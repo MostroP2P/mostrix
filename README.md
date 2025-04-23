@@ -2,7 +2,7 @@
 
 ![Mostro-logo](static/logo.png)
 
-**This is work in progres**
+**This is work in progress**
 
 Terminal client for p2p using Mostro protocol.
 
