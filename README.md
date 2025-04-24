@@ -34,7 +34,7 @@ Make sure that you have the following settings in your `~/.mostrix/settings.toml
 
 ```toml
 mostro_pubkey = "0000000000000000000000000000000000000000000000000000000000000000"
-relays = ["wss://relay.mostro.network", "wss://nostr.bilthon.dev"]
+relays = ["wss://relay.mostro.network"]
 ```
 
 ### Run
