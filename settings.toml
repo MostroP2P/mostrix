@@ -1,0 +1,5 @@
+# Mostro pubkey, it can be hex or npub
+mostro_pubkey = "0000000000000000000000000000000000000000000000000000000000000000"
+# Relays to connect to
+relays = ["wss://relay.mostro.network"]
+log_level = "info"

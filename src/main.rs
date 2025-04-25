@@ -1,7 +1,9 @@
 pub mod db;
 pub mod models;
+pub mod settings;
 
 use crate::models::Order;
+use crate::settings::{Settings, init_settings};
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -19,18 +21,30 @@ use ratatui::widgets::{Tabs, Block, Borders, Table, Row, Cell, Paragraph};
 use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 use tokio::time::{interval, Duration};
-use fern::Dispatch;use chrono::Local;
+use fern::Dispatch;
+use chrono::Local;
 use nostr_sdk::prelude::*;
 use nostr_sdk::prelude::RelayPoolNotification;
-
 use mostro_core::NOSTR_REPLACEABLE_EVENT_KIND;
+use std::sync::OnceLock;
+
+/// Constructs (or copies) the configuration file and loads it.
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 // Official Mostro colors.
 const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51);    // #b1cc33
 const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44);     // #1D212C
 
 /// Initialize logger function
-fn setup_logger(level: log::LevelFilter) -> Result<(), fern::InitError> {
+fn setup_logger(level: &str) -> Result<(), fern::InitError> {
+    let log_level = match level.to_lowercase().as_str() {
+        "trace" => log::LevelFilter::Trace,
+        "debug" => log::LevelFilter::Debug,
+        "info" => log::LevelFilter::Info,
+        "warn" => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        _ => log::LevelFilter::Info, // Default to Info for invalid values
+    };
     Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -40,7 +54,7 @@ fn setup_logger(level: log::LevelFilter) -> Result<(), fern::InitError> {
                 message
             ))
         })
-        .level(level)
+        .level(log_level)
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
@@ -230,9 +244,11 @@ fn ui_draw(
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    log::info!("MostriX started");
+    let settings = init_settings();
     db::init_db().await?;
     // Initialize logger
-    setup_logger(log::LevelFilter::Info).expect("Can't initialize logger");
+    setup_logger(&settings.log_level).expect("Can't initialize logger");
     // Set the terminal in raw mode and switch to the alternate screen.
     enable_raw_mode()?;
     let mut stdout = stdout();
