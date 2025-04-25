@@ -1,17 +1,14 @@
 pub mod db;
 pub mod models;
+pub mod settings;
 
 use crate::models::Order;
+use crate::settings::{Settings, init_settings};
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::io::stdout;
-use std::{
-    env,
-    fs,
-    path::{Path, PathBuf},
-};
-use serde::Deserialize;
+
 use chrono::{Utc, Duration as ChronoDuration};
 use futures::StreamExt;
 use crossterm::event::{Event as CEvent, EventStream, KeyCode, KeyEvent};
@@ -31,14 +28,6 @@ use nostr_sdk::prelude::RelayPoolNotification;
 use mostro_core::NOSTR_REPLACEABLE_EVENT_KIND;
 use std::sync::OnceLock;
 
-
-#[derive(Debug, Deserialize)]
-pub struct Settings {
-    mostro_pubkey: String,
-    relays:        Vec<String>,
-    log_level:     String,
-}
-
 /// Constructs (or copies) the configuration file and loads it.
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
@@ -46,43 +35,16 @@ static SETTINGS: OnceLock<Settings> = OnceLock::new();
 const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51);    // #b1cc33
 const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44);     // #1D212C
 
-fn init_settings() -> &'static Settings {
-    SETTINGS.get_or_init(|| {
-        // HOME y nombre del paquete en tiempo de compilación
-        let home_dir      = env::var("HOME").expect("No se pudo obtener $HOME");
-        let package_name  = env!("CARGO_PKG_NAME");          // p.e. "my_project"
-        let hidden_dir    = Path::new(&home_dir).join(format!(".{package_name}"));
-        let hidden_file   = hidden_dir.join("settings.toml");
-
-        // Ruta del settings.toml incluido en el repo (al lado del Cargo.toml)
-        let default_file: PathBuf =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
-
-        // 1. Crea ~/.my_project si no existe
-        if !hidden_dir.exists() {
-            fs::create_dir(&hidden_dir)
-                .expect("No se pudo crear el directorio de configuración");
-        }
-
-        // 2. Copia settings.toml si aún no está en ~/.my_project
-        if !hidden_file.exists() {
-            fs::copy(&default_file, &hidden_file)
-                .expect("No se pudo copiar settings.toml por defecto");
-        }
-
-        // 3. Usa el crate `config` para deserializar a la struct Settings
-        let cfg = config::Config::builder()
-            .add_source(config::File::from(hidden_file))
-            .build()
-            .expect("settings.toml mal formado");
-
-        cfg.try_deserialize::<Settings>()
-            .expect("Error deserializando settings.toml")
-    })
-}
-
 /// Initialize logger function
-fn setup_logger(level: log::LevelFilter) -> Result<(), fern::InitError> {
+fn setup_logger(level: &str) -> Result<(), fern::InitError> {
+    let log_level = match level.to_lowercase().as_str() {
+        "trace" => log::LevelFilter::Trace,
+        "debug" => log::LevelFilter::Debug,
+        "info" => log::LevelFilter::Info,
+        "warn" => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        _ => log::LevelFilter::Info, // Default to Info for invalid values
+    };
     Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -92,7 +54,7 @@ fn setup_logger(level: log::LevelFilter) -> Result<(), fern::InitError> {
                 message
             ))
         })
-        .level(level)
+        .level(log_level)
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
@@ -287,7 +249,7 @@ async fn main() -> Result<(), anyhow::Error> {
     println!("⚙️  Configuración cargada:\n{settings:#?}");
     db::init_db().await?;
     // Initialize logger
-    setup_logger(log::LevelFilter::Info).expect("Can't initialize logger");
+    setup_logger(&settings.log_level).expect("Can't initialize logger");
     // Set the terminal in raw mode and switch to the alternate screen.
     enable_raw_mode()?;
     let mut stdout = stdout();
