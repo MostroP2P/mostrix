@@ -246,7 +246,6 @@ fn ui_draw(
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
     let settings = init_settings();
-    println!("⚙️  Configuración cargada:\n{settings:#?}");
     db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
