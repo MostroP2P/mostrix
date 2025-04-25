@@ -6,7 +6,12 @@ use crate::models::Order;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::io::stdout;
-
+use std::{
+    env,
+    fs,
+    path::{Path, PathBuf},
+};
+use serde::Deserialize;
 use chrono::{Utc, Duration as ChronoDuration};
 use futures::StreamExt;
 use crossterm::event::{Event as CEvent, EventStream, KeyCode, KeyEvent};
@@ -19,15 +24,62 @@ use ratatui::widgets::{Tabs, Block, Borders, Table, Row, Cell, Paragraph};
 use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 use tokio::time::{interval, Duration};
-use fern::Dispatch;use chrono::Local;
+use fern::Dispatch;
+use chrono::Local;
 use nostr_sdk::prelude::*;
 use nostr_sdk::prelude::RelayPoolNotification;
-
 use mostro_core::NOSTR_REPLACEABLE_EVENT_KIND;
+use std::sync::OnceLock;
+
+
+#[derive(Debug, Deserialize)]
+pub struct Settings {
+    mostro_pubkey: String,
+    relays:        Vec<String>,
+    log_level:     String,
+}
+
+/// Constructs (or copies) the configuration file and loads it.
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 // Official Mostro colors.
 const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51);    // #b1cc33
 const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44);     // #1D212C
+
+fn init_settings() -> &'static Settings {
+    SETTINGS.get_or_init(|| {
+        // HOME y nombre del paquete en tiempo de compilación
+        let home_dir      = env::var("HOME").expect("No se pudo obtener $HOME");
+        let package_name  = env!("CARGO_PKG_NAME");          // p.e. "my_project"
+        let hidden_dir    = Path::new(&home_dir).join(format!(".{package_name}"));
+        let hidden_file   = hidden_dir.join("settings.toml");
+
+        // Ruta del settings.toml incluido en el repo (al lado del Cargo.toml)
+        let default_file: PathBuf =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
+
+        // 1. Crea ~/.my_project si no existe
+        if !hidden_dir.exists() {
+            fs::create_dir(&hidden_dir)
+                .expect("No se pudo crear el directorio de configuración");
+        }
+
+        // 2. Copia settings.toml si aún no está en ~/.my_project
+        if !hidden_file.exists() {
+            fs::copy(&default_file, &hidden_file)
+                .expect("No se pudo copiar settings.toml por defecto");
+        }
+
+        // 3. Usa el crate `config` para deserializar a la struct Settings
+        let cfg = config::Config::builder()
+            .add_source(config::File::from(hidden_file))
+            .build()
+            .expect("settings.toml mal formado");
+
+        cfg.try_deserialize::<Settings>()
+            .expect("Error deserializando settings.toml")
+    })
+}
 
 /// Initialize logger function
 fn setup_logger(level: log::LevelFilter) -> Result<(), fern::InitError> {
@@ -230,6 +282,9 @@ fn ui_draw(
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    log::info!("MostriX started");
+    let settings = init_settings();
+    println!("⚙️  Configuración cargada:\n{settings:#?}");
     db::init_db().await?;
     // Initialize logger
     setup_logger(log::LevelFilter::Info).expect("Can't initialize logger");
