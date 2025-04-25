@@ -1,4 +1,4 @@
-# Mostrix 🧌
+# MostriX 🧌
 
 ![Mostro-logo](static/logo.png)
 
@@ -10,7 +10,7 @@ Terminal client for p2p using Mostro protocol.
 
 ## Requirements:
 
-0. You need Rust version 1.64 or higher to compile.
+0. You need Rust version 1.70 or higher to compile.
 
 ## Install dependencies:
 
@@ -30,11 +30,12 @@ $ cd mostrix
 
 ### Settings
 
-Make sure that you have the following settings in your `~/.mostrix/settings.toml` file, you can find an example of the settings file in `settings.tpl.toml`, so you can copy it and modify it to your needs.
+Fill `settings.toml` file with you own settings before run it for the first time, Mostrix will copy it to `~/.mostrix`, after the first run you have to modify it directly in `~/.mostrix/settings.toml`
 
 ```toml
 mostro_pubkey = "0000000000000000000000000000000000000000000000000000000000000000"
 relays = ["wss://relay.mostro.network"]
+log_level = "info"
 ```
 
 ### Run
@@ -48,7 +49,7 @@ $ cargo run
 - [x] Implement logger
 - [x] Create 12 words seed for user runing first time
 - [x] Use sqlite (sqlx)
-- [ ] Create settings.toml
+- [x] Create settings.toml
 - [ ] Create Settings tab
 - [ ] [Implement keys management](https://mostro.network/protocol/key_management.html)
 - [ ] List own orders
