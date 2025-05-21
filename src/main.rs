@@ -8,6 +8,7 @@ use crate::settings::{init_settings, Settings};
 use std::io::stdout;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::vec;
 
 use chrono::Local;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -116,7 +117,11 @@ fn parse_order_event(event: nostr_sdk::Event) -> Option<Order> {
             }
             "pm" => {
                 if tag.len() > 1 {
-                    payment_method = Some(tag[1].clone());
+                    let mut pm = vec![];
+                    for tag in tag.iter().skip(1) {
+                        pm.push(tag.clone());
+                    }
+                    payment_method = Some(pm.join(", "));
                 }
             }
             _ => {}
