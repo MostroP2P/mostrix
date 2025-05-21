@@ -328,6 +328,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .author(mostro_pubkey)
         .limit(20)
         .since(timestamp)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::S), "pending")
         .custom_tag(SingleLetterTag::lowercase(Alphabet::Y), "mostro")
         .custom_tag(SingleLetterTag::lowercase(Alphabet::Z), "order")
         .kind(Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND));
