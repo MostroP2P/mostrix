@@ -333,7 +333,6 @@ async fn main() -> Result<(), anyhow::Error> {
         .author(mostro_pubkey)
         .limit(20)
         .since(timestamp)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::S), "pending")
         .custom_tag(SingleLetterTag::lowercase(Alphabet::Y), "mostro")
         .custom_tag(SingleLetterTag::lowercase(Alphabet::Z), "order")
         .kind(Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND));
@@ -353,11 +352,18 @@ async fn main() -> Result<(), anyhow::Error> {
                 if event.kind == Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND) {
                     if let Some(order) = parse_order_event((*event).clone()) {
                         let mut orders_lock = orders_clone.lock().unwrap();
-                        // Update the existing order (if the id matches) or add a new one.
-                        if let Some(existing) = orders_lock.iter_mut().find(|o| o.id == order.id) {
-                            *existing = order;
+                        // If status still pending we add it or update it
+                        if order.status == Some("pending".to_string()) {
+                            if let Some(existing) =
+                                orders_lock.iter_mut().find(|o| o.id == order.id)
+                            {
+                                *existing = order;
+                            } else {
+                                orders_lock.push(order);
+                            }
                         } else {
-                            orders_lock.push(order);
+                            // If status is not pending we remove it from the list
+                            orders_lock.retain(|o| o.id != order.id);
                         }
                     }
                 }
