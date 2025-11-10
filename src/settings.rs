@@ -23,6 +23,8 @@ pub fn init_settings() -> &'static Settings {
         let hidden_dir = home_dir.join(format!(".{package_name}"));
         let hidden_file = hidden_dir.join("settings.toml");
 
+        println!("hidden_file: {:?}", hidden_file);
+
         // Path to the settings.toml included in the repo (next to Cargo.toml)
         let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
 

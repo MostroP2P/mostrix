@@ -1,42 +1,45 @@
+pub mod adapter;
 pub mod db;
 pub mod models;
 pub mod settings;
+pub mod ui;
+pub mod util;
 
-use crate::models::Order;
+use crate::models::{Order, User};
 use crate::settings::{init_settings, Settings};
+use crossterm::event::EventStream;
+use mostro_core::prelude::{NOSTR_REPLACEABLE_EVENT_KIND, Status};
 
-use std::io::stdout;
+
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::vec;
 
 use chrono::Local;
 use chrono::{Duration as ChronoDuration, Utc};
-use crossterm::event::{Event as CEvent, EventStream, KeyCode, KeyEvent};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::{self, event::{Event, KeyEvent, KeyCode}};
 use fern::Dispatch;
 use futures::StreamExt;
-use mostro_core::NOSTR_REPLACEABLE_EVENT_KIND;
+// Removed dependency on NOSTR_REPLACEABLE_EVENT_KIND to avoid unresolved import
 use nostr_sdk::prelude::RelayPoolNotification;
 use nostr_sdk::prelude::*;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs};
-use ratatui::Terminal;
+use nostr_sdk::EventBuilder;
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
+use crossterm::execute;
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use std::io::stdout;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+use nip44::v2::{ConversationKey, encrypt_to_bytes};
+use nostr_sdk::Tag;
 
 /// Constructs (or copies) the configuration file and loads it.
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-// Official Mostro colors.
-const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
-const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
+use crate::ui::{AppState, UiMode, FormState};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -170,140 +173,19 @@ fn parse_order_event(event: nostr_sdk::Event) -> Option<Order> {
 
 /// Draws the TUI interface with tabs and active content.
 /// The "Orders" tab shows a table of pending orders and highlights the selected row.
-fn ui_draw(
-    f: &mut ratatui::Frame,
-    active_tab: usize,
-    orders: &Arc<Mutex<Vec<Order>>>,
-    selected_order_idx: usize,
-) {
-    // Create layout: one row for tabs and the rest for content.
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [Constraint::Length(3), Constraint::Min(0)],
-    )
-    .split(f.area());
-
-    // Define tab titles.
-    let tab_titles = ["Orders", "My Trades", "Messages", "Settings"]
-        .iter()
-        .map(|t| Line::from(*t))
-        .collect::<Vec<Line>>();
-    let tabs = Tabs::new(tab_titles)
-        .select(active_tab)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(tabs, chunks[0]);
-
-    let content_area = chunks[1];
-    if active_tab == 0 {
-        // "Orders" tab: show table with pending orders.
-        let header_cells = [
-            "Kind",
-            "Sats Amount",
-            "Fiat",
-            "Fiat Amount",
-            "Payment Method",
-        ]
-        .iter()
-        .map(|h| Cell::from(*h))
-        .collect::<Vec<Cell>>();
-        let header = Row::new(header_cells).style(Style::default().add_modifier(Modifier::BOLD));
-
-        let orders_lock = orders.lock().unwrap();
-        let rows: Vec<Row> = orders_lock
-            .iter()
-            .enumerate()
-            .map(|(i, order)| {
-                let kind = order.kind.clone().unwrap_or_default();
-                let fiat_code = order.fiat_code.clone();
-                let amount = if order.amount == 0 {
-                    "M/P".to_string()
-                } else {
-                    order.amount.to_string()
-                };
-                let fiat_amount = order.fiat_amount.to_string();
-                let payment_method = order.payment_method.clone();
-                let row = Row::new(vec![
-                    Cell::from(kind),
-                    Cell::from(amount),
-                    Cell::from(fiat_code),
-                    Cell::from(fiat_amount),
-                    Cell::from(payment_method),
-                ]);
-                if i == selected_order_idx {
-                    // Highlight the selected row.
-                    row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-                } else {
-                    row
-                }
-            })
-            .collect();
-
-        let table = Table::new(
-            rows,
-            &[
-                Constraint::Max(5),
-                Constraint::Max(11),
-                Constraint::Max(5),
-                Constraint::Max(12),
-                Constraint::Min(10),
-            ],
-        )
-        .header(header)
-        .block(
-            Block::default()
-                .title("Orders")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(table, content_area);
-    } else if active_tab == 1 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("My Trades")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    } else if active_tab == 2 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("Messages")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    } else if active_tab == 3 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("Settings")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    }
-}
+use crate::ui::ui_draw;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
     let settings = init_settings();
-    db::init_db().await?;
+    let pool = db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
-    // Set the terminal in raw mode and switch to the alternate screen.
     enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
     // Shared state: orders are stored in memory.
@@ -312,7 +194,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Configure Nostr client.
     let my_keys = Keys::generate();
     let client = Client::new(my_keys);
-    // Add relay.
+    // Add q.
     for relay in &settings.relays {
         client.add_relay(relay).await?;
     }
@@ -342,6 +224,28 @@ async fn main() -> Result<(), anyhow::Error> {
     }
     // Subscribe to the filter.
     client.subscribe(filter, None).await?;
+
+    // Fetch initial orders list using reused logic from mostro-cli
+    // Filter for pending orders only, matching the original behavior
+    if let Ok(fetched_orders) = adapter::fetch_orders(
+        &client,
+        mostro_pubkey,
+        Some(Status::Pending),
+        None, // No currency filter
+        None, // No kind filter
+    )
+    .await
+    {
+        let mut lock = orders.lock().unwrap();
+        lock.clear();
+        for order in fetched_orders {
+            if let Some(existing) = lock.iter_mut().find(|o| o.id == order.id) {
+                *existing = order;
+            } else {
+                lock.push(order);
+            }
+        }
+    }
 
     // Asynchronous task to handle incoming notifications.
     let orders_clone = Arc::clone(&orders);
@@ -374,51 +278,207 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(500));
-    let mut active_tab: usize = 0;
-    // Selected order index for the "Orders" table.
-    let mut selected_order_idx: usize = 0;
+    let mut app = AppState::new();
 
     loop {
         tokio::select! {
             maybe_event = events.next() => {
                 if let Some(Ok(event)) = maybe_event {
-                    if let CEvent::Key(KeyEvent { code, .. }) = event {
+                    if let Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, .. }) = event {
                         match code {
                             KeyCode::Left => {
-                                if active_tab > 0 {
-                                    active_tab -= 1;
+                                if matches!(app.mode, UiMode::Normal) {
+                                    if app.active_tab > 0 {
+                                        app.active_tab -= 1;
+                                    }
                                 }
                             }
                             KeyCode::Right => {
-                                if active_tab < 3 {
-                                    active_tab += 1;
+                                if matches!(app.mode, UiMode::Normal) {
+                                    if app.active_tab < 3 {
+                                        app.active_tab += 1;
+                                    }
                                 }
                             }
                             KeyCode::Up => {
-                                if active_tab == 0 {
-                                    let orders_len = orders.lock().unwrap().len();
-                                    if orders_len > 0 && selected_order_idx > 0 {
-                                        selected_order_idx -= 1;
+                                match &mut app.mode {
+                                    UiMode::Normal => {
+                                        if app.active_tab == 0 {
+                                            let orders_len = orders.lock().unwrap().len();
+                                            if orders_len > 0 && app.selected_order_idx > 0 {
+                                                app.selected_order_idx -= 1;
+                                            }
+                                        }
+                                    }
+                                    UiMode::CreatingOrder(form) => {
+                                        if form.focused > 0 { form.focused -= 1; }
                                     }
                                 }
                             }
                             KeyCode::Down => {
-                                if active_tab == 0 {
-                                    let orders_len = orders.lock().unwrap().len();
-                                    if orders_len > 0 && selected_order_idx < orders_len.saturating_sub(1) {
-                                        selected_order_idx += 1;
+                                match &mut app.mode {
+                                    UiMode::Normal => {
+                                        if app.active_tab == 0 {
+                                            let orders_len = orders.lock().unwrap().len();
+                                            if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
+                                                app.selected_order_idx += 1;
+                                            }
+                                        }
                                     }
+                                    UiMode::CreatingOrder(form) => {
+                                        if form.focused < 3 { form.focused += 1; }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('n') => {
+                                if matches!(app.mode, UiMode::Normal) {
+                                    let mut form = FormState::default();
+                                    form.kind = "buy".to_string();
+                                    form.fiat_code = "USD".to_string();
+                                    form.focused = 1; // start editing on Valuta
+                                    app.mode = UiMode::CreatingOrder(form);
+                                }
+                            }
+                            KeyCode::Tab => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    form.focused = (form.focused + 1) % 4;
+                                }
+                            }
+                            KeyCode::BackTab => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    form.focused = form.focused.saturating_sub(1);
                                 }
                             }
                             KeyCode::Enter => {
-                                if active_tab == 0 {
-                                    let orders_lock = orders.lock().unwrap();
-                                    if let Some(order) = orders_lock.get(selected_order_idx) {
-                                        log::info!("selected order {:#?}", order);
+                                match &mut app.mode {
+                                    UiMode::Normal => {
+                                        if app.active_tab == 0 {
+                                            // Apri form crea ordine da Orders
+                                            let mut form = FormState::default();
+                                            form.kind = "buy".to_string();
+                                            form.fiat_code = "USD".to_string();
+                                            form.focused = 1; // start editing on Valuta
+                                            app.mode = UiMode::CreatingOrder(form);
+                                        }
+                                    }
+                                    UiMode::CreatingOrder(form) => {
+                                        // Build and send order via DM using trade key
+                                        let kind_str = if form.kind.trim().is_empty() { "buy".to_string() } else { form.kind.trim().to_lowercase() };
+                                        let fiat = if form.fiat_code.trim().is_empty() { "USD".to_string() } else { form.fiat_code.trim().to_uppercase() };
+                                        let fiat_amount: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
+                                        let pm_clean = form.payment_method.trim().to_string();
+
+                                        if let Ok(user) = User::get(&pool).await {
+                                            let next_idx = user.last_trade_index.unwrap_or(0) + 1;
+                                            if let Ok(trade_keys) = user.derive_trade_keys(next_idx) {
+                                                let _ = User::update_last_trade_index(&pool, next_idx).await;
+
+                                                let kind_checked = mostro_core::order::Kind::from_str(&kind_str).unwrap_or(mostro_core::order::Kind::Buy);
+                                                let small_order = mostro_core::prelude::SmallOrder::new(
+                                                    None,
+                                                    Some(kind_checked),
+                                                    Some(mostro_core::prelude::Status::Pending),
+                                                    0,
+                                                    fiat.clone(),
+                                                    None,
+                                                    None,
+                                                    fiat_amount,
+                                                    pm_clean.clone(),
+                                                    0,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    Some(0),
+                                                    None,
+                                                );
+                                                let payload = mostro_core::prelude::Payload::Order(small_order);
+                                                let message = mostro_core::prelude::Message::new_order(
+                                                    None,
+                                                    None,
+                                                    Some(next_idx),
+                                                    mostro_core::prelude::Action::NewOrder,
+                                                    Some(payload),
+                                                );
+                                                if let Ok(json) = message.as_json() {
+                                                    let trade_client = Client::new(trade_keys.clone());
+                                                    for relay in &settings.relays { let _ = trade_client.add_relay(relay).await; }
+                                                    trade_client.connect().await;
+                                                    if let Ok(mostro_pk) = PublicKey::from_str(&settings.mostro_pubkey) {
+                                                        // Create encrypted PDM event
+                                                        let ck = ConversationKey::derive(trade_keys.secret_key(), &mostro_pk).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                        let encrypted = encrypt_to_bytes(&ck, json.as_bytes()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                        let b64 = B64.encode(encrypted);
+                                                        let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
+                                                            .tag(Tag::public_key(mostro_pk))
+                                                            .sign_with_keys(&trade_keys)?;
+                                                        if let Err(e) = trade_client.send_event(&event).await {
+                                                            log::error!("Failed to send DM: {}", e);
+                                                        } else {
+                                                            log::info!("New order sent via DM with trade index {}", next_idx);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        app.mode = UiMode::Normal;
                                     }
                                 }
                             }
-                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Esc => {
+                                if matches!(app.mode, UiMode::CreatingOrder(_)) {
+                                    app.mode = UiMode::Normal;
+                                } else {
+                                    break
+                                }
+                            }
+                            KeyCode::Char('q') => break,
+                            KeyCode::Char(c) => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    if form.focused == 0 {
+                                        // ignore typing on toggle field
+                                    } else {
+                                        let target = match form.focused { 1 => &mut form.fiat_code, 2 => &mut form.fiat_amount, _ => &mut form.payment_method };
+                                        target.push(c);
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    if form.focused == 0 {
+                                        // ignore
+                                    } else {
+                                        let target = match form.focused { 1 => &mut form.fiat_code, 2 => &mut form.fiat_amount, _ => &mut form.payment_method };
+                                        target.pop();
+                                    }
+                                }
+                            }
+                            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    match code {
+                                        KeyCode::Left => {
+                                            if form.focused == 0 {
+                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
+                                            } else if form.focused > 0 {
+                                                form.focused -= 1;
+                                            }
+                                        }
+                                        KeyCode::Right => {
+                                            if form.focused == 0 {
+                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
+                                            } else if form.focused < 3 {
+                                                form.focused += 1;
+                                            }
+                                        }
+                                        KeyCode::Char(' ') => {
+                                            if form.focused == 0 {
+                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -432,12 +492,16 @@ async fn main() -> Result<(), anyhow::Error> {
         // Ensure the selected index is valid when orders list changes.
         {
             let orders_len = orders.lock().unwrap().len();
-            if orders_len > 0 && selected_order_idx >= orders_len {
-                selected_order_idx = orders_len - 1;
+            if orders_len > 0 && app.selected_order_idx >= orders_len {
+                app.selected_order_idx = orders_len - 1;
             }
         }
 
-        terminal.draw(|f| ui_draw(f, active_tab, &orders, selected_order_idx))?;
+        // Status bar text
+        let relays_str = settings.relays.join(" - ");
+        // let mostro_short = if settings.mostro_pubkey.len { format!("{}…", &settings.mostro_pubkey[..12]) } else { settings.mostro_pubkey.clone() };
+        let status_line = format!("🧌 pubkey - {}   🔗 {}", &settings.mostro_pubkey, relays_str);
+        terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
     }
 
     // Restore terminal to its original state.
