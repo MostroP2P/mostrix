@@ -1,11 +1,11 @@
-pub mod adapter;
 pub mod db;
 pub mod models;
 pub mod settings;
 pub mod ui;
 pub mod util;
 
-use crate::models::{Order, User};
+use crate::models::User;
+use crate::util::{fetch_events_list, Event as UtilEvent, ListKind};
 use crate::settings::{init_settings, Settings};
 use crossterm::event::EventStream;
 use mostro_core::prelude::{NOSTR_REPLACEABLE_EVENT_KIND, Status};
@@ -13,15 +13,12 @@ use mostro_core::prelude::{NOSTR_REPLACEABLE_EVENT_KIND, Status};
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::vec;
 
 use chrono::Local;
 use chrono::{Duration as ChronoDuration, Utc};
 use crossterm::{self, event::{Event, KeyEvent, KeyCode}};
 use fern::Dispatch;
 use futures::StreamExt;
-// Removed dependency on NOSTR_REPLACEABLE_EVENT_KIND to avoid unresolved import
-use nostr_sdk::prelude::RelayPoolNotification;
 use nostr_sdk::prelude::*;
 use nostr_sdk::EventBuilder;
 use std::sync::OnceLock;
@@ -66,110 +63,6 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-/// Parses a nostr_sdk::Event (expected to be a NIP-69 order event) into an Order.
-/// It extracts tags:
-/// - "d": order identifier (used as Code)
-/// - "k": order kind ("buy" or "sell")
-/// - "s": status (e.g. "pending")
-/// - "amt": bitcoin amount (in satoshis)
-/// - "f": fiat currency code
-/// - "fa": fiat amount
-/// - "pm": payment method
-fn parse_order_event(event: nostr_sdk::Event) -> Option<Order> {
-    let mut id = None;
-    let mut kind = None;
-    let mut status = None;
-    let mut amount = None;
-    let mut fiat_code = None;
-    let mut fiat_amount = None;
-    let mut payment_method = None;
-
-    // Iterate over the tags using iter(), avoiding any errors with &event.tags.
-    for tag in event.tags.iter() {
-        let tag = tag.as_slice();
-        match tag[0].as_str() {
-            "d" => {
-                if tag.len() > 1 {
-                    id = Some(tag[1].clone());
-                }
-            }
-            "k" => {
-                if tag.len() > 1 {
-                    kind = Some(tag[1].clone());
-                }
-            }
-            "s" => {
-                if tag.len() > 1 {
-                    status = Some(tag[1].clone());
-                }
-            }
-            "amt" => {
-                if tag.len() > 1 {
-                    amount = tag[1].parse::<i64>().ok();
-                }
-            }
-            "f" => {
-                if tag.len() > 1 {
-                    fiat_code = Some(tag[1].clone());
-                }
-            }
-            "fa" => {
-                if tag.len() > 1 {
-                    fiat_amount = tag[1].parse::<i64>().ok();
-                }
-            }
-            "pm" => {
-                if tag.len() > 1 {
-                    let mut pm = vec![];
-                    for tag in tag.iter().skip(1) {
-                        pm.push(tag.clone());
-                    }
-                    payment_method = Some(pm.join(", "));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Check that all required fields are present.
-    if let (
-        Some(kind),
-        Some(id),
-        Some(status),
-        Some(amount),
-        Some(fiat_code),
-        Some(fiat_amount),
-        Some(payment_method),
-    ) = (
-        kind,
-        id,
-        status,
-        amount,
-        fiat_code,
-        fiat_amount,
-        payment_method,
-    ) {
-        Some(Order {
-            id: Some(id),
-            kind: Some(kind),
-            status: Some(status),
-            amount,
-            fiat_code,
-            min_amount: None,
-            max_amount: None,
-            fiat_amount,
-            payment_method,
-            is_mine: false,
-            premium: 0,
-            buyer_trade_pubkey: None,
-            seller_trade_pubkey: None,
-            created_at: None,
-            expires_at: None,
-        })
-    } else {
-        None
-    }
-}
 
 /// Draws the TUI interface with tabs and active content.
 /// The "Orders" tab shows a table of pending orders and highlights the selected row.
@@ -189,7 +82,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut terminal = Terminal::new(backend)?;
 
     // Shared state: orders are stored in memory.
-    let orders: Arc<Mutex<Vec<Order>>> = Arc::new(Mutex::new(Vec::new()));
+    let orders: Arc<Mutex<Vec<mostro_core::prelude::SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
     let my_keys = Keys::generate();
@@ -225,50 +118,57 @@ async fn main() -> Result<(), anyhow::Error> {
     // Subscribe to the filter.
     client.subscribe(filter, None).await?;
 
-    // Fetch initial orders list using reused logic from mostro-cli
+    // Fetch initial orders list using fetch_events_list with ListKind::Orders
     // Filter for pending orders only, matching the original behavior
-    if let Ok(fetched_orders) = adapter::fetch_orders(
-        &client,
-        mostro_pubkey,
+    if let Ok(fetched_events) = fetch_events_list(
+        ListKind::Orders,
         Some(Status::Pending),
         None, // No currency filter
         None, // No kind filter
+        &client,
+        mostro_pubkey,
+        None,
     )
     .await
     {
         let mut lock = orders.lock().unwrap();
         lock.clear();
-        for order in fetched_orders {
-            if let Some(existing) = lock.iter_mut().find(|o| o.id == order.id) {
-                *existing = order;
-            } else {
-                lock.push(order);
+        for event in fetched_events {
+            if let UtilEvent::SmallOrder(order) = event {
+                if let Some(existing) = lock.iter_mut().find(|o| o.id == order.id) {
+                    *existing = order;
+                } else {
+                    lock.push(order);
+                }
             }
         }
     }
 
     // Asynchronous task to handle incoming notifications.
     let orders_clone = Arc::clone(&orders);
-    let mut notifications = client.notifications();
+    let client_clone = client.clone();
+    let mostro_pubkey_clone = mostro_pubkey;
     tokio::spawn(async move {
-        while let Ok(notification) = notifications.recv().await {
-            if let RelayPoolNotification::Event { event, .. } = notification {
-                if event.kind == Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND) {
-                    if let Some(order) = parse_order_event((*event).clone()) {
-                        let mut orders_lock = orders_clone.lock().unwrap();
-                        // If status still pending we add it or update it
-                        if order.status == Some("pending".to_string()) {
-                            if let Some(existing) =
-                                orders_lock.iter_mut().find(|o| o.id == order.id)
-                            {
-                                *existing = order;
-                            } else {
-                                orders_lock.push(order);
-                            }
-                        } else {
-                            // If status is not pending we remove it from the list
-                            orders_lock.retain(|o| o.id != order.id);
-                        }
+        // Periodically refresh orders list
+        let mut refresh_interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            refresh_interval.tick().await;
+            if let Ok(fetched_events) = fetch_events_list(
+                ListKind::Orders,
+                Some(Status::Pending),
+                None,
+                None,
+                &client_clone,
+                mostro_pubkey_clone,
+                None,
+            )
+            .await
+            {
+                let mut orders_lock = orders_clone.lock().unwrap();
+                orders_lock.clear();
+                for event in fetched_events {
+                    if let UtilEvent::SmallOrder(order) = event {
+                        orders_lock.push(order);
                     }
                 }
             }
@@ -291,12 +191,24 @@ async fn main() -> Result<(), anyhow::Error> {
                                     if app.active_tab > 0 {
                                         app.active_tab -= 1;
                                     }
+                                    // Exit form mode when leaving Create New Order tab
+                                    if app.active_tab != 4 {
+                                        app.mode = UiMode::Normal;
+                                    }
                                 }
                             }
                             KeyCode::Right => {
                                 if matches!(app.mode, UiMode::Normal) {
-                                    if app.active_tab < 3 {
+                                    if app.active_tab < 4 {
                                         app.active_tab += 1;
+                                    }
+                                    // Auto-initialize form when switching to Create New Order tab
+                                    if app.active_tab == 4 {
+                                        let mut form = FormState::default();
+                                        form.kind = "buy".to_string();
+                                        form.fiat_code = "USD".to_string();
+                                        form.focused = 1;
+                                        app.mode = UiMode::CreatingOrder(form);
                                     }
                                 }
                             }
@@ -331,13 +243,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 }
                             }
                             KeyCode::Char('n') => {
-                                if matches!(app.mode, UiMode::Normal) {
-                                    let mut form = FormState::default();
-                                    form.kind = "buy".to_string();
-                                    form.fiat_code = "USD".to_string();
-                                    form.focused = 1; // start editing on Valuta
-                                    app.mode = UiMode::CreatingOrder(form);
-                                }
+                                // 'n' key no longer opens form - use Create New Order tab instead
                             }
                             KeyCode::Tab => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
@@ -352,76 +258,78 @@ async fn main() -> Result<(), anyhow::Error> {
                             KeyCode::Enter => {
                                 match &mut app.mode {
                                     UiMode::Normal => {
-                                        if app.active_tab == 0 {
-                                            // Apri form crea ordine da Orders
-                                            let mut form = FormState::default();
-                                            form.kind = "buy".to_string();
-                                            form.fiat_code = "USD".to_string();
-                                            form.focused = 1; // start editing on Valuta
-                                            app.mode = UiMode::CreatingOrder(form);
-                                        }
+                                        // Enter key will be used for taking orders later
+                                        // No action for now
                                     }
                                     UiMode::CreatingOrder(form) => {
-                                        // Build and send order via DM using trade key
-                                        let kind_str = if form.kind.trim().is_empty() { "buy".to_string() } else { form.kind.trim().to_lowercase() };
-                                        let fiat = if form.fiat_code.trim().is_empty() { "USD".to_string() } else { form.fiat_code.trim().to_uppercase() };
-                                        let fiat_amount: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
-                                        let pm_clean = form.payment_method.trim().to_string();
+                                        // Only submit if on Create New Order tab
+                                        if app.active_tab == 4 {
+                                            // Build and send order via DM using trade key
+                                            let kind_str = if form.kind.trim().is_empty() { "buy".to_string() } else { form.kind.trim().to_lowercase() };
+                                            let fiat = if form.fiat_code.trim().is_empty() { "USD".to_string() } else { form.fiat_code.trim().to_uppercase() };
+                                            let fiat_amount: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
+                                            let pm_clean = form.payment_method.trim().to_string();
 
-                                        if let Ok(user) = User::get(&pool).await {
-                                            let next_idx = user.last_trade_index.unwrap_or(0) + 1;
-                                            if let Ok(trade_keys) = user.derive_trade_keys(next_idx) {
-                                                let _ = User::update_last_trade_index(&pool, next_idx).await;
+                                            if let Ok(user) = User::get(&pool).await {
+                                                let next_idx = user.last_trade_index.unwrap_or(0) + 1;
+                                                if let Ok(trade_keys) = user.derive_trade_keys(next_idx) {
+                                                    let _ = User::update_last_trade_index(&pool, next_idx).await;
 
-                                                let kind_checked = mostro_core::order::Kind::from_str(&kind_str).unwrap_or(mostro_core::order::Kind::Buy);
-                                                let small_order = mostro_core::prelude::SmallOrder::new(
-                                                    None,
-                                                    Some(kind_checked),
-                                                    Some(mostro_core::prelude::Status::Pending),
-                                                    0,
-                                                    fiat.clone(),
-                                                    None,
-                                                    None,
-                                                    fiat_amount,
-                                                    pm_clean.clone(),
-                                                    0,
-                                                    None,
-                                                    None,
-                                                    None,
-                                                    Some(0),
-                                                    None,
-                                                );
-                                                let payload = mostro_core::prelude::Payload::Order(small_order);
-                                                let message = mostro_core::prelude::Message::new_order(
-                                                    None,
-                                                    None,
-                                                    Some(next_idx),
-                                                    mostro_core::prelude::Action::NewOrder,
-                                                    Some(payload),
-                                                );
-                                                if let Ok(json) = message.as_json() {
-                                                    let trade_client = Client::new(trade_keys.clone());
-                                                    for relay in &settings.relays { let _ = trade_client.add_relay(relay).await; }
-                                                    trade_client.connect().await;
-                                                    if let Ok(mostro_pk) = PublicKey::from_str(&settings.mostro_pubkey) {
-                                                        // Create encrypted PDM event
-                                                        let ck = ConversationKey::derive(trade_keys.secret_key(), &mostro_pk).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                        let encrypted = encrypt_to_bytes(&ck, json.as_bytes()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                        let b64 = B64.encode(encrypted);
-                                                        let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
-                                                            .tag(Tag::public_key(mostro_pk))
-                                                            .sign_with_keys(&trade_keys)?;
-                                                        if let Err(e) = trade_client.send_event(&event).await {
-                                                            log::error!("Failed to send DM: {}", e);
-                                                        } else {
-                                                            log::info!("New order sent via DM with trade index {}", next_idx);
+                                                    let kind_checked = mostro_core::order::Kind::from_str(&kind_str).unwrap_or(mostro_core::order::Kind::Buy);
+                                                    let small_order = mostro_core::prelude::SmallOrder::new(
+                                                        None,
+                                                        Some(kind_checked),
+                                                        Some(mostro_core::prelude::Status::Pending),
+                                                        0,
+                                                        fiat.clone(),
+                                                        None,
+                                                        None,
+                                                        fiat_amount,
+                                                        pm_clean.clone(),
+                                                        0,
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        Some(0),
+                                                        None,
+                                                    );
+                                                    let payload = mostro_core::prelude::Payload::Order(small_order);
+                                                    let message = mostro_core::prelude::Message::new_order(
+                                                        None,
+                                                        None,
+                                                        Some(next_idx),
+                                                        mostro_core::prelude::Action::NewOrder,
+                                                        Some(payload),
+                                                    );
+                                                    if let Ok(json) = message.as_json() {
+                                                        let trade_client = Client::new(trade_keys.clone());
+                                                        for relay in &settings.relays { let _ = trade_client.add_relay(relay).await; }
+                                                        trade_client.connect().await;
+                                                        if let Ok(mostro_pk) = PublicKey::from_str(&settings.mostro_pubkey) {
+                                                            // Create encrypted PDM event
+                                                            let ck = ConversationKey::derive(trade_keys.secret_key(), &mostro_pk).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                            let encrypted = encrypt_to_bytes(&ck, json.as_bytes()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                            let b64 = B64.encode(encrypted);
+                                                            let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
+                                                                .tag(Tag::public_key(mostro_pk))
+                                                                .sign_with_keys(&trade_keys)?;
+                                                            if let Err(e) = trade_client.send_event(&event).await {
+                                                                log::error!("Failed to send DM: {}", e);
+                                                            } else {
+                                                                log::info!("New order sent via DM with trade index {}", next_idx);
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        app.mode = UiMode::Normal;
+                                            // Reset form after submission
+                                            let mut new_form = FormState::default();
+                                            new_form.kind = "buy".to_string();
+                                            new_form.fiat_code = "USD".to_string();
+                                            new_form.focused = 1;
+                                            app.mode = UiMode::CreatingOrder(new_form);
+                                        }
                                     }
                                 }
                             }
@@ -433,6 +341,18 @@ async fn main() -> Result<(), anyhow::Error> {
                                 }
                             }
                             KeyCode::Char('q') => break,
+                            KeyCode::Char(' ') => {
+                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
+                                    if form.focused == 0 {
+                                        // Toggle buy/sell
+                                        form.kind = if form.kind.to_lowercase() == "buy" { 
+                                            "sell".to_string() 
+                                        } else { 
+                                            "buy".to_string() 
+                                        };
+                                    }
+                                }
+                            }
                             KeyCode::Char(c) => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
                                     if form.focused == 0 {
@@ -450,32 +370,6 @@ async fn main() -> Result<(), anyhow::Error> {
                                     } else {
                                         let target = match form.focused { 1 => &mut form.fiat_code, 2 => &mut form.fiat_amount, _ => &mut form.payment_method };
                                         target.pop();
-                                    }
-                                }
-                            }
-                            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    match code {
-                                        KeyCode::Left => {
-                                            if form.focused == 0 {
-                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
-                                            } else if form.focused > 0 {
-                                                form.focused -= 1;
-                                            }
-                                        }
-                                        KeyCode::Right => {
-                                            if form.focused == 0 {
-                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
-                                            } else if form.focused < 3 {
-                                                form.focused += 1;
-                                            }
-                                        }
-                                        KeyCode::Char(' ') => {
-                                            if form.focused == 0 {
-                                                form.kind = if form.kind.to_lowercase() == "buy" { "sell".into() } else { "buy".into() };
-                                            }
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }

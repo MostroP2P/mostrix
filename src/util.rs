@@ -17,6 +17,13 @@ pub enum ListKind {
     PrivateDirectMessagesUser,
 }
 
+#[derive(Clone, Debug)]
+pub enum Event {
+    SmallOrder(SmallOrder),
+    Dispute(Dispute),
+    MessageTuple(Box<(Message, u64, PublicKey)>),
+}
+
 fn create_seven_days_filter(letter: Alphabet, value: String, pubkey: PublicKey) -> Result<Filter> {
     let since_time = chrono::Utc::now()
         .checked_sub_signed(chrono::Duration::days(7))
@@ -159,19 +166,26 @@ fn parse_orders_events(
     requested
 }
 
-/// Fetch orders list using the same logic as mostro-cli (adapted for mostrix)
-pub async fn fetch_orders_list(
-    client: &Client,
-    mostro_pubkey: PublicKey,
+/// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
+pub async fn fetch_events_list(
+    list_kind: ListKind,
     status: Option<Status>,
     currency: Option<String>,
     kind: Option<mostro_core::order::Kind>,
-) -> Result<Vec<SmallOrder>> {
-    let filters = create_filter(ListKind::Orders, mostro_pubkey, None)?;
-    let fetched_events = client
-        .fetch_events(filters, FETCH_EVENTS_TIMEOUT)
-        .await?;
-    let orders = parse_orders_events(fetched_events, currency, status, kind);
-    Ok(orders)
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    _since: Option<&i64>,
+) -> Result<Vec<Event>> {
+    match list_kind {
+        ListKind::Orders => {
+            let filters = create_filter(list_kind, mostro_pubkey, None)?;
+            let fetched_events = client
+                .fetch_events(filters, FETCH_EVENTS_TIMEOUT)
+                .await?;
+            let orders = parse_orders_events(fetched_events, currency, status, kind);
+            Ok(orders.into_iter().map(Event::SmallOrder).collect())
+        }
+        _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
+    }
 }
 
