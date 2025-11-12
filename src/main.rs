@@ -5,7 +5,7 @@ pub mod ui;
 pub mod util;
 
 use crate::models::User;
-use crate::util::{fetch_events_list, Event as UtilEvent, ListKind};
+use crate::util::{fetch_events_list, Event as UtilEvent, ListKind, send_dm, wait_for_dm, parse_dm_events, FETCH_EVENTS_TIMEOUT};
 use crate::settings::{init_settings, Settings};
 use crossterm::event::EventStream;
 use mostro_core::prelude::{NOSTR_REPLACEABLE_EVENT_KIND, Status};
@@ -20,7 +20,6 @@ use crossterm::{self, event::{Event, KeyEvent, KeyCode}};
 use fern::Dispatch;
 use futures::StreamExt;
 use nostr_sdk::prelude::*;
-use nostr_sdk::EventBuilder;
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
 use crossterm::execute;
@@ -28,10 +27,6 @@ use crossterm::terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScree
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
-use nip44::v2::{ConversationKey, encrypt_to_bytes};
-use nostr_sdk::Tag;
 
 /// Constructs (or copies) the configuration file and loads it.
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
@@ -67,6 +62,224 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 /// Draws the TUI interface with tabs and active content.
 /// The "Orders" tab shows a table of pending orders and highlights the selected row.
 use crate::ui::ui_draw;
+
+/// Send a new order to Mostro (similar to execute_new_order in mostro-cli)
+async fn send_new_order(
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    _settings: &Settings,
+    mostro_pubkey: PublicKey,
+    form: &crate::ui::FormState,
+) -> Result<crate::ui::OrderResult, anyhow::Error> {
+    use std::collections::HashMap;
+    
+    // Parse form data
+    let kind_str = if form.kind.trim().is_empty() {
+        "buy".to_string()
+    } else {
+        form.kind.trim().to_lowercase()
+    };
+    let fiat_code = if form.fiat_code.trim().is_empty() {
+        "USD".to_string()
+    } else {
+        form.fiat_code.trim().to_uppercase()
+    };
+    
+    let amount: i64 = form.amount.trim().parse().unwrap_or(0);
+    
+    // Check if fiat currency is available on Yadio if amount is 0
+    if amount == 0 {
+        let api_req_string = "https://api.yadio.io/currencies".to_string();
+        let fiat_list_check = reqwest::get(api_req_string)
+            .await?
+            .json::<HashMap<String, String>>()
+            .await?
+            .contains_key(&fiat_code);
+        if !fiat_list_check {
+            return Err(anyhow::anyhow!("{} is not present in the fiat market, please specify an amount with -a flag to fix the rate", fiat_code));
+        }
+    }
+    
+    let kind_checked = mostro_core::order::Kind::from_str(&kind_str)
+        .map_err(|_| anyhow::anyhow!("Invalid order kind"))?;
+    
+    let expiration_days: i64 = form.expiration_days.trim().parse().unwrap_or(0);
+    let expires_at = match expiration_days {
+        0 => None,
+        _ => {
+            let now = chrono::Utc::now();
+            let expires_at = now + chrono::Duration::days(expiration_days);
+            Some(expires_at.timestamp())
+        }
+    };
+    
+    // Handle fiat amount (single or range)
+    let (fiat_amount, min_amount, max_amount) = if form.use_range && !form.fiat_amount_max.trim().is_empty() {
+        let min: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
+        let max: i64 = form.fiat_amount_max.trim().parse().unwrap_or(0);
+        (0, Some(min), Some(max))
+    } else {
+        let fiat: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
+        (fiat, None, None)
+    };
+    
+    let payment_method = form.payment_method.trim().to_string();
+    let premium: i64 = form.premium.trim().parse().unwrap_or(0);
+    let invoice = if form.invoice.trim().is_empty() {
+        None
+    } else {
+        Some(form.invoice.trim().to_string())
+    };
+    
+    // Get user and trade keys
+    let user = User::get(pool).await?;
+    let next_idx = user.last_trade_index.unwrap_or(0) + 1;
+    let trade_keys = user.derive_trade_keys(next_idx)?;
+    let _ = User::update_last_trade_index(pool, next_idx).await;
+    
+    // Create SmallOrder
+    let small_order = mostro_core::prelude::SmallOrder::new(
+        None,
+        Some(kind_checked),
+        Some(mostro_core::prelude::Status::Pending),
+        amount,
+        fiat_code.clone(),
+        min_amount,
+        max_amount,
+        fiat_amount,
+        payment_method.clone(),
+        premium,
+        None,
+        None,
+        invoice.clone(),
+        Some(0),
+        expires_at,
+    );
+    
+    // Create message
+    let request_id = uuid::Uuid::new_v4().as_u128() as u64;
+    let order_content = mostro_core::prelude::Payload::Order(small_order);
+    let message = mostro_core::prelude::Message::new_order(
+        None,
+        Some(request_id),
+        Some(next_idx),
+        mostro_core::prelude::Action::NewOrder,
+        Some(order_content),
+    );
+    
+    // Serialize message
+    let message_json = message
+        .as_json()
+        .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
+    
+    log::info!("Sending new order via DM with trade index {} and request_id {}", next_idx, request_id);
+    
+    // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
+    let recv_event = wait_for_dm(
+        client,
+        &trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        async {
+            // Send DM inside the future passed to wait_for_dm
+            send_dm(client, &trade_keys, &mostro_pubkey, message_json).await
+        }
+    ).await?;
+    
+    // Parse DM events
+    let messages = parse_dm_events(recv_event, &trade_keys, None).await;
+    
+    if let Some((response_message, _, _)) = messages.first() {
+        let inner_message = response_message.get_inner_message_kind();
+        match inner_message.request_id {
+            Some(id) => {
+                if request_id == id {
+                    // Request ID matches, process the response
+                    match inner_message.action {
+                        mostro_core::prelude::Action::NewOrder => {
+                            if let Some(mostro_core::prelude::Payload::Order(order)) = &inner_message.payload {
+                                log::info!("✅ Order created successfully! Order ID: {:?}", order.id);
+                                
+                                // Return success with order details
+                                return Ok(crate::ui::OrderResult::Success {
+                                    order_id: order.id,
+                                    kind: order.kind.clone(),
+                                    amount: order.amount,
+                                    fiat_code: order.fiat_code.clone(),
+                                    fiat_amount: order.fiat_amount,
+                                    min_amount: order.min_amount,
+                                    max_amount: order.max_amount,
+                                    payment_method: order.payment_method.clone(),
+                                    premium: order.premium,
+                                    status: order.status.clone(),
+                                });
+                            } else {
+                                // Response without order details - return what we sent
+                                return Ok(crate::ui::OrderResult::Success {
+                                    order_id: None,
+                                    kind: Some(kind_checked),
+                                    amount,
+                                    fiat_code: fiat_code.clone(),
+                                    fiat_amount,
+                                    min_amount,
+                                    max_amount,
+                                    payment_method: payment_method.clone(),
+                                    premium,
+                                    status: Some(mostro_core::prelude::Status::Pending),
+                                });
+                            }
+                        }
+                        _ => {
+                            log::warn!("Received unexpected action: {:?}", inner_message.action);
+                            return Err(anyhow::anyhow!("Unexpected action: {:?}", inner_message.action));
+                        }
+                    }
+                } else {
+                    log::warn!("Received response with mismatched request_id. Expected: {}, Got: {}", request_id, id);
+                    return Err(anyhow::anyhow!("Mismatched request_id"));
+                }
+            }
+            None if inner_message.action == mostro_core::prelude::Action::RateReceived
+                || inner_message.action == mostro_core::prelude::Action::NewOrder =>
+            {
+                // Some actions don't require request_id matching
+                if let Some(mostro_core::prelude::Payload::Order(order)) = &inner_message.payload {
+                    return Ok(crate::ui::OrderResult::Success {
+                        order_id: order.id,
+                        kind: order.kind.clone(),
+                        amount: order.amount,
+                        fiat_code: order.fiat_code.clone(),
+                        fiat_amount: order.fiat_amount,
+                        min_amount: order.min_amount,
+                        max_amount: order.max_amount,
+                        payment_method: order.payment_method.clone(),
+                        premium: order.premium,
+                        status: order.status.clone(),
+                    });
+                } else {
+                    return Ok(crate::ui::OrderResult::Success {
+                        order_id: None,
+                        kind: Some(kind_checked),
+                        amount,
+                        fiat_code: fiat_code.clone(),
+                        fiat_amount,
+                        min_amount,
+                        max_amount,
+                        payment_method: payment_method.clone(),
+                        premium,
+                        status: Some(mostro_core::prelude::Status::Pending),
+                    });
+                }
+            }
+            None => {
+                log::warn!("Received response with null request_id. Expected: {}", request_id);
+                return Err(anyhow::anyhow!("Response with null request_id"));
+            }
+        }
+    } else {
+        log::error!("No response received from Mostro");
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -179,9 +392,17 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(500));
     let mut app = AppState::new();
+    
+    // Channel to receive order results from async tasks
+    let (order_result_tx, mut order_result_rx) = tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
 
     loop {
         tokio::select! {
+            result = order_result_rx.recv() => {
+                if let Some(result) = result {
+                    app.mode = UiMode::OrderResult(result);
+                }
+            }
             maybe_event = events.next() => {
                 if let Some(Ok(event)) = maybe_event {
                     if let Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, .. }) = event {
@@ -207,6 +428,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                         let mut form = FormState::default();
                                         form.kind = "buy".to_string();
                                         form.fiat_code = "USD".to_string();
+                                        form.amount = "0".to_string();
+                                        form.premium = "0".to_string();
+                                        form.expiration_days = "0".to_string();
                                         form.focused = 1;
                                         app.mode = UiMode::CreatingOrder(form);
                                     }
@@ -225,6 +449,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::CreatingOrder(form) => {
                                         if form.focused > 0 { form.focused -= 1; }
                                     }
+                                    UiMode::ConfirmingOrder(_) => {
+                                        // No navigation in confirmation mode
+                                    }
+                                    UiMode::WaitingForMostro(_) => {
+                                        // No navigation in waiting mode
+                                    }
+                                    UiMode::OrderResult(_) => {
+                                        // No navigation in result mode
+                                    }
                                 }
                             }
                             KeyCode::Down => {
@@ -238,21 +471,27 @@ async fn main() -> Result<(), anyhow::Error> {
                                         }
                                     }
                                     UiMode::CreatingOrder(form) => {
-                                        if form.focused < 3 { form.focused += 1; }
+                                        if form.focused < 8 { form.focused += 1; }
+                                    }
+                                    UiMode::ConfirmingOrder(_) => {
+                                        // No navigation in confirmation mode
+                                    }
+                                    UiMode::WaitingForMostro(_) => {
+                                        // No navigation in waiting mode
+                                    }
+                                    UiMode::OrderResult(_) => {
+                                        // No navigation in result mode
                                     }
                                 }
                             }
-                            KeyCode::Char('n') => {
-                                // 'n' key no longer opens form - use Create New Order tab instead
-                            }
                             KeyCode::Tab => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    form.focused = (form.focused + 1) % 4;
+                                    form.focused = (form.focused + 1) % 9;
                                 }
                             }
                             KeyCode::BackTab => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    form.focused = form.focused.saturating_sub(1);
+                                    form.focused = if form.focused == 0 { 8 } else { form.focused - 1 };
                                 }
                             }
                             KeyCode::Enter => {
@@ -262,82 +501,40 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // No action for now
                                     }
                                     UiMode::CreatingOrder(form) => {
-                                        // Only submit if on Create New Order tab
+                                        // Show confirmation popup when Enter is pressed
                                         if app.active_tab == 4 {
-                                            // Build and send order via DM using trade key
-                                            let kind_str = if form.kind.trim().is_empty() { "buy".to_string() } else { form.kind.trim().to_lowercase() };
-                                            let fiat = if form.fiat_code.trim().is_empty() { "USD".to_string() } else { form.fiat_code.trim().to_uppercase() };
-                                            let fiat_amount: i64 = form.fiat_amount.trim().parse().unwrap_or(0);
-                                            let pm_clean = form.payment_method.trim().to_string();
-
-                                            if let Ok(user) = User::get(&pool).await {
-                                                let next_idx = user.last_trade_index.unwrap_or(0) + 1;
-                                                if let Ok(trade_keys) = user.derive_trade_keys(next_idx) {
-                                                    let _ = User::update_last_trade_index(&pool, next_idx).await;
-
-                                                    let kind_checked = mostro_core::order::Kind::from_str(&kind_str).unwrap_or(mostro_core::order::Kind::Buy);
-                                                    let small_order = mostro_core::prelude::SmallOrder::new(
-                                                        None,
-                                                        Some(kind_checked),
-                                                        Some(mostro_core::prelude::Status::Pending),
-                                                        0,
-                                                        fiat.clone(),
-                                                        None,
-                                                        None,
-                                                        fiat_amount,
-                                                        pm_clean.clone(),
-                                                        0,
-                                                        None,
-                                                        None,
-                                                        None,
-                                                        Some(0),
-                                                        None,
-                                                    );
-                                                    let payload = mostro_core::prelude::Payload::Order(small_order);
-                                                    let message = mostro_core::prelude::Message::new_order(
-                                                        None,
-                                                        None,
-                                                        Some(next_idx),
-                                                        mostro_core::prelude::Action::NewOrder,
-                                                        Some(payload),
-                                                    );
-                                                    if let Ok(json) = message.as_json() {
-                                                        let trade_client = Client::new(trade_keys.clone());
-                                                        for relay in &settings.relays { let _ = trade_client.add_relay(relay).await; }
-                                                        trade_client.connect().await;
-                                                        if let Ok(mostro_pk) = PublicKey::from_str(&settings.mostro_pubkey) {
-                                                            // Create encrypted PDM event
-                                                            let ck = ConversationKey::derive(trade_keys.secret_key(), &mostro_pk).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                            let encrypted = encrypt_to_bytes(&ck, json.as_bytes()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                            let b64 = B64.encode(encrypted);
-                                                            let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
-                                                                .tag(Tag::public_key(mostro_pk))
-                                                                .sign_with_keys(&trade_keys)?;
-                                                            if let Err(e) = trade_client.send_event(&event).await {
-                                                                log::error!("Failed to send DM: {}", e);
-                                                            } else {
-                                                                log::info!("New order sent via DM with trade index {}", next_idx);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Reset form after submission
-                                            let mut new_form = FormState::default();
-                                            new_form.kind = "buy".to_string();
-                                            new_form.fiat_code = "USD".to_string();
-                                            new_form.focused = 1;
-                                            app.mode = UiMode::CreatingOrder(new_form);
+                                            app.mode = UiMode::ConfirmingOrder(form.clone());
                                         }
+                                    }
+                                    UiMode::ConfirmingOrder(_) => {
+                                        // Enter acts as Yes in confirmation
+                                        // This will be handled by 'y' key
+                                    }
+                                    UiMode::WaitingForMostro(_) => {
+                                        // No action while waiting
+                                    }
+                                    UiMode::OrderResult(_) => {
+                                        // No action in result mode
                                     }
                                 }
                             }
                             KeyCode::Esc => {
-                                if matches!(app.mode, UiMode::CreatingOrder(_)) {
-                                    app.mode = UiMode::Normal;
-                                } else {
-                                    break
+                                match &mut app.mode {
+                                    UiMode::CreatingOrder(_) => {
+                                        app.mode = UiMode::Normal;
+                                    }
+                                    UiMode::ConfirmingOrder(form) => {
+                                        // Cancel confirmation, go back to form
+                                        app.mode = UiMode::CreatingOrder(form.clone());
+                                    }
+                                    UiMode::WaitingForMostro(_) => {
+                                        // Can't cancel while waiting
+                                    }
+                                    UiMode::OrderResult(_) => {
+                                        // Close result popup, return to normal mode
+                                        app.mode = UiMode::Normal;
+                                    }
+                                    _ => break,
                                 }
                             }
                             KeyCode::Char('q') => break,
@@ -350,7 +547,42 @@ async fn main() -> Result<(), anyhow::Error> {
                                         } else { 
                                             "buy".to_string() 
                                         };
+                                    } else if form.focused == 3 {
+                                        // Toggle range mode
+                                        form.use_range = !form.use_range;
                                     }
+                                }
+                            }
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                if let UiMode::ConfirmingOrder(form) = &app.mode {
+                                    // User confirmed, send the order
+                                    let form_clone = form.clone();
+                                    app.mode = UiMode::WaitingForMostro(form_clone.clone());
+                                    
+                                    // Spawn async task to send order
+                                    let pool_clone = pool.clone();
+                                    let client_clone = client.clone();
+                                    let settings_clone = settings;
+                                    let mostro_pubkey_clone = mostro_pubkey;
+                                    let result_tx = order_result_tx.clone();
+                                    
+                                    tokio::spawn(async move {
+                                        match send_new_order(&pool_clone, &client_clone, &settings_clone, mostro_pubkey_clone, &form_clone).await {
+                                            Ok(result) => {
+                                                let _ = result_tx.send(result);
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to send order: {}", e);
+                                                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') => {
+                                if let UiMode::ConfirmingOrder(form) = &app.mode {
+                                    // User cancelled, go back to form
+                                    app.mode = UiMode::CreatingOrder(form.clone());
                                 }
                             }
                             KeyCode::Char(c) => {
@@ -358,7 +590,17 @@ async fn main() -> Result<(), anyhow::Error> {
                                     if form.focused == 0 {
                                         // ignore typing on toggle field
                                     } else {
-                                        let target = match form.focused { 1 => &mut form.fiat_code, 2 => &mut form.fiat_amount, _ => &mut form.payment_method };
+                                        let target = match form.focused {
+                                            1 => &mut form.fiat_code,
+                                            2 => &mut form.amount,
+                                            3 => &mut form.fiat_amount,
+                                            4 if form.use_range => &mut form.fiat_amount_max,
+                                            5 => &mut form.payment_method,
+                                            6 => &mut form.premium,
+                                            7 => &mut form.invoice,
+                                            8 => &mut form.expiration_days,
+                                            _ => unreachable!(),
+                                        };
                                         target.push(c);
                                     }
                                 }
@@ -368,7 +610,17 @@ async fn main() -> Result<(), anyhow::Error> {
                                     if form.focused == 0 {
                                         // ignore
                                     } else {
-                                        let target = match form.focused { 1 => &mut form.fiat_code, 2 => &mut form.fiat_amount, _ => &mut form.payment_method };
+                                        let target = match form.focused {
+                                            1 => &mut form.fiat_code,
+                                            2 => &mut form.amount,
+                                            3 => &mut form.fiat_amount,
+                                            4 if form.use_range => &mut form.fiat_amount_max,
+                                            5 => &mut form.payment_method,
+                                            6 => &mut form.premium,
+                                            7 => &mut form.invoice,
+                                            8 => &mut form.expiration_days,
+                                            _ => unreachable!(),
+                                        };
                                         target.pop();
                                     }
                                 }
