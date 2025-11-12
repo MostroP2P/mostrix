@@ -88,3 +88,117 @@ pub struct Order {
     pub created_at: Option<i64>,
     pub expires_at: Option<i64>,
 }
+
+impl Order {
+    /// Create a new order from SmallOrder and save it to the database
+    pub async fn new(
+        pool: &SqlitePool,
+        order: mostro_core::prelude::SmallOrder,
+        _trade_keys: &nostr_sdk::prelude::Keys,
+        _request_id: Option<i64>,
+    ) -> Result<Self> {
+        let id = match order.id {
+            Some(id) => id.to_string(),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        let order = Order {
+            id: Some(id.clone()),
+            kind: order.kind.as_ref().map(|k| k.to_string()),
+            status: order.status.as_ref().map(|s| s.to_string()),
+            amount: order.amount,
+            fiat_code: order.fiat_code,
+            min_amount: order.min_amount,
+            max_amount: order.max_amount,
+            fiat_amount: order.fiat_amount,
+            payment_method: order.payment_method,
+            premium: order.premium,
+            is_mine: true,
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            created_at: Some(chrono::Utc::now().timestamp()),
+            expires_at: order.expires_at,
+        };
+
+        // Try insert; if id already exists, perform an update instead
+        let insert_result = order.insert_db(pool).await;
+
+        if let Err(e) = insert_result {
+            // If the error is due to unique constraint (id already present), update instead
+            let is_unique_violation = match e.as_database_error() {
+                Some(db_err) => {
+                    let code = db_err.code().map(|c| c.to_string()).unwrap_or_default();
+                    code == "1555" || code == "2067"
+                }
+                None => false,
+            };
+
+            if is_unique_violation {
+                order.update_db(pool).await?;
+            } else {
+                return Err(e.into());
+            }
+        }
+
+        Ok(order)
+    }
+
+    async fn insert_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
+            fiat_code, fiat_amount, payment_method, premium, is_mine,
+            buyer_trade_pubkey, seller_trade_pubkey, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&self.id)
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(self.amount)
+        .bind(self.min_amount)
+        .bind(self.max_amount)
+        .bind(&self.fiat_code)
+        .bind(self.fiat_amount)
+        .bind(&self.payment_method)
+        .bind(self.premium)
+        .bind(if self.is_mine { 1 } else { 0 })
+        .bind(&self.buyer_trade_pubkey)
+        .bind(&self.seller_trade_pubkey)
+        .bind(self.created_at)
+        .bind(self.expires_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn update_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE orders 
+            SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
+                fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
+                is_mine = ?, buyer_trade_pubkey = ?, seller_trade_pubkey = ?,
+                created_at = ?, expires_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(self.amount)
+        .bind(self.min_amount)
+        .bind(self.max_amount)
+        .bind(&self.fiat_code)
+        .bind(self.fiat_amount)
+        .bind(&self.payment_method)
+        .bind(self.premium)
+        .bind(if self.is_mine { 1 } else { 0 })
+        .bind(&self.buyer_trade_pubkey)
+        .bind(&self.seller_trade_pubkey)
+        .bind(self.created_at)
+        .bind(self.expires_at)
+        .bind(&self.id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
