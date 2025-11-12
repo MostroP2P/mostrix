@@ -1,13 +1,16 @@
 // Nostr-related utilities (copied from mostro-cli/src/util/events.rs and adapted for mostrix)
-use anyhow::Result;
+use anyhow::{Error, Result};
 use base64::engine::general_purpose;
 use base64::Engine;
 use mostro_core::prelude::*;
 use nip44::v2::{decrypt_to_bytes, ConversationKey};
+use nip44::v2::encrypt_to_bytes;
 use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use uuid::Uuid;
+
+use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -20,12 +23,29 @@ pub enum ListKind {
     PrivateDirectMessagesUser,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum MessageType {
+    PrivateDirectMessage,
+    PrivateGiftWrap,
+    SignedGiftWrap,
+}
+
+
 #[derive(Clone, Debug)]
 pub enum Event {
     SmallOrder(SmallOrder),
     Dispute(Dispute),
     MessageTuple(Box<(Message, u64, PublicKey)>),
 }
+
+fn create_expiration_tags(expiration: Option<Timestamp>) -> Tags {
+    let mut tags: Vec<Tag> = Vec::with_capacity(1 + usize::from(expiration.is_some()));
+    if let Some(timestamp) = expiration {
+        tags.push(Tag::expiration(timestamp));
+    }
+    Tags::from_list(tags)
+}
+
 
 fn create_seven_days_filter(letter: Alphabet, value: String, pubkey: PublicKey) -> Result<Filter> {
     let since_time = chrono::Utc::now()
@@ -186,29 +206,122 @@ pub async fn fetch_events_list(
     }
 }
 
-/// Send a direct message (encrypted PDM) to a receiver
-pub async fn send_dm(
-    client: &Client,
+async fn create_private_dm_event(
     trade_keys: &Keys,
     receiver_pubkey: &PublicKey,
     payload: String,
+    pow: u8,
+) -> Result<nostr_sdk::Event> {
+    let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)?;
+    let encrypted_content = encrypt_to_bytes(&ck, payload.as_bytes())?;
+    let b64decoded_content = general_purpose::STANDARD.encode(encrypted_content);
+    Ok(
+        EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64decoded_content)
+            .pow(pow)
+            .tag(Tag::public_key(*receiver_pubkey))
+            .sign_with_keys(trade_keys)?,
+    )
+}
+
+async fn create_gift_wrap_event(
+    trade_keys: &Keys,
+    identity_keys: Option<&Keys>,
+    receiver_pubkey: &PublicKey,
+    payload: String,
+    pow: u8,
+    expiration: Option<Timestamp>,
+    signed: bool,
+) -> Result<nostr_sdk::Event> {
+    let message = Message::from_json(&payload)
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+
+    let content = if signed {
+        let _identity_keys = identity_keys
+            .ok_or_else(|| Error::msg("identity_keys required for signed messages"))?;
+        let sig = Message::sign(payload, trade_keys);
+        serde_json::to_string(&(message, sig))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
+    } else {
+        let content: (Message, Option<Signature>) = (message, None);
+        serde_json::to_string(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
+    };
+
+    let rumor = EventBuilder::text_note(content)
+        .pow(pow)
+        .build(trade_keys.public_key());
+
+    let tags = create_expiration_tags(expiration);
+
+    let signer_keys = if signed {
+        identity_keys.ok_or_else(|| Error::msg("identity_keys required for signed messages"))?
+    } else {
+        trade_keys
+    };
+
+    Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
+}
+
+
+fn determine_message_type(to_user: bool, private: bool) -> MessageType {
+    match (to_user, private) {
+        (true, _) => MessageType::PrivateDirectMessage,
+        (false, true) => MessageType::PrivateGiftWrap,
+        (false, false) => MessageType::SignedGiftWrap,
+    }
+}
+
+pub async fn send_dm(
+    client: &Client,
+    identity_keys: Option<&Keys>,
+    trade_keys: &Keys,
+    receiver_pubkey: &PublicKey,
+    payload: String,
+    expiration: Option<Timestamp>,
+    to_user: bool,
 ) -> Result<()> {
-    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-    use nip44::v2::{encrypt_to_bytes, ConversationKey};
+    let pow: u8 = SETTINGS.get().unwrap().pow;
+    // let private = var("SECRET")
+    //     .unwrap_or("false".to_string())
+    //     .parse::<bool>()
+    //     .map_err(|e| anyhow::anyhow!("Failed to parse SECRET: {}", e))?;
 
-    let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)
-        .map_err(|e| anyhow::anyhow!("Failed to derive conversation key: {}", e))?;
-    let encrypted = encrypt_to_bytes(&ck, payload.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to encrypt message: {}", e))?;
-    let b64 = B64.encode(encrypted);
+    let message_type = determine_message_type(to_user, false);
 
-    let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
-        .tag(Tag::public_key(*receiver_pubkey))
-        .sign_with_keys(trade_keys)?;
+    let event = match message_type {
+        MessageType::PrivateDirectMessage => {
+            create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
+        }
+        MessageType::PrivateGiftWrap => {
+            create_gift_wrap_event(
+                trade_keys,
+                identity_keys,
+                receiver_pubkey,
+                payload,
+                pow,
+                expiration,
+                false,
+            )
+            .await?
+        }
+        MessageType::SignedGiftWrap => {
+            create_gift_wrap_event(
+                trade_keys,
+                identity_keys,
+                receiver_pubkey,
+                payload,
+                pow,
+                expiration,
+                true,
+            )
+            .await?
+        }
+    };
 
     client.send_event(&event).await?;
     Ok(())
 }
+
 
 /// Wait for a direct message response from Mostro
 /// Subscribes first, then sends the message (to avoid missing messages)

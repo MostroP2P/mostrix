@@ -37,6 +37,25 @@ impl User {
         Ok(user)
     }
 
+
+    // Applying changes to the database
+    pub async fn save(&self, pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            r#"
+              UPDATE users 
+              SET mnemonic = ?, last_trade_index = ?
+              WHERE i0_pubkey = ?
+              "#,
+        )
+        .bind(&self.mnemonic)
+        .bind(self.last_trade_index)
+        .bind(&self.i0_pubkey)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn get(pool: &SqlitePool) -> Result<Self> {
         let user: User = sqlx::query_as(
             r#"SELECT i0_pubkey, mnemonic, last_trade_index, created_at FROM users LIMIT 1"#,
@@ -55,6 +74,17 @@ impl User {
         .await?;
         Ok(())
     }
+
+
+    pub async fn get_identity_keys(pool: &SqlitePool) -> Result<Keys> {
+        let user = User::get(pool).await?;
+        let account = NOSTR_REPLACEABLE_EVENT_KIND as u32;
+        let keys =
+            Keys::from_mnemonic_advanced(&user.mnemonic, None, Some(account), Some(0), Some(0))?;
+
+        Ok(keys)
+    }
+
 
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
         let account: u32 = NOSTR_REPLACEABLE_EVENT_KIND as u32;

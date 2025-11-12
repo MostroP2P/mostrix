@@ -4,7 +4,7 @@ pub mod settings;
 pub mod ui;
 pub mod util;
 
-use crate::settings::{init_settings, Settings};
+use crate::settings::{init_settings, Settings, Context};
 use crate::util::{fetch_events_list, send_new_order, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
 use mostro_core::prelude::{Status, NOSTR_REPLACEABLE_EVENT_KIND};
@@ -33,6 +33,7 @@ use tokio::time::{interval, Duration};
 
 /// Constructs (or copies) the configuration file and loads it.
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
+static CONTEXT: OnceLock<Context> = OnceLock::new();
 
 use crate::ui::{AppState, FormState, Tab, UiMode};
 
