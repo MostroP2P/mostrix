@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Style};
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -13,5 +13,3 @@ pub fn render_status_bar(f: &mut ratatui::Frame, area: Rect, line: &str) {
     );
     f.render_widget(bar, area);
 }
-
-

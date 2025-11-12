@@ -1,13 +1,13 @@
 // Copied from mostro-cli/src/util/events.rs and adapted for mostrix
 use anyhow::Result;
+use base64::engine::general_purpose;
+use base64::Engine;
 use mostro_core::prelude::*;
+use nip44::v2::{decrypt_to_bytes, ConversationKey};
 use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use uuid::Uuid;
-use base64::engine::general_purpose;
-use base64::Engine;
-use nip44::v2::{decrypt_to_bytes, ConversationKey};
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -41,11 +41,7 @@ fn create_seven_days_filter(letter: Alphabet, value: String, pubkey: PublicKey) 
         .kind(nostr_sdk::Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND)))
 }
 
-fn create_filter(
-    list_kind: ListKind,
-    pubkey: PublicKey,
-    _since: Option<&i64>,
-) -> Result<Filter> {
+fn create_filter(list_kind: ListKind, pubkey: PublicKey, _since: Option<&i64>) -> Result<Filter> {
     match list_kind {
         ListKind::Orders => create_seven_days_filter(Alphabet::Z, "order".to_string(), pubkey),
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
@@ -182,9 +178,7 @@ pub async fn fetch_events_list(
     match list_kind {
         ListKind::Orders => {
             let filters = create_filter(list_kind, mostro_pubkey, None)?;
-            let fetched_events = client
-                .fetch_events(filters, FETCH_EVENTS_TIMEOUT)
-                .await?;
+            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
             let orders = parse_orders_events(fetched_events, currency, status, kind);
             Ok(orders.into_iter().map(Event::SmallOrder).collect())
         }
@@ -199,19 +193,19 @@ pub async fn send_dm(
     receiver_pubkey: &PublicKey,
     payload: String,
 ) -> Result<()> {
-    use nip44::v2::{ConversationKey, encrypt_to_bytes};
-    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-    
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    use nip44::v2::{encrypt_to_bytes, ConversationKey};
+
     let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)
         .map_err(|e| anyhow::anyhow!("Failed to derive conversation key: {}", e))?;
     let encrypted = encrypt_to_bytes(&ck, payload.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to encrypt message: {}", e))?;
     let b64 = B64.encode(encrypted);
-    
+
     let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64)
         .tag(Tag::public_key(*receiver_pubkey))
         .sign_with_keys(trade_keys)?;
-    
+
     client.send_event(&event).await?;
     Ok(())
 }
@@ -228,8 +222,8 @@ where
     F: std::future::Future<Output = Result<()>> + Send,
 {
     let mut notifications = client.notifications();
-    let opts = SubscribeAutoCloseOptions::default()
-        .exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(1));
+    let opts =
+        SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(1));
     let subscription = Filter::new()
         .pubkey(trade_keys.public_key())
         .kind(nostr_sdk::Kind::GiftWrap)
@@ -283,10 +277,7 @@ pub async fn parse_dm_events(
                 let unwrapped_gift = match nip59::extract_rumor(pubkey, dm).await {
                     Ok(u) => u,
                     Err(e) => {
-                        log::warn!(
-                            "Could not decrypt gift wrap (event {}): {}",
-                            dm.id, e
-                        );
+                        log::warn!("Could not decrypt gift wrap (event {}): {}", dm.id, e);
                         continue;
                     }
                 };
@@ -294,10 +285,7 @@ pub async fn parse_dm_events(
                     match serde_json::from_str(&unwrapped_gift.rumor.content) {
                         Ok(msg) => msg,
                         Err(e) => {
-                            log::warn!(
-                                "Could not parse message content (event {}): {}",
-                                dm.id, e
-                            );
+                            log::warn!("Could not parse message content (event {}): {}", dm.id, e);
                             continue;
                         }
                     };
@@ -360,4 +348,3 @@ pub async fn parse_dm_events(
     direct_messages.sort_by(|a, b| a.1.cmp(&b.1));
     direct_messages
 }
-

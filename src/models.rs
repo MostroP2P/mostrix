@@ -1,9 +1,9 @@
-use sqlx::sqlite::SqlitePool;
 use anyhow::Result;
 use chrono::Utc;
-use nostr_sdk::prelude::*;
-use nip06::FromMnemonic;
 use mostro_core::prelude::NOSTR_REPLACEABLE_EVENT_KIND;
+use nip06::FromMnemonic;
+use nostr_sdk::prelude::*;
+use sqlx::sqlite::SqlitePool;
 
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct User {
