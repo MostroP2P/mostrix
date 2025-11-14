@@ -11,6 +11,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::SETTINGS;
+use crate::settings::Settings;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -280,12 +281,8 @@ pub async fn send_dm(
     expiration: Option<Timestamp>,
     to_user: bool,
 ) -> Result<()> {
+    // pow is set in the settings
     let pow: u8 = SETTINGS.get().unwrap().pow;
-    // let private = var("SECRET")
-    //     .unwrap_or("false".to_string())
-    //     .parse::<bool>()
-    //     .map_err(|e| anyhow::anyhow!("Failed to parse SECRET: {}", e))?;
-
     let message_type = determine_message_type(to_user, false);
 
     let event = match message_type {
@@ -466,7 +463,7 @@ pub async fn parse_dm_events(
 pub async fn send_new_order(
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
-    _settings: &crate::settings::Settings,
+    settings: &Settings,
     mostro_pubkey: PublicKey,
     form: &crate::ui::FormState,
 ) -> Result<crate::ui::OrderResult, anyhow::Error> {
@@ -535,7 +532,7 @@ pub async fn send_new_order(
 
     // Get user and trade keys
     let user = User::get(pool).await?;
-    let next_idx = user.last_trade_index.unwrap_or(0) + 1;
+    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
     let trade_keys = user.derive_trade_keys(next_idx)?;
     let _ = User::update_last_trade_index(pool, next_idx).await;
 
@@ -580,10 +577,12 @@ pub async fn send_new_order(
         request_id
     );
 
+    let identity_keys = User::get_identity_keys(pool).await?;
+
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
     let recv_event = wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, async {
         // Send DM inside the future passed to wait_for_dm
-        send_dm(client, &trade_keys, &mostro_pubkey, message_json).await
+        send_dm(client, Some(&identity_keys), &trade_keys, &mostro_pubkey, message_json, None, false).await
     })
     .await?;
 

@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use super::{OrderResult, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
-    let area = f.area();
+    let area: Rect = f.area();
     let popup_width = 70;
     let popup_height = match result {
         OrderResult::Success { .. } => 18,

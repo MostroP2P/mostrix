@@ -1,6 +1,4 @@
-use crate::{SETTINGS, CONTEXT};
-use nostr_sdk::prelude::*;
-use sqlx::sqlite::SqlitePool;
+use crate::SETTINGS;
 use serde::Deserialize;
 use std::{
     env, fs,
@@ -10,39 +8,13 @@ use std::{
 #[derive(Debug, Deserialize, Default)]
 pub struct Settings {
     pub mostro_pubkey: String,
-    pub identity_keys: String,
-    pub trade_keys: String,
-    pub trade_index: i64,
-    pub context_keys: String,
+    pub nsec_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
     pub currencies: Vec<String>,
     pub pow: u8,
 }
 
-
-pub fn init_context() -> &'static Context{
-     // Configure Nostr client.
-    let my_keys = Keys::generate();
-    let a = User::
-    let client = Client::new(my_keys);
-    // Add q.
-    for relay in &settings.relays {
-        client.add_relay(relay).await?;
-    }
-    client.connect().await;
-
-    let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
-        .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
-    CONTEXT.get_or_init(|| {
-        let client = Client::new(init_settings().identity_keys);
-        let trade_keys = init_settings().trade_keys;
-        let trade_index = init_settings().trade_index;
-        let pool = init_db().await?;
-        let context_keys = init_settings().context_keys;
-        let mostro_pubkey = init_settings().mostro_pubkey;
-    })
-}
 
 /// Constructs (or copies) the configuration file and loads it
 pub fn init_settings() -> &'static Settings {

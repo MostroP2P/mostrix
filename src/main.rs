@@ -4,7 +4,7 @@ pub mod settings;
 pub mod ui;
 pub mod util;
 
-use crate::settings::{init_settings, Settings, Context};
+use crate::settings::{init_settings, Settings};
 use crate::util::{fetch_events_list, send_new_order, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
 use mostro_core::prelude::{Status, NOSTR_REPLACEABLE_EVENT_KIND};
@@ -29,11 +29,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
 use std::sync::OnceLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, interval_at, Duration, Instant};
 
 /// Constructs (or copies) the configuration file and loads it.
-static SETTINGS: OnceLock<Settings> = OnceLock::new();
-static CONTEXT: OnceLock<Context> = OnceLock::new();
+pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 use crate::ui::{AppState, FormState, Tab, UiMode};
 
@@ -84,9 +83,9 @@ async fn main() -> Result<(), anyhow::Error> {
         Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
-    let my_keys = Keys::generate();
+    let my_keys = settings.nsec_privkey.parse::<Keys>().map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
     let client = Client::new(my_keys);
-    // Add q.
+    // Add relays.
     for relay in &settings.relays {
         client.add_relay(relay).await?;
     }
@@ -117,39 +116,13 @@ async fn main() -> Result<(), anyhow::Error> {
     // Subscribe to the filter.
     client.subscribe(filter, None).await?;
 
-    // Fetch initial orders list using fetch_events_list with ListKind::Orders
-    // Filter for pending orders only, matching the original behavior
-    if let Ok(fetched_events) = fetch_events_list(
-        ListKind::Orders,
-        Some(Status::Pending),
-        None, // No currency filter
-        None, // No kind filter
-        &client,
-        mostro_pubkey,
-        None,
-    )
-    .await
-    {
-        let mut lock = orders.lock().unwrap();
-        lock.clear();
-        for event in fetched_events {
-            if let UtilEvent::SmallOrder(order) = event {
-                if let Some(existing) = lock.iter_mut().find(|o| o.id == order.id) {
-                    *existing = order;
-                } else {
-                    lock.push(order);
-                }
-            }
-        }
-    }
-
     // Asynchronous task to handle incoming notifications.
     let orders_clone = Arc::clone(&orders);
     let client_clone = client.clone();
     let mostro_pubkey_clone = mostro_pubkey;
     tokio::spawn(async move {
-        // Periodically refresh orders list
-        let mut refresh_interval = tokio::time::interval(Duration::from_secs(30));
+        // Periodically refresh orders list (immediate first fetch, then every 30 seconds)
+        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(30));
         loop {
             refresh_interval.tick().await;
             if let Ok(fetched_events) = fetch_events_list(
