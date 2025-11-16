@@ -3,17 +3,68 @@ use anyhow::{Error, Result};
 use base64::engine::general_purpose;
 use base64::Engine;
 use mostro_core::prelude::*;
-use nip44::v2::{decrypt_to_bytes, ConversationKey};
 use nip44::v2::encrypt_to_bytes;
+use nip44::v2::{decrypt_to_bytes, ConversationKey};
 use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::SETTINGS;
 use crate::settings::Settings;
+use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Convert CantDoReason to user-friendly description
+fn get_cant_do_description(reason: &CantDoReason) -> String {
+    match reason {
+        CantDoReason::InvalidSignature => "Invalid signature - authentication failed".to_string(),
+        CantDoReason::InvalidTradeIndex => "Invalid trade index - please try again".to_string(),
+        CantDoReason::InvalidAmount => "Invalid amount - check your order values".to_string(),
+        CantDoReason::InvalidInvoice => {
+            "Invalid invoice - please provide a valid lightning invoice".to_string()
+        }
+        CantDoReason::InvalidPaymentRequest => "Invalid payment request".to_string(),
+        CantDoReason::InvalidPeer => "Invalid peer information".to_string(),
+        CantDoReason::InvalidRating => "Invalid rating value".to_string(),
+        CantDoReason::InvalidTextMessage => "Invalid text message".to_string(),
+        CantDoReason::InvalidOrderKind => {
+            "Invalid order kind - must be 'buy' or 'sell'".to_string()
+        }
+        CantDoReason::InvalidOrderStatus => "Invalid order status".to_string(),
+        CantDoReason::InvalidPubkey => "Invalid public key".to_string(),
+        CantDoReason::InvalidParameters => {
+            "Invalid parameters - check your order details".to_string()
+        }
+        CantDoReason::OrderAlreadyCanceled => "Order is already canceled".to_string(),
+        CantDoReason::CantCreateUser => "Cannot create user - please contact support".to_string(),
+        CantDoReason::IsNotYourOrder => "This is not your order".to_string(),
+        CantDoReason::NotAllowedByStatus => {
+            "Action not allowed - order status prevents this operation".to_string()
+        }
+        CantDoReason::OutOfRangeFiatAmount => "Fiat amount is out of acceptable range".to_string(),
+        CantDoReason::OutOfRangeSatsAmount => {
+            "Satoshis amount is out of acceptable range".to_string()
+        }
+        CantDoReason::IsNotYourDispute => "This is not your dispute".to_string(),
+        CantDoReason::DisputeTakenByAdmin => {
+            "Dispute has been taken over by an administrator".to_string()
+        }
+        CantDoReason::DisputeCreationError => "Cannot create dispute for this order".to_string(),
+        CantDoReason::NotFound => "Resource not found".to_string(),
+        CantDoReason::InvalidDisputeStatus => "Invalid dispute status".to_string(),
+        CantDoReason::InvalidAction => "Invalid action for current state".to_string(),
+        CantDoReason::PendingOrderExists => {
+            "You already have a pending order - please complete or cancel it first".to_string()
+        }
+        CantDoReason::InvalidFiatCurrency => {
+            "Invalid fiat currency - currency not supported or specify a fixed rate".to_string()
+        }
+        CantDoReason::TooManyRequests => {
+            "Too many requests - please wait and try again".to_string()
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum ListKind {
@@ -31,7 +82,6 @@ pub(super) enum MessageType {
     SignedGiftWrap,
 }
 
-
 #[derive(Clone, Debug)]
 pub enum Event {
     SmallOrder(SmallOrder),
@@ -46,7 +96,6 @@ fn create_expiration_tags(expiration: Option<Timestamp>) -> Tags {
     }
     Tags::from_list(tags)
 }
-
 
 fn create_seven_days_filter(letter: Alphabet, value: String, pubkey: PublicKey) -> Result<Filter> {
     let since_time = chrono::Utc::now()
@@ -263,7 +312,6 @@ async fn create_gift_wrap_event(
     Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
 }
 
-
 fn determine_message_type(to_user: bool, private: bool) -> MessageType {
     match (to_user, private) {
         (true, _) => MessageType::PrivateDirectMessage,
@@ -319,7 +367,6 @@ pub async fn send_dm(
     Ok(())
 }
 
-
 /// Wait for a direct message response from Mostro
 /// Subscribes first, then sends the message (to avoid missing messages)
 pub async fn wait_for_dm<F>(
@@ -333,7 +380,7 @@ where
 {
     let mut notifications = client.notifications();
     let opts =
-        SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(1));
+        SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(4));
     let subscription = Filter::new()
         .pubkey(trade_keys.public_key())
         .kind(nostr_sdk::Kind::GiftWrap)
@@ -578,28 +625,43 @@ pub async fn send_new_order(
     );
 
     let identity_keys = User::get_identity_keys(pool).await?;
+    let new_order_messge = send_dm(
+        client,
+        Some(&identity_keys),
+        &trade_keys,
+        &mostro_pubkey,
+        message_json,
+        None,
+        false,
+    );
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
-    let recv_event = wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, async {
-        // Send DM inside the future passed to wait_for_dm
-        send_dm(client, Some(&identity_keys), &trade_keys, &mostro_pubkey, message_json, None, false).await
-    })
-    .await?;
+    let recv_event =
+        wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, new_order_messge).await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &trade_keys, None).await;
 
     if let Some((response_message, _, _)) = messages.first() {
         let inner_message = response_message.get_inner_message_kind();
+
+        // Check for CantDo payload first (error response)
+        if let Some(Payload::CantDo(reason)) = &inner_message.payload {
+            let error_msg = match reason {
+                Some(r) => get_cant_do_description(r),
+                None => "Unknown error - Mostro couldn't process your request".to_string(),
+            };
+            log::error!("Received CantDo error: {}", error_msg);
+            return Err(anyhow::anyhow!(error_msg));
+        }
+
         match inner_message.request_id {
             Some(id) => {
                 if request_id == id {
                     // Request ID matches, process the response
                     match inner_message.action {
-                        mostro_core::prelude::Action::NewOrder => {
-                            if let Some(mostro_core::prelude::Payload::Order(order)) =
-                                &inner_message.payload
-                            {
+                        Action::NewOrder => {
+                            if let Some(Payload::Order(order)) = &inner_message.payload {
                                 log::info!(
                                     "✅ Order created successfully! Order ID: {:?}",
                                     order.id
@@ -665,11 +727,11 @@ pub async fn send_new_order(
                     Err(anyhow::anyhow!("Mismatched request_id"))
                 }
             }
-            None if inner_message.action == mostro_core::prelude::Action::RateReceived
-                || inner_message.action == mostro_core::prelude::Action::NewOrder =>
+            None if inner_message.action == Action::RateReceived
+                || inner_message.action == Action::NewOrder =>
             {
                 // Some actions don't require request_id matching
-                if let Some(mostro_core::prelude::Payload::Order(order)) = &inner_message.payload {
+                if let Some(Payload::Order(order)) = &inner_message.payload {
                     // Save order to database
                     if let Err(e) =
                         save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await

@@ -93,26 +93,46 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
     f.render_widget(amount, inner_chunks[field_idx]);
     field_idx += 1;
 
-    // Field 3: Fiat Amount (min or single)
-    let fiat_title = if form.use_range {
-        "Fiat Amount (Min)"
+    // Field 3: Fiat Amount (toggle single/range with Space)
+    let fiat_title_block = Block::default()
+        .title(Line::from(vec![
+            Span::styled("💰 ", Style::default().fg(Color::Yellow)),
+            Span::styled("Fiat Amount", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" (Space to toggle)", Style::default().fg(Color::DarkGray)),
+        ]))
+        .borders(Borders::ALL)
+        .style(if form.focused == 3 {
+            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+        } else {
+            Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
+        });
+
+    // Show toggle indicator and value
+    let fiat_line = if form.use_range {
+        Line::from(vec![
+            Span::styled(
+                "[ Range ] ",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(&form.fiat_amount),
+        ])
     } else {
-        "Fiat Amount"
+        Line::from(vec![
+            Span::styled(
+                "[ Single ] ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(&form.fiat_amount),
+        ])
     };
-    let qty = Paragraph::new(Line::from(form.fiat_amount.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("💰 ", Style::default().fg(Color::Yellow)),
-                Span::styled(fiat_title, Style::default().add_modifier(Modifier::BOLD)),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == 3 {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
+    f.render_widget(
+        Paragraph::new(fiat_line).block(fiat_title_block),
+        inner_chunks[field_idx],
     );
-    f.render_widget(qty, inner_chunks[field_idx]);
     field_idx += 1;
 
     // Field 4: Fiat Amount Max (if range)
@@ -249,30 +269,34 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
 
     // Show cursor in active text field
     let cursor_field = match form.focused {
-        1 => Some((inner_chunks[2], &form.fiat_code)),
-        2 => Some((inner_chunks[3], &form.amount)),
-        3 => Some((inner_chunks[4], &form.fiat_amount)),
-        4 if form.use_range => Some((inner_chunks[5], &form.fiat_amount_max)),
+        1 => Some((inner_chunks[2], &form.fiat_code, 0)),
+        2 => Some((inner_chunks[3], &form.amount, 0)),
+        3 => Some((inner_chunks[4], &form.fiat_amount, 11)), // 11 chars for "[ Single ] " or "[ Range ] "
+        4 if form.use_range => Some((inner_chunks[5], &form.fiat_amount_max, 0)),
         5 => Some((
             inner_chunks[if form.use_range { 6 } else { 5 }],
             &form.payment_method,
+            0,
         )),
         6 => Some((
             inner_chunks[if form.use_range { 7 } else { 6 }],
             &form.premium,
+            0,
         )),
         7 => Some((
             inner_chunks[if form.use_range { 8 } else { 7 }],
             &form.invoice,
+            0,
         )),
         8 => Some((
             inner_chunks[if form.use_range { 9 } else { 8 }],
             &form.expiration_days,
+            0,
         )),
         _ => None,
     };
-    if let Some((chunk, text)) = cursor_field {
-        let x = chunk.x + 1 + text.len() as u16;
+    if let Some((chunk, text, offset)) = cursor_field {
+        let x = chunk.x + 1 + offset + text.len() as u16;
         let y = chunk.y + 1;
         f.set_cursor_position((x, y));
     }

@@ -7,13 +7,12 @@ pub mod util;
 use crate::settings::{init_settings, Settings};
 use crate::util::{fetch_events_list, send_new_order, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
-use mostro_core::prelude::{Status, NOSTR_REPLACEABLE_EVENT_KIND};
+use mostro_core::prelude::Status;
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use chrono::Local;
-use chrono::{Duration as ChronoDuration, Utc};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -83,7 +82,10 @@ async fn main() -> Result<(), anyhow::Error> {
         Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
-    let my_keys = settings.nsec_privkey.parse::<Keys>().map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
+    let my_keys = settings
+        .nsec_privkey
+        .parse::<Keys>()
+        .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
     let client = Client::new(my_keys);
     // Add relays.
     for relay in &settings.relays {
@@ -94,35 +96,13 @@ async fn main() -> Result<(), anyhow::Error> {
     let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
 
-    // Calculate timestamp for events in the last 7 days.
-    let since_time = Utc::now()
-        .checked_sub_signed(ChronoDuration::days(7))
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute time"))?
-        .timestamp() as u64;
-    let timestamp = Timestamp::from(since_time);
-
-    // Build the filter for NIP-69 (orders) events from Mostro.
-    let mut filter = Filter::new()
-        .author(mostro_pubkey)
-        .limit(20)
-        .since(timestamp)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::Y), "mostro")
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::Z), "order")
-        .kind(Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND));
-
-    for c in &settings.currencies {
-        filter = filter.custom_tag(SingleLetterTag::lowercase(Alphabet::F), c);
-    }
-    // Subscribe to the filter.
-    client.subscribe(filter, None).await?;
-
     // Asynchronous task to handle incoming notifications.
     let orders_clone = Arc::clone(&orders);
     let client_clone = client.clone();
     let mostro_pubkey_clone = mostro_pubkey;
     tokio::spawn(async move {
         // Periodically refresh orders list (immediate first fetch, then every 30 seconds)
-        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(30));
+        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(10));
         loop {
             refresh_interval.tick().await;
             if let Ok(fetched_events) = fetch_events_list(
@@ -185,7 +165,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                             fiat_code: "USD".to_string(),
                                             amount: "0".to_string(),
                                             premium: "0".to_string(),
-                                            expiration_days: "0".to_string(),
+                                            expiration_days: "1".to_string(),
                                             focused: 1,
                                             ..Default::default()
                                         };
@@ -204,7 +184,13 @@ async fn main() -> Result<(), anyhow::Error> {
                                         }
                                     }
                                     UiMode::CreatingOrder(form) => {
-                                        if form.focused > 0 { form.focused -= 1; }
+                                        if form.focused > 0 {
+                                            form.focused -= 1;
+                                            // Skip field 4 if not using range (go from 5 to 3)
+                                            if form.focused == 4 && !form.use_range {
+                                                form.focused = 3;
+                                            }
+                                        }
                                     }
                                     UiMode::ConfirmingOrder(_) => {
                                         // No navigation in confirmation mode
@@ -228,7 +214,13 @@ async fn main() -> Result<(), anyhow::Error> {
                                         }
                                     }
                                     UiMode::CreatingOrder(form) => {
-                                        if form.focused < 8 { form.focused += 1; }
+                                        if form.focused < 8 {
+                                            form.focused += 1;
+                                            // Skip field 4 if not using range (go from 3 to 5)
+                                            if form.focused == 4 && !form.use_range {
+                                                form.focused = 5;
+                                            }
+                                        }
                                     }
                                     UiMode::ConfirmingOrder(_) => {
                                         // No navigation in confirmation mode
@@ -244,11 +236,19 @@ async fn main() -> Result<(), anyhow::Error> {
                             KeyCode::Tab => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
                                     form.focused = (form.focused + 1) % 9;
+                                    // Skip field 4 if not using range
+                                    if form.focused == 4 && !form.use_range {
+                                        form.focused = 5;
+                                    }
                                 }
                             }
                             KeyCode::BackTab => {
                                 if let UiMode::CreatingOrder(ref mut form) = app.mode {
                                     form.focused = if form.focused == 0 { 8 } else { form.focused - 1 };
+                                    // Skip field 4 if not using range
+                                    if form.focused == 4 && !form.use_range {
+                                        form.focused = 3;
+                                    }
                                 }
                             }
                             KeyCode::Enter => {
@@ -271,7 +271,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // No action while waiting
                                     }
                                     UiMode::OrderResult(_) => {
-                                        // No action in result mode
+                                        // Close result popup, return to Orders tab
+                                        app.mode = UiMode::Normal;
+                                        app.active_tab = Tab::Orders;
                                     }
                                 }
                             }
@@ -288,8 +290,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Can't cancel while waiting
                                     }
                                     UiMode::OrderResult(_) => {
-                                        // Close result popup, return to normal mode
+                                        // Close result popup, return to Orders tab
                                         app.mode = UiMode::Normal;
+                                        app.active_tab = Tab::Orders;
                                     }
                                     _ => break,
                                 }

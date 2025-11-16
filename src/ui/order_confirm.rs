@@ -49,11 +49,12 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![Span::styled(
             "Please review your order:",
             Style::default().add_modifier(Modifier::BOLD),
-        )])),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[1],
     );
 
-    // Order details
+    // Order details (centered)
     let kind_str = if form.kind.to_lowercase() == "buy" {
         "🟢 Buy"
     } else {
@@ -63,7 +64,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Order Type: "),
             Span::styled(kind_str, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[3],
     );
 
@@ -71,7 +73,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Currency: "),
             Span::styled(&form.fiat_code, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[4],
     );
 
@@ -84,7 +87,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Amount: "),
             Span::styled(amount_str, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[5],
     );
 
@@ -100,7 +104,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Fiat Amount: "),
             Span::styled(fiat_str, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[6],
     );
 
@@ -108,7 +113,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Payment Method: "),
             Span::styled(&form.payment_method, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[7],
     );
 
@@ -119,7 +125,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
                 format!("{}%", form.premium),
                 Style::default().fg(PRIMARY_COLOR),
             ),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[8],
     );
 
@@ -128,7 +135,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
             Paragraph::new(Line::from(vec![
                 Span::raw("Invoice: "),
                 Span::styled(&form.invoice, Style::default().fg(PRIMARY_COLOR)),
-            ])),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
             inner_chunks[9],
         );
     }
@@ -142,7 +150,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         Paragraph::new(Line::from(vec![
             Span::raw("Expiration: "),
             Span::styled(exp_str, Style::default().fg(PRIMARY_COLOR)),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[10],
     );
 
@@ -162,7 +171,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" to cancel"),
-        ])),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[12],
     );
 }

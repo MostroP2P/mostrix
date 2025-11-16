@@ -38,6 +38,9 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
                 .title("✅ Order Created Successfully")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Green));
+
+            // Calculate inner area (excluding borders)
+            let inner = block.inner(popup);
             f.render_widget(block, popup);
 
             let mut lines = vec![];
@@ -103,25 +106,28 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
 
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
-                "Press ESC to close",
+                "Press ESC or ENTER to close",
                 Style::default().fg(Color::DarkGray),
             )]));
 
-            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Left);
-            f.render_widget(paragraph, popup);
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(paragraph, inner);
         }
         OrderResult::Error(error_msg) => {
             let block = Block::default()
                 .title("❌ Order Failed")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Red));
+
+            // Calculate inner area (excluding borders)
+            let inner = block.inner(popup);
             f.render_widget(block, popup);
 
-            // Wrap error message if too long
+            // Wrap error message if too long (accounting for borders)
             let error_lines: Vec<Line> = error_msg
                 .chars()
                 .collect::<Vec<_>>()
-                .chunks(popup_width as usize - 4)
+                .chunks(inner.width as usize - 2)
                 .map(|chunk| Line::from(chunk.iter().collect::<String>()))
                 .collect();
 
@@ -131,12 +137,12 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
-                "Press ESC to close",
+                "Press ESC or ENTER to close",
                 Style::default().fg(Color::DarkGray),
             )]));
 
-            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Left);
-            f.render_widget(paragraph, popup);
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(paragraph, inner);
         }
     }
 }

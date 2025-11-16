@@ -9,7 +9,7 @@ description = "Mostro TUI client"
 [dependencies]
 ratatui = { git = "https://github.com/ratatui/ratatui", tag = "ratatui-v0.30.0-beta.0" }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-mostro-core = "0.6.38"
+mostro-core = "0.6.56"
 nostr-sdk = { version = "0.43.0", features = ["nip06", "nip44", "nip59"] }
 bip39 = { version = "2.1.0", features = ["rand"] }
 sqlx = { version = "0.8.5", features = ["sqlite", "runtime-tokio-native-tls"] }
@@ -20,8 +20,8 @@ anyhow = "1.0.98"
 dirs = "6.0.0"
 fern = "0.7.1"
 log = "0.4.27"
-config = { version = "0.15.11", features = ["toml"]}
-serde    = { version = "1.0.219", features = ["derive"] }
+config = { version = "0.15.11", features = ["toml"] }
+serde = { version = "1.0.219", features = ["derive"] }
 base64 = "0.22.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 reqwest = { version = "0.12", features = ["json"] }

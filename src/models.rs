@@ -37,7 +37,6 @@ impl User {
         Ok(user)
     }
 
-
     // Applying changes to the database
     pub async fn save(&self, pool: &SqlitePool) -> Result<()> {
         sqlx::query(
@@ -75,7 +74,6 @@ impl User {
         Ok(())
     }
 
-
     pub async fn get_identity_keys(pool: &SqlitePool) -> Result<Keys> {
         let user = User::get(pool).await?;
         let account = NOSTR_REPLACEABLE_EVENT_KIND as u32;
@@ -84,7 +82,6 @@ impl User {
 
         Ok(keys)
     }
-
 
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
         let account: u32 = NOSTR_REPLACEABLE_EVENT_KIND as u32;

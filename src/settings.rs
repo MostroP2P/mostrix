@@ -15,7 +15,6 @@ pub struct Settings {
     pub pow: u8,
 }
 
-
 /// Constructs (or copies) the configuration file and loads it
 pub fn init_settings() -> &'static Settings {
     SETTINGS.get_or_init(|| {
