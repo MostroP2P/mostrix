@@ -1,17 +1,16 @@
 // Nostr-related utilities (copied from mostro-cli/src/util/events.rs and adapted for mostrix)
-use anyhow::{Error, Result};
+use anyhow::Result;
 use base64::engine::general_purpose;
 use base64::Engine;
 use mostro_core::prelude::*;
-use nip44::v2::encrypt_to_bytes;
 use nip44::v2::{decrypt_to_bytes, ConversationKey};
 use nostr_sdk::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
+use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 use crate::settings::Settings;
-use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -113,12 +112,219 @@ fn create_seven_days_filter(letter: Alphabet, value: String, pubkey: PublicKey) 
 
 fn create_filter(list_kind: ListKind, pubkey: PublicKey, _since: Option<&i64>) -> Result<Filter> {
     match list_kind {
-        ListKind::Orders => create_seven_days_filter(Alphabet::Z, "order".to_string(), pubkey),
-        _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
+        ListKind::Orders => {
+            // Use "order" tag (letter Z) like mostro-cli, not status
+            let letter = Alphabet::Z;
+            let value = "order".to_string();
+            create_seven_days_filter(letter, value, pubkey)
+        }
+        ListKind::Disputes => {
+            let letter = Alphabet::Y;
+            let value = "dispute".to_string();
+            create_seven_days_filter(letter, value, pubkey)
+        }
+        ListKind::DirectMessagesUser => Ok(Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .limit(20)),
+        ListKind::DirectMessagesAdmin => Ok(Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .limit(20)),
+        ListKind::PrivateDirectMessagesUser => Ok(Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::PrivateDirectMessage)
+            .limit(20)),
     }
 }
 
-/// Parse order from nostr tags (copied from mostro-cli/src/nip33.rs)
+pub async fn send_gift_wrap_dm(
+    client: &Client,
+    trade_keys: &Keys,
+    receiver_pubkey: &PublicKey,
+    message_json: String,
+) -> Result<()> {
+    let rumor = EventBuilder::text_note(message_json).build(trade_keys.public_key());
+    let event = EventBuilder::gift_wrap(trade_keys, receiver_pubkey, rumor, Tags::new()).await?;
+    client.send_event(&event).await?;
+    Ok(())
+}
+
+async fn create_gift_wrap_event(
+    trade_keys: &Keys,
+    identity_keys: Option<&Keys>,
+    receiver_pubkey: &PublicKey,
+    payload: String,
+    pow: u8,
+    expiration: Option<Timestamp>,
+    signed: bool,
+) -> Result<nostr_sdk::Event> {
+    // Parse the message from JSON
+    let message = Message::from_json(&payload)
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+
+    // Format as (Message, Option<Signature>) tuple
+    let content = if signed {
+        // Sign the message using trade_keys
+        let sig = Message::sign(payload, trade_keys);
+        serde_json::to_string(&(message, sig))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
+    } else {
+        // For unsigned messages, use (Message, None)
+        let content: (Message, Option<Signature>) = (message, None);
+        serde_json::to_string(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
+    };
+
+    // Create the rumor with the properly formatted content
+    let rumor = EventBuilder::text_note(content)
+        .pow(pow)
+        .build(trade_keys.public_key());
+
+    // Create expiration tags if needed
+    let mut tags = Tags::new();
+    if let Some(timestamp) = expiration {
+        tags.push(Tag::expiration(timestamp));
+    }
+
+    // Determine signer keys
+    let signer_keys = if signed {
+        identity_keys
+            .ok_or_else(|| anyhow::anyhow!("identity_keys required for signed messages"))?
+    } else {
+        trade_keys
+    };
+
+    Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
+}
+
+fn determine_message_type(to_user: bool, private: bool) -> MessageType {
+    match (to_user, private) {
+        (true, _) => MessageType::PrivateDirectMessage,
+        (false, true) => MessageType::PrivateGiftWrap,
+        (false, false) => MessageType::SignedGiftWrap,
+    }
+}
+
+pub async fn send_dm(
+    client: &Client,
+    identity_keys: Option<&Keys>,
+    trade_keys: &Keys,
+    receiver_pubkey: &PublicKey,
+    payload: String,
+    expiration: Option<Timestamp>,
+    to_user: bool,
+) -> Result<()> {
+    let pow: u8 = 0; // Default POW, can be made configurable later
+    let private = false; // Default to signed gift wrap for Mostro communication
+
+    let message_type = determine_message_type(to_user, private);
+
+    let event = match message_type {
+        MessageType::PrivateDirectMessage => {
+            // For private DMs, we'd need to implement NIP-44 encryption
+            // For now, we'll use gift wrap for Mostro communication
+            create_gift_wrap_event(
+                trade_keys,
+                identity_keys,
+                receiver_pubkey,
+                payload,
+                pow,
+                expiration,
+                false,
+            )
+            .await?
+        }
+        MessageType::PrivateGiftWrap => {
+            create_gift_wrap_event(
+                trade_keys,
+                identity_keys,
+                receiver_pubkey,
+                payload,
+                pow,
+                expiration,
+                false,
+            )
+            .await?
+        }
+        MessageType::SignedGiftWrap => {
+            create_gift_wrap_event(
+                trade_keys,
+                identity_keys,
+                receiver_pubkey,
+                payload,
+                pow,
+                expiration,
+                true,
+            )
+            .await?
+        }
+    };
+
+    client.send_event(&event).await?;
+    Ok(())
+}
+
+/// Wait for a direct message response from Mostro (adapted from mostro-cli)
+pub async fn wait_for_dm(
+    client: &Client,
+    trade_keys: &Keys,
+    request_id: u64,
+    send_future: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) -> Result<Message> {
+    // Subscribe to gift wrap events - ONLY NEW ONES WITH LIMIT 0
+    let subscription = Filter::new()
+        .pubkey(trade_keys.public_key())
+        .kind(nostr_sdk::Kind::GiftWrap)
+        .limit(0);
+
+    let opts = SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEvents(1));
+    client.subscribe(subscription, Some(opts)).await?;
+
+    // Spawn a task to send the DM
+    tokio::spawn(async move {
+        let _ = send_future.await;
+    });
+
+    // Wait for incoming gift wraps using notifications
+    let mut notifications = client.notifications();
+
+    match tokio::time::timeout(FETCH_EVENTS_TIMEOUT, async move {
+        while let Ok(notification) = notifications.recv().await {
+            if let RelayPoolNotification::Event { event, .. } = notification {
+                if event.kind == nostr_sdk::Kind::GiftWrap {
+                    let gift = match nip59::extract_rumor(trade_keys, &event).await {
+                        Ok(gift) => gift,
+                        Err(e) => {
+                            log::warn!("Failed to extract rumor: {}", e);
+                            continue;
+                        }
+                    };
+                    let (message, _): (Message, Option<String>) =
+                        match serde_json::from_str(&gift.rumor.content) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                log::warn!("Failed to deserialize message: {}", e);
+                                continue;
+                            }
+                        };
+                    let inner_message = message.get_inner_message_kind();
+                    if inner_message.request_id == Some(request_id) {
+                        return Ok(message);
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!("No matching message found"))
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event")),
+    }
+}
+
+/// Parse order from NIP-33 event tags (from mostro-cli)
 fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     let mut order = SmallOrder::default();
 
@@ -173,245 +379,117 @@ fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     Ok(order)
 }
 
-/// Parse orders from events (copied from mostro-cli/src/parser/orders.rs)
-fn parse_orders_events(
-    events: Events,
-    currency: Option<String>,
-    status: Option<Status>,
-    kind: Option<mostro_core::order::Kind>,
-) -> Vec<SmallOrder> {
-    // HashMap to store the latest order by id
-    let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
-
-    for event in events.iter() {
-        // Get order from tags
-        let mut order = match order_from_tags(event.tags.clone()) {
-            Ok(o) => o,
-            Err(e) => {
-                log::error!("{e:?}");
-                continue;
-            }
-        };
-        // Get order id
-        let order_id = match order.id {
-            Some(id) => id,
-            None => {
-                log::info!("Order ID is none");
-                continue;
-            }
-        };
-        // Check if order kind is none
-        if order.kind.is_none() {
-            log::info!("Order kind is none");
-            continue;
-        }
-        // Set created at
-        order.created_at = Some(event.created_at.as_u64() as i64);
-        // Update latest order by id
-        latest_by_id
-            .entry(order_id)
-            .and_modify(|existing| {
-                let new_ts = order.created_at.unwrap_or(0);
-                let old_ts = existing.created_at.unwrap_or(0);
-                if new_ts > old_ts {
-                    *existing = order.clone();
-                }
-            })
-            .or_insert(order);
-    }
-
-    let mut requested: Vec<SmallOrder> = latest_by_id
-        .into_values()
-        .filter(|o| status.map(|s| o.status == Some(s)).unwrap_or(true))
-        .filter(|o| currency.as_ref().map(|c| o.fiat_code == *c).unwrap_or(true))
-        .filter(|o| {
-            kind.as_ref()
-                .map(|k| o.kind.as_ref() == Some(k))
-                .unwrap_or(true)
-        })
-        .collect();
-
-    requested.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    requested
-}
-
-/// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
 pub async fn fetch_events_list(
     list_kind: ListKind,
     status: Option<Status>,
-    currency: Option<String>,
-    kind: Option<mostro_core::order::Kind>,
+    order_id: Option<Uuid>,
+    dispute_id: Option<Uuid>,
     client: &Client,
-    mostro_pubkey: PublicKey,
+    pubkey: PublicKey,
     _since: Option<&i64>,
 ) -> Result<Vec<Event>> {
-    match list_kind {
+    let filter = create_filter(list_kind.clone(), pubkey, None)?;
+    let events = client
+        .fetch_events(filter, StdDuration::from_secs(10))
+        .await?;
+
+    // Parse orders from NIP-33 event tags (like mostro-cli)
+    let events = match list_kind {
         ListKind::Orders => {
-            let filters = create_filter(list_kind, mostro_pubkey, None)?;
-            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
-            let orders = parse_orders_events(fetched_events, currency, status, kind);
-            Ok(orders.into_iter().map(Event::SmallOrder).collect())
-        }
-        _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
-    }
-}
+            use std::collections::HashMap;
+            // HashMap to store the latest order by id (deduplicate replaceable events)
+            let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
 
-async fn create_private_dm_event(
-    trade_keys: &Keys,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    pow: u8,
-) -> Result<nostr_sdk::Event> {
-    let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)?;
-    let encrypted_content = encrypt_to_bytes(&ck, payload.as_bytes())?;
-    let b64decoded_content = general_purpose::STANDARD.encode(encrypted_content);
-    Ok(
-        EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64decoded_content)
-            .pow(pow)
-            .tag(Tag::public_key(*receiver_pubkey))
-            .sign_with_keys(trade_keys)?,
-    )
-}
-
-async fn create_gift_wrap_event(
-    trade_keys: &Keys,
-    identity_keys: Option<&Keys>,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    pow: u8,
-    expiration: Option<Timestamp>,
-    signed: bool,
-) -> Result<nostr_sdk::Event> {
-    let message = Message::from_json(&payload)
-        .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
-
-    let content = if signed {
-        let _identity_keys = identity_keys
-            .ok_or_else(|| Error::msg("identity_keys required for signed messages"))?;
-        let sig = Message::sign(payload, trade_keys);
-        serde_json::to_string(&(message, sig))
-            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
-    } else {
-        let content: (Message, Option<Signature>) = (message, None);
-        serde_json::to_string(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
-    };
-
-    let rumor = EventBuilder::text_note(content)
-        .pow(pow)
-        .build(trade_keys.public_key());
-
-    let tags = create_expiration_tags(expiration);
-
-    let signer_keys = if signed {
-        identity_keys.ok_or_else(|| Error::msg("identity_keys required for signed messages"))?
-    } else {
-        trade_keys
-    };
-
-    Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
-}
-
-fn determine_message_type(to_user: bool, private: bool) -> MessageType {
-    match (to_user, private) {
-        (true, _) => MessageType::PrivateDirectMessage,
-        (false, true) => MessageType::PrivateGiftWrap,
-        (false, false) => MessageType::SignedGiftWrap,
-    }
-}
-
-pub async fn send_dm(
-    client: &Client,
-    identity_keys: Option<&Keys>,
-    trade_keys: &Keys,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    expiration: Option<Timestamp>,
-    to_user: bool,
-) -> Result<()> {
-    // pow is set in the settings
-    let pow: u8 = SETTINGS.get().unwrap().pow;
-    let message_type = determine_message_type(to_user, false);
-
-    let event = match message_type {
-        MessageType::PrivateDirectMessage => {
-            create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
-        }
-        MessageType::PrivateGiftWrap => {
-            create_gift_wrap_event(
-                trade_keys,
-                identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                false,
-            )
-            .await?
-        }
-        MessageType::SignedGiftWrap => {
-            create_gift_wrap_event(
-                trade_keys,
-                identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                true,
-            )
-            .await?
-        }
-    };
-
-    client.send_event(&event).await?;
-    Ok(())
-}
-
-/// Wait for a direct message response from Mostro
-/// Subscribes first, then sends the message (to avoid missing messages)
-pub async fn wait_for_dm<F>(
-    client: &Client,
-    trade_keys: &Keys,
-    timeout: std::time::Duration,
-    sent_message: F,
-) -> Result<Events>
-where
-    F: std::future::Future<Output = Result<()>> + Send,
-{
-    let mut notifications = client.notifications();
-    let opts =
-        SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(4));
-    let subscription = Filter::new()
-        .pubkey(trade_keys.public_key())
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(0);
-    client.subscribe(subscription, Some(opts)).await?;
-
-    // Send message here after opening notifications to avoid missing messages.
-    sent_message.await?;
-
-    let event = tokio::time::timeout(timeout, async move {
-        loop {
-            match notifications.recv().await {
-                Ok(notification) => match notification {
-                    RelayPoolNotification::Event { event, .. } => {
-                        return Ok(*event);
+            for event in events.iter() {
+                // Parse order from tags
+                let mut order = match order_from_tags(event.tags.clone()) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        log::warn!("Failed to parse order from tags: {}", e);
+                        continue;
                     }
-                    _ => continue,
-                },
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Error receiving notification: {:?}", e));
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
-    .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+                };
 
-    let mut events = Events::default();
-    events.insert(event);
+                // Get order id
+                let order_id_from_event = match order.id {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("Order ID is none, skipping");
+                        continue;
+                    }
+                };
+
+                // Check if order kind is none
+                if order.kind.is_none() {
+                    log::warn!("Order kind is none, skipping");
+                    continue;
+                }
+
+                // Set created_at from event timestamp
+                order.created_at = Some(event.created_at.as_u64() as i64);
+
+                // Update latest order by id (keep the most recent version)
+                latest_by_id
+                    .entry(order_id_from_event)
+                    .and_modify(|existing| {
+                        let new_ts = order.created_at.unwrap_or(0);
+                        let old_ts = existing.created_at.unwrap_or(0);
+                        if new_ts > old_ts {
+                            *existing = order.clone();
+                        }
+                    })
+                    .or_insert(order);
+            }
+
+            // Convert to Event::SmallOrder and apply filters
+            latest_by_id
+                .into_values()
+                .filter(|o| status.map(|s| o.status == Some(s)).unwrap_or(true))
+                .filter(|o| {
+                    order_id
+                        .as_ref()
+                        .map(|oid| o.id.as_ref() == Some(oid))
+                        .unwrap_or(true)
+                })
+                .map(Event::SmallOrder)
+                .collect::<Vec<Event>>()
+        }
+        ListKind::Disputes => events
+            .into_iter()
+            .filter_map(|event| {
+                // Try to parse dispute from JSON content (disputes might use different format)
+                let dispute: Dispute = serde_json::from_str(&event.content).ok()?;
+                if let Some(ref did) = dispute_id {
+                    if dispute.id != *did {
+                        return None;
+                    }
+                }
+                Some(Event::Dispute(dispute))
+            })
+            .collect::<Vec<Event>>(),
+        _ => Vec::new(),
+    };
+
     Ok(events)
+}
+
+pub mod db_utils {
+    use super::*;
+    use crate::models::{Order, User};
+    use sqlx::SqlitePool;
+
+    pub async fn save_order(
+        order: SmallOrder,
+        trade_keys: &Keys,
+        _request_id: u64,
+        trade_index: i64,
+        pool: &SqlitePool,
+    ) -> Result<()> {
+        User::update_last_trade_index(pool, trade_index).await?;
+        Order::new(pool, order, trade_keys, None).await?;
+
+        Ok(())
+    }
 }
 
 /// Parse DM events to extract Messages (similar to mostro-cli)
@@ -488,18 +566,26 @@ pub async fn parse_dm_events(
             }
             _ => continue,
         };
-        // check if the message is older than the since time if it is, skip it
-        if let Some(since_time) = since {
-            // Calculate since time from now in minutes subtracting the since time
-            let since_time = chrono::Utc::now()
-                .checked_sub_signed(chrono::Duration::minutes(*since_time))
-                .unwrap()
-                .timestamp() as u64;
 
-            if created_at.as_u64() < since_time {
+        // Time-based filtering (only process messages from last 30 minutes)
+        if let Some(since_timestamp) = since {
+            if created_at.as_u64() < (*since_timestamp as u64) {
+                continue;
+            }
+        } else {
+            let since_time =
+                match chrono::Utc::now().checked_sub_signed(chrono::Duration::minutes(30)) {
+                    Some(dt) => dt.timestamp(),
+                    None => {
+                        log::warn!("Error: Unable to calculate time 30 minutes ago");
+                        continue;
+                    }
+                };
+            if (created_at.as_u64() as i64) < since_time {
                 continue;
             }
         }
+
         direct_messages.push((message, created_at.as_u64(), sender));
     }
     direct_messages.sort_by(|a, b| a.1.cmp(&b.1));
@@ -510,7 +596,7 @@ pub async fn parse_dm_events(
 pub async fn send_new_order(
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
-    settings: &Settings,
+    _settings: &Settings,
     mostro_pubkey: PublicKey,
     form: &crate::ui::FormState,
 ) -> Result<crate::ui::OrderResult, anyhow::Error> {
@@ -625,123 +711,244 @@ pub async fn send_new_order(
     );
 
     let identity_keys = User::get_identity_keys(pool).await?;
-    let new_order_messge = send_dm(
-        client,
-        Some(&identity_keys),
-        &trade_keys,
-        &mostro_pubkey,
-        message_json,
-        None,
-        false,
-    );
+
+    // Clone values for the async future
+    let client_clone = client.clone();
+    let identity_keys_clone = identity_keys.clone();
+    let trade_keys_clone = trade_keys.clone();
+    let mostro_pubkey_clone = mostro_pubkey;
+    let message_json_clone = message_json.clone();
+
+    let new_order_messge = async move {
+        send_dm(
+            &client_clone,
+            Some(&identity_keys_clone),
+            &trade_keys_clone,
+            &mostro_pubkey_clone,
+            message_json_clone,
+            None,
+            false,
+        )
+        .await
+    };
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
-    let recv_event =
-        wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, new_order_messge).await?;
+    let message = wait_for_dm(client, &trade_keys, request_id, new_order_messge).await?;
 
-    // Parse DM events
-    let messages = parse_dm_events(recv_event, &trade_keys, None).await;
+    let inner_message = message.get_inner_message_kind();
 
-    if let Some((response_message, _, _)) = messages.first() {
-        let inner_message = response_message.get_inner_message_kind();
+    // Check for CantDo payload first (error response)
+    if let Some(Payload::CantDo(reason)) = &inner_message.payload {
+        let error_msg = match reason {
+            Some(r) => get_cant_do_description(r),
+            None => "Unknown error - Mostro couldn't process your request".to_string(),
+        };
+        log::error!("Received CantDo error: {}", error_msg);
+        return Err(anyhow::anyhow!(error_msg));
+    }
 
-        // Check for CantDo payload first (error response)
-        if let Some(Payload::CantDo(reason)) = &inner_message.payload {
-            let error_msg = match reason {
-                Some(r) => get_cant_do_description(r),
-                None => "Unknown error - Mostro couldn't process your request".to_string(),
-            };
-            log::error!("Received CantDo error: {}", error_msg);
-            return Err(anyhow::anyhow!(error_msg));
-        }
+    // Process the response based on action
+    match inner_message.action {
+        Action::NewOrder => {
+            if let Some(Payload::Order(order)) = &inner_message.payload {
+                log::info!("✅ Order created successfully! Order ID: {:?}", order.id);
 
-        match inner_message.request_id {
-            Some(id) => {
-                if request_id == id {
-                    // Request ID matches, process the response
-                    match inner_message.action {
-                        Action::NewOrder => {
-                            if let Some(Payload::Order(order)) = &inner_message.payload {
-                                log::info!(
-                                    "✅ Order created successfully! Order ID: {:?}",
-                                    order.id
-                                );
-
-                                // Save order to database
-                                if let Err(e) = save_order(
-                                    order.clone(),
-                                    &trade_keys,
-                                    request_id,
-                                    next_idx,
-                                    pool,
-                                )
-                                .await
-                                {
-                                    log::error!("Failed to save order to database: {}", e);
-                                    // Continue anyway - we still return success to the UI
-                                }
-
-                                // Return success with order details
-                                Ok(crate::ui::OrderResult::Success {
-                                    order_id: order.id,
-                                    kind: order.kind,
-                                    amount: order.amount,
-                                    fiat_code: order.fiat_code.clone(),
-                                    fiat_amount: order.fiat_amount,
-                                    min_amount: order.min_amount,
-                                    max_amount: order.max_amount,
-                                    payment_method: order.payment_method.clone(),
-                                    premium: order.premium,
-                                    status: order.status,
-                                })
-                            } else {
-                                // Response without order details - return what we sent
-                                Ok(crate::ui::OrderResult::Success {
-                                    order_id: None,
-                                    kind: Some(kind_checked),
-                                    amount,
-                                    fiat_code: fiat_code.clone(),
-                                    fiat_amount,
-                                    min_amount,
-                                    max_amount,
-                                    payment_method: payment_method.clone(),
-                                    premium,
-                                    status: Some(mostro_core::prelude::Status::Pending),
-                                })
-                            }
-                        }
-                        _ => {
-                            log::warn!("Received unexpected action: {:?}", inner_message.action);
-                            Err(anyhow::anyhow!(
-                                "Unexpected action: {:?}",
-                                inner_message.action
-                            ))
-                        }
-                    }
-                } else {
-                    log::warn!(
-                        "Received response with mismatched request_id. Expected: {}, Got: {}",
-                        request_id,
-                        id
-                    );
-                    Err(anyhow::anyhow!("Mismatched request_id"))
+                // Save order to database
+                if let Err(e) =
+                    save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await
+                {
+                    log::error!("Failed to save order to database: {}", e);
+                    // Continue anyway - we still return success to the UI
                 }
+
+                // Return success with order details
+                Ok(crate::ui::OrderResult::Success {
+                    order_id: order.id,
+                    kind: order.kind,
+                    amount: order.amount,
+                    fiat_code: order.fiat_code.clone(),
+                    fiat_amount: order.fiat_amount,
+                    min_amount: order.min_amount,
+                    max_amount: order.max_amount,
+                    payment_method: order.payment_method.clone(),
+                    premium: order.premium,
+                    status: order.status,
+                })
+            } else {
+                // Response without order details - return what we sent
+                log::warn!("Received NewOrder action but no order payload");
+                Ok(crate::ui::OrderResult::Success {
+                    order_id: None,
+                    kind: Some(kind_checked),
+                    amount,
+                    fiat_code: fiat_code.clone(),
+                    fiat_amount,
+                    min_amount,
+                    max_amount,
+                    payment_method: payment_method.clone(),
+                    premium,
+                    status: Some(mostro_core::prelude::Status::Pending),
+                })
             }
-            None if inner_message.action == Action::RateReceived
-                || inner_message.action == Action::NewOrder =>
-            {
-                // Some actions don't require request_id matching
-                if let Some(Payload::Order(order)) = &inner_message.payload {
+        }
+        _ => {
+            log::warn!(
+                "Received unexpected action: {:?}, payload: {:?}",
+                inner_message.action,
+                inner_message.payload
+            );
+            Err(anyhow::anyhow!(
+                "Unexpected action: {:?}",
+                inner_message.action
+            ))
+        }
+    }
+}
+
+/// Take an order from the order book (similar to execute_take_order in mostro-cli)
+pub async fn take_order(
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    _settings: &Settings,
+    mostro_pubkey: PublicKey,
+    order: &SmallOrder,
+    amount: Option<i64>,
+    invoice: Option<String>,
+) -> Result<crate::ui::OrderResult, anyhow::Error> {
+    use crate::models::User;
+    use crate::util::db_utils::save_order;
+
+    // Determine action based on order kind
+    let (action, payload) = match order.kind {
+        Some(mostro_core::order::Kind::Buy) => {
+            // Taking a Buy order = Selling (need invoice)
+            let inv =
+                invoice.ok_or_else(|| anyhow::anyhow!("Invoice required for taking buy orders"))?;
+            let payload = if let Some(amt) = amount {
+                Payload::PaymentRequest(None, inv, Some(amt))
+            } else {
+                Payload::PaymentRequest(None, inv, None)
+            };
+            (Action::TakeSell, Some(payload))
+        }
+        Some(mostro_core::order::Kind::Sell) => {
+            // Taking a Sell order = Buying (provide amount if range)
+            let payload = amount.map(Payload::Amount);
+            (Action::TakeBuy, payload)
+        }
+        None => {
+            return Err(anyhow::anyhow!("Order kind is not specified"));
+        }
+    };
+
+    let order_id = order
+        .id
+        .ok_or_else(|| anyhow::anyhow!("Order ID is missing"))?;
+
+    // Get user and trade keys
+    let user = User::get(pool).await?;
+    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
+    let trade_keys = user.derive_trade_keys(next_idx)?;
+    let _ = User::update_last_trade_index(pool, next_idx).await;
+
+    // Create message
+    let request_id = uuid::Uuid::new_v4().as_u128() as u64;
+    let take_message = Message::new_order(
+        Some(order_id),
+        Some(request_id),
+        Some(next_idx),
+        action,
+        payload,
+    );
+
+    // Serialize message
+    let message_json = take_message
+        .as_json()
+        .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
+
+    log::info!(
+        "Taking order {} with trade index {} and request_id {}",
+        order_id,
+        next_idx,
+        request_id
+    );
+
+    let identity_keys = User::get_identity_keys(pool).await?;
+
+    // Clone values for the async future
+    let client_clone = client.clone();
+    let identity_keys_clone = identity_keys.clone();
+    let trade_keys_clone = trade_keys.clone();
+    let mostro_pubkey_clone = mostro_pubkey;
+    let message_json_clone = message_json.clone();
+
+    let take_order_msg = async move {
+        send_dm(
+            &client_clone,
+            Some(&identity_keys_clone),
+            &trade_keys_clone,
+            &mostro_pubkey_clone,
+            message_json_clone,
+            None,
+            false,
+        )
+        .await
+    };
+
+    // Wait for Mostro response
+    let message = wait_for_dm(client, &trade_keys, request_id, take_order_msg).await?;
+
+    let inner_message = message.get_inner_message_kind();
+
+    // Check for CantDo payload first (error response)
+    if let Some(Payload::CantDo(reason)) = &inner_message.payload {
+        let error_msg = match reason {
+            Some(r) => get_cant_do_description(r),
+            None => "Unknown error - Mostro couldn't process your request".to_string(),
+        };
+        log::error!("Received CantDo error: {}", error_msg);
+        return Err(anyhow::anyhow!(error_msg));
+    }
+
+    match inner_message.request_id {
+        Some(id) => {
+            if request_id == id {
+                // Request ID matches, process the response
+                if let Some(Payload::Order(returned_order)) = &inner_message.payload {
+                    log::info!(
+                        "✅ Order taken successfully! Order ID: {:?}",
+                        returned_order.id
+                    );
+
                     // Save order to database
-                    if let Err(e) =
-                        save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await
+                    if let Err(e) = save_order(
+                        returned_order.clone(),
+                        &trade_keys,
+                        request_id,
+                        next_idx,
+                        pool,
+                    )
+                    .await
                     {
                         log::error!("Failed to save order to database: {}", e);
-                        // Continue anyway - we still return success to the UI
                     }
 
+                    // Return success with order details
                     Ok(crate::ui::OrderResult::Success {
-                        order_id: order.id,
+                        order_id: returned_order.id,
+                        kind: returned_order.kind,
+                        amount: returned_order.amount,
+                        fiat_code: returned_order.fiat_code.clone(),
+                        fiat_amount: returned_order.fiat_amount,
+                        min_amount: returned_order.min_amount,
+                        max_amount: returned_order.max_amount,
+                        payment_method: returned_order.payment_method.clone(),
+                        premium: returned_order.premium,
+                        status: returned_order.status,
+                    })
+                } else {
+                    Ok(crate::ui::OrderResult::Success {
+                        order_id: Some(order_id),
                         kind: order.kind,
                         amount: order.amount,
                         fiat_code: order.fiat_code.clone(),
@@ -750,33 +957,24 @@ pub async fn send_new_order(
                         max_amount: order.max_amount,
                         payment_method: order.payment_method.clone(),
                         premium: order.premium,
-                        status: order.status,
-                    })
-                } else {
-                    Ok(crate::ui::OrderResult::Success {
-                        order_id: None,
-                        kind: Some(kind_checked),
-                        amount,
-                        fiat_code: fiat_code.clone(),
-                        fiat_amount,
-                        min_amount,
-                        max_amount,
-                        payment_method: payment_method.clone(),
-                        premium,
-                        status: Some(mostro_core::prelude::Status::Pending),
+                        status: Some(mostro_core::prelude::Status::Active),
                     })
                 }
-            }
-            None => {
+            } else {
                 log::warn!(
-                    "Received response with null request_id. Expected: {}",
-                    request_id
+                    "Received response with mismatched request_id. Expected: {}, Got: {}",
+                    request_id,
+                    id
                 );
-                Err(anyhow::anyhow!("Response with null request_id"))
+                Err(anyhow::anyhow!("Mismatched request_id"))
             }
         }
-    } else {
-        log::error!("No response received from Mostro");
-        Err(anyhow::anyhow!("No response received from Mostro"))
+        None => {
+            log::warn!(
+                "Received response with null request_id. Expected: {}",
+                request_id
+            );
+            Err(anyhow::anyhow!("Response with null request_id"))
+        }
     }
 }

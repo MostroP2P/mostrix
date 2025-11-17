@@ -14,6 +14,7 @@ pub mod orders_tab;
 pub mod status;
 pub mod tab_content;
 pub mod tabs;
+pub mod take_order_confirm;
 pub mod waiting;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,9 +80,12 @@ impl Tab {
 pub enum UiMode {
     Normal,
     CreatingOrder(FormState),
-    ConfirmingOrder(FormState),  // Confirmation popup
-    WaitingForMostro(FormState), // Waiting for Mostro response
-    OrderResult(OrderResult),    // Show order result (success or error)
+    ConfirmingOrder(FormState),     // Confirmation popup
+    WaitingForMostro(FormState),    // Waiting for Mostro response
+    OrderResult(OrderResult),       // Show order result (success or error)
+    ConfirmingTakeOrder(TakeOrderState), // Confirming take order
+    WaitingTakeOrder(TakeOrderState),    // Waiting for take order response
+    TakeOrderResult(OrderResult),   // Show take order result
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +118,13 @@ pub struct FormState {
     pub expiration_days: String, // expiration days (0 for no expiration)
     pub focused: usize,          // field index
     pub use_range: bool,         // whether to use fiat range
+}
+
+#[derive(Clone, Debug)]
+pub struct TakeOrderState {
+    pub order: mostro_core::prelude::SmallOrder,
+    pub amount: String, // Amount to take (for range orders)
+    pub invoice: String, // Invoice for sell orders
 }
 
 pub struct AppState {
@@ -228,6 +239,21 @@ pub fn ui_draw(
 
     // Order result popup overlay
     if let UiMode::OrderResult(result) = &app.mode {
+        order_result::render_order_result(f, result);
+    }
+
+    // Take order confirmation popup overlay
+    if let UiMode::ConfirmingTakeOrder(state) = &app.mode {
+        take_order_confirm::render(f, f.area(), state, false);
+    }
+
+    // Waiting for take order response popup overlay
+    if let UiMode::WaitingTakeOrder(_) = &app.mode {
+        waiting::render_waiting(f);
+    }
+
+    // Take order result popup overlay
+    if let UiMode::TakeOrderResult(result) = &app.mode {
         order_result::render_order_result(f, result);
     }
 }
