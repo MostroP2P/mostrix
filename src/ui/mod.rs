@@ -10,6 +10,7 @@ pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 pub mod order_confirm;
 pub mod order_form;
 pub mod order_result;
+pub mod order_take;
 pub mod orders_tab;
 pub mod status;
 pub mod tab_content;
@@ -80,6 +81,7 @@ pub enum UiMode {
     Normal,
     CreatingOrder(FormState),
     ConfirmingOrder(FormState),  // Confirmation popup
+    TakingOrder(TakeOrderState), // Taking an order from the list
     WaitingForMostro(FormState), // Waiting for Mostro response
     OrderResult(OrderResult),    // Show order result (success or error)
 }
@@ -114,6 +116,15 @@ pub struct FormState {
     pub expiration_days: String, // expiration days (0 for no expiration)
     pub focused: usize,          // field index
     pub use_range: bool,         // whether to use fiat range
+}
+
+#[derive(Clone, Debug)]
+pub struct TakeOrderState {
+    pub order: SmallOrder,
+    pub amount_input: String,    // For range orders: the amount user wants to take
+    pub is_range_order: bool,    // Whether this is a range order (has min/max)
+    pub validation_error: Option<String>, // Error message if amount is invalid
+    pub selected_button: bool,    // true for YES, false for NO
 }
 
 pub struct AppState {
@@ -229,5 +240,10 @@ pub fn ui_draw(
     // Order result popup overlay
     if let UiMode::OrderResult(result) = &app.mode {
         order_result::render_order_result(f, result);
+    }
+
+    // Taking order popup overlay
+    if let UiMode::TakingOrder(take_state) = &app.mode {
+        order_take::render_order_take(f, take_state);
     }
 }

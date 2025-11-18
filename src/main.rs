@@ -33,7 +33,7 @@ use tokio::time::{interval, interval_at, Duration, Instant};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AppState, FormState, Tab, UiMode};
+use crate::ui::{AppState, FormState, Tab, UiMode, TakeOrderState};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -58,6 +58,34 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
+}
+
+/// Validates the range amount input against min/max limits
+fn validate_range_amount(take_state: &mut TakeOrderState) {
+    if take_state.amount_input.is_empty() {
+        take_state.validation_error = None;
+        return;
+    }
+
+    let amount = match take_state.amount_input.parse::<f64>() {
+        Ok(val) => val,
+        Err(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
+    };
+
+    let min = take_state.order.min_amount.unwrap_or(0) as f64;
+    let max = take_state.order.max_amount.unwrap_or(0) as f64;
+
+    if amount < min || amount > max {
+        take_state.validation_error = Some(format!(
+            "Amount must be between {} and {} {}",
+            min, max, take_state.order.fiat_code
+        ));
+    } else {
+        take_state.validation_error = None;
+    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -147,30 +175,44 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(Ok(Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, .. }))) = maybe_event {
                     match code {
                             KeyCode::Left => {
-                                if matches!(app.mode, UiMode::Normal) {
-                                    app.active_tab = app.active_tab.prev();
-                                    // Exit form mode when leaving Create New Order tab
-                                    if app.active_tab != Tab::CreateNewOrder {
-                                        app.mode = UiMode::Normal;
+                                match &mut app.mode {
+                                    UiMode::Normal => {
+                                        app.active_tab = app.active_tab.prev();
+                                        // Exit form mode when leaving Create New Order tab
+                                        if app.active_tab != Tab::CreateNewOrder {
+                                            app.mode = UiMode::Normal;
+                                        }
                                     }
+                                    UiMode::TakingOrder(ref mut take_state) => {
+                                        // Switch to YES button (left side)
+                                        take_state.selected_button = true;
+                                    }
+                                    _ => {}
                                 }
                             }
                             KeyCode::Right => {
-                                if matches!(app.mode, UiMode::Normal) {
-                                    app.active_tab = app.active_tab.next();
-                                    // Auto-initialize form when switching to Create New Order tab
-                                    if app.active_tab == Tab::CreateNewOrder {
-                                        let form = FormState {
-                                            kind: "buy".to_string(),
-                                            fiat_code: "USD".to_string(),
-                                            amount: "0".to_string(),
-                                            premium: "0".to_string(),
-                                            expiration_days: "1".to_string(),
-                                            focused: 1,
-                                            ..Default::default()
-                                        };
-                                        app.mode = UiMode::CreatingOrder(form);
+                                match &mut app.mode {
+                                    UiMode::Normal => {
+                                        app.active_tab = app.active_tab.next();
+                                        // Auto-initialize form when switching to Create New Order tab
+                                        if app.active_tab == Tab::CreateNewOrder {
+                                            let form = FormState {
+                                                kind: "buy".to_string(),
+                                                fiat_code: "USD".to_string(),
+                                                amount: "0".to_string(),
+                                                premium: "0".to_string(),
+                                                expiration_days: "1".to_string(),
+                                                focused: 1,
+                                                ..Default::default()
+                                            };
+                                            app.mode = UiMode::CreatingOrder(form);
+                                        }
                                     }
+                                    UiMode::TakingOrder(ref mut take_state) => {
+                                        // Switch to NO button (right side)
+                                        take_state.selected_button = false;
+                                    }
+                                    _ => {}
                                 }
                             }
                             KeyCode::Up => {
@@ -194,6 +236,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     }
                                     UiMode::ConfirmingOrder(_) => {
                                         // No navigation in confirmation mode
+                                    }
+                                    UiMode::TakingOrder(_) => {
+                                        // No navigation in take order mode
                                     }
                                     UiMode::WaitingForMostro(_) => {
                                         // No navigation in waiting mode
@@ -225,6 +270,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::ConfirmingOrder(_) => {
                                         // No navigation in confirmation mode
                                     }
+                                    UiMode::TakingOrder(_) => {
+                                        // No navigation in take order mode
+                                    }
                                     UiMode::WaitingForMostro(_) => {
                                         // No navigation in waiting mode
                                     }
@@ -254,8 +302,21 @@ async fn main() -> Result<(), anyhow::Error> {
                             KeyCode::Enter => {
                                 match &mut app.mode {
                                     UiMode::Normal => {
-                                        // Enter key will be used for taking orders later
-                                        // No action for now
+                                        // Show take order popup when Enter is pressed in Orders tab
+                                        if app.active_tab == Tab::Orders {
+                                            let orders_lock = orders.lock().unwrap();
+                                            if let Some(order) = orders_lock.get(app.selected_order_idx) {
+                                                let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
+                                                let take_state = TakeOrderState {
+                                                    order: order.clone(),
+                                                    amount_input: String::new(),
+                                                    is_range_order,
+                                                    validation_error: None,
+                                                    selected_button: true, // Default to YES
+                                                };
+                                                app.mode = UiMode::TakingOrder(take_state);
+                                            }
+                                        }
                                     }
                                     UiMode::CreatingOrder(form) => {
                                         // Show confirmation popup when Enter is pressed
@@ -266,6 +327,22 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::ConfirmingOrder(_) => {
                                         // Enter acts as Yes in confirmation
                                         // This will be handled by 'y' key
+                                    }
+                                    UiMode::TakingOrder(ref take_state) => {
+                                        // Enter confirms the selected button
+                                        if take_state.selected_button {
+                                            // YES selected - check validation and proceed
+                                            if take_state.is_range_order 
+                                            && take_state.amount_input.is_empty() || take_state.validation_error.is_some() {
+                                                // Can't proceed
+                                                continue;
+                                            }
+                                            // TODO: Implement actual order taking logic here
+                                            app.mode = UiMode::Normal;
+                                        } else {
+                                            // NO selected - cancel
+                                            app.mode = UiMode::Normal;
+                                        }
                                     }
                                     UiMode::WaitingForMostro(_) => {
                                         // No action while waiting
@@ -285,6 +362,10 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::ConfirmingOrder(form) => {
                                         // Cancel confirmation, go back to form
                                         app.mode = UiMode::CreatingOrder(form.clone());
+                                    }
+                                    UiMode::TakingOrder(_) => {
+                                        // Cancel taking order, return to normal mode
+                                        app.mode = UiMode::Normal;
                                     }
                                     UiMode::WaitingForMostro(_) => {
                                         // Can't cancel while waiting
@@ -337,12 +418,31 @@ async fn main() -> Result<(), anyhow::Error> {
                                             }
                                         }
                                     });
+                                } else if let UiMode::TakingOrder(ref take_state) = &app.mode {
+                                    // User confirmed taking the order
+                                    // Check validation first
+                                    if take_state.is_range_order {
+                                        if take_state.amount_input.is_empty() {
+                                            // Can't proceed without amount
+                                            continue;
+                                        }
+                                        if take_state.validation_error.is_some() {
+                                            // Can't proceed with invalid amount
+                                            continue;
+                                        }
+                                    }
+                                    // TODO: Implement actual order taking logic here
+                                    // For now, just close the popup
+                                    app.mode = UiMode::Normal;
                                 }
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') => {
                                 if let UiMode::ConfirmingOrder(form) = &app.mode {
                                     // User cancelled, go back to form
                                     app.mode = UiMode::CreatingOrder(form.clone());
+                                } else if let UiMode::TakingOrder(_) = &app.mode {
+                                    // User cancelled taking the order
+                                    app.mode = UiMode::Normal;
                                 }
                             }
                             KeyCode::Char(c) => {
@@ -363,6 +463,16 @@ async fn main() -> Result<(), anyhow::Error> {
                                         };
                                         target.push(c);
                                     }
+                                } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
+                                    // Allow typing in the amount input field for range orders
+                                    if take_state.is_range_order {
+                                        // Only allow digits and decimal point
+                                        if c.is_ascii_digit() || c == '.' {
+                                            take_state.amount_input.push(c);
+                                            // Validate after typing
+                                            validate_range_amount(take_state);
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Backspace => {
@@ -382,6 +492,13 @@ async fn main() -> Result<(), anyhow::Error> {
                                             _ => unreachable!(),
                                         };
                                         target.pop();
+                                    }
+                                } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
+                                    // Allow backspace in the amount input field
+                                    if take_state.is_range_order {
+                                        take_state.amount_input.pop();
+                                        // Validate after deletion
+                                        validate_range_amount(take_state);
                                     }
                                 }
                             }
