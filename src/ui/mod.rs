@@ -82,7 +82,8 @@ pub enum UiMode {
     CreatingOrder(FormState),
     ConfirmingOrder(FormState),  // Confirmation popup
     TakingOrder(TakeOrderState), // Taking an order from the list
-    WaitingForMostro(FormState), // Waiting for Mostro response
+    WaitingForMostro(FormState), // Waiting for Mostro response (order creation)
+    WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)
     OrderResult(OrderResult),    // Show order result (success or error)
 }
 
@@ -234,6 +235,11 @@ pub fn ui_draw(
 
     // Waiting for Mostro popup overlay
     if let UiMode::WaitingForMostro(_) = &app.mode {
+        waiting::render_waiting(f);
+    }
+
+    // Waiting for take order popup overlay
+    if let UiMode::WaitingTakeOrder(_) = &app.mode {
         waiting::render_waiting(f);
     }
 

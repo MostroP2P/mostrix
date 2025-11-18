@@ -5,7 +5,7 @@ pub mod ui;
 pub mod util;
 
 use crate::settings::{init_settings, Settings};
-use crate::util::{fetch_events_list, send_new_order, Event as UtilEvent, ListKind};
+use crate::util::{fetch_events_list, send_new_order, take_order, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
 use mostro_core::prelude::Status;
 
@@ -168,7 +168,15 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
-                    app.mode = UiMode::OrderResult(result);
+                    // Set appropriate result mode based on current state
+                    match app.mode {
+                        UiMode::WaitingTakeOrder(_) => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                        _ => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                    }
                 }
             }
             maybe_event = events.next() => {
@@ -243,6 +251,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::WaitingForMostro(_) => {
                                         // No navigation in waiting mode
                                     }
+                                    UiMode::WaitingTakeOrder(_) => {
+                                        // No navigation in waiting take order mode
+                                    }
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
                                     }
@@ -275,6 +286,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     }
                                     UiMode::WaitingForMostro(_) => {
                                         // No navigation in waiting mode
+                                    }
+                                    UiMode::WaitingTakeOrder(_) => {
+                                        // No navigation in waiting take order mode
                                     }
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
@@ -332,19 +346,68 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Enter confirms the selected button
                                         if take_state.selected_button {
                                             // YES selected - check validation and proceed
-                                            if take_state.is_range_order
-                                            && take_state.amount_input.is_empty() || take_state.validation_error.is_some() {
-                                                // Can't proceed
-                                                continue;
+                                            if take_state.is_range_order {
+                                                if take_state.amount_input.is_empty() {
+                                                    // Can't proceed without amount
+                                                    continue;
+                                                }
+                                                if take_state.validation_error.is_some() {
+                                                    // Can't proceed with invalid amount
+                                                    continue;
+                                                }
                                             }
-                                            // TODO: Implement actual order taking logic here
-                                            app.mode = UiMode::Normal;
+                                            // Proceed with taking the order
+                                            let take_state_clone = take_state.clone();
+                                            app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
+
+                                            // Parse amount if it's a range order
+                                            let amount = if take_state_clone.is_range_order {
+                                                take_state_clone.amount_input.trim().parse::<i64>().ok()
+                                            } else {
+                                                None
+                                            };
+
+                                            // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
+                                            // TODO: Add invoice input for buy orders
+                                            let invoice = None;
+
+                                            // Spawn async task to take order
+                                            let pool_clone = pool.clone();
+                                            let client_clone = client.clone();
+                                            let settings_clone = settings;
+                                            let mostro_pubkey_clone = mostro_pubkey;
+                                            let result_tx = order_result_tx.clone();
+
+                                            tokio::spawn(async move {
+                                                match take_order(
+                                                    &pool_clone,
+                                                    &client_clone,
+                                                    settings_clone,
+                                                    mostro_pubkey_clone,
+                                                    &take_state_clone.order,
+                                                    amount,
+                                                    invoice,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(result) => {
+                                                        let _ = result_tx.send(result);
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("Failed to take order: {}", e);
+                                                        let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                                                    }
+                                                }
+                                            });
                                         } else {
                                             // NO selected - cancel
                                             app.mode = UiMode::Normal;
                                         }
                                     }
                                     UiMode::WaitingForMostro(_) => {
+                                        // No action while waiting
+                                    }
+                                    UiMode::WaitingTakeOrder(_) => {
                                         // No action while waiting
                                     }
                                     UiMode::OrderResult(_) => {
@@ -368,6 +431,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                         app.mode = UiMode::Normal;
                                     }
                                     UiMode::WaitingForMostro(_) => {
+                                        // Can't cancel while waiting
+                                    }
+                                    UiMode::WaitingTakeOrder(_) => {
                                         // Can't cancel while waiting
                                     }
                                     UiMode::OrderResult(_) => {
@@ -419,7 +485,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         }
                                     });
                                 } else if let UiMode::TakingOrder(ref take_state) = &app.mode {
-                                    // User confirmed taking the order
+                                    // User confirmed taking the order (same as Enter key)
                                     // Check validation first
                                     if take_state.is_range_order {
                                         if take_state.amount_input.is_empty() {
@@ -431,9 +497,49 @@ async fn main() -> Result<(), anyhow::Error> {
                                             continue;
                                         }
                                     }
-                                    // TODO: Implement actual order taking logic here
-                                    // For now, just close the popup
-                                    app.mode = UiMode::Normal;
+                                    // Proceed with taking the order
+                                    let take_state_clone = take_state.clone();
+                                    app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
+
+                                    // Parse amount if it's a range order
+                                    let amount = if take_state_clone.is_range_order {
+                                        take_state_clone.amount_input.trim().parse::<i64>().ok()
+                                    } else {
+                                        None
+                                    };
+
+                                    // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
+                                    // TODO: Add invoice input for buy orders
+                                    let invoice = None;
+
+                                    // Spawn async task to take order
+                                    let pool_clone = pool.clone();
+                                    let client_clone = client.clone();
+                                    let settings_clone = settings;
+                                    let mostro_pubkey_clone = mostro_pubkey;
+                                    let result_tx = order_result_tx.clone();
+
+                                    tokio::spawn(async move {
+                                        match take_order(
+                                            &pool_clone,
+                                            &client_clone,
+                                            settings_clone,
+                                            mostro_pubkey_clone,
+                                            &take_state_clone.order,
+                                            amount,
+                                            invoice,
+                                        )
+                                        .await
+                                        {
+                                            Ok(result) => {
+                                                let _ = result_tx.send(result);
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to take order: {}", e);
+                                                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                                            }
+                                        }
+                                    });
                                 }
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') => {

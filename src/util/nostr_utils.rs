@@ -780,3 +780,199 @@ pub async fn send_new_order(
         Err(anyhow::anyhow!("No response received from Mostro"))
     }
 }
+
+/// Create payload based on action type and parameters (from example_code/cli/take_order.rs)
+fn create_take_order_payload(
+    action: Action,
+    invoice: &Option<String>,
+    amount: Option<i64>,
+) -> Result<Option<Payload>> {
+    match action {
+        Action::TakeBuy => Ok(amount.map(Payload::Amount)),
+        Action::TakeSell => Ok(Some(match invoice {
+            Some(inv) => {
+                // For TakeSell with invoice, create PaymentRequest
+                // If amount is provided (for range orders), include it
+                match amount {
+                    Some(amt) => Payload::PaymentRequest(None, inv.clone(), Some(amt)),
+                    None => Payload::PaymentRequest(None, inv.clone(), None),
+                }
+            }
+            None => amount.map(Payload::Amount).unwrap_or(Payload::Amount(0)),
+        })),
+        _ => Err(anyhow::anyhow!("Invalid action for take order")),
+    }
+}
+
+/// Take an order from the order book (based on example_code/cli/take_order.rs)
+pub async fn take_order(
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    _settings: &Settings,
+    mostro_pubkey: PublicKey,
+    order: &SmallOrder,
+    amount: Option<i64>,
+    invoice: Option<String>,
+) -> Result<crate::ui::OrderResult, anyhow::Error> {
+    use crate::models::User;
+    use crate::util::db_utils::save_order;
+
+    // Determine action based on order kind
+    let action = match order.kind {
+        Some(mostro_core::order::Kind::Buy) => {
+            // Taking a Buy order = Selling (need invoice for TakeSell)
+            Action::TakeBuy
+        }
+        Some(mostro_core::order::Kind::Sell) => {
+            // Taking a Sell order = Buying (provide amount if range)
+            Action::TakeSell
+        }
+        None => {
+            return Err(anyhow::anyhow!("Order kind is not specified"));
+        }
+    };
+
+    let order_id = order
+        .id
+        .ok_or_else(|| anyhow::anyhow!("Order ID is missing"))?;
+
+    // Get user and trade keys
+    let user = User::get(pool).await?;
+    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
+    let trade_keys = user.derive_trade_keys(next_idx)?;
+    let _ = User::update_last_trade_index(pool, next_idx).await;
+
+    // Create payload based on action type
+    let payload = create_take_order_payload(action.clone(), &invoice, amount)?;
+
+    // Create request id
+    let request_id = uuid::Uuid::new_v4().as_u128() as u64;
+
+    // Create message
+    let take_order_message = Message::new_order(
+        Some(order_id),
+        Some(request_id),
+        Some(next_idx),
+        action.clone(),
+        payload,
+    );
+
+    log::info!(
+        "Taking order {} with trade index {} and request_id {}",
+        order_id,
+        next_idx,
+        request_id
+    );
+
+    // Serialize message
+    let message_json = take_order_message
+        .as_json()
+        .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
+
+    let identity_keys = User::get_identity_keys(pool).await?;
+
+    // Send the DM (this returns a future)
+    let sent_message = send_dm(
+        client,
+        Some(&identity_keys),
+        &trade_keys,
+        &mostro_pubkey,
+        message_json,
+        None,
+        false,
+    );
+
+    // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
+    let recv_event = wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+
+    // Parse DM events
+    let messages = parse_dm_events(
+        recv_event, &trade_keys, None).await;
+
+    if let Some((response_message, _, _)) = messages.first() {
+        let inner_message = response_message.get_inner_message_kind();
+
+        // Check for CantDo payload first (error response)
+        if let Some(Payload::CantDo(reason)) = &inner_message.payload {
+            let error_msg = match reason {
+                Some(r) => get_cant_do_description(r),
+                None => "Unknown error - Mostro couldn't process your request".to_string(),
+            };
+            log::error!("Received CantDo error: {}", error_msg);
+            return Err(anyhow::anyhow!(error_msg));
+        }
+
+        match inner_message.request_id {
+            Some(id) => {
+                if request_id == id {
+                    // Request ID matches, process the response
+                    if let Some(Payload::Order(returned_order)) = &inner_message.payload {
+                        log::info!(
+                            "✅ Order taken successfully! Order ID: {:?}",
+                            returned_order.id
+                        );
+
+                        // Save order to database
+                        if let Err(e) = save_order(
+                            returned_order.clone(),
+                            &trade_keys,
+                            request_id,
+                            next_idx,
+                            pool,
+                        )
+                        .await
+                        {
+                            log::error!("Failed to save order to database: {}", e);
+                            // Continue anyway - we still return success to the UI
+                        }
+
+                        // Return success with order details
+                        Ok(crate::ui::OrderResult::Success {
+                            order_id: returned_order.id,
+                            kind: returned_order.kind,
+                            amount: returned_order.amount,
+                            fiat_code: returned_order.fiat_code.clone(),
+                            fiat_amount: returned_order.fiat_amount,
+                            min_amount: returned_order.min_amount,
+                            max_amount: returned_order.max_amount,
+                            payment_method: returned_order.payment_method.clone(),
+                            premium: returned_order.premium,
+                            status: returned_order.status,
+                        })
+                    } else {
+                        // Response without order details - return success with original order info
+                        Ok(crate::ui::OrderResult::Success {
+                            order_id: Some(order_id),
+                            kind: order.kind,
+                            amount: order.amount,
+                            fiat_code: order.fiat_code.clone(),
+                            fiat_amount: order.fiat_amount,
+                            min_amount: order.min_amount,
+                            max_amount: order.max_amount,
+                            payment_method: order.payment_method.clone(),
+                            premium: order.premium,
+                            status: Some(mostro_core::prelude::Status::Active),
+                        })
+                    }
+                } else {
+                    log::warn!(
+                        "Received response with mismatched request_id. Expected: {}, Got: {}",
+                        request_id,
+                        id
+                    );
+                    Err(anyhow::anyhow!("Mismatched request_id"))
+                }
+            }
+            None => {
+                log::warn!(
+                    "Received response with null request_id. Expected: {}",
+                    request_id
+                );
+                Err(anyhow::anyhow!("Response with null request_id"))
+            }
+        }
+    } else {
+        log::error!("No response received from Mostro");
+        Err(anyhow::anyhow!("No response received from Mostro"))
+    }
+}
