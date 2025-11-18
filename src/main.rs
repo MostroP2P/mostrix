@@ -33,7 +33,7 @@ use tokio::time::{interval, interval_at, Duration, Instant};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AppState, FormState, Tab, UiMode, TakeOrderState};
+use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -332,7 +332,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Enter confirms the selected button
                                         if take_state.selected_button {
                                             // YES selected - check validation and proceed
-                                            if take_state.is_range_order 
+                                            if take_state.is_range_order
                                             && take_state.amount_input.is_empty() || take_state.validation_error.is_some() {
                                                 // Can't proceed
                                                 continue;

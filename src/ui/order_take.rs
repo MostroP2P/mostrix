@@ -10,14 +10,14 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
     let popup_width = area.width.saturating_sub(area.width / 4);
     // Adjust height based on whether it's a range order (needs input field and error)
     // Calculate total height needed: sum of all constraints + borders (2 lines)
-    // Base constraints: spacer(1) + title(2) + separator(1) + kind(1) + currency(1) + fiat(1) + payment(1) + separator(1) + buttons(3) + help(1) = 13
-    // For range: + label(1) + input(3) + error(1) = +5 (always reserve error space to prevent resizing)
+    // Base constraints: spacer(1) + title(2) + separator(1) + kind(1) + currency(1) + fiat(1) + payment(1) + separator(1) + buttons(5) + help(1) = 15
+    // For range: + label(1) + input(3) + error(1) + spacer(1) = +6 (always reserve error space to prevent resizing)
     // Borders: top(1) + bottom(1) = 2
     // IMPORTANT: Always use fixed height for range orders to prevent popup from moving when typing
     let popup_height = if take_state.is_range_order {
-        22 // Base(13) + range(5) + borders(2) + padding(2) = 22 (fixed, never changes)
+        23 // Base(15) + range(6) + borders(2) = 23 (fixed, never changes)
     } else {
-        15 // Base(13) + borders(2) = 15
+        17 // Base(15) + borders(2) = 17
     };
     let popup_x = area.x + (area.width - popup_width) / 2;
     let popup_y = area.y + (area.height - popup_height) / 2;
@@ -47,7 +47,10 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
     }
 
     constraints.push(Constraint::Length(1)); // separator
-    constraints.push(Constraint::Length(3)); // YES/NO buttons (need more space for borders and content)
+    constraints.push(Constraint::Length(3)); // YES/NO buttons (need space for borders, margins, and content)
+    if take_state.is_range_order {
+        constraints.push(Constraint::Length(1)); // spacer for buttons
+    }
     constraints.push(Constraint::Length(1)); // help text
 
     let inner_chunks = Layout::new(Direction::Vertical, constraints).split(popup);
@@ -104,7 +107,10 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         let max = take_state.order.max_amount.unwrap_or(0);
         format!("{}-{} {}", min, max, take_state.order.fiat_code)
     } else {
-        format!("{} {}", take_state.order.fiat_amount, take_state.order.fiat_code)
+        format!(
+            "{} {}",
+            take_state.order.fiat_amount, take_state.order.fiat_code
+        )
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -129,9 +135,10 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
 
     // Input field for range orders
     // Calculate button index: buttons come after separator
-    // For range orders, always use fixed index since we always reserve error space
+    // For range orders: indices 0-6 (base), 7-9 (range fields), 10 (separator), 11 (buttons)
+    // For non-range: indices 0-6 (base), 7 (separator), 8 (buttons)
     let button_idx = if take_state.is_range_order {
-        10 // separator at 9 (after error space), buttons at 10 (fixed, never changes)
+        11 // separator at 10, buttons at 11
     } else {
         8 // separator at 7, buttons at 8
     };
@@ -185,16 +192,13 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         let input_block = Block::default()
             .borders(Borders::ALL)
             .style(Style::default().fg(border_color));
-        
+
         f.render_widget(input_block, input_rect);
 
         // Input text inside the box
-        let inner_input = Layout::new(
-            Direction::Horizontal,
-            [Constraint::Min(0)],
-        )
-        .margin(1)
-        .split(input_rect);
+        let inner_input = Layout::new(Direction::Horizontal, [Constraint::Min(0)])
+            .margin(1)
+            .split(input_rect);
 
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
@@ -224,13 +228,13 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
 
     // YES/NO buttons - center them in the popup
     let button_area = inner_chunks[button_idx];
-    
+
     // Calculate button width (each button + separator)
     // Each button should be about 12-15 chars wide, plus 1 for separator
     let button_width = 15; // Width for each button
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
-    
+
     // Center the buttons horizontally
     let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
     let centered_button_area = Rect {
@@ -239,7 +243,7 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         width: total_button_width.min(button_area.width),
         height: button_area.height,
     };
-    
+
     let button_chunks = Layout::new(
         Direction::Horizontal,
         [
@@ -262,17 +266,12 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
             .add_modifier(Modifier::BOLD)
     };
 
-    let yes_block = Block::default()
-        .borders(Borders::ALL)
-        .style(yes_style);
+    let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
     f.render_widget(yes_block, button_chunks[0]);
 
-    let yes_inner = Layout::new(
-        Direction::Vertical,
-        [Constraint::Min(0)],
-    )
-    .margin(1)
-    .split(button_chunks[0]);
+    let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+        .margin(1)
+        .split(button_chunks[0]);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
@@ -296,22 +295,15 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     };
 
-    let no_block = Block::default()
-        .borders(Borders::ALL)
-        .style(no_style);
+    let no_block = Block::default().borders(Borders::ALL).style(no_style);
     f.render_widget(no_block, button_chunks[2]);
 
-    let no_inner = Layout::new(
-        Direction::Vertical,
-        [Constraint::Min(0)],
-    )
-    .margin(1)
-    .split(button_chunks[2]);
+    let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+        .margin(1)
+        .split(button_chunks[2]);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
@@ -328,33 +320,34 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         no_inner[0],
     );
 
-    // Help text
-    let help_idx = button_idx + 1;
+    // Help text - comes after buttons and optional spacer
+    let help_idx = if take_state.is_range_order {
+        button_idx + 2 // buttons at 11, spacer at 12, help at 13
+    } else {
+        button_idx + 1 // buttons at 8, help at 9
+    };
+
     if help_idx < inner_chunks.len() {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("Use ", Style::default()),
-                Span::styled("← →", Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "← →",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" to switch, ", Style::default()),
-                Span::styled("Enter", Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" to confirm", Style::default()),
             ]))
             .alignment(ratatui::layout::Alignment::Center),
             inner_chunks[help_idx],
-        );
-    } else if !take_state.is_range_order {
-        // For non-range orders, show help text at the end
-        let last_idx = inner_chunks.len() - 1;
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Use ", Style::default()),
-                Span::styled("← →", Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
-                Span::styled(" to switch, ", Style::default()),
-                Span::styled("Enter", Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
-                Span::styled(" to confirm", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            inner_chunks[last_idx],
         );
     }
 }
