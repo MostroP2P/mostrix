@@ -33,6 +33,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             payment_method,
             premium,
             status,
+            trade_index: _,
         } => {
             let block = Block::default()
                 .title("✅ Order Created Successfully")

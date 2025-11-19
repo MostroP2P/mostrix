@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
+use nostr_sdk::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 
@@ -80,11 +82,12 @@ impl Tab {
 pub enum UiMode {
     Normal,
     CreatingOrder(FormState),
-    ConfirmingOrder(FormState),  // Confirmation popup
-    TakingOrder(TakeOrderState), // Taking an order from the list
-    WaitingForMostro(FormState), // Waiting for Mostro response (order creation)
-    WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)
-    OrderResult(OrderResult),    // Show order result (success or error)
+    ConfirmingOrder(FormState),                  // Confirmation popup
+    TakingOrder(TakeOrderState),                 // Taking an order from the list
+    WaitingForMostro(FormState),                 // Waiting for Mostro response (order creation)
+    WaitingTakeOrder(TakeOrderState),            // Waiting for Mostro response (taking order)
+    OrderResult(OrderResult),                    // Show order result (success or error)
+    NewMessageNotification(MessageNotification), // Popup for new message
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +103,7 @@ pub enum OrderResult {
         payment_method: String,
         premium: i64,
         status: Option<mostro_core::prelude::Status>,
+        trade_index: Option<i64>, // Trade index used for this order
     },
     Error(String),
 }
@@ -128,10 +132,31 @@ pub struct TakeOrderState {
     pub selected_button: bool, // true for YES, false for NO
 }
 
+/// Represents a message related to an order
+#[derive(Clone, Debug)]
+pub struct OrderMessage {
+    pub message: Message,
+    pub timestamp: u64,
+    pub sender: PublicKey,
+    pub order_id: Option<uuid::Uuid>,
+    pub trade_index: i64,
+}
+
+/// Notification for a new message
+#[derive(Clone, Debug)]
+pub struct MessageNotification {
+    pub order_id: Option<uuid::Uuid>,
+    pub message_preview: String,
+    pub timestamp: u64,
+}
+
 pub struct AppState {
     pub active_tab: Tab,
     pub selected_order_idx: usize,
     pub mode: UiMode,
+    pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
+    pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
+    pub selected_message_idx: usize, // Selected message in Messages tab
 }
 
 impl Default for AppState {
@@ -140,6 +165,9 @@ impl Default for AppState {
             active_tab: Tab::Orders,
             selected_order_idx: 0,
             mode: UiMode::Normal,
+            messages: Arc::new(Mutex::new(Vec::new())),
+            active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
+            selected_message_idx: 0,
         }
     }
 }
@@ -212,7 +240,10 @@ pub fn ui_draw(
             orders_tab::render_orders_tab(f, content_area, orders, app.selected_order_idx)
         }
         Tab::MyTrades => tab_content::render_coming_soon(f, content_area, "My Trades"),
-        Tab::Messages => tab_content::render_coming_soon(f, content_area, "Messages"),
+        Tab::Messages => {
+            let messages = app.messages.lock().unwrap();
+            tab_content::render_messages_tab(f, content_area, &messages, app.selected_message_idx)
+        }
         Tab::Settings => tab_content::render_coming_soon(f, content_area, "Settings"),
         Tab::CreateNewOrder => {
             if let UiMode::CreatingOrder(form) = &app.mode {
@@ -251,5 +282,10 @@ pub fn ui_draw(
     // Taking order popup overlay
     if let UiMode::TakingOrder(take_state) = &app.mode {
         order_take::render_order_take(f, take_state);
+    }
+
+    // New message notification popup overlay
+    if let UiMode::NewMessageNotification(notification) = &app.mode {
+        tab_content::render_message_notification(f, notification);
     }
 }

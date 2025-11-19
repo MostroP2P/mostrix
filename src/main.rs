@@ -5,7 +5,10 @@ pub mod ui;
 pub mod util;
 
 use crate::settings::{init_settings, Settings};
-use crate::util::{fetch_events_list, send_new_order, take_order, Event as UtilEvent, ListKind};
+use crate::util::{
+    fetch_events_list, listen_for_order_messages, send_new_order, take_order, Event as UtilEvent,
+    ListKind,
+};
 use crossterm::event::EventStream;
 use mostro_core::prelude::Status;
 
@@ -164,19 +167,59 @@ async fn main() -> Result<(), anyhow::Error> {
     let (order_result_tx, mut order_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
 
+    // Channel to receive message notifications
+    let (message_notification_tx, mut message_notification_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ui::MessageNotification>();
+
+    // Spawn background task to listen for messages on active orders
+    let client_for_messages = client.clone();
+    let pool_for_messages = pool.clone();
+    let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let messages_clone = Arc::clone(&app.messages);
+    let message_notification_tx_clone = message_notification_tx.clone();
+    tokio::spawn(async move {
+        listen_for_order_messages(
+            client_for_messages,
+            pool_for_messages,
+            active_order_trade_indices_clone,
+            messages_clone,
+            message_notification_tx_clone,
+        )
+        .await;
+    });
+
     loop {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
+                    // Track trade_index for taken orders
+                    if let crate::ui::OrderResult::Success { order_id, trade_index, .. } = &result {
+                        if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
+                            let mut indices = app.active_order_trade_indices.lock().unwrap();
+                            indices.insert(*order_id, *trade_index);
+                            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
+                        }
+                    }
+
                     // Set appropriate result mode based on current state
                     match app.mode {
                         UiMode::WaitingTakeOrder(_) => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                        UiMode::NewMessageNotification(_) => {
+                            // If we have a notification, replace it with the result
                             app.mode = UiMode::OrderResult(result);
                         }
                         _ => {
                             app.mode = UiMode::OrderResult(result);
                         }
                     }
+                }
+            }
+            notification = message_notification_rx.recv() => {
+                if let Some(notification) = notification {
+                    // Show notification popup
+                    app.mode = UiMode::NewMessageNotification(notification);
                 }
             }
             maybe_event = events.next() => {
@@ -194,6 +237,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::TakingOrder(ref mut take_state) => {
                                         // Switch to YES button (left side)
                                         take_state.selected_button = true;
+                                    }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // No action in notification mode
                                     }
                                     _ => {}
                                 }
@@ -220,6 +266,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Switch to NO button (right side)
                                         take_state.selected_button = false;
                                     }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // No action in notification mode
+                                    }
                                     _ => {}
                                 }
                             }
@@ -230,6 +279,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                             let orders_len = orders.lock().unwrap().len();
                                             if orders_len > 0 && app.selected_order_idx > 0 {
                                                 app.selected_order_idx -= 1;
+                                            }
+                                        } else if app.active_tab == Tab::Messages {
+                                            let messages_len = app.messages.lock().unwrap().len();
+                                            if messages_len > 0 && app.selected_message_idx > 0 {
+                                                app.selected_message_idx -= 1;
                                             }
                                         }
                                     }
@@ -257,6 +311,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
                                     }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // No navigation in notification mode
+                                    }
                                 }
                             }
                             KeyCode::Down => {
@@ -266,6 +323,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                             let orders_len = orders.lock().unwrap().len();
                                             if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
                                                 app.selected_order_idx += 1;
+                                            }
+                                        } else if app.active_tab == Tab::Messages {
+                                            let messages_len = app.messages.lock().unwrap().len();
+                                            if messages_len > 0 && app.selected_message_idx < messages_len.saturating_sub(1) {
+                                                app.selected_message_idx += 1;
                                             }
                                         }
                                     }
@@ -292,6 +354,9 @@ async fn main() -> Result<(), anyhow::Error> {
                                     }
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
+                                    }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // No navigation in notification mode
                                     }
                                 }
                             }
@@ -415,6 +480,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                         app.mode = UiMode::Normal;
                                         app.active_tab = Tab::Orders;
                                     }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // Close notification, switch to Messages tab
+                                        app.mode = UiMode::Normal;
+                                        app.active_tab = Tab::Messages;
+                                    }
                                 }
                             }
                             KeyCode::Esc => {
@@ -440,6 +510,10 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Close result popup, return to Orders tab
                                         app.mode = UiMode::Normal;
                                         app.active_tab = Tab::Orders;
+                                    }
+                                    UiMode::NewMessageNotification(_) => {
+                                        // Dismiss notification
+                                        app.mode = UiMode::Normal;
                                     }
                                     _ => break,
                                 }
