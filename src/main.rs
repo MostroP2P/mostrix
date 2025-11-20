@@ -206,7 +206,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         UiMode::WaitingTakeOrder(_) => {
                             app.mode = UiMode::OrderResult(result);
                         }
-                        UiMode::NewMessageNotification(_) => {
+                        UiMode::NewMessageNotification(_, _, _) => {
                             // If we have a notification, replace it with the result
                             app.mode = UiMode::OrderResult(result);
                         }
@@ -218,17 +218,66 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             notification = message_notification_rx.recv() => {
                 if let Some(notification) = notification {
-                    // Show notification popup
-                    app.mode = UiMode::NewMessageNotification(notification);
+                    // Only show popup immediately for PayInvoice and AddInvoice
+                    // For other actions, just increment the pending notifications counter
+                    match notification.action {
+                        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::AddInvoice => {
+                            // Show popup immediately for critical actions
+                            let invoice_state = crate::ui::InvoiceInputState {
+                                invoice_input: String::new(),
+                                focused: true, // Focus input field for AddInvoice
+                            };
+                            let action = notification.action.clone();
+                            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+                        }
+                        _ => {
+                            // For other actions, just increment pending notifications counter
+                            let mut pending = app.pending_notifications.lock().unwrap();
+                            *pending += 1;
+                        }
+                    }
                 }
             }
             maybe_event = events.next() => {
-                if let Some(Ok(Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, .. }))) = maybe_event {
+                // Handle paste events (bracketed paste mode)
+                if let Some(Ok(Event::Paste(pasted_text))) = maybe_event {
+                    if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                        // Handle paste in AddInvoice notification input field
+                        if invoice_state.focused {
+                            invoice_state.invoice_input.push_str(&pasted_text);
+                        }
+                    }
+                    continue;
+                }
+                
+                if let Some(Ok(Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, modifiers, .. }))) = maybe_event {
+                    // Handle Ctrl+V for paste (especially on Windows)
+                    if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && code == KeyCode::Char('v') {
+                        if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                            if invoice_state.focused {
+                                // On Windows, we can't easily get clipboard content programmatically in this context
+                                // The Event::Paste should handle it, but we'll skip Ctrl+V to avoid issues
+                                continue;
+                            }
+                        }
+                    }
+                    
                     match code {
                             KeyCode::Left => {
                                 match &mut app.mode {
                                     UiMode::Normal => {
+                                        let prev_tab = app.active_tab;
                                         app.active_tab = app.active_tab.prev();
+                                        // Clear pending notifications and mark messages as read when switching to Messages tab
+                                        if app.active_tab == Tab::Messages && prev_tab != Tab::Messages {
+                                            let mut pending = app.pending_notifications.lock().unwrap();
+                                            *pending = 0;
+                                            // Mark all messages as read when entering Messages tab
+                                            let mut messages = app.messages.lock().unwrap();
+                                            for msg in messages.iter_mut() {
+                                                msg.read = true;
+                                            }
+                                        }
                                         // Exit form mode when leaving Create New Order tab
                                         if app.active_tab != Tab::CreateNewOrder {
                                             app.mode = UiMode::Normal;
@@ -238,7 +287,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Switch to YES button (left side)
                                         take_state.selected_button = true;
                                     }
-                                    UiMode::NewMessageNotification(_) => {
+                                    UiMode::NewMessageNotification(_, _, _) => {
                                         // No action in notification mode
                                     }
                                     _ => {}
@@ -247,7 +296,18 @@ async fn main() -> Result<(), anyhow::Error> {
                             KeyCode::Right => {
                                 match &mut app.mode {
                                     UiMode::Normal => {
+                                        let prev_tab = app.active_tab;
                                         app.active_tab = app.active_tab.next();
+                                        // Clear pending notifications and mark messages as read when switching to Messages tab
+                                        if app.active_tab == Tab::Messages && prev_tab != Tab::Messages {
+                                            let mut pending = app.pending_notifications.lock().unwrap();
+                                            *pending = 0;
+                                            // Mark all messages as read when entering Messages tab
+                                            let mut messages = app.messages.lock().unwrap();
+                                            for msg in messages.iter_mut() {
+                                                msg.read = true;
+                                            }
+                                        }
                                         // Auto-initialize form when switching to Create New Order tab
                                         if app.active_tab == Tab::CreateNewOrder {
                                             let form = FormState {
@@ -266,7 +326,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         // Switch to NO button (right side)
                                         take_state.selected_button = false;
                                     }
-                                    UiMode::NewMessageNotification(_) => {
+                                    UiMode::NewMessageNotification(_, _, _) => {
                                         // No action in notification mode
                                     }
                                     _ => {}
@@ -281,9 +341,14 @@ async fn main() -> Result<(), anyhow::Error> {
                                                 app.selected_order_idx -= 1;
                                             }
                                         } else if app.active_tab == Tab::Messages {
-                                            let messages_len = app.messages.lock().unwrap().len();
+                                            let mut messages = app.messages.lock().unwrap();
+                                            let messages_len = messages.len();
                                             if messages_len > 0 && app.selected_message_idx > 0 {
                                                 app.selected_message_idx -= 1;
+                                                // Mark selected message as read
+                                                if let Some(msg) = messages.get_mut(app.selected_message_idx) {
+                                                    msg.read = true;
+                                                }
                                             }
                                         }
                                     }
@@ -311,7 +376,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
                                     }
-                                    UiMode::NewMessageNotification(_) => {
+                                    UiMode::NewMessageNotification(_, _, _) => {
                                         // No navigation in notification mode
                                     }
                                 }
@@ -325,9 +390,14 @@ async fn main() -> Result<(), anyhow::Error> {
                                                 app.selected_order_idx += 1;
                                             }
                                         } else if app.active_tab == Tab::Messages {
-                                            let messages_len = app.messages.lock().unwrap().len();
+                                            let mut messages = app.messages.lock().unwrap();
+                                            let messages_len = messages.len();
                                             if messages_len > 0 && app.selected_message_idx < messages_len.saturating_sub(1) {
                                                 app.selected_message_idx += 1;
+                                                // Mark selected message as read
+                                                if let Some(msg) = messages.get_mut(app.selected_message_idx) {
+                                                    msg.read = true;
+                                                }
                                             }
                                         }
                                     }
@@ -355,7 +425,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::OrderResult(_) => {
                                         // No navigation in result mode
                                     }
-                                    UiMode::NewMessageNotification(_) => {
+                                    UiMode::NewMessageNotification(_, _, _) => {
                                         // No navigation in notification mode
                                     }
                                 }
@@ -480,10 +550,40 @@ async fn main() -> Result<(), anyhow::Error> {
                                         app.mode = UiMode::Normal;
                                         app.active_tab = Tab::Orders;
                                     }
-                                    UiMode::NewMessageNotification(_) => {
-                                        // Close notification, switch to Messages tab
-                                        app.mode = UiMode::Normal;
-                                        app.active_tab = Tab::Messages;
+                                    UiMode::NewMessageNotification(ref _notification, action, ref mut invoice_state) => {
+                                        match action {
+                                            mostro_core::prelude::Action::AddInvoice => {
+                                                // For AddInvoice, Enter submits the invoice
+                                                if !invoice_state.invoice_input.trim().is_empty() {
+                                                    // TODO: Send invoice to Mostro
+                                                    // For now, just close and switch to Messages tab
+                                                    log::info!("Invoice submitted: {}", invoice_state.invoice_input);
+                                                    app.mode = UiMode::Normal;
+                                                    app.active_tab = Tab::Messages;
+                                                    // Clear pending notifications when viewing messages
+                                                    let mut pending = app.pending_notifications.lock().unwrap();
+                                                    *pending = 0;
+                                                    // Mark all messages as read when entering Messages tab via notification
+                                                    let mut messages = app.messages.lock().unwrap();
+                                                    for msg in messages.iter_mut() {
+                                                        msg.read = true;
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                // For PayInvoice and others, Enter just closes notification
+                                                app.mode = UiMode::Normal;
+                                                app.active_tab = Tab::Messages;
+                                                // Clear pending notifications when viewing messages
+                                                let mut pending = app.pending_notifications.lock().unwrap();
+                                                *pending = 0;
+                                                // Mark all messages as read when entering Messages tab via notification
+                                                let mut messages = app.messages.lock().unwrap();
+                                                for msg in messages.iter_mut() {
+                                                    msg.read = true;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -511,7 +611,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         app.mode = UiMode::Normal;
                                         app.active_tab = Tab::Orders;
                                     }
-                                    UiMode::NewMessageNotification(_) => {
+                                    UiMode::NewMessageNotification(_, _, _) => {
                                         // Dismiss notification
                                         app.mode = UiMode::Normal;
                                     }
@@ -653,6 +753,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                             validate_range_amount(take_state);
                                         }
                                     }
+                                } else if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                                    // Allow typing in invoice input field for AddInvoice notifications
+                                    if invoice_state.focused {
+                                        invoice_state.invoice_input.push(c);
+                                    }
                                 }
                             }
                             KeyCode::Backspace => {
@@ -679,6 +784,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                         take_state.amount_input.pop();
                                         // Validate after deletion
                                         validate_range_amount(take_state);
+                                    }
+                                } else if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                                    // Allow backspace in invoice input field
+                                    if invoice_state.focused {
+                                        invoice_state.invoice_input.pop();
                                     }
                                 }
                             }

@@ -87,7 +87,7 @@ pub enum UiMode {
     WaitingForMostro(FormState),                 // Waiting for Mostro response (order creation)
     WaitingTakeOrder(TakeOrderState),            // Waiting for Mostro response (taking order)
     OrderResult(OrderResult),                    // Show order result (success or error)
-    NewMessageNotification(MessageNotification), // Popup for new message
+    NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +140,9 @@ pub struct OrderMessage {
     pub sender: PublicKey,
     pub order_id: Option<uuid::Uuid>,
     pub trade_index: i64,
+    pub sat_amount: Option<i64>,
+    pub buyer_invoice: Option<String>,
+    pub read: bool, // Whether the message has been read
 }
 
 /// Notification for a new message
@@ -148,6 +151,16 @@ pub struct MessageNotification {
     pub order_id: Option<uuid::Uuid>,
     pub message_preview: String,
     pub timestamp: u64,
+    pub action: Action,
+    pub sat_amount: Option<i64>,
+    pub buyer_invoice: Option<String>,
+}
+
+/// State for handling invoice input in AddInvoice notifications
+#[derive(Clone, Debug)]
+pub struct InvoiceInputState {
+    pub invoice_input: String,
+    pub focused: bool,
 }
 
 pub struct AppState {
@@ -157,6 +170,7 @@ pub struct AppState {
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
     pub selected_message_idx: usize, // Selected message in Messages tab
+    pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
 }
 
 impl Default for AppState {
@@ -168,6 +182,7 @@ impl Default for AppState {
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
             selected_message_idx: 0,
+            pending_notifications: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -256,7 +271,8 @@ pub fn ui_draw(
 
     // Bottom status bar
     if let Some(line) = status_line {
-        status::render_status_bar(f, chunks[2], line);
+        let pending_count = app.pending_notifications.lock().unwrap().clone();
+        status::render_status_bar(f, chunks[2], line, pending_count);
     }
 
     // Confirmation popup overlay
@@ -285,7 +301,7 @@ pub fn ui_draw(
     }
 
     // New message notification popup overlay
-    if let UiMode::NewMessageNotification(notification) = &app.mode {
-        tab_content::render_message_notification(f, notification);
+    if let UiMode::NewMessageNotification(notification, action, invoice_state) = &app.mode {
+        tab_content::render_message_notification(f, notification, action.clone(), invoice_state);
     }
 }

@@ -342,19 +342,50 @@ pub async fn listen_for_order_messages(
             for (message, timestamp, sender) in parsed_messages {
                 // Only add if it's a new message
                 if !existing_timestamps.contains(&timestamp) {
+                    let inner_kind = message.get_inner_message_kind();
+                    let action = inner_kind.action.clone();
+                    
+                    // Extract invoice and sat_amount from payload based on action type
+                    // PayInvoice: PaymentRequest payload contains invoice
+                    // AddInvoice: Order payload contains sat amount
+                    let (sat_amount, buyer_invoice) = match &action {
+                        Action::PayInvoice => {
+                            // For PayInvoice, extract invoice from PaymentRequest payload
+                            match &inner_kind.payload {
+                                Some(Payload::PaymentRequest(_, invoice, _)) => {
+                                    (None, Some(invoice.clone()))
+                                }
+                                _ => (None, None),
+                            }
+                        }
+                        Action::AddInvoice => {
+                            // For AddInvoice, extract sat amount from Order payload
+                            match &inner_kind.payload {
+                                Some(Payload::Order(order)) => {
+                                    (Some(order.amount), None)
+                                }
+                                _ => (None, None),
+                            }
+                        }
+                        _ => (None, None),
+                    };
+                    
                     let order_message = crate::ui::OrderMessage {
                         message: message.clone(),
                         timestamp,
                         sender,
                         order_id: Some(*order_id),
                         trade_index: *trade_index,
+                        read: false, // New messages are unread by default
+                        sat_amount,
+                        buyer_invoice: buyer_invoice.clone(),
                     };
 
                     // Add to messages list
                     messages_lock.push(order_message.clone());
 
                     // Create notification
-                    let action_str = match message.get_inner_message_kind().action {
+                    let action_str = match &action {
                         mostro_core::prelude::Action::AddInvoice => "Invoice Request",
                         mostro_core::prelude::Action::PayInvoice => "Payment Request",
                         mostro_core::prelude::Action::FiatSent => "Fiat Sent",
@@ -370,6 +401,9 @@ pub async fn listen_for_order_messages(
                         order_id: Some(*order_id),
                         message_preview: action_str.to_string(),
                         timestamp,
+                        action,
+                        sat_amount,
+                        buyer_invoice,
                     };
 
                     // Send notification (ignore errors if channel is closed)
