@@ -9,6 +9,7 @@ use ratatui::style::{Color, Style};
 pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
+pub mod key_handler;
 pub mod order_confirm;
 pub mod order_form;
 pub mod order_result;
@@ -82,11 +83,11 @@ impl Tab {
 pub enum UiMode {
     Normal,
     CreatingOrder(FormState),
-    ConfirmingOrder(FormState),                  // Confirmation popup
-    TakingOrder(TakeOrderState),                 // Taking an order from the list
-    WaitingForMostro(FormState),                 // Waiting for Mostro response (order creation)
-    WaitingTakeOrder(TakeOrderState),            // Waiting for Mostro response (taking order)
-    OrderResult(OrderResult),                    // Show order result (success or error)
+    ConfirmingOrder(FormState),       // Confirmation popup
+    TakingOrder(TakeOrderState),      // Taking an order from the list
+    WaitingForMostro(FormState),      // Waiting for Mostro response (order creation)
+    WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)
+    OrderResult(OrderResult),         // Show order result (success or error)
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
 }
 
@@ -161,6 +162,7 @@ pub struct MessageNotification {
 pub struct InvoiceInputState {
     pub invoice_input: String,
     pub focused: bool,
+    pub just_pasted: bool, // Flag to ignore Enter immediately after paste
 }
 
 pub struct AppState {
@@ -271,7 +273,7 @@ pub fn ui_draw(
 
     // Bottom status bar
     if let Some(line) = status_line {
-        let pending_count = app.pending_notifications.lock().unwrap().clone();
+        let pending_count = *app.pending_notifications.lock().unwrap();
         status::render_status_bar(f, chunks[2], line, pending_count);
     }
 

@@ -5,10 +5,7 @@ pub mod ui;
 pub mod util;
 
 use crate::settings::{init_settings, Settings};
-use crate::util::{
-    fetch_events_list, listen_for_order_messages, send_new_order, take_order, Event as UtilEvent,
-    ListKind,
-};
+use crate::util::{fetch_events_list, listen_for_order_messages, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
 use mostro_core::prelude::Status;
 
@@ -22,7 +19,7 @@ use crossterm::terminal::{
 };
 use crossterm::{
     self,
-    event::{Event, KeyCode, KeyEvent},
+    event::{Event, KeyEvent},
 };
 use fern::Dispatch;
 use futures::StreamExt;
@@ -36,7 +33,7 @@ use tokio::time::{interval, interval_at, Duration, Instant};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
+use crate::ui::{AppState, TakeOrderState, UiMode};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -225,7 +222,8 @@ async fn main() -> Result<(), anyhow::Error> {
                             // Show popup immediately for critical actions
                             let invoice_state = crate::ui::InvoiceInputState {
                                 invoice_input: String::new(),
-                                focused: true, // Focus input field for AddInvoice
+                                focused: true,
+                                just_pasted: false,
                             };
                             let action = notification.action.clone();
                             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
@@ -239,560 +237,55 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             maybe_event = events.next() => {
+                // Handle errors in event stream
+                let event = match maybe_event {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => {
+                        log::error!("Error reading event: {}", e);
+                        continue;
+                    }
+                    None => {
+                        // Event stream ended, exit gracefully
+                        break;
+                    }
+                };
+
                 // Handle paste events (bracketed paste mode)
-                if let Some(Ok(Event::Paste(pasted_text))) = maybe_event {
+                if let Event::Paste(pasted_text) = event {
                     if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
-                        // Handle paste in AddInvoice notification input field
                         if invoice_state.focused {
-                            invoice_state.invoice_input.push_str(&pasted_text);
+                            // Filter out control characters (especially newlines) that could trigger unwanted actions
+                            let filtered_text: String = pasted_text
+                                .chars()
+                                .filter(|c| !c.is_control() || *c == '\t')
+                                .collect();
+                            invoice_state.invoice_input.push_str(&filtered_text);
+                            // Set flag to ignore Enter key immediately after paste
+                            invoice_state.just_pasted = true;
                         }
                     }
                     continue;
                 }
-                
-                if let Some(Ok(Event::Key(KeyEvent { code, kind: crossterm::event::KeyEventKind::Press, modifiers, .. }))) = maybe_event {
-                    // Handle Ctrl+V for paste (especially on Windows)
-                    if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && code == KeyCode::Char('v') {
-                        if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
-                            if invoice_state.focused {
-                                // On Windows, we can't easily get clipboard content programmatically in this context
-                                // The Event::Paste should handle it, but we'll skip Ctrl+V to avoid issues
-                                continue;
-                            }
+
+                // Handle key events
+                if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
+                    match crate::ui::key_handler::handle_key_event(
+                        key_event,
+                        &mut app,
+                        &orders,
+                        &pool,
+                        &client,
+                        settings,
+                        mostro_pubkey,
+                        &order_result_tx,
+                        &validate_range_amount,
+                    ) {
+                        Some(true) => continue, // Key was handled, continue loop
+                        Some(false) => break,   // Exit requested (q key)
+                        None => {
+                            // Key not handled by handler - this shouldn't happen with current implementation
+                            continue;
                         }
-                    }
-                    
-                    match code {
-                            KeyCode::Left => {
-                                match &mut app.mode {
-                                    UiMode::Normal => {
-                                        let prev_tab = app.active_tab;
-                                        app.active_tab = app.active_tab.prev();
-                                        // Clear pending notifications and mark messages as read when switching to Messages tab
-                                        if app.active_tab == Tab::Messages && prev_tab != Tab::Messages {
-                                            let mut pending = app.pending_notifications.lock().unwrap();
-                                            *pending = 0;
-                                            // Mark all messages as read when entering Messages tab
-                                            let mut messages = app.messages.lock().unwrap();
-                                            for msg in messages.iter_mut() {
-                                                msg.read = true;
-                                            }
-                                        }
-                                        // Exit form mode when leaving Create New Order tab
-                                        if app.active_tab != Tab::CreateNewOrder {
-                                            app.mode = UiMode::Normal;
-                                        }
-                                    }
-                                    UiMode::TakingOrder(ref mut take_state) => {
-                                        // Switch to YES button (left side)
-                                        take_state.selected_button = true;
-                                    }
-                                    UiMode::NewMessageNotification(_, _, _) => {
-                                        // No action in notification mode
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Right => {
-                                match &mut app.mode {
-                                    UiMode::Normal => {
-                                        let prev_tab = app.active_tab;
-                                        app.active_tab = app.active_tab.next();
-                                        // Clear pending notifications and mark messages as read when switching to Messages tab
-                                        if app.active_tab == Tab::Messages && prev_tab != Tab::Messages {
-                                            let mut pending = app.pending_notifications.lock().unwrap();
-                                            *pending = 0;
-                                            // Mark all messages as read when entering Messages tab
-                                            let mut messages = app.messages.lock().unwrap();
-                                            for msg in messages.iter_mut() {
-                                                msg.read = true;
-                                            }
-                                        }
-                                        // Auto-initialize form when switching to Create New Order tab
-                                        if app.active_tab == Tab::CreateNewOrder {
-                                            let form = FormState {
-                                                kind: "buy".to_string(),
-                                                fiat_code: "USD".to_string(),
-                                                amount: "0".to_string(),
-                                                premium: "0".to_string(),
-                                                expiration_days: "1".to_string(),
-                                                focused: 1,
-                                                ..Default::default()
-                                            };
-                                            app.mode = UiMode::CreatingOrder(form);
-                                        }
-                                    }
-                                    UiMode::TakingOrder(ref mut take_state) => {
-                                        // Switch to NO button (right side)
-                                        take_state.selected_button = false;
-                                    }
-                                    UiMode::NewMessageNotification(_, _, _) => {
-                                        // No action in notification mode
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Up => {
-                                match &mut app.mode {
-                                    UiMode::Normal => {
-                                        if app.active_tab == Tab::Orders {
-                                            let orders_len = orders.lock().unwrap().len();
-                                            if orders_len > 0 && app.selected_order_idx > 0 {
-                                                app.selected_order_idx -= 1;
-                                            }
-                                        } else if app.active_tab == Tab::Messages {
-                                            let mut messages = app.messages.lock().unwrap();
-                                            let messages_len = messages.len();
-                                            if messages_len > 0 && app.selected_message_idx > 0 {
-                                                app.selected_message_idx -= 1;
-                                                // Mark selected message as read
-                                                if let Some(msg) = messages.get_mut(app.selected_message_idx) {
-                                                    msg.read = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    UiMode::CreatingOrder(form) => {
-                                        if form.focused > 0 {
-                                            form.focused -= 1;
-                                            // Skip field 4 if not using range (go from 5 to 3)
-                                            if form.focused == 4 && !form.use_range {
-                                                form.focused = 3;
-                                            }
-                                        }
-                                    }
-                                    UiMode::ConfirmingOrder(_) => {
-                                        // No navigation in confirmation mode
-                                    }
-                                    UiMode::TakingOrder(_) => {
-                                        // No navigation in take order mode
-                                    }
-                                    UiMode::WaitingForMostro(_) => {
-                                        // No navigation in waiting mode
-                                    }
-                                    UiMode::WaitingTakeOrder(_) => {
-                                        // No navigation in waiting take order mode
-                                    }
-                                    UiMode::OrderResult(_) => {
-                                        // No navigation in result mode
-                                    }
-                                    UiMode::NewMessageNotification(_, _, _) => {
-                                        // No navigation in notification mode
-                                    }
-                                }
-                            }
-                            KeyCode::Down => {
-                                match &mut app.mode {
-                                    UiMode::Normal => {
-                                        if app.active_tab == Tab::Orders {
-                                            let orders_len = orders.lock().unwrap().len();
-                                            if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
-                                                app.selected_order_idx += 1;
-                                            }
-                                        } else if app.active_tab == Tab::Messages {
-                                            let mut messages = app.messages.lock().unwrap();
-                                            let messages_len = messages.len();
-                                            if messages_len > 0 && app.selected_message_idx < messages_len.saturating_sub(1) {
-                                                app.selected_message_idx += 1;
-                                                // Mark selected message as read
-                                                if let Some(msg) = messages.get_mut(app.selected_message_idx) {
-                                                    msg.read = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    UiMode::CreatingOrder(form) => {
-                                        if form.focused < 8 {
-                                            form.focused += 1;
-                                            // Skip field 4 if not using range (go from 3 to 5)
-                                            if form.focused == 4 && !form.use_range {
-                                                form.focused = 5;
-                                            }
-                                        }
-                                    }
-                                    UiMode::ConfirmingOrder(_) => {
-                                        // No navigation in confirmation mode
-                                    }
-                                    UiMode::TakingOrder(_) => {
-                                        // No navigation in take order mode
-                                    }
-                                    UiMode::WaitingForMostro(_) => {
-                                        // No navigation in waiting mode
-                                    }
-                                    UiMode::WaitingTakeOrder(_) => {
-                                        // No navigation in waiting take order mode
-                                    }
-                                    UiMode::OrderResult(_) => {
-                                        // No navigation in result mode
-                                    }
-                                    UiMode::NewMessageNotification(_, _, _) => {
-                                        // No navigation in notification mode
-                                    }
-                                }
-                            }
-                            KeyCode::Tab => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    form.focused = (form.focused + 1) % 9;
-                                    // Skip field 4 if not using range
-                                    if form.focused == 4 && !form.use_range {
-                                        form.focused = 5;
-                                    }
-                                }
-                            }
-                            KeyCode::BackTab => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    form.focused = if form.focused == 0 { 8 } else { form.focused - 1 };
-                                    // Skip field 4 if not using range
-                                    if form.focused == 4 && !form.use_range {
-                                        form.focused = 3;
-                                    }
-                                }
-                            }
-                            KeyCode::Enter => {
-                                match &mut app.mode {
-                                    UiMode::Normal => {
-                                        // Show take order popup when Enter is pressed in Orders tab
-                                        if app.active_tab == Tab::Orders {
-                                            let orders_lock = orders.lock().unwrap();
-                                            if let Some(order) = orders_lock.get(app.selected_order_idx) {
-                                                let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
-                                                let take_state = TakeOrderState {
-                                                    order: order.clone(),
-                                                    amount_input: String::new(),
-                                                    is_range_order,
-                                                    validation_error: None,
-                                                    selected_button: true, // Default to YES
-                                                };
-                                                app.mode = UiMode::TakingOrder(take_state);
-                                            }
-                                        }
-                                    }
-                                    UiMode::CreatingOrder(form) => {
-                                        // Show confirmation popup when Enter is pressed
-                                        if app.active_tab == Tab::CreateNewOrder {
-                                            app.mode = UiMode::ConfirmingOrder(form.clone());
-                                        }
-                                    }
-                                    UiMode::ConfirmingOrder(_) => {
-                                        // Enter acts as Yes in confirmation
-                                        // This will be handled by 'y' key
-                                    }
-                                    UiMode::TakingOrder(ref take_state) => {
-                                        // Enter confirms the selected button
-                                        if take_state.selected_button {
-                                            // YES selected - check validation and proceed
-                                            if take_state.is_range_order {
-                                                if take_state.amount_input.is_empty() {
-                                                    // Can't proceed without amount
-                                                    continue;
-                                                }
-                                                if take_state.validation_error.is_some() {
-                                                    // Can't proceed with invalid amount
-                                                    continue;
-                                                }
-                                            }
-                                            // Proceed with taking the order
-                                            let take_state_clone = take_state.clone();
-                                            app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
-
-                                            // Parse amount if it's a range order
-                                            let amount = if take_state_clone.is_range_order {
-                                                take_state_clone.amount_input.trim().parse::<i64>().ok()
-                                            } else {
-                                                None
-                                            };
-
-                                            // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-                                            // TODO: Add invoice input for buy orders
-                                            let invoice = None;
-
-                                            // Spawn async task to take order
-                                            let pool_clone = pool.clone();
-                                            let client_clone = client.clone();
-                                            let settings_clone = settings;
-                                            let mostro_pubkey_clone = mostro_pubkey;
-                                            let result_tx = order_result_tx.clone();
-
-                                            tokio::spawn(async move {
-                                                match take_order(
-                                                    &pool_clone,
-                                                    &client_clone,
-                                                    settings_clone,
-                                                    mostro_pubkey_clone,
-                                                    &take_state_clone.order,
-                                                    amount,
-                                                    invoice,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(result) => {
-                                                        let _ = result_tx.send(result);
-                                                    }
-                                                    Err(e) => {
-                                                        log::error!("Failed to take order: {}", e);
-                                                        let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                                                    }
-                                                }
-                                            });
-                                        } else {
-                                            // NO selected - cancel
-                                            app.mode = UiMode::Normal;
-                                        }
-                                    }
-                                    UiMode::WaitingForMostro(_) => {
-                                        // No action while waiting
-                                    }
-                                    UiMode::WaitingTakeOrder(_) => {
-                                        // No action while waiting
-                                    }
-                                    UiMode::OrderResult(_) => {
-                                        // Close result popup, return to Orders tab
-                                        app.mode = UiMode::Normal;
-                                        app.active_tab = Tab::Orders;
-                                    }
-                                    UiMode::NewMessageNotification(ref _notification, action, ref mut invoice_state) => {
-                                        match action {
-                                            mostro_core::prelude::Action::AddInvoice => {
-                                                // For AddInvoice, Enter submits the invoice
-                                                if !invoice_state.invoice_input.trim().is_empty() {
-                                                    // TODO: Send invoice to Mostro
-                                                    // For now, just close and switch to Messages tab
-                                                    log::info!("Invoice submitted: {}", invoice_state.invoice_input);
-                                                    app.mode = UiMode::Normal;
-                                                    app.active_tab = Tab::Messages;
-                                                    // Clear pending notifications when viewing messages
-                                                    let mut pending = app.pending_notifications.lock().unwrap();
-                                                    *pending = 0;
-                                                    // Mark all messages as read when entering Messages tab via notification
-                                                    let mut messages = app.messages.lock().unwrap();
-                                                    for msg in messages.iter_mut() {
-                                                        msg.read = true;
-                                                    }
-                                                }
-                                            }
-                                            _ => {
-                                                // For PayInvoice and others, Enter just closes notification
-                                                app.mode = UiMode::Normal;
-                                                app.active_tab = Tab::Messages;
-                                                // Clear pending notifications when viewing messages
-                                                let mut pending = app.pending_notifications.lock().unwrap();
-                                                *pending = 0;
-                                                // Mark all messages as read when entering Messages tab via notification
-                                                let mut messages = app.messages.lock().unwrap();
-                                                for msg in messages.iter_mut() {
-                                                    msg.read = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            KeyCode::Esc => {
-                                match &mut app.mode {
-                                    UiMode::CreatingOrder(_) => {
-                                        app.mode = UiMode::Normal;
-                                    }
-                                    UiMode::ConfirmingOrder(form) => {
-                                        // Cancel confirmation, go back to form
-                                        app.mode = UiMode::CreatingOrder(form.clone());
-                                    }
-                                    UiMode::TakingOrder(_) => {
-                                        // Cancel taking order, return to normal mode
-                                        app.mode = UiMode::Normal;
-                                    }
-                                    UiMode::WaitingForMostro(_) => {
-                                        // Can't cancel while waiting
-                                    }
-                                    UiMode::WaitingTakeOrder(_) => {
-                                        // Can't cancel while waiting
-                                    }
-                                    UiMode::OrderResult(_) => {
-                                        // Close result popup, return to Orders tab
-                                        app.mode = UiMode::Normal;
-                                        app.active_tab = Tab::Orders;
-                                    }
-                                    UiMode::NewMessageNotification(_, _, _) => {
-                                        // Dismiss notification
-                                        app.mode = UiMode::Normal;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char(' ') => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    if form.focused == 0 {
-                                        // Toggle buy/sell
-                                        form.kind = if form.kind.to_lowercase() == "buy" {
-                                            "sell".to_string()
-                                        } else {
-                                            "buy".to_string()
-                                        };
-                                    } else if form.focused == 3 {
-                                        // Toggle range mode
-                                        form.use_range = !form.use_range;
-                                    }
-                                }
-                            }
-                            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                if let UiMode::ConfirmingOrder(form) = &app.mode {
-                                    // User confirmed, send the order
-                                    let form_clone = form.clone();
-                                    app.mode = UiMode::WaitingForMostro(form_clone.clone());
-
-                                    // Spawn async task to send order
-                                    let pool_clone = pool.clone();
-                                    let client_clone = client.clone();
-                                    let settings_clone = settings;
-                                    let mostro_pubkey_clone = mostro_pubkey;
-                                    let result_tx = order_result_tx.clone();
-
-                                    tokio::spawn(async move {
-                                        match send_new_order(&pool_clone, &client_clone, settings_clone, mostro_pubkey_clone, &form_clone).await {
-                                            Ok(result) => {
-                                                let _ = result_tx.send(result);
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to send order: {}", e);
-                                                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                                            }
-                                        }
-                                    });
-                                } else if let UiMode::TakingOrder(ref take_state) = &app.mode {
-                                    // User confirmed taking the order (same as Enter key)
-                                    // Check validation first
-                                    if take_state.is_range_order {
-                                        if take_state.amount_input.is_empty() {
-                                            // Can't proceed without amount
-                                            continue;
-                                        }
-                                        if take_state.validation_error.is_some() {
-                                            // Can't proceed with invalid amount
-                                            continue;
-                                        }
-                                    }
-                                    // Proceed with taking the order
-                                    let take_state_clone = take_state.clone();
-                                    app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
-
-                                    // Parse amount if it's a range order
-                                    let amount = if take_state_clone.is_range_order {
-                                        take_state_clone.amount_input.trim().parse::<i64>().ok()
-                                    } else {
-                                        None
-                                    };
-
-                                    // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-                                    // TODO: Add invoice input for buy orders
-                                    let invoice = None;
-
-                                    // Spawn async task to take order
-                                    let pool_clone = pool.clone();
-                                    let client_clone = client.clone();
-                                    let settings_clone = settings;
-                                    let mostro_pubkey_clone = mostro_pubkey;
-                                    let result_tx = order_result_tx.clone();
-
-                                    tokio::spawn(async move {
-                                        match take_order(
-                                            &pool_clone,
-                                            &client_clone,
-                                            settings_clone,
-                                            mostro_pubkey_clone,
-                                            &take_state_clone.order,
-                                            amount,
-                                            invoice,
-                                        )
-                                        .await
-                                        {
-                                            Ok(result) => {
-                                                let _ = result_tx.send(result);
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to take order: {}", e);
-                                                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                                            }
-                                        }
-                                    });
-                                }
-                            }
-                            KeyCode::Char('n') | KeyCode::Char('N') => {
-                                if let UiMode::ConfirmingOrder(form) = &app.mode {
-                                    // User cancelled, go back to form
-                                    app.mode = UiMode::CreatingOrder(form.clone());
-                                } else if let UiMode::TakingOrder(_) = &app.mode {
-                                    // User cancelled taking the order
-                                    app.mode = UiMode::Normal;
-                                }
-                            }
-                            KeyCode::Char(c) => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    if form.focused == 0 {
-                                        // ignore typing on toggle field
-                                    } else {
-                                        let target = match form.focused {
-                                            1 => &mut form.fiat_code,
-                                            2 => &mut form.amount,
-                                            3 => &mut form.fiat_amount,
-                                            4 if form.use_range => &mut form.fiat_amount_max,
-                                            5 => &mut form.payment_method,
-                                            6 => &mut form.premium,
-                                            7 => &mut form.invoice,
-                                            8 => &mut form.expiration_days,
-                                            _ => unreachable!(),
-                                        };
-                                        target.push(c);
-                                    }
-                                } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
-                                    // Allow typing in the amount input field for range orders
-                                    if take_state.is_range_order {
-                                        // Only allow digits and decimal point
-                                        if c.is_ascii_digit() || c == '.' {
-                                            take_state.amount_input.push(c);
-                                            // Validate after typing
-                                            validate_range_amount(take_state);
-                                        }
-                                    }
-                                } else if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
-                                    // Allow typing in invoice input field for AddInvoice notifications
-                                    if invoice_state.focused {
-                                        invoice_state.invoice_input.push(c);
-                                    }
-                                }
-                            }
-                            KeyCode::Backspace => {
-                                if let UiMode::CreatingOrder(ref mut form) = app.mode {
-                                    if form.focused == 0 {
-                                        // ignore
-                                    } else {
-                                        let target = match form.focused {
-                                            1 => &mut form.fiat_code,
-                                            2 => &mut form.amount,
-                                            3 => &mut form.fiat_amount,
-                                            4 if form.use_range => &mut form.fiat_amount_max,
-                                            5 => &mut form.payment_method,
-                                            6 => &mut form.premium,
-                                            7 => &mut form.invoice,
-                                            8 => &mut form.expiration_days,
-                                            _ => unreachable!(),
-                                        };
-                                        target.pop();
-                                    }
-                                } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
-                                    // Allow backspace in the amount input field
-                                    if take_state.is_range_order {
-                                        take_state.amount_input.pop();
-                                        // Validate after deletion
-                                        validate_range_amount(take_state);
-                                    }
-                                } else if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
-                                    // Allow backspace in invoice input field
-                                    if invoice_state.focused {
-                                        invoice_state.invoice_input.pop();
-                                    }
-                                }
-                            }
-                            _ => {}
                     }
                 }
             },

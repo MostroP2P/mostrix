@@ -110,17 +110,17 @@ pub fn render_message_notification(
     let area = f.area();
     // Different widths based on action type
     let popup_width = match action {
-        mostro_core::prelude::Action::AddInvoice => 80, // Wider for invoice input
+        mostro_core::prelude::Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
         _ => 70,
     };
-    
+
     // Different heights based on action type
     let popup_height = match action {
-        mostro_core::prelude::Action::AddInvoice => 15, // More space for input field and help text
-        mostro_core::prelude::Action::PayInvoice => 10,  // Need space for invoice display
+        mostro_core::prelude::Action::AddInvoice => 18, // More height for multi-line invoice display
+        mostro_core::prelude::Action::PayInvoice => 10, // Need space for invoice display
         _ => 8,
     };
-    
+
     let popup_x = area.x + (area.width - popup_width) / 2;
     let popup_y = area.y + (area.height - popup_height) / 2;
     let popup = Rect {
@@ -161,7 +161,7 @@ pub fn render_message_notification(
                     Constraint::Length(1), // message preview
                     Constraint::Length(1), // spacer
                     Constraint::Length(1), // label
-                    Constraint::Length(3), // invoice input field (more space)
+                    Constraint::Length(6), // invoice input field (more lines for full invoice display)
                     Constraint::Length(1), // spacer
                     Constraint::Length(1), // help text (paste instructions)
                     Constraint::Length(1), // help text (esc instructions)
@@ -194,31 +194,20 @@ pub fn render_message_notification(
                 chunks[2],
             );
 
+            let amt: i64 = notification.sat_amount.unwrap_or_default();
+
             // Invoice input field label
-            let input_label = "Paste your Lightning invoice:";
+            let input_label = format!("Paste your {} sats Lightning invoice:", amt);
             f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(input_label, Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
-                ]))
+                Paragraph::new(Line::from(vec![Span::styled(
+                    input_label,
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                )]))
                 .alignment(ratatui::layout::Alignment::Center),
                 chunks[4],
             );
-
-            // Invoice input field area (larger, more visible)
-            let input_display = if invoice_state.invoice_input.is_empty() {
-                "lnbc..."
-            } else {
-                &invoice_state.invoice_input
-            };
-            
-            let input_style = if invoice_state.focused {
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
 
             // Use the full chunks[5] area for the input field
             let input_area = Rect {
@@ -228,20 +217,35 @@ pub fn render_message_notification(
                 height: chunks[5].height,
             };
 
+            // Invoice input field area (larger, more visible)
+            // Show full invoice with text wrapping
+            let input_display = if invoice_state.invoice_input.is_empty() {
+                "lnbc...".to_string()
+            } else {
+                invoice_state.invoice_input.clone()
+            };
+
+            let input_style = if invoice_state.focused {
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            // Use Paragraph with wrapping to show full invoice across multiple lines
             f.render_widget(
-                Paragraph::new(Line::from(vec![Span::styled(
-                    input_display,
-                    input_style,
-                )]))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .style(if invoice_state.focused {
+                Paragraph::new(input_display)
+                    .style(input_style)
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(Block::default().borders(Borders::ALL).style(
+                        if invoice_state.focused {
                             Style::default().fg(PRIMARY_COLOR)
                         } else {
                             Style::default()
-                        }),
-                ),
+                        },
+                    )),
                 input_area,
             );
 
@@ -250,7 +254,7 @@ pub fn render_message_notification(
                 Paragraph::new(Line::from(vec![
                     Span::styled("Paste invoice (", Style::default()),
                     Span::styled(
-                        "Ctrl+V",
+                        "Ctrl+Shift+V",
                         Style::default()
                             .fg(PRIMARY_COLOR)
                             .add_modifier(Modifier::BOLD),
@@ -267,7 +271,7 @@ pub fn render_message_notification(
                 .alignment(ratatui::layout::Alignment::Center),
                 chunks[7],
             );
-            
+
             // Additional help line
             f.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -333,9 +337,10 @@ pub fn render_message_notification(
                 };
 
                 f.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(amount_text, Style::default().fg(PRIMARY_COLOR)),
-                    ])),
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        amount_text,
+                        Style::default().fg(PRIMARY_COLOR),
+                    )])),
                     chunks[4],
                 );
 
