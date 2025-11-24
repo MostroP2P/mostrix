@@ -97,7 +97,7 @@ impl User {
 }
 
 /// Struct representing a Mostro order.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct Order {
     pub id: Option<String>,
     pub kind: Option<String>,

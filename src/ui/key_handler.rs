@@ -264,7 +264,7 @@ pub fn handle_enter_key(
             app.active_tab = Tab::Orders;
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
-            handle_enter_message_notification(app,pool, &action, &mut invoice_state, notification.order_id);
+            handle_enter_message_notification(app,pool, &action, &mut invoice_state, notification.order_id).await;
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
         }
     }
@@ -368,7 +368,7 @@ fn handle_enter_taking_order(
     }
 }
 
-fn handle_enter_message_notification(
+async fn handle_enter_message_notification(
     app: &mut AppState,
     pool: &sqlx::SqlitePool,
     action: &mostro_core::prelude::Action,

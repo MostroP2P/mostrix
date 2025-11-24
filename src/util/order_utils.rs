@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::models::User;
+use crate::models::{Order, User};
 use crate::settings::Settings;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
@@ -608,7 +608,7 @@ pub async fn take_order(
 
 pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::SqlitePool) -> Result<()> {
     // Get order from order id
-    let order = Order::by_id(&ctx.pool, &order_id.to_string()).await?;
+    let order = Order::get_by_id(pool, &order_id.to_string()).await?;
     // Get trade keys of specific order
     let trade_keys = order
         .trade_keys
