@@ -228,4 +228,22 @@ impl Order {
         .await?;
         Ok(())
     }
+
+    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
+        let order = sqlx::query_as::<_, Order>(
+            r#"
+            SELECT * FROM orders WHERE id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+
+        if order.id.is_none() {
+            return Err(anyhow::anyhow!("Order not found"));
+        }
+
+        Ok(order)
+    }
 }

@@ -2,7 +2,9 @@ use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::SmallOrder;
+use uuid::Uuid;
 use std::sync::{Arc, Mutex};
+use crate::util::order_utils::execute_add_invoice;
 
 /// Handle invoice input for AddInvoice notifications
 /// Returns true if the key was handled and should skip further processing
@@ -262,7 +264,7 @@ pub fn handle_enter_key(
             app.active_tab = Tab::Orders;
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
-            handle_enter_message_notification(app, &action, &mut invoice_state);
+            handle_enter_message_notification(app,pool, &action, &mut invoice_state, notification.order_id);
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
         }
     }
@@ -368,14 +370,19 @@ fn handle_enter_taking_order(
 
 fn handle_enter_message_notification(
     app: &mut AppState,
+    pool: &sqlx::SqlitePool,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
+    order_id: Option<Uuid>,
 ) {
     match action {
         mostro_core::prelude::Action::AddInvoice => {
             // For AddInvoice, Enter submits the invoice
             if !invoice_state.invoice_input.trim().is_empty() {
-                // TODO: Send invoice to Mostro
+                if let Some(order_id) = order_id {
+                    // Send invoice to Mostro
+                    execute_add_invoice(&order_id, &invoice_state.invoice_input, pool).await;
+                }
                 // For now, just close and switch to Messages tab
                 log::info!("Invoice submitted: {}", invoice_state.invoice_input);
                 app.active_tab = Tab::Messages;
