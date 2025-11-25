@@ -96,7 +96,6 @@ impl User {
     }
 }
 
-/// Struct representing a Mostro order.
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct Order {
     pub id: Option<String>,
@@ -106,12 +105,14 @@ pub struct Order {
     pub fiat_code: String,
     pub min_amount: Option<i64>,
     pub max_amount: Option<i64>,
-    pub is_mine: bool,
     pub fiat_amount: i64,
     pub payment_method: String,
     pub premium: i64,
-    pub buyer_trade_pubkey: Option<String>,
-    pub seller_trade_pubkey: Option<String>,
+    pub trade_keys: Option<String>,
+    pub counterparty_pubkey: Option<String>,
+    pub is_mine: Option<bool>,
+    pub buyer_invoice: Option<String>,
+    pub request_id: Option<i64>,
     pub created_at: Option<i64>,
     pub expires_at: Option<i64>,
 }
@@ -139,9 +140,11 @@ impl Order {
             fiat_amount: order.fiat_amount,
             payment_method: order.payment_method,
             premium: order.premium,
-            is_mine: true,
-            buyer_trade_pubkey: None,
-            seller_trade_pubkey: None,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            is_mine: Some(true),
+            buyer_invoice: order.buyer_invoice,
+            request_id: _request_id,
             created_at: Some(chrono::Utc::now().timestamp()),
             expires_at: order.expires_at,
         };
@@ -188,9 +191,9 @@ impl Order {
         .bind(self.fiat_amount)
         .bind(&self.payment_method)
         .bind(self.premium)
-        .bind(if self.is_mine { 1 } else { 0 })
-        .bind(&self.buyer_trade_pubkey)
-        .bind(&self.seller_trade_pubkey)
+        .bind(self.is_mine)
+        .bind(&self.trade_keys)
+        .bind(&self.counterparty_pubkey)
         .bind(self.created_at)
         .bind(self.expires_at)
         .execute(pool)
@@ -218,9 +221,9 @@ impl Order {
         .bind(self.fiat_amount)
         .bind(&self.payment_method)
         .bind(self.premium)
-        .bind(if self.is_mine { 1 } else { 0 })
-        .bind(&self.buyer_trade_pubkey)
-        .bind(&self.seller_trade_pubkey)
+        .bind(self.is_mine)
+        .bind(&self.trade_keys)
+        .bind(&self.counterparty_pubkey)
         .bind(self.created_at)
         .bind(self.expires_at)
         .bind(&self.id)

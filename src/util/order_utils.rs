@@ -1,10 +1,12 @@
 // Order-related utilities for Nostr
 use anyhow::Result;
+use lnurl::lightning_address::LightningAddress;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
+use lightning_invoice::Bolt11Invoice as Invoice;
 
 use crate::models::{Order, User};
 use crate::settings::Settings;
@@ -12,6 +14,7 @@ use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
+
 
 /// Parse order from nostr tags
 fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
@@ -605,8 +608,18 @@ pub async fn take_order(
     }
 }
 
+/// Verify if an invoice is valid
+pub fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error> {
+    let invoice = Invoice::from_str(payment_request).map_err(|_| anyhow::anyhow!("Invalid invoice"))?;
+    if invoice.is_expired() {
+        return Err(anyhow::anyhow!("Invoice expired"));
+    }
 
-pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::SqlitePool) -> Result<()> {
+    Ok(invoice)
+}
+
+
+pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::SqlitePool, client: &nostr_sdk::Client) -> Result<()> {
     // Get order from order id
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
     // Get trade keys of specific order

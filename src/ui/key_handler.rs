@@ -264,7 +264,7 @@ pub fn handle_enter_key(
             app.active_tab = Tab::Orders;
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
-            handle_enter_message_notification(app,pool, &action, &mut invoice_state, notification.order_id).await;
+            handle_enter_message_notification(app,client,pool, &action, &mut invoice_state, notification.order_id);
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
         }
     }
@@ -368,8 +368,9 @@ fn handle_enter_taking_order(
     }
 }
 
-async fn handle_enter_message_notification(
+fn handle_enter_message_notification(
     app: &mut AppState,
+    client: &nostr_sdk::Client,
     pool: &sqlx::SqlitePool,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
@@ -381,7 +382,7 @@ async fn handle_enter_message_notification(
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
                     // Send invoice to Mostro
-                    execute_add_invoice(&order_id, &invoice_state.invoice_input, pool).await;
+                    execute_add_invoice(&order_id, &invoice_state.invoice_input, pool, client).await;
                 }
                 // For now, just close and switch to Messages tab
                 log::info!("Invoice submitted: {}", invoice_state.invoice_input);
