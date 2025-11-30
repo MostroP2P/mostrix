@@ -619,7 +619,7 @@ pub fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error>
 }
 
 
-pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::SqlitePool, client: &nostr_sdk::Client) -> Result<()> {
+pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::sqlite::SqlitePool, client: &Client) -> Result<()> {
     // Get order from order id
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
     // Get trade keys of specific order

@@ -264,7 +264,7 @@ pub fn handle_enter_key(
             app.active_tab = Tab::Orders;
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
-            handle_enter_message_notification(app,client,pool, &action, &mut invoice_state, notification.order_id);
+            handle_enter_message_notification(client, pool, &action, &mut invoice_state, notification.order_id, order_result_tx);
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
         }
     }
@@ -369,45 +369,51 @@ fn handle_enter_taking_order(
 }
 
 fn handle_enter_message_notification(
-    app: &mut AppState,
     client: &nostr_sdk::Client,
     pool: &sqlx::SqlitePool,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
     order_id: Option<Uuid>,
+    order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
 ) {
     match action {
         mostro_core::prelude::Action::AddInvoice => {
             // For AddInvoice, Enter submits the invoice
+            let order_result_tx_clone = order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
                     // Send invoice to Mostro
-                    execute_add_invoice(&order_id, &invoice_state.invoice_input, pool, client).await;
-                }
-                // For now, just close and switch to Messages tab
-                log::info!("Invoice submitted: {}", invoice_state.invoice_input);
-                app.active_tab = Tab::Messages;
-                // Clear pending notifications when viewing messages
-                let mut pending = app.pending_notifications.lock().unwrap();
-                *pending = 0;
-                // Mark all messages as read when entering Messages tab via notification
-                let mut messages = app.messages.lock().unwrap();
-                for msg in messages.iter_mut() {
-                    msg.read = true;
+                    let invoice_state_clone = invoice_state.clone();
+                    let pool_clone = pool.clone();
+                    let client_clone = client.clone();
+                    tokio::spawn(async move {
+                        match execute_add_invoice(&order_id, &invoice_state_clone.invoice_input, &pool_clone, &client_clone).await {
+                            Ok(_) => {
+                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Success {
+                                    order_id: Some(order_id),
+                                    kind: None,
+                                    amount: 0,
+                                    fiat_code: "".to_string(),
+                                    fiat_amount: 0,
+                                    min_amount: None,
+                                    max_amount: None,
+                                    payment_method: "".to_string(),
+                                    premium: 0,
+                                    status: None,
+                                    trade_index: None,
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Failed to add invoice: {}", e);
+                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Error(e.to_string()));
+                            }
+                        }
+                    });
                 }
             }
         }
         _ => {
-            // For PayInvoice and others, Enter just closes notification
-            app.active_tab = Tab::Messages;
-            // Clear pending notifications when viewing messages
-            let mut pending = app.pending_notifications.lock().unwrap();
-            *pending = 0;
-            // Mark all messages as read when entering Messages tab via notification
-            let mut messages = app.messages.lock().unwrap();
-            for msg in messages.iter_mut() {
-                msg.read = true;
-            }
+            let _ = order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
         }
     }
 }
