@@ -1,10 +1,10 @@
 use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
+use crate::util::order_utils::execute_add_invoice;
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::SmallOrder;
-use uuid::Uuid;
 use std::sync::{Arc, Mutex};
-use crate::util::order_utils::execute_add_invoice;
+use uuid::Uuid;
 
 /// Handle invoice input for AddInvoice notifications
 /// Returns true if the key was handled and should skip further processing
@@ -134,6 +134,7 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::TakingOrder(_)
         | UiMode::WaitingForMostro(_)
         | UiMode::WaitingTakeOrder(_)
+        | UiMode::WaitingAddInvoice
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _) => {
             // No navigation in these modes
@@ -174,6 +175,7 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::TakingOrder(_)
         | UiMode::WaitingForMostro(_)
         | UiMode::WaitingTakeOrder(_)
+        | UiMode::WaitingAddInvoice
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _) => {
             // No navigation in these modes
@@ -255,7 +257,7 @@ pub fn handle_enter_key(
                 order_result_tx,
             );
         }
-        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) => {
+        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) | UiMode::WaitingAddInvoice => {
             // No action while waiting
             app.mode = UiMode::Normal;
         }
@@ -264,8 +266,17 @@ pub fn handle_enter_key(
             app.active_tab = Tab::Orders;
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
-            handle_enter_message_notification(client, pool, &action, &mut invoice_state, notification.order_id, order_result_tx);
-            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+            handle_enter_message_notification(
+                app,
+                client,
+                pool,
+                &action,
+                &mut invoice_state,
+                mostro_pubkey,
+                notification.order_id,
+                order_result_tx,
+            );
+            // Mode is updated inside handle_enter_message_notification
         }
     }
 }
@@ -369,10 +380,12 @@ fn handle_enter_taking_order(
 }
 
 fn handle_enter_message_notification(
+    app: &mut AppState,
     client: &nostr_sdk::Client,
     pool: &sqlx::SqlitePool,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
+    mostro_pubkey: nostr_sdk::PublicKey,
     order_id: Option<Uuid>,
     order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
 ) {
@@ -382,30 +395,43 @@ fn handle_enter_message_notification(
             let order_result_tx_clone = order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
+                    // Set waiting mode before sending invoice
+                    app.mode = UiMode::WaitingAddInvoice;
+
                     // Send invoice to Mostro
                     let invoice_state_clone = invoice_state.clone();
                     let pool_clone = pool.clone();
                     let client_clone = client.clone();
                     tokio::spawn(async move {
-                        match execute_add_invoice(&order_id, &invoice_state_clone.invoice_input, &pool_clone, &client_clone).await {
+                        match execute_add_invoice(
+                            &order_id,
+                            &invoice_state_clone.invoice_input,
+                            &pool_clone,
+                            &client_clone,
+                            mostro_pubkey,
+                        )
+                        .await
+                        {
                             Ok(_) => {
-                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Success {
-                                    order_id: Some(order_id),
-                                    kind: None,
-                                    amount: 0,
-                                    fiat_code: "".to_string(),
-                                    fiat_amount: 0,
-                                    min_amount: None,
-                                    max_amount: None,
-                                    payment_method: "".to_string(),
-                                    premium: 0,
-                                    status: None,
-                                    trade_index: None,
-                                });
+                                let _ =
+                                    order_result_tx_clone.send(crate::ui::OrderResult::Success {
+                                        order_id: Some(order_id),
+                                        kind: None,
+                                        amount: 0,
+                                        fiat_code: "".to_string(),
+                                        fiat_amount: 0,
+                                        min_amount: None,
+                                        max_amount: None,
+                                        payment_method: "".to_string(),
+                                        premium: 0,
+                                        status: None,
+                                        trade_index: None,
+                                    });
                             }
                             Err(e) => {
                                 log::error!("Failed to add invoice: {}", e);
-                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Error(e.to_string()));
+                                let _ = order_result_tx_clone
+                                    .send(crate::ui::OrderResult::Error(e.to_string()));
                             }
                         }
                     });
@@ -413,7 +439,8 @@ fn handle_enter_message_notification(
             }
         }
         _ => {
-            let _ = order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
+            let _ =
+                order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
         }
     }
 }
@@ -436,7 +463,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::Normal;
             true
         }
-        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) => {
+        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) | UiMode::WaitingAddInvoice => {
             // Can't cancel while waiting
             true
         }
@@ -695,6 +722,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
+            
             handle_enter_key(
                 app,
                 orders,

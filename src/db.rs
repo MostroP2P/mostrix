@@ -30,7 +30,7 @@ pub async fn init_db() -> Result<SqlitePool> {
         }
 
         pool = SqlitePool::connect(&db_url).await?;
-
+        
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS orders (
@@ -44,9 +44,11 @@ pub async fn init_db() -> Result<SqlitePool> {
                 fiat_amount INTEGER NOT NULL,
                 payment_method TEXT NOT NULL,
                 premium INTEGER NOT NULL,
+                trade_keys TEXT,
+                counterparty_pubkey TEXT,
                 is_mine INTEGER NOT NULL,
-                buyer_trade_pubkey TEXT,
-                seller_trade_pubkey TEXT,
+                buyer_invoice TEXT,
+                request_id INTEGER,
                 created_at INTEGER,
                 expires_at INTEGER
             );

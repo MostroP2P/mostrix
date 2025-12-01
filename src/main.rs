@@ -203,6 +203,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         UiMode::WaitingTakeOrder(_) => {
                             app.mode = UiMode::OrderResult(result);
                         }
+                        UiMode::WaitingAddInvoice => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
                         UiMode::NewMessageNotification(_, _, _) => {
                             // If we have a notification, replace it with the result
                             app.mode = UiMode::OrderResult(result);

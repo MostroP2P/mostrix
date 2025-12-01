@@ -87,6 +87,7 @@ pub enum UiMode {
     TakingOrder(TakeOrderState),      // Taking an order from the list
     WaitingForMostro(FormState),      // Waiting for Mostro response (order creation)
     WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)
+    WaitingAddInvoice,                // Waiting for Mostro response (adding invoice)
     OrderResult(OrderResult),         // Show order result (success or error)
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
 }
@@ -289,6 +290,11 @@ pub fn ui_draw(
 
     // Waiting for take order popup overlay
     if let UiMode::WaitingTakeOrder(_) = &app.mode {
+        waiting::render_waiting(f);
+    }
+
+    // Waiting for AddInvoice popup overlay
+    if let UiMode::WaitingAddInvoice = &app.mode {
         waiting::render_waiting(f);
     }
 

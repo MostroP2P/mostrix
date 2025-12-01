@@ -1,12 +1,12 @@
 // Order-related utilities for Nostr
 use anyhow::Result;
+use lightning_invoice::Bolt11Invoice as Invoice;
 use lnurl::lightning_address::LightningAddress;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
-use lightning_invoice::Bolt11Invoice as Invoice;
 
 use crate::models::{Order, User};
 use crate::settings::Settings;
@@ -14,7 +14,6 @@ use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
-
 
 /// Parse order from nostr tags
 fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
@@ -610,7 +609,8 @@ pub async fn take_order(
 
 /// Verify if an invoice is valid
 pub fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error> {
-    let invoice = Invoice::from_str(payment_request).map_err(|_| anyhow::anyhow!("Invalid invoice"))?;
+    let invoice =
+        Invoice::from_str(payment_request).map_err(|_| anyhow::anyhow!("Invalid invoice"))?;
     if invoice.is_expired() {
         return Err(anyhow::anyhow!("Invoice expired"));
     }
@@ -618,8 +618,13 @@ pub fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error>
     Ok(invoice)
 }
 
-
-pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::sqlite::SqlitePool, client: &Client) -> Result<()> {
+pub async fn execute_add_invoice(
+    order_id: &Uuid,
+    invoice: &str,
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+) -> Result<()> {
     // Get order from order id
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
     // Get trade keys of specific order
@@ -654,6 +659,9 @@ pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::sq
         payload,
     );
 
+    //
+    let identity_keys = User::get_identity_keys(pool).await?;
+
     // Serialize the message
     let message_json = add_invoice_message
         .as_json()
@@ -661,21 +669,46 @@ pub async fn execute_add_invoice(order_id: &Uuid, invoice: &str, pool: &sqlx::sq
 
     // Send the DM
     let sent_message = send_dm(
-        &ctx.client,
-        Some(&ctx.identity_keys),
+        client,
+        Some(&identity_keys),
         &order_trade_keys,
-        &ctx.mostro_pubkey,
+        &mostro_pubkey,
         message_json,
         None,
         false,
     );
 
     // Wait for the DM to be sent from mostro
-    let recv_event = wait_for_dm(ctx, Some(&order_trade_keys), sent_message).await?;
+    let recv_event = wait_for_dm(
+        client,
+        &order_trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        sent_message,
+    )
+    .await?;
 
-    // // Parse the incoming DM
-    // print_dm_events(recv_event, request_id, ctx, Some(&order_trade_keys)).await?;
+    let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
-    Ok(())
+    if let Some((response_message, _, _)) = messages.first() {
+        let inner_message = response_message.get_inner_message_kind();
+        if let Some(id) = inner_message.request_id {
+            if request_id == id {
+                match inner_message.action {
+                    Action::AddInvoice => Ok(()),
+                    _ => Err(anyhow::anyhow!(
+                        "Unexpected action: {:?}",
+                        inner_message.action
+                    )),
+                }
+            } else {
+                Err(anyhow::anyhow!("Mismatched request_id"))
+            }
+        } else {
+            Err(anyhow::anyhow!("Response with null request_id"))
+        }
+    } else {
+        Err(anyhow::anyhow!(
+            "No response received from Mostro for AddInvoice"
+        ))
+    }
 }
-

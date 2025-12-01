@@ -344,7 +344,7 @@ pub async fn listen_for_order_messages(
                 if !existing_timestamps.contains(&timestamp) {
                     let inner_kind = message.get_inner_message_kind();
                     let action = inner_kind.action.clone();
-                    
+
                     // Extract invoice and sat_amount from payload based on action type
                     // PayInvoice: PaymentRequest payload contains invoice
                     // AddInvoice: Order payload contains sat amount
@@ -361,15 +361,13 @@ pub async fn listen_for_order_messages(
                         Action::AddInvoice => {
                             // For AddInvoice, extract sat amount from Order payload
                             match &inner_kind.payload {
-                                Some(Payload::Order(order)) => {
-                                    (Some(order.amount), None)
-                                }
+                                Some(Payload::Order(order)) => (Some(order.amount), None),
                                 _ => (None, None),
                             }
                         }
                         _ => (None, None),
                     };
-                    
+
                     let order_message = crate::ui::OrderMessage {
                         message: message.clone(),
                         timestamp,
