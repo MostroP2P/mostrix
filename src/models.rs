@@ -122,9 +122,12 @@ impl Order {
     pub async fn new(
         pool: &SqlitePool,
         order: mostro_core::prelude::SmallOrder,
-        _trade_keys: &nostr_sdk::prelude::Keys,
+        trade_keys: &nostr_sdk::prelude::Keys,
         _request_id: Option<i64>,
     ) -> Result<Self> {
+        
+        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
+
         let id = match order.id {
             Some(id) => id.to_string(),
             None => uuid::Uuid::new_v4().to_string(),
@@ -140,7 +143,7 @@ impl Order {
             fiat_amount: order.fiat_amount,
             payment_method: order.payment_method,
             premium: order.premium,
-            trade_keys: None,
+            trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
             is_mine: Some(true),
             buyer_invoice: order.buyer_invoice,
@@ -177,8 +180,8 @@ impl Order {
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
             fiat_code, fiat_amount, payment_method, premium, is_mine,
-            buyer_trade_pubkey, seller_trade_pubkey, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            trade_keys, counterparty_pubkey, buyer_invoice, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -194,6 +197,7 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.buyer_invoice)
         .bind(self.created_at)
         .bind(self.expires_at)
         .execute(pool)
@@ -207,7 +211,7 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, buyer_trade_pubkey = ?, seller_trade_pubkey = ?,
+                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, buyer_invoice = ?,
                 created_at = ?, expires_at = ?
             WHERE id = ?
             "#,
@@ -224,6 +228,7 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.buyer_invoice)
         .bind(self.created_at)
         .bind(self.expires_at)
         .bind(&self.id)
