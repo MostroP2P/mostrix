@@ -225,6 +225,7 @@ fn handle_mostro_response(
         }
     } else if inner_message.action != Action::RateReceived
         && inner_message.action != Action::NewOrder
+        && inner_message.action != Action::AddInvoice
     {
         log::warn!(
             "Received response with null request_id. Expected: {}",
@@ -689,26 +690,18 @@ pub async fn execute_add_invoice(
 
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
-    if let Some((response_message, _, _)) = messages.first() {
-        let inner_message = response_message.get_inner_message_kind();
-        if let Some(id) = inner_message.request_id {
-            if request_id == id {
-                match inner_message.action {
-                    Action::AddInvoice => Ok(()),
-                    _ => Err(anyhow::anyhow!(
-                        "Unexpected action: {:?}",
-                        inner_message.action
-                    )),
-                }
-            } else {
-                Err(anyhow::anyhow!("Mismatched request_id"))
-            }
-        } else {
-            Err(anyhow::anyhow!("Response with null request_id"))
-        }
-    } else {
-        Err(anyhow::anyhow!(
+    // Handle the response
+    let Some((response_message, _, _)) = messages.first() else {
+        return Err(anyhow::anyhow!(
             "No response received from Mostro for AddInvoice"
-        ))
+        ));
+    };
+    let inner_message = handle_mostro_response(response_message, request_id)?;
+    match inner_message.action {
+        Action::AddInvoice => Ok(()),
+        _ => Err(anyhow::anyhow!(
+            "Unexpected action: {:?}",
+            inner_message.action
+        )),
     }
 }

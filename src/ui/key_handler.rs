@@ -722,7 +722,6 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            
             handle_enter_key(
                 app,
                 orders,
