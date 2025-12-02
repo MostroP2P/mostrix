@@ -125,7 +125,6 @@ impl Order {
         trade_keys: &nostr_sdk::prelude::Keys,
         _request_id: Option<i64>,
     ) -> Result<Self> {
-        
         let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
 
         let id = match order.id {
