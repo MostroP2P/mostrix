@@ -1,17 +1,18 @@
 use crate::SETTINGS;
-
 use serde::Deserialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Settings {
     pub mostro_pubkey: String,
+    pub nsec_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
     pub currencies: Vec<String>,
+    pub pow: u8,
 }
 
 /// Constructs (or copies) the configuration file and loads it
@@ -22,6 +23,8 @@ pub fn init_settings() -> &'static Settings {
         let package_name = env!("CARGO_PKG_NAME");
         let hidden_dir = home_dir.join(format!(".{package_name}"));
         let hidden_file = hidden_dir.join("settings.toml");
+
+        println!("hidden_file: {:?}", hidden_file);
 
         // Path to the settings.toml included in the repo (next to Cargo.toml)
         let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");

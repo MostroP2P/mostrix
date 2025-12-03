@@ -1,42 +1,39 @@
 pub mod db;
 pub mod models;
 pub mod settings;
+pub mod ui;
+pub mod util;
 
-use crate::models::Order;
 use crate::settings::{init_settings, Settings};
+use crate::util::{fetch_events_list, listen_for_order_messages, Event as UtilEvent, ListKind};
+use crossterm::event::EventStream;
+use mostro_core::prelude::Status;
 
-use std::io::stdout;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::vec;
 
 use chrono::Local;
-use chrono::{Duration as ChronoDuration, Utc};
-use crossterm::event::{Event as CEvent, EventStream, KeyCode, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use crossterm::{
+    self,
+    event::{Event, KeyEvent},
+};
 use fern::Dispatch;
 use futures::StreamExt;
-use mostro_core::NOSTR_REPLACEABLE_EVENT_KIND;
-use nostr_sdk::prelude::RelayPoolNotification;
 use nostr_sdk::prelude::*;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs};
 use ratatui::Terminal;
+use std::io::stdout;
 use std::sync::OnceLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, interval_at, Duration, Instant};
 
 /// Constructs (or copies) the configuration file and loads it.
-static SETTINGS: OnceLock<Settings> = OnceLock::new();
+pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-// Official Mostro colors.
-const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
-const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
+use crate::ui::{AppState, TakeOrderState, UiMode};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -63,256 +60,62 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-/// Parses a nostr_sdk::Event (expected to be a NIP-69 order event) into an Order.
-/// It extracts tags:
-/// - "d": order identifier (used as Code)
-/// - "k": order kind ("buy" or "sell")
-/// - "s": status (e.g. "pending")
-/// - "amt": bitcoin amount (in satoshis)
-/// - "f": fiat currency code
-/// - "fa": fiat amount
-/// - "pm": payment method
-fn parse_order_event(event: nostr_sdk::Event) -> Option<Order> {
-    let mut id = None;
-    let mut kind = None;
-    let mut status = None;
-    let mut amount = None;
-    let mut fiat_code = None;
-    let mut fiat_amount = None;
-    let mut payment_method = None;
-
-    // Iterate over the tags using iter(), avoiding any errors with &event.tags.
-    for tag in event.tags.iter() {
-        let tag = tag.as_slice();
-        match tag[0].as_str() {
-            "d" => {
-                if tag.len() > 1 {
-                    id = Some(tag[1].clone());
-                }
-            }
-            "k" => {
-                if tag.len() > 1 {
-                    kind = Some(tag[1].clone());
-                }
-            }
-            "s" => {
-                if tag.len() > 1 {
-                    status = Some(tag[1].clone());
-                }
-            }
-            "amt" => {
-                if tag.len() > 1 {
-                    amount = tag[1].parse::<i64>().ok();
-                }
-            }
-            "f" => {
-                if tag.len() > 1 {
-                    fiat_code = Some(tag[1].clone());
-                }
-            }
-            "fa" => {
-                if tag.len() > 1 {
-                    fiat_amount = tag[1].parse::<i64>().ok();
-                }
-            }
-            "pm" => {
-                if tag.len() > 1 {
-                    let mut pm = vec![];
-                    for tag in tag.iter().skip(1) {
-                        pm.push(tag.clone());
-                    }
-                    payment_method = Some(pm.join(", "));
-                }
-            }
-            _ => {}
-        }
+/// Validates the range amount input against min/max limits
+fn validate_range_amount(take_state: &mut TakeOrderState) {
+    if take_state.amount_input.is_empty() {
+        take_state.validation_error = None;
+        return;
     }
 
-    // Check that all required fields are present.
-    if let (
-        Some(kind),
-        Some(id),
-        Some(status),
-        Some(amount),
-        Some(fiat_code),
-        Some(fiat_amount),
-        Some(payment_method),
-    ) = (
-        kind,
-        id,
-        status,
-        amount,
-        fiat_code,
-        fiat_amount,
-        payment_method,
-    ) {
-        Some(Order {
-            id: Some(id),
-            kind: Some(kind),
-            status: Some(status),
-            amount,
-            fiat_code,
-            min_amount: None,
-            max_amount: None,
-            fiat_amount,
-            payment_method,
-            is_mine: false,
-            premium: 0,
-            buyer_trade_pubkey: None,
-            seller_trade_pubkey: None,
-            created_at: None,
-            expires_at: None,
-        })
+    let amount = match take_state.amount_input.parse::<f64>() {
+        Ok(val) => val,
+        Err(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
+    };
+
+    let min = take_state.order.min_amount.unwrap_or(0) as f64;
+    let max = take_state.order.max_amount.unwrap_or(0) as f64;
+
+    if amount < min || amount > max {
+        take_state.validation_error = Some(format!(
+            "Amount must be between {} and {} {}",
+            min, max, take_state.order.fiat_code
+        ));
     } else {
-        None
+        take_state.validation_error = None;
     }
 }
 
 /// Draws the TUI interface with tabs and active content.
 /// The "Orders" tab shows a table of pending orders and highlights the selected row.
-fn ui_draw(
-    f: &mut ratatui::Frame,
-    active_tab: usize,
-    orders: &Arc<Mutex<Vec<Order>>>,
-    selected_order_idx: usize,
-) {
-    // Create layout: one row for tabs and the rest for content.
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [Constraint::Length(3), Constraint::Min(0)],
-    )
-    .split(f.area());
-
-    // Define tab titles.
-    let tab_titles = ["Orders", "My Trades", "Messages", "Settings"]
-        .iter()
-        .map(|t| Line::from(*t))
-        .collect::<Vec<Line>>();
-    let tabs = Tabs::new(tab_titles)
-        .select(active_tab)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(tabs, chunks[0]);
-
-    let content_area = chunks[1];
-    if active_tab == 0 {
-        // "Orders" tab: show table with pending orders.
-        let header_cells = [
-            "Kind",
-            "Sats Amount",
-            "Fiat",
-            "Fiat Amount",
-            "Payment Method",
-        ]
-        .iter()
-        .map(|h| Cell::from(*h))
-        .collect::<Vec<Cell>>();
-        let header = Row::new(header_cells).style(Style::default().add_modifier(Modifier::BOLD));
-
-        let orders_lock = orders.lock().unwrap();
-        let rows: Vec<Row> = orders_lock
-            .iter()
-            .enumerate()
-            .map(|(i, order)| {
-                let kind = order.kind.clone().unwrap_or_default();
-                let fiat_code = order.fiat_code.clone();
-                let amount = if order.amount == 0 {
-                    "M/P".to_string()
-                } else {
-                    order.amount.to_string()
-                };
-                let fiat_amount = order.fiat_amount.to_string();
-                let payment_method = order.payment_method.clone();
-                let row = Row::new(vec![
-                    Cell::from(kind),
-                    Cell::from(amount),
-                    Cell::from(fiat_code),
-                    Cell::from(fiat_amount),
-                    Cell::from(payment_method),
-                ]);
-                if i == selected_order_idx {
-                    // Highlight the selected row.
-                    row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-                } else {
-                    row
-                }
-            })
-            .collect();
-
-        let table = Table::new(
-            rows,
-            &[
-                Constraint::Max(5),
-                Constraint::Max(11),
-                Constraint::Max(5),
-                Constraint::Max(12),
-                Constraint::Min(10),
-            ],
-        )
-        .header(header)
-        .block(
-            Block::default()
-                .title("Orders")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(table, content_area);
-    } else if active_tab == 1 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("My Trades")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    } else if active_tab == 2 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("Messages")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    } else if active_tab == 3 {
-        let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
-            Block::default()
-                .title("Settings")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, content_area);
-    }
-}
+use crate::ui::ui_draw;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
     let settings = init_settings();
-    db::init_db().await?;
+    let pool = db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
-    // Set the terminal in raw mode and switch to the alternate screen.
     enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
     // Shared state: orders are stored in memory.
-    let orders: Arc<Mutex<Vec<Order>>> = Arc::new(Mutex::new(Vec::new()));
+    let orders: Arc<Mutex<Vec<mostro_core::prelude::SmallOrder>>> =
+        Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
-    let my_keys = Keys::generate();
+    let my_keys = settings
+        .nsec_privkey
+        .parse::<Keys>()
+        .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
     let client = Client::new(my_keys);
-    // Add relay.
+    // Add relays.
     for relay in &settings.relays {
         client.add_relay(relay).await?;
     }
@@ -321,50 +124,31 @@ async fn main() -> Result<(), anyhow::Error> {
     let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
 
-    // Calculate timestamp for events in the last 7 days.
-    let since_time = Utc::now()
-        .checked_sub_signed(ChronoDuration::days(7))
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute time"))?
-        .timestamp() as u64;
-    let timestamp = Timestamp::from(since_time);
-
-    // Build the filter for NIP-69 (orders) events from Mostro.
-    let mut filter = Filter::new()
-        .author(mostro_pubkey)
-        .limit(20)
-        .since(timestamp)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::Y), "mostro")
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::Z), "order")
-        .kind(Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND));
-
-    for c in &settings.currencies {
-        filter = filter.custom_tag(SingleLetterTag::lowercase(Alphabet::F), c);
-    }
-    // Subscribe to the filter.
-    client.subscribe(filter, None).await?;
-
     // Asynchronous task to handle incoming notifications.
     let orders_clone = Arc::clone(&orders);
-    let mut notifications = client.notifications();
+    let client_clone = client.clone();
+    let mostro_pubkey_clone = mostro_pubkey;
     tokio::spawn(async move {
-        while let Ok(notification) = notifications.recv().await {
-            if let RelayPoolNotification::Event { event, .. } = notification {
-                if event.kind == Kind::Custom(NOSTR_REPLACEABLE_EVENT_KIND) {
-                    if let Some(order) = parse_order_event((*event).clone()) {
-                        let mut orders_lock = orders_clone.lock().unwrap();
-                        // If status still pending we add it or update it
-                        if order.status == Some("pending".to_string()) {
-                            if let Some(existing) =
-                                orders_lock.iter_mut().find(|o| o.id == order.id)
-                            {
-                                *existing = order;
-                            } else {
-                                orders_lock.push(order);
-                            }
-                        } else {
-                            // If status is not pending we remove it from the list
-                            orders_lock.retain(|o| o.id != order.id);
-                        }
+        // Periodically refresh orders list (immediate first fetch, then every 30 seconds)
+        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(10));
+        loop {
+            refresh_interval.tick().await;
+            if let Ok(fetched_events) = fetch_events_list(
+                ListKind::Orders,
+                Some(Status::Pending),
+                None,
+                None,
+                &client_clone,
+                mostro_pubkey_clone,
+                None,
+            )
+            .await
+            {
+                let mut orders_lock = orders_clone.lock().unwrap();
+                orders_lock.clear();
+                for event in fetched_events {
+                    if let UtilEvent::SmallOrder(order) = event {
+                        orders_lock.push(order);
                     }
                 }
             }
@@ -374,52 +158,136 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(500));
-    let mut active_tab: usize = 0;
-    // Selected order index for the "Orders" table.
-    let mut selected_order_idx: usize = 0;
+    let mut app = AppState::new();
+
+    // Channel to receive order results from async tasks
+    let (order_result_tx, mut order_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
+
+    // Channel to receive message notifications
+    let (message_notification_tx, mut message_notification_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ui::MessageNotification>();
+
+    // Spawn background task to listen for messages on active orders
+    let client_for_messages = client.clone();
+    let pool_for_messages = pool.clone();
+    let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let messages_clone = Arc::clone(&app.messages);
+    let message_notification_tx_clone = message_notification_tx.clone();
+    tokio::spawn(async move {
+        listen_for_order_messages(
+            client_for_messages,
+            pool_for_messages,
+            active_order_trade_indices_clone,
+            messages_clone,
+            message_notification_tx_clone,
+        )
+        .await;
+    });
 
     loop {
         tokio::select! {
+            result = order_result_rx.recv() => {
+                if let Some(result) = result {
+                    // Track trade_index for taken orders
+                    if let crate::ui::OrderResult::Success { order_id, trade_index, .. } = &result {
+                        if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
+                            let mut indices = app.active_order_trade_indices.lock().unwrap();
+                            indices.insert(*order_id, *trade_index);
+                            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
+                        }
+                    }
+
+                    // Set appropriate result mode based on current state
+                    match app.mode {
+                        UiMode::WaitingTakeOrder(_) => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                        UiMode::WaitingAddInvoice => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                        UiMode::NewMessageNotification(_, _, _) => {
+                            // If we have a notification, replace it with the result
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                        _ => {
+                            app.mode = UiMode::OrderResult(result);
+                        }
+                    }
+                }
+            }
+            notification = message_notification_rx.recv() => {
+                if let Some(notification) = notification {
+                    // Only show popup immediately for PayInvoice and AddInvoice
+                    // For other actions, just increment the pending notifications counter
+                    match notification.action {
+                        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::AddInvoice => {
+                            // Show popup immediately for critical actions
+                            let invoice_state = crate::ui::InvoiceInputState {
+                                invoice_input: String::new(),
+                                focused: true,
+                                just_pasted: false,
+                            };
+                            let action = notification.action.clone();
+                            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+                        }
+                        _ => {
+                            // For other actions, just increment pending notifications counter
+                            let mut pending = app.pending_notifications.lock().unwrap();
+                            *pending += 1;
+                        }
+                    }
+                }
+            }
             maybe_event = events.next() => {
-                if let Some(Ok(event)) = maybe_event {
-                    if let CEvent::Key(KeyEvent { code, .. }) = event {
-                        match code {
-                            KeyCode::Left => {
-                                if active_tab > 0 {
-                                    active_tab -= 1;
-                                }
-                            }
-                            KeyCode::Right => {
-                                if active_tab < 3 {
-                                    active_tab += 1;
-                                }
-                            }
-                            KeyCode::Up => {
-                                if active_tab == 0 {
-                                    let orders_len = orders.lock().unwrap().len();
-                                    if orders_len > 0 && selected_order_idx > 0 {
-                                        selected_order_idx -= 1;
-                                    }
-                                }
-                            }
-                            KeyCode::Down => {
-                                if active_tab == 0 {
-                                    let orders_len = orders.lock().unwrap().len();
-                                    if orders_len > 0 && selected_order_idx < orders_len.saturating_sub(1) {
-                                        selected_order_idx += 1;
-                                    }
-                                }
-                            }
-                            KeyCode::Enter => {
-                                if active_tab == 0 {
-                                    let orders_lock = orders.lock().unwrap();
-                                    if let Some(order) = orders_lock.get(selected_order_idx) {
-                                        log::info!("selected order {:#?}", order);
-                                    }
-                                }
-                            }
-                            KeyCode::Char('q') | KeyCode::Esc => break,
-                            _ => {}
+                // Handle errors in event stream
+                let event = match maybe_event {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => {
+                        log::error!("Error reading event: {}", e);
+                        continue;
+                    }
+                    None => {
+                        // Event stream ended, exit gracefully
+                        break;
+                    }
+                };
+
+                // Handle paste events (bracketed paste mode)
+                if let Event::Paste(pasted_text) = event {
+                    if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                        if invoice_state.focused {
+                            // Filter out control characters (especially newlines) that could trigger unwanted actions
+                            let filtered_text: String = pasted_text
+                                .chars()
+                                .filter(|c| !c.is_control() || *c == '\t')
+                                .collect();
+                            invoice_state.invoice_input.push_str(&filtered_text);
+                            // Set flag to ignore Enter key immediately after paste
+                            invoice_state.just_pasted = true;
+                        }
+                    }
+                    continue;
+                }
+
+                // Handle key events
+                if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
+                    match crate::ui::key_handler::handle_key_event(
+                        key_event,
+                        &mut app,
+                        &orders,
+                        &pool,
+                        &client,
+                        settings,
+                        mostro_pubkey,
+                        &order_result_tx,
+                        &validate_range_amount,
+                    ) {
+                        Some(true) => continue, // Key was handled, continue loop
+                        Some(false) => break,   // Exit requested (q key)
+                        None => {
+                            // Key not handled by handler - this shouldn't happen with current implementation
+                            continue;
                         }
                     }
                 }
@@ -432,12 +300,19 @@ async fn main() -> Result<(), anyhow::Error> {
         // Ensure the selected index is valid when orders list changes.
         {
             let orders_len = orders.lock().unwrap().len();
-            if orders_len > 0 && selected_order_idx >= orders_len {
-                selected_order_idx = orders_len - 1;
+            if orders_len > 0 && app.selected_order_idx >= orders_len {
+                app.selected_order_idx = orders_len - 1;
             }
         }
 
-        terminal.draw(|f| ui_draw(f, active_tab, &orders, selected_order_idx))?;
+        // Status bar text
+        let relays_str = settings.relays.join(" - ");
+        // let mostro_short = if settings.mostro_pubkey.len { format!("{}…", &settings.mostro_pubkey[..12]) } else { settings.mostro_pubkey.clone() };
+        let status_line = format!(
+            "🧌 pubkey - {}   🔗 {}",
+            &settings.mostro_pubkey, relays_str
+        );
+        terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
     }
 
     // Restore terminal to its original state.

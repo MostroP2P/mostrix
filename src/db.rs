@@ -2,7 +2,7 @@
 use crate::models::User;
 use anyhow::Result;
 use bip39::Mnemonic;
-use sqlx::{ SqlitePool};
+use sqlx::SqlitePool;
 use std::fs::File;
 use std::path::Path;
 
@@ -13,7 +13,12 @@ pub async fn init_db() -> Result<SqlitePool> {
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to get home directory"))?;
     let app_dir = home_dir.join(format!(".{}", name));
     let db_path = app_dir.join(format!("{}.db", name));
-    let db_url = format!("sqlite://{}", db_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid db path"))?);
+    let db_url = format!(
+        "sqlite://{}",
+        db_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid db path"))?
+    );
     if !app_dir.exists() {
         std::fs::create_dir_all(&app_dir)?;
     }
@@ -39,9 +44,11 @@ pub async fn init_db() -> Result<SqlitePool> {
                 fiat_amount INTEGER NOT NULL,
                 payment_method TEXT NOT NULL,
                 premium INTEGER NOT NULL,
+                trade_keys TEXT,
+                counterparty_pubkey TEXT,
                 is_mine INTEGER NOT NULL,
-                buyer_trade_pubkey TEXT,
-                seller_trade_pubkey TEXT,
+                buyer_invoice TEXT,
+                request_id INTEGER,
                 created_at INTEGER,
                 expires_at INTEGER
             );
@@ -55,7 +62,7 @@ pub async fn init_db() -> Result<SqlitePool> {
         )
         .execute(&pool)
         .await?;
-    
+
         // Check if a user exists, if not, create one
         let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
             .fetch_one(&pool)
