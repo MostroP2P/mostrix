@@ -7,7 +7,7 @@ pub mod util;
 use crate::settings::{init_settings, Settings};
 use crate::util::{fetch_events_list, listen_for_order_messages, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
-use mostro_core::prelude::Status;
+use mostro_core::prelude::*;
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -106,7 +106,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut terminal = Terminal::new(backend)?;
 
     // Shared state: orders are stored in memory.
-    let orders: Arc<Mutex<Vec<mostro_core::prelude::SmallOrder>>> =
+    let orders: Arc<Mutex<Vec<SmallOrder>>> =
         Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
@@ -221,7 +221,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     // Only show popup immediately for PayInvoice and AddInvoice
                     // For other actions, just increment the pending notifications counter
                     match notification.action {
-                        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::AddInvoice => {
+                        Action::PayInvoice | Action::AddInvoice => {
                             // Show popup immediately for critical actions
                             let invoice_state = crate::ui::InvoiceInputState {
                                 invoice_input: String::new(),
@@ -255,7 +255,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle paste events (bracketed paste mode)
                 if let Event::Paste(pasted_text) = event {
-                    if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
                         if invoice_state.focused {
                             // Filter out control characters (especially newlines) that could trigger unwanted actions
                             let filtered_text: String = pasted_text

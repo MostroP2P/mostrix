@@ -104,7 +104,7 @@ pub enum OrderResult {
         max_amount: Option<i64>,
         payment_method: String,
         premium: i64,
-        status: Option<mostro_core::prelude::Status>,
+        status: Option<Status>,
         trade_index: Option<i64>, // Trade index used for this order
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
