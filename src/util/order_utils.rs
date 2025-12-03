@@ -170,6 +170,7 @@ fn create_order_result_success(order: &SmallOrder, trade_index: i64) -> crate::u
 }
 
 /// Helper function to create OrderResult::Success from form data (fallback)
+#[allow(clippy::too_many_arguments)]
 fn create_order_result_from_form(
     kind: mostro_core::order::Kind,
     amount: i64,

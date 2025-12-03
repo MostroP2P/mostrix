@@ -10,7 +10,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
     let popup_width = 70;
     let popup_height = match result {
         OrderResult::Success { .. } => 18,
-        OrderResult::Error(_) => 8,
+        OrderResult::Error(_) | OrderResult::Info(_) => 8,
     };
     let popup_x = area.x + (area.width - popup_width) / 2;
     let popup_y = area.y + (area.height - popup_height) / 2;
@@ -134,6 +134,37 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
 
             let mut lines = vec![];
             for line in error_lines {
+                lines.push(line);
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled(
+                "Press ESC or ENTER to close",
+                Style::default().fg(Color::DarkGray),
+            )]));
+
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(paragraph, inner);
+        }
+        OrderResult::Info(message) => {
+            let block = Block::default()
+                .title("✅ Operation Successful")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Green));
+
+            // Calculate inner area (excluding borders)
+            let inner = block.inner(popup);
+            f.render_widget(block, popup);
+
+            // Wrap message if too long (accounting for borders)
+            let info_lines: Vec<Line> = message
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(inner.width as usize - 2)
+                .map(|chunk| Line::from(chunk.iter().collect::<String>()))
+                .collect();
+
+            let mut lines = vec![];
+            for line in info_lines {
                 lines.push(line);
             }
             lines.push(Line::from(""));

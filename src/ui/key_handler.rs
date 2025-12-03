@@ -379,6 +379,7 @@ fn handle_enter_taking_order(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_enter_message_notification(
     app: &mut AppState,
     client: &nostr_sdk::Client,
@@ -413,20 +414,9 @@ fn handle_enter_message_notification(
                         .await
                         {
                             Ok(_) => {
-                                let _ =
-                                    order_result_tx_clone.send(crate::ui::OrderResult::Success {
-                                        order_id: Some(order_id),
-                                        kind: None,
-                                        amount: 0,
-                                        fiat_code: "".to_string(),
-                                        fiat_amount: 0,
-                                        min_amount: None,
-                                        max_amount: None,
-                                        payment_method: "".to_string(),
-                                        premium: 0,
-                                        status: None,
-                                        trade_index: None,
-                                    });
+                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Info(
+                                    "Invoice sent successfully".to_string(),
+                                ));
                             }
                             Err(e) => {
                                 log::error!("Failed to add invoice: {}", e);
@@ -685,6 +675,7 @@ pub fn handle_cancel_key(app: &mut AppState) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
     key_event: KeyEvent,

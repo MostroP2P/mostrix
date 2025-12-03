@@ -107,6 +107,8 @@ pub enum OrderResult {
         status: Option<mostro_core::prelude::Status>,
         trade_index: Option<i64>, // Trade index used for this order
     },
+    /// Generic informational popup (e.g. AddInvoice confirmation)
+    Info(String),
     Error(String),
 }
 
