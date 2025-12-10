@@ -348,7 +348,7 @@ pub async fn listen_for_order_messages(
                     // Extract invoice and sat_amount from payload based on action type
                     // PayInvoice: PaymentRequest payload contains invoice
                     // AddInvoice: Order payload contains sat amount
-                    let (sat_amount, buyer_invoice) = match &action {
+                    let (sat_amount, invoice) = match &action {
                         Action::PayInvoice => {
                             // For PayInvoice, extract invoice from PaymentRequest payload
                             match &inner_kind.payload {
@@ -376,7 +376,7 @@ pub async fn listen_for_order_messages(
                         trade_index: *trade_index,
                         read: false, // New messages are unread by default
                         sat_amount,
-                        buyer_invoice: buyer_invoice.clone(),
+                        buyer_invoice: invoice.clone(),
                     };
 
                     // Add to messages list
@@ -401,7 +401,7 @@ pub async fn listen_for_order_messages(
                         timestamp,
                         action,
                         sat_amount,
-                        buyer_invoice,
+                        invoice,
                     };
 
                     // Send notification (ignore errors if channel is closed)

@@ -107,6 +107,13 @@ pub enum OrderResult {
         status: Option<Status>,
         trade_index: Option<i64>, // Trade index used for this order
     },
+    /// Payment request required - shows invoice popup for buy orders
+    PaymentRequestRequired {
+        order: mostro_core::prelude::SmallOrder,
+        invoice: String,
+        sat_amount: Option<i64>,
+        trade_index: i64,
+    },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
     Error(String),
@@ -157,7 +164,7 @@ pub struct MessageNotification {
     pub timestamp: u64,
     pub action: Action,
     pub sat_amount: Option<i64>,
-    pub buyer_invoice: Option<String>,
+    pub invoice: Option<String>,
 }
 
 /// State for handling invoice input in AddInvoice notifications
@@ -166,6 +173,7 @@ pub struct InvoiceInputState {
     pub invoice_input: String,
     pub focused: bool,
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
+    pub copied_to_clipboard: bool, // Flag to show "Copied!" message
 }
 
 pub struct AppState {

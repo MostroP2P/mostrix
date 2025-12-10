@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -17,6 +17,9 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         width: popup_width,
         height: popup_height,
     };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
 
     let inner_chunks = Layout::new(
         Direction::Vertical,

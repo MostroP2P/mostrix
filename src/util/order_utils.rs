@@ -227,6 +227,7 @@ fn handle_mostro_response(
     } else if inner_message.action != Action::RateReceived
         && inner_message.action != Action::NewOrder
         && inner_message.action != Action::AddInvoice
+        && inner_message.action != Action::PayInvoice
     {
         log::warn!(
             "Received response with null request_id. Expected: {}",
@@ -280,7 +281,7 @@ pub async fn send_new_order(
 
     let expiration_days: i64 = form.expiration_days.trim().parse().unwrap_or(0);
     let expires_at = match expiration_days {
-        0 => None,
+        0 => return Err(anyhow::anyhow!("Minimum expiration time is 1 day")),
         _ => {
             let now = chrono::Utc::now();
             let expires_at = now + chrono::Duration::days(expiration_days);
@@ -314,10 +315,10 @@ pub async fn send_new_order(
     let _ = User::update_last_trade_index(pool, next_idx).await;
 
     // Create SmallOrder
-    let small_order = mostro_core::prelude::SmallOrder::new(
+    let small_order = SmallOrder::new(
         None,
         Some(kind_checked),
-        Some(mostro_core::prelude::Status::Pending),
+        Some(Status::Pending),
         amount,
         fiat_code.clone(),
         min_amount,
@@ -334,12 +335,12 @@ pub async fn send_new_order(
 
     // Create message
     let request_id = uuid::Uuid::new_v4().as_u128() as u64;
-    let order_content = mostro_core::prelude::Payload::Order(small_order);
-    let message = mostro_core::prelude::Message::new_order(
+    let order_content = Payload::Order(small_order);
+    let message = Message::new_order(
         None,
         Some(request_id),
         Some(next_idx),
-        mostro_core::prelude::Action::NewOrder,
+        Action::NewOrder,
         Some(order_content),
     );
 
@@ -573,29 +574,61 @@ pub async fn take_order(
             Some(id) => {
                 if request_id == id {
                     // Request ID matches, process the response
-                    if let Some(Payload::Order(returned_order)) = &inner_message.payload {
-                        log::info!(
-                            "✅ Order taken successfully! Order ID: {:?}",
-                            returned_order.id
-                        );
-
-                        // Save order to database
-                        if let Err(e) = save_order(
-                            returned_order.clone(),
-                            &trade_keys,
-                            request_id,
-                            next_idx,
-                            pool,
-                        )
-                        .await
-                        {
-                            log::error!("Failed to save order to database: {}", e);
+                    match &inner_message.payload {
+                        Some(Payload::Order(returned_order)) => {
+                            // Save order to database
+                            if let Err(e) = save_order(
+                                returned_order.clone(),
+                                &trade_keys,
+                                request_id,
+                                next_idx,
+                                pool,
+                            )
+                            .await
+                            {
+                                log::error!("Failed to save order to database: {}", e);
+                            }
+                            return Ok(create_order_result_success(returned_order, next_idx));
                         }
+                        Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
+                            // For buy orders, we receive PaymentRequest with invoice for seller to pay
+                            // Use the order from payload if available, otherwise use the original order
+                            let order_to_save = opt_order.as_ref().unwrap_or(order);
 
-                        Ok(create_order_result_success(returned_order, next_idx))
-                    } else {
-                        log::warn!("Received response without order details");
-                        Err(anyhow::anyhow!("Response without order details"))
+                            // Save order to database
+                            if let Err(e) = save_order(
+                                order_to_save.clone(),
+                                &trade_keys,
+                                request_id,
+                                next_idx,
+                                pool,
+                            )
+                            .await
+                            {
+                                log::error!("Failed to save order to database: {}", e);
+                            }
+
+                            log::info!(
+                                "Received PaymentRequest for buy order {} with invoice",
+                                order_id
+                            );
+
+                            // Return PaymentRequestRequired to trigger invoice popup
+                            return Ok(crate::ui::OrderResult::PaymentRequestRequired {
+                                order: order_to_save.clone(),
+                                invoice: invoice_string.clone(),
+                                sat_amount: *opt_amount,
+                                trade_index: next_idx,
+                            });
+                        }
+                        _ => {
+                            log::warn!(
+                                "Received response without order details or payment request"
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Response without order details or payment request"
+                            ));
+                        }
                     }
                 } else {
                     Err(anyhow::anyhow!("Mismatched request_id"))
@@ -699,7 +732,7 @@ pub async fn execute_add_invoice(
     };
     let inner_message = handle_mostro_response(response_message, request_id)?;
     match inner_message.action {
-        Action::AddInvoice => Ok(()),
+        Action::WaitingSellerToPay => Ok(()),
         _ => Err(anyhow::anyhow!(
             "Unexpected action: {:?}",
             inner_message.action

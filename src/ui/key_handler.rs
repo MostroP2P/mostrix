@@ -2,7 +2,7 @@ use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
 use crate::util::order_utils::execute_add_invoice;
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
-use mostro_core::prelude::SmallOrder;
+use mostro_core::prelude::{Action, SmallOrder};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -703,6 +703,13 @@ pub fn handle_key_event(
         }
     }
 
+    // Clear "copied" indicator when any key is pressed (except C which sets it)
+    if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
+        if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
+            invoice_state.copied_to_clipboard = false;
+        }
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
             handle_navigation(code, app, orders);
@@ -736,6 +743,41 @@ pub fn handle_key_event(
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
+            Some(true)
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            // Handle copy invoice for PayInvoice notifications
+            if let UiMode::NewMessageNotification(
+                ref notification,
+                Action::PayInvoice,
+                ref mut invoice_state,
+            ) = app.mode
+            {
+                if let Some(invoice) = &notification.invoice {
+                    // Copy to clipboard - keep instance alive to avoid "dropped too quickly" warning
+                    let copy_result = {
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => {
+                                let result = clipboard.set_text(invoice.clone());
+                                // Keep clipboard in scope a bit longer
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                result
+                            }
+                            Err(e) => Err(e),
+                        }
+                    };
+
+                    match copy_result {
+                        Ok(_) => {
+                            log::info!("Invoice copied to clipboard");
+                            invoice_state.copied_to_clipboard = true;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to copy invoice to clipboard: {}", e);
+                        }
+                    }
+                }
+            }
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {

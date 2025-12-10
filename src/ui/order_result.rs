@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{OrderResult, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -10,6 +10,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
     let popup_width = 70;
     let popup_height = match result {
         OrderResult::Success { .. } => 18,
+        OrderResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
         OrderResult::Error(_) | OrderResult::Info(_) => 8,
     };
     let popup_x = area.x + (area.width - popup_width) / 2;
@@ -20,6 +21,9 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
         width: popup_width,
         height: popup_height,
     };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
 
     match result {
         OrderResult::Success {
@@ -172,6 +176,32 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
                 "Press ESC or ENTER to close",
                 Style::default().fg(Color::DarkGray),
             )]));
+
+            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(paragraph, inner);
+        }
+        OrderResult::PaymentRequestRequired { .. } => {
+            // This should not be displayed - it's converted to a notification in main.rs
+            // But if it somehow reaches here, show a simple message
+            let block = Block::default()
+                .title("💳 Payment Request")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+
+            let inner = block.inner(popup);
+            f.render_widget(block, popup);
+
+            let lines = vec![
+                Line::from(vec![Span::styled(
+                    "Payment request received",
+                    Style::default(),
+                )]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Press ESC or ENTER to close",
+                    Style::default().fg(Color::DarkGray),
+                )]),
+            ];
 
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);

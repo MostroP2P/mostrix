@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{TakeOrderState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -27,6 +27,9 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         width: popup_width,
         height: popup_height,
     };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
 
     let mut constraints = vec![
         Constraint::Length(1), // spacer
