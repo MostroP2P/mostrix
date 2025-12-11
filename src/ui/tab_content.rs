@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use mostro_core::prelude::*;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
@@ -45,7 +45,7 @@ pub fn render_messages_tab(
             let order_id_str = if let Some(order_id) = msg.order_id {
                 format!(
                     "Order: {}",
-                    order_id.to_string().chars().take(8).collect::<String>()
+                    order_id.to_string().chars().take(16).collect::<String>()
                 )
             } else {
                 "Order: Unknown".to_string()
@@ -56,15 +56,14 @@ pub fn render_messages_tab(
                 .unwrap_or_else(|| "Unknown time".to_string());
 
             let action_str = match msg.message.get_inner_message_kind().action {
-                mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
-                mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
-                mostro_core::prelude::Action::FiatSent => "✅ Fiat Sent",
-                mostro_core::prelude::Action::FiatSentOk => "✅ Fiat Received",
-                mostro_core::prelude::Action::Release | mostro_core::prelude::Action::Released => {
+                Action::AddInvoice => "📝 Invoice Request",
+                Action::PayInvoice => "💳 Payment Request",
+                Action::FiatSent => "✅ Fiat Sent",
+                Action::FiatSentOk => "✅ Fiat Received",
+                Action::Release | Action::Released => {
                     "🔓 Release"
                 }
-                mostro_core::prelude::Action::Dispute
-                | mostro_core::prelude::Action::DisputeInitiatedByYou => "⚠️ Dispute",
+                Action::Dispute | Action::DisputeInitiatedByYou => "⚠️ Dispute",
                 _ => "📨 Message",
             };
 
@@ -127,18 +126,15 @@ pub fn render_message_notification(
     let popup_width = popup_width.min(area.width);
     let popup_height = popup_height.min(area.height);
 
-    // Use saturating arithmetic to prevent overflow when calculating popup position
-    let popup_x = area
-        .x
-        .saturating_add(area.width.saturating_sub(popup_width) / 2);
-    let popup_y = area
-        .y
-        .saturating_add(area.height.saturating_sub(popup_height) / 2);
-    let popup = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: popup_width,
-        height: popup_height,
+    // Center the popup using Flex::Center
+    let popup = {
+        let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(popup);
+        popup
     };
 
     let title = match action {

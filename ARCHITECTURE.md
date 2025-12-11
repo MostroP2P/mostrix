@@ -1,4 +1,4 @@
-# Mostrix Overview
+# Mostrix Architecture
 
 ## 🎯 Main Purpose
 

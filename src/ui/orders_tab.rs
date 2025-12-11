@@ -121,7 +121,7 @@ pub fn render_orders_tab(
                 Constraint::Max(15),
                 Constraint::Max(10),
                 Constraint::Max(12),
-                Constraint::Max(6),
+                Constraint::Max(10),
                 Constraint::Max(12),
                 Constraint::Min(15),
                 Constraint::Max(18),

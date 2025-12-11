@@ -257,7 +257,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     match notification.action {
                         Action::PayInvoice | Action::AddInvoice => {
                             // Show popup immediately for critical actions
-                            let invoice_state = 
+                            let invoice_state =
                             crate::ui::InvoiceInputState {
                                 invoice_input: String::new(),
                                 focused: true,

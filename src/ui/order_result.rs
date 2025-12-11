@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -13,13 +13,15 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
         OrderResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
         OrderResult::Error(_) | OrderResult::Info(_) => 8,
     };
-    let popup_x = area.x + (area.width - popup_width) / 2;
-    let popup_y = area.y + (area.height - popup_height) / 2;
-    let popup = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: popup_width,
-        height: popup_height,
+    // Center the popup using Flex::Center
+    let popup = {
+        let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(popup);
+        popup
     };
 
     // Clear the popup area to make it fully opaque
