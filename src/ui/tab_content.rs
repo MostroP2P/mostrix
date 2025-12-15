@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use super::{MessageNotification, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{MessageNotification, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -45,7 +45,11 @@ pub fn render_messages_tab(
             let order_id_str = if let Some(order_id) = msg.order_id {
                 format!(
                     "Order: {}",
-                    order_id.to_string().chars().take(16).collect::<String>()
+                    order_id
+                        .to_string()
+                        .chars()
+                        .take(order_id.to_string().len())
+                        .collect::<String>()
                 )
             } else {
                 "Order: Unknown".to_string()
@@ -60,9 +64,7 @@ pub fn render_messages_tab(
                 Action::PayInvoice => "💳 Payment Request",
                 Action::FiatSent => "✅ Fiat Sent",
                 Action::FiatSentOk => "✅ Fiat Received",
-                Action::Release | Action::Released => {
-                    "🔓 Release"
-                }
+                Action::Release | Action::Released => "🔓 Release",
                 Action::Dispute | Action::DisputeInitiatedByYou => "⚠️ Dispute",
                 _ => "📨 Message",
             };
@@ -505,4 +507,138 @@ pub fn render_message_notification(
             );
         }
     }
+}
+
+pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {
+    let area = f.area();
+    let popup_width = area.width.saturating_sub(area.width / 4);
+    let popup_height = 12;
+    // Center the popup using Flex::Center
+    let popup = {
+        let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(popup);
+        popup
+    };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
+
+    let inner_chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // title
+            Constraint::Length(1), // separator
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // message content
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // buttons
+            Constraint::Length(1), // help text
+        ],
+    )
+    .split(popup);
+
+    let block = Block::default()
+        .title("📨 Message")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block, popup);
+
+    // Order ID
+    let order_id_str = if let Some(order_id) = view_state.order_id {
+        format!(
+            "Order: {}",
+            order_id.to_string().chars().take(8).collect::<String>()
+        )
+    } else {
+        "Order: Unknown".to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            order_id_str,
+            Style::default()
+                .bg(BACKGROUND_COLOR)
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[3],
+    );
+
+    // Message content
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            &view_state.message_content,
+            Style::default().bg(BACKGROUND_COLOR),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(ratatui::widgets::Wrap { trim: true }),
+        inner_chunks[4],
+    );
+
+    // Yes/No buttons
+    let yes_style = if view_state.selected_button {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(PRIMARY_COLOR)
+    };
+
+    let no_style = if !view_state.selected_button {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(PRIMARY_COLOR)
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  [", Style::default()),
+            Span::styled("YES", yes_style),
+            Span::styled("]  ", Style::default()),
+            Span::styled("  [", Style::default()),
+            Span::styled("NO", no_style),
+            Span::styled("]  ", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[6],
+    );
+
+    // Help text
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Use ", Style::default()),
+            Span::styled(
+                "Left/Right",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to select, ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[7],
+    );
 }

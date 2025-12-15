@@ -285,16 +285,18 @@ pub async fn listen_for_order_messages(
             continue;
         }
 
+        // Get user key from db
+        let user = match User::get(&pool).await {
+            Ok(u) => u,
+            Err(e) => {
+                log::error!("Failed to get user: {}", e);
+                continue;
+            }
+        };
+
         // For each active order, check for new messages
         for (order_id, trade_index) in active_orders.iter() {
-            let user = match User::get(&pool).await {
-                Ok(u) => u,
-                Err(e) => {
-                    log::error!("Failed to get user: {}", e);
-                    continue;
-                }
-            };
-
+            // Derive trade key for message decode
             let trade_keys = match user.derive_trade_keys(*trade_index) {
                 Ok(k) => k,
                 Err(e) => {
@@ -331,82 +333,83 @@ pub async fn listen_for_order_messages(
             // Parse messages
             let parsed_messages = parse_dm_events(events, &trade_keys, None).await;
 
+            // Get only the latest message (with the highest timestamp)
+            // Index 1 in the tuple is the timestamp
+            let latest_message = parsed_messages.into_iter().max_by_key(|msg| msg.1);
+
             // Check if we have new messages
             let mut messages_lock = messages.lock().unwrap();
-            let existing_timestamps: HashSet<u64> = messages_lock
-                .iter()
-                .filter(|m| m.order_id == Some(*order_id))
-                .map(|m| m.timestamp)
-                .collect();
 
-            for (message, timestamp, sender) in parsed_messages {
+            if let Some((message, timestamp, sender)) = latest_message {
                 // Only add if it's a new message
-                if !existing_timestamps.contains(&timestamp) {
-                    let inner_kind = message.get_inner_message_kind();
-                    let action = inner_kind.action.clone();
-
-                    // Extract invoice and sat_amount from payload based on action type
-                    // PayInvoice: PaymentRequest payload contains invoice
-                    // AddInvoice: Order payload contains sat amount
-                    let (sat_amount, invoice) = match &action {
-                        Action::PayInvoice => {
-                            // For PayInvoice, extract invoice from PaymentRequest payload
-                            match &inner_kind.payload {
-                                Some(Payload::PaymentRequest(_, invoice, _)) => {
-                                    (None, Some(invoice.clone()))
-                                }
-                                _ => (None, None),
+                let inner_kind = message.get_inner_message_kind();
+                let action = inner_kind.action.clone();
+                // Extract invoice and sat_amount from payload based on action type
+                // PayInvoice: PaymentRequest payload contains invoice
+                // AddInvoice: Order payload contains sat amount
+                let (sat_amount, invoice) = match &action {
+                    Action::PayInvoice => {
+                        // For PayInvoice, extract invoice from PaymentRequest payload
+                        match &inner_kind.payload {
+                            Some(Payload::PaymentRequest(_, invoice, _)) => {
+                                (None, Some(invoice.clone()))
                             }
+                            _ => (None, None),
                         }
-                        Action::AddInvoice => {
-                            // For AddInvoice, extract sat amount from Order payload
-                            match &inner_kind.payload {
-                                Some(Payload::Order(order)) => (Some(order.amount), None),
-                                _ => (None, None),
-                            }
+                    }
+                    Action::AddInvoice => {
+                        // For AddInvoice, extract sat amount from Order payload
+                        match &inner_kind.payload {
+                            Some(Payload::Order(order)) => (Some(order.amount), None),
+                            _ => (None, None),
                         }
-                        _ => (None, None),
-                    };
+                    }
+                    _ => (None, None),
+                };
 
-                    let order_message = crate::ui::OrderMessage {
-                        message: message.clone(),
-                        timestamp,
-                        sender,
-                        order_id: Some(*order_id),
-                        trade_index: *trade_index,
-                        read: false, // New messages are unread by default
-                        sat_amount,
-                        buyer_invoice: invoice.clone(),
-                    };
+                let order_message = crate::ui::OrderMessage {
+                    message: message.clone(),
+                    timestamp,
+                    sender,
+                    order_id: Some(*order_id),
+                    trade_index: *trade_index,
+                    read: false, // New messages are unread by default
+                    sat_amount,
+                    buyer_invoice: invoice.clone(),
+                    auto_popup_shown: false,
+                };
+                // Add to messages list
+                messages_lock.push(order_message.clone());
+                // Sort by time
+                messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                // Remove duplicates with dedup
+                messages_lock.dedup_by_key(|a| a.order_id.unwrap());
 
-                    // Add to messages list
-                    messages_lock.push(order_message.clone());
+                // Create notification
+                let action_str = match &action {
+                    Action::AddInvoice => "Invoice Request",
+                    Action::PayInvoice => "Payment Request",
+                    Action::FiatSent => "Fiat Sent",
+                    Action::FiatSentOk => "Fiat Received",
+                    Action::Release | Action::Released => "Release",
+                    Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+                    Action::WaitingSellerToPay => "Waiting for Seller to Pay",
+                    Action::Rate => "Rate Counterparty",
+                    Action::RateReceived => "Rate Counterparty received",
+                    _ => "New Message",
+                };
 
-                    // Create notification
-                    let action_str = match &action {
-                        mostro_core::prelude::Action::AddInvoice => "Invoice Request",
-                        mostro_core::prelude::Action::PayInvoice => "Payment Request",
-                        mostro_core::prelude::Action::FiatSent => "Fiat Sent",
-                        mostro_core::prelude::Action::FiatSentOk => "Fiat Received",
-                        mostro_core::prelude::Action::Release
-                        | mostro_core::prelude::Action::Released => "Release",
-                        mostro_core::prelude::Action::Dispute
-                        | mostro_core::prelude::Action::DisputeInitiatedByYou => "Dispute",
-                        _ => "New Message",
-                    };
+                let notification = crate::ui::MessageNotification {
+                    order_id: Some(*order_id),
+                    message_preview: action_str.to_string(),
+                    timestamp,
+                    action,
+                    sat_amount,
+                    invoice,
+                };
 
-                    let notification = crate::ui::MessageNotification {
-                        order_id: Some(*order_id),
-                        message_preview: action_str.to_string(),
-                        timestamp,
-                        action,
-                        sat_amount,
-                        invoice,
-                    };
-
-                    // Send notification (ignore errors if channel is closed)
-                    let _ = message_notification_tx.send(notification);
-                }
+                // Send notification (ignore errors if channel is closed)
+                let _ = message_notification_tx.send(notification);
             }
         }
     }

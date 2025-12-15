@@ -90,6 +90,7 @@ pub enum UiMode {
     WaitingAddInvoice,                // Waiting for Mostro response (adding invoice)
     OrderResult(OrderResult),         // Show order result (success or error)
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
+    ViewingMessage(MessageViewState), // Simple message popup with yes/no options
 }
 
 #[derive(Clone, Debug)]
@@ -154,6 +155,8 @@ pub struct OrderMessage {
     pub sat_amount: Option<i64>,
     pub buyer_invoice: Option<String>,
     pub read: bool, // Whether the message has been read
+    /// Whether we've already shown the automatic popup for this message
+    pub auto_popup_shown: bool,
 }
 
 /// Notification for a new message
@@ -176,6 +179,15 @@ pub struct InvoiceInputState {
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
 }
 
+/// State for viewing a simple message popup
+#[derive(Clone, Debug)]
+pub struct MessageViewState {
+    pub message_content: String, // The message content to display
+    pub order_id: Option<uuid::Uuid>,
+    pub action: Action,
+    pub selected_button: bool, // true for YES, false for NO
+}
+
 pub struct AppState {
     pub active_tab: Tab,
     pub selected_order_idx: usize,
@@ -184,6 +196,31 @@ pub struct AppState {
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
+}
+
+/// Build a `MessageNotification` from an `OrderMessage` for use in popups.
+pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification {
+    let inner_message_kind = msg.message.get_inner_message_kind();
+    let action = inner_message_kind.action.clone();
+
+    let action_str = match action {
+        Action::AddInvoice => "Invoice Request",
+        Action::PayInvoice => "Payment Request",
+        Action::FiatSent => "Fiat Sent",
+        Action::FiatSentOk => "Fiat Received",
+        Action::Release | Action::Released => "Release",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        _ => "Message",
+    };
+
+    MessageNotification {
+        order_id: msg.order_id,
+        message_preview: action_str.to_string(),
+        timestamp: msg.timestamp,
+        action,
+        sat_amount: msg.sat_amount,
+        invoice: msg.buyer_invoice.clone(),
+    }
 }
 
 impl Default for AppState {
@@ -321,5 +358,10 @@ pub fn ui_draw(
     // New message notification popup overlay
     if let UiMode::NewMessageNotification(notification, action, invoice_state) = &app.mode {
         tab_content::render_message_notification(f, notification, action.clone(), invoice_state);
+    }
+
+    // Viewing message popup overlay
+    if let UiMode::ViewingMessage(view_state) = &app.mode {
+        tab_content::render_message_view(f, view_state);
     }
 }

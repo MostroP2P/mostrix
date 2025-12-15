@@ -252,20 +252,48 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             notification = message_notification_rx.recv() => {
                 if let Some(notification) = notification {
-                    // Only show popup immediately for PayInvoice and AddInvoice
-                    // For other actions, just increment the pending notifications counter
+                    // Only show popup automatically for PayInvoice and AddInvoice,
+                    // and only if we haven't already shown it for this message.
                     match notification.action {
                         Action::PayInvoice | Action::AddInvoice => {
-                            // Show popup immediately for critical actions
-                            let invoice_state =
-                            crate::ui::InvoiceInputState {
-                                invoice_input: String::new(),
-                                focused: true,
-                                just_pasted: false,
-                                copied_to_clipboard: false,
-                            };
-                            let action = notification.action.clone();
-                            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+                            let mut should_show_popup = false;
+
+                            if let Some(order_id) = notification.order_id {
+                                // Try to find the corresponding OrderMessage and check its popup flag.
+                                let mut messages = app.messages.lock().unwrap();
+                                if let Some(order_msg) = messages
+                                    .iter_mut()
+                                    .find(|m| m.order_id == Some(order_id))
+                                {
+                                    if !order_msg.auto_popup_shown {
+                                        order_msg.auto_popup_shown = true;
+                                        should_show_popup = true;
+                                    }
+                                } else {
+                                    // No matching message found (e.g. race condition) - fall back to showing once.
+                                    should_show_popup = true;
+                                }
+                            } else {
+                                // No order_id associated, show once.
+                                should_show_popup = true;
+                            }
+
+                            if should_show_popup {
+                                let invoice_state = crate::ui::InvoiceInputState {
+                                    invoice_input: String::new(),
+                                    // Only focus input for AddInvoice, PayInvoice is display-only.
+                                    focused: matches!(notification.action, Action::AddInvoice),
+                                    just_pasted: false,
+                                    copied_to_clipboard: false,
+                                };
+                                let action = notification.action.clone();
+                                app.mode =
+                                    UiMode::NewMessageNotification(notification, action, invoice_state);
+                            } else {
+                                // Popup already shown once; just bump pending counter.
+                                let mut pending = app.pending_notifications.lock().unwrap();
+                                *pending += 1;
+                            }
                         }
                         _ => {
                             // For other actions, just increment pending notifications counter

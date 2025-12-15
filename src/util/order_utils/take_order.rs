@@ -134,7 +134,7 @@ pub async fn take_order(
                             {
                                 log::error!("Failed to save order to database: {}", e);
                             }
-                            return Ok(create_order_result_success(returned_order, next_idx));
+                            Ok(create_order_result_success(returned_order, next_idx))
                         }
                         Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
                             // For buy orders, we receive PaymentRequest with invoice for seller to pay
@@ -142,7 +142,9 @@ pub async fn take_order(
                             let order_to_save = if let Some(order_to_save) = opt_order {
                                 order_to_save
                             } else {
-                                return Err(anyhow::anyhow!("Order details are missing from payload"));
+                                return Err(anyhow::anyhow!(
+                                    "Order details are missing from payload"
+                                ));
                             };
 
                             // Save order to database
@@ -164,20 +166,20 @@ pub async fn take_order(
                             );
 
                             // Return PaymentRequestRequired to trigger invoice popup
-                            return Ok(crate::ui::OrderResult::PaymentRequestRequired {
+                            Ok(crate::ui::OrderResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),
                                 sat_amount: *opt_amount,
                                 trade_index: next_idx,
-                            });
+                            })
                         }
                         _ => {
                             log::warn!(
                                 "Received response without order details or payment request"
                             );
-                            return Err(anyhow::anyhow!(
+                            Err(anyhow::anyhow!(
                                 "Response without order details or payment request"
-                            ));
+                            ))
                         }
                     }
                 } else {

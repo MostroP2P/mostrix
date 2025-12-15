@@ -2,7 +2,7 @@ use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
 use crate::util::order_utils::execute_add_invoice;
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
-use mostro_core::prelude::{Action, SmallOrder};
+use mostro_core::prelude::*;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -63,6 +63,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to YES button (left side)
             take_state.selected_button = true;
         }
+        UiMode::ViewingMessage(ref mut view_state) => {
+            // Switch to YES button (left side)
+            view_state.selected_button = true;
+        }
         UiMode::NewMessageNotification(_, _, _) => {
             // No action in notification mode
         }
@@ -93,6 +97,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         UiMode::TakingOrder(ref mut take_state) => {
             // Switch to NO button (right side)
             take_state.selected_button = false;
+        }
+        UiMode::ViewingMessage(ref mut view_state) => {
+            // Switch to NO button (right side)
+            view_state.selected_button = false;
         }
         UiMode::NewMessageNotification(_, _, _) => {
             // No action in notification mode
@@ -136,7 +144,8 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::WaitingTakeOrder(_)
         | UiMode::WaitingAddInvoice
         | UiMode::OrderResult(_)
-        | UiMode::NewMessageNotification(_, _, _) => {
+        | UiMode::NewMessageNotification(_, _, _)
+        | UiMode::ViewingMessage(_) => {
             // No navigation in these modes
         }
     }
@@ -177,7 +186,8 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::WaitingTakeOrder(_)
         | UiMode::WaitingAddInvoice
         | UiMode::OrderResult(_)
-        | UiMode::NewMessageNotification(_, _, _) => {
+        | UiMode::NewMessageNotification(_, _, _)
+        | UiMode::ViewingMessage(_) => {
             // No navigation in these modes
         }
     }
@@ -278,6 +288,12 @@ pub fn handle_enter_key(
             );
             // Mode is updated inside handle_enter_message_notification
         }
+        UiMode::ViewingMessage(_view_state) => {
+            // Enter confirms the selected button (YES or NO)
+            // For now, just close the popup regardless of selection
+            // In the future, you could add specific actions based on the button
+            app.mode = UiMode::Normal;
+        }
     }
 }
 
@@ -295,6 +311,35 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
                 selected_button: true, // Default to YES
             };
             app.mode = UiMode::TakingOrder(take_state);
+        }
+    } else if app.active_tab == Tab::Messages {
+        let messages_lock = app.messages.lock().unwrap();
+        if let Some(msg) = messages_lock.get(app.selected_message_idx) {
+            let inner_message_kind = msg.message.get_inner_message_kind();
+            let action = inner_message_kind.action.clone();
+            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+                // Show invoice/payment popup for actionable messages
+                let notification = crate::ui::order_message_to_notification(msg);
+                let action = notification.action.clone();
+                let invoice_state = crate::ui::InvoiceInputState {
+                    invoice_input: String::new(),
+                    focused: matches!(action, Action::AddInvoice),
+                    just_pasted: false,
+                    copied_to_clipboard: false,
+                };
+
+                app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+            } else {
+                // Show simple message view popup for other message types
+                let notification = crate::ui::order_message_to_notification(msg);
+                let view_state = crate::ui::MessageViewState {
+                    message_content: notification.message_preview,
+                    order_id: notification.order_id,
+                    action: notification.action,
+                    selected_button: true, // Default to YES
+                };
+                app.mode = UiMode::ViewingMessage(view_state);
+            }
         }
     }
 }
@@ -391,7 +436,7 @@ fn handle_enter_message_notification(
     order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
 ) {
     match action {
-        mostro_core::prelude::Action::AddInvoice => {
+        Action::AddInvoice => {
             // For AddInvoice, Enter submits the invoice
             let order_result_tx_clone = order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
@@ -428,6 +473,7 @@ fn handle_enter_message_notification(
                 }
             }
         }
+        Action::PayInvoice => {}
         _ => {
             let _ =
                 order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
@@ -465,6 +511,11 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         }
         UiMode::NewMessageNotification(_, _, _) => {
             // Dismiss notification
+            app.mode = UiMode::Normal;
+            true
+        }
+        UiMode::ViewingMessage(_) => {
+            // Dismiss message view popup
             app.mode = UiMode::Normal;
             true
         }
