@@ -7,7 +7,7 @@ pub mod util;
 use crate::settings::{init_settings, Settings};
 use crate::util::{fetch_events_list, listen_for_order_messages, Event as UtilEvent, ListKind};
 use crossterm::event::EventStream;
-use mostro_core::prelude::Status;
+use mostro_core::prelude::*;
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -101,13 +101,16 @@ async fn main() -> Result<(), anyhow::Error> {
     setup_logger(&settings.log_level).expect("Can't initialize logger");
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(
+        out,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
     // Shared state: orders are stored in memory.
-    let orders: Arc<Mutex<Vec<mostro_core::prelude::SmallOrder>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Configure Nostr client.
     let my_keys = settings
@@ -189,6 +192,37 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
+                    // Handle PaymentRequestRequired - show invoice popup for buy orders
+                    if let crate::ui::OrderResult::PaymentRequestRequired { order, invoice, sat_amount, trade_index } = &result {
+                        // Track trade_index
+                        if let Some(order_id) = order.id {
+                            let mut indices = app.active_order_trade_indices.lock().unwrap();
+                            indices.insert(order_id, *trade_index);
+                            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
+                        }
+
+                        // Create MessageNotification to show PayInvoice popup
+                        let notification = crate::ui::MessageNotification {
+                            order_id: order.id,
+                            message_preview: "Payment Request".to_string(),
+                            timestamp: chrono::Utc::now().timestamp() as u64,
+                            action: mostro_core::prelude::Action::PayInvoice,
+                            sat_amount: *sat_amount,
+                            invoice: Some(invoice.clone()),
+                        };
+
+                        // Create invoice state (not focused since this is display-only)
+                        let invoice_state = crate::ui::InvoiceInputState {
+                            invoice_input: String::new(),
+                            focused: false,
+                            just_pasted: false,
+                            copied_to_clipboard: false,
+                        };
+                        // Reuse pay invoice popup for buy orders when taking an order
+                        app.mode = UiMode::NewMessageNotification(notification, mostro_core::prelude::Action::PayInvoice, invoice_state);
+                        continue;
+                    }
+
                     // Track trade_index for taken orders
                     if let crate::ui::OrderResult::Success { order_id, trade_index, .. } = &result {
                         if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
@@ -218,18 +252,48 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             notification = message_notification_rx.recv() => {
                 if let Some(notification) = notification {
-                    // Only show popup immediately for PayInvoice and AddInvoice
-                    // For other actions, just increment the pending notifications counter
+                    // Only show popup automatically for PayInvoice and AddInvoice,
+                    // and only if we haven't already shown it for this message.
                     match notification.action {
-                        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::AddInvoice => {
-                            // Show popup immediately for critical actions
-                            let invoice_state = crate::ui::InvoiceInputState {
-                                invoice_input: String::new(),
-                                focused: true,
-                                just_pasted: false,
-                            };
-                            let action = notification.action.clone();
-                            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+                        Action::PayInvoice | Action::AddInvoice => {
+                            let mut should_show_popup = false;
+
+                            if let Some(order_id) = notification.order_id {
+                                // Try to find the corresponding OrderMessage and check its popup flag.
+                                let mut messages = app.messages.lock().unwrap();
+                                if let Some(order_msg) = messages
+                                    .iter_mut()
+                                    .find(|m| m.order_id == Some(order_id))
+                                {
+                                    if !order_msg.auto_popup_shown {
+                                        order_msg.auto_popup_shown = true;
+                                        should_show_popup = true;
+                                    }
+                                } else {
+                                    // No matching message found (e.g. race condition) - fall back to showing once.
+                                    should_show_popup = true;
+                                }
+                            } else {
+                                // No order_id associated, show once.
+                                should_show_popup = true;
+                            }
+
+                            if should_show_popup {
+                                let invoice_state = crate::ui::InvoiceInputState {
+                                    invoice_input: String::new(),
+                                    // Only focus input for AddInvoice, PayInvoice is display-only.
+                                    focused: matches!(notification.action, Action::AddInvoice),
+                                    just_pasted: false,
+                                    copied_to_clipboard: false,
+                                };
+                                let action = notification.action.clone();
+                                app.mode =
+                                    UiMode::NewMessageNotification(notification, action, invoice_state);
+                            } else {
+                                // Popup already shown once; just bump pending counter.
+                                let mut pending = app.pending_notifications.lock().unwrap();
+                                *pending += 1;
+                            }
                         }
                         _ => {
                             // For other actions, just increment pending notifications counter
@@ -255,7 +319,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle paste events (bracketed paste mode)
                 if let Event::Paste(pasted_text) = event {
-                    if let UiMode::NewMessageNotification(_, mostro_core::prelude::Action::AddInvoice, ref mut invoice_state) = app.mode {
+                    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
                         if invoice_state.focused {
                             // Filter out control characters (especially newlines) that could trigger unwanted actions
                             let filtered_text: String = pasted_text
@@ -269,6 +333,15 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                     continue;
                 }
+
+                // Handle mouse events (double-click for invoice selection)
+                // Terminal's native text selection will handle the actual selection
+                // since we've removed borders from the invoice area for easier selection
+                // if let Event::Mouse(_mouse_event) = event {
+                //     // Mouse events are enabled for terminal-native text selection
+                //     // The borderless invoice display makes it easier to select the invoice text
+                //     continue;
+                // }
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
@@ -317,7 +390,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Restore terminal to its original state.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     Ok(())

@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use mostro_core::prelude::*;
+use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use super::{MessageNotification, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{MessageNotification, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -44,7 +45,11 @@ pub fn render_messages_tab(
             let order_id_str = if let Some(order_id) = msg.order_id {
                 format!(
                     "Order: {}",
-                    order_id.to_string().chars().take(8).collect::<String>()
+                    order_id
+                        .to_string()
+                        .chars()
+                        .take(order_id.to_string().len())
+                        .collect::<String>()
                 )
             } else {
                 "Order: Unknown".to_string()
@@ -55,15 +60,12 @@ pub fn render_messages_tab(
                 .unwrap_or_else(|| "Unknown time".to_string());
 
             let action_str = match msg.message.get_inner_message_kind().action {
-                mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
-                mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
-                mostro_core::prelude::Action::FiatSent => "✅ Fiat Sent",
-                mostro_core::prelude::Action::FiatSentOk => "✅ Fiat Received",
-                mostro_core::prelude::Action::Release | mostro_core::prelude::Action::Released => {
-                    "🔓 Release"
-                }
-                mostro_core::prelude::Action::Dispute
-                | mostro_core::prelude::Action::DisputeInitiatedByYou => "⚠️ Dispute",
+                Action::AddInvoice => "📝 Invoice Request",
+                Action::PayInvoice => "💳 Payment Request",
+                Action::FiatSent => "✅ Fiat Sent",
+                Action::FiatSentOk => "✅ Fiat Received",
+                Action::Release | Action::Released => "🔓 Release",
+                Action::Dispute | Action::DisputeInitiatedByYou => "⚠️ Dispute",
                 _ => "📨 Message",
             };
 
@@ -104,37 +106,47 @@ pub fn render_messages_tab(
 pub fn render_message_notification(
     f: &mut ratatui::Frame,
     notification: &MessageNotification,
-    action: mostro_core::prelude::Action,
+    action: Action,
     invoice_state: &crate::ui::InvoiceInputState,
 ) {
     let area = f.area();
     // Different widths based on action type
     let popup_width = match action {
-        mostro_core::prelude::Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
+        Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
+        Action::PayInvoice => 400, // Wide enough to show full Bolt11 invoice (383 chars) on one line
         _ => 70,
     };
 
     // Different heights based on action type
     let popup_height = match action {
-        mostro_core::prelude::Action::AddInvoice => 18, // More height for multi-line invoice display
-        mostro_core::prelude::Action::PayInvoice => 10, // Need space for invoice display
+        Action::AddInvoice => 18, // More height for multi-line invoice display
+        Action::PayInvoice => 18, // More height for multi-line invoice display
         _ => 8,
     };
 
-    let popup_x = area.x + (area.width - popup_width) / 2;
-    let popup_y = area.y + (area.height - popup_height) / 2;
-    let popup = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: popup_width,
-        height: popup_height,
+    // Clamp popup dimensions to fit within available area to prevent overflow
+    let popup_width = popup_width.min(area.width);
+    let popup_height = popup_height.min(area.height);
+
+    // Center the popup using Flex::Center
+    let popup = {
+        let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(popup);
+        popup
     };
 
     let title = match action {
-        mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
-        mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
+        Action::AddInvoice => "📝 Invoice Request",
+        Action::PayInvoice => "💳 Payment Request",
         _ => "📨 New Message",
     };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
 
     let block = Block::default()
         .title(title)
@@ -151,7 +163,7 @@ pub fn render_message_notification(
     };
 
     match action {
-        mostro_core::prelude::Action::AddInvoice => {
+        Action::AddInvoice => {
             // Layout for AddInvoice with input field
             let chunks = Layout::new(
                 Direction::Vertical,
@@ -177,6 +189,7 @@ pub fn render_message_notification(
                 Paragraph::new(Line::from(vec![Span::styled(
                     order_id_str,
                     Style::default()
+                        .bg(BACKGROUND_COLOR)
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 )]))
@@ -188,7 +201,7 @@ pub fn render_message_notification(
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
                     &notification.message_preview,
-                    Style::default(),
+                    Style::default().bg(BACKGROUND_COLOR),
                 )]))
                 .alignment(ratatui::layout::Alignment::Center),
                 chunks[2],
@@ -210,11 +223,17 @@ pub fn render_message_notification(
             );
 
             // Use the full chunks[5] area for the input field
-            let input_area = Rect {
-                x: chunks[5].x + 1,
-                y: chunks[5].y,
-                width: chunks[5].width.saturating_sub(2),
-                height: chunks[5].height,
+            // Ensure we have valid dimensions and use saturating arithmetic
+            let input_area = if chunks[5].width > 2 && chunks[5].height > 0 {
+                Rect {
+                    x: chunks[5].x.saturating_add(1),
+                    y: chunks[5].y,
+                    width: chunks[5].width.saturating_sub(2),
+                    height: chunks[5].height,
+                }
+            } else {
+                // Fallback to a minimal valid area if chunks[5] is too small
+                chunks[5]
             };
 
             // Invoice input field area (larger, more visible)
@@ -288,8 +307,8 @@ pub fn render_message_notification(
                 chunks[8],
             );
         }
-        mostro_core::prelude::Action::PayInvoice => {
-            // Layout for PayInvoice showing invoice to pay
+        Action::PayInvoice => {
+            // Layout for PayInvoice showing invoice to pay (same layout as AddInvoice)
             let chunks = Layout::new(
                 Direction::Vertical,
                 [
@@ -297,9 +316,11 @@ pub fn render_message_notification(
                     Constraint::Length(1), // order id
                     Constraint::Length(1), // message preview
                     Constraint::Length(1), // spacer
-                    Constraint::Length(3), // invoice display
+                    Constraint::Length(1), // label
+                    Constraint::Length(6), // invoice display field (more lines for full invoice display)
                     Constraint::Length(1), // spacer
-                    Constraint::Length(1), // help text
+                    Constraint::Length(1), // help text line 1
+                    Constraint::Length(1), // help text line 2
                 ],
             )
             .split(popup);
@@ -311,6 +332,7 @@ pub fn render_message_notification(
                 Paragraph::new(Line::from(vec![Span::styled(
                     order_id_str,
                     Style::default()
+                        .bg(BACKGROUND_COLOR)
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 )]))
@@ -322,56 +344,88 @@ pub fn render_message_notification(
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
                     &notification.message_preview,
-                    Style::default(),
+                    Style::default().bg(BACKGROUND_COLOR).fg(Color::White),
                 )]))
                 .alignment(ratatui::layout::Alignment::Center),
                 chunks[2],
             );
 
             // Invoice to pay
-            if let Some(invoice) = &notification.buyer_invoice {
+            if let Some(invoice) = &notification.invoice {
                 let amount_text = if let Some(amount) = notification.sat_amount {
-                    format!("Amount: {} sats", amount)
+                    format!("Lightning invoice to pay ({} sats):", amount)
                 } else {
-                    "Amount: See invoice".to_string()
+                    "Lightning invoice to pay:".to_string()
                 };
 
+                // Invoice label
                 f.render_widget(
                     Paragraph::new(Line::from(vec![Span::styled(
                         amount_text,
-                        Style::default().fg(PRIMARY_COLOR),
-                    )])),
+                        Style::default()
+                            .fg(PRIMARY_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    )]))
+                    .alignment(ratatui::layout::Alignment::Center),
                     chunks[4],
                 );
 
-                // Show invoice (truncated if too long)
-                let invoice_display = if invoice.len() > 60 {
-                    format!("{}...", &invoice[..60])
-                } else {
-                    invoice.clone()
-                };
-
+                // Show full invoice with text wrapping (no truncation)
+                // Bordered block for visual clarity - hold Shift while selecting to copy
                 f.render_widget(
                     Paragraph::new(Line::from(vec![Span::styled(
-                        invoice_display,
-                        Style::default().fg(Color::Yellow),
+                        invoice.clone(),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
                     )]))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .style(Style::default().fg(PRIMARY_COLOR)),
-                    )
-                    .wrap(ratatui::widgets::Wrap { trim: true }),
-                    Rect {
-                        x: chunks[4].x,
-                        y: chunks[4].y + 1,
-                        width: chunks[4].width,
-                        height: 2,
-                    },
+                    ),
+                    chunks[5],
                 );
             }
 
-            // Help text
+            // Help text - first line (show "Copied!" message if invoice was just copied)
+            if invoice_state.copied_to_clipboard {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        "✓ Invoice copied to clipboard!",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )]))
+                    .alignment(ratatui::layout::Alignment::Center),
+                    chunks[7],
+                );
+            } else {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("Press ", Style::default()),
+                        Span::styled(
+                            "C",
+                            Style::default()
+                                .fg(PRIMARY_COLOR)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" to copy invoice to clipboard, or ", Style::default()),
+                        Span::styled(
+                            "Shift",
+                            Style::default()
+                                .fg(PRIMARY_COLOR)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("+click to select", Style::default()),
+                    ]))
+                    .alignment(ratatui::layout::Alignment::Center),
+                    chunks[7],
+                );
+            }
+
+            // Help text - second line
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled("Press ", Style::default()),
@@ -391,7 +445,7 @@ pub fn render_message_notification(
                     Span::styled(" to dismiss", Style::default()),
                 ]))
                 .alignment(ratatui::layout::Alignment::Center),
-                chunks[6],
+                chunks[8],
             );
         }
         _ => {
@@ -453,4 +507,142 @@ pub fn render_message_notification(
             );
         }
     }
+}
+
+pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {
+    let area = f.area();
+    let popup_width = area.width.saturating_sub(area.width / 4);
+    let popup_height = 12;
+    // Center the popup using Flex::Center
+    let popup = {
+        let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(popup);
+        popup
+    };
+
+    // Clear the popup area to make it fully opaque
+    f.render_widget(Clear, popup);
+
+    let inner_chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // title
+            Constraint::Length(1), // separator
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // message content
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // buttons
+            Constraint::Length(1), // help text
+        ],
+    )
+    .split(popup);
+
+    let block = Block::default()
+        .title("📨 Message")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block, popup);
+
+    // Order ID
+    let order_id_str = if let Some(order_id) = view_state.order_id {
+        format!(
+            "Order: {}",
+            order_id
+                .to_string()
+                .chars()
+                .take(order_id.to_string().len())
+                .collect::<String>()
+        )
+    } else {
+        "Order: Unknown".to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            order_id_str,
+            Style::default()
+                .bg(BACKGROUND_COLOR)
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[3],
+    );
+
+    // Message content
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            &view_state.message_content,
+            Style::default().bg(BACKGROUND_COLOR),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(ratatui::widgets::Wrap { trim: true }),
+        inner_chunks[4],
+    );
+
+    // Yes/No buttons
+    let yes_style = if view_state.selected_button {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(PRIMARY_COLOR)
+    };
+
+    let no_style = if !view_state.selected_button {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(PRIMARY_COLOR)
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  [", Style::default()),
+            Span::styled("YES", yes_style),
+            Span::styled("]  ", Style::default()),
+            Span::styled("  [", Style::default()),
+            Span::styled("NO", no_style),
+            Span::styled("]  ", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[6],
+    );
+
+    // Help text
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Use ", Style::default()),
+            Span::styled(
+                "Left/Right",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to select, ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[7],
+    );
 }

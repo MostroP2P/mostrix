@@ -90,6 +90,7 @@ pub enum UiMode {
     WaitingAddInvoice,                // Waiting for Mostro response (adding invoice)
     OrderResult(OrderResult),         // Show order result (success or error)
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
+    ViewingMessage(MessageViewState), // Simple message popup with yes/no options
 }
 
 #[derive(Clone, Debug)]
@@ -104,8 +105,15 @@ pub enum OrderResult {
         max_amount: Option<i64>,
         payment_method: String,
         premium: i64,
-        status: Option<mostro_core::prelude::Status>,
+        status: Option<Status>,
         trade_index: Option<i64>, // Trade index used for this order
+    },
+    /// Payment request required - shows invoice popup for buy orders
+    PaymentRequestRequired {
+        order: mostro_core::prelude::SmallOrder,
+        invoice: String,
+        sat_amount: Option<i64>,
+        trade_index: i64,
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
@@ -147,6 +155,8 @@ pub struct OrderMessage {
     pub sat_amount: Option<i64>,
     pub buyer_invoice: Option<String>,
     pub read: bool, // Whether the message has been read
+    /// Whether we've already shown the automatic popup for this message
+    pub auto_popup_shown: bool,
 }
 
 /// Notification for a new message
@@ -157,7 +167,7 @@ pub struct MessageNotification {
     pub timestamp: u64,
     pub action: Action,
     pub sat_amount: Option<i64>,
-    pub buyer_invoice: Option<String>,
+    pub invoice: Option<String>,
 }
 
 /// State for handling invoice input in AddInvoice notifications
@@ -166,6 +176,16 @@ pub struct InvoiceInputState {
     pub invoice_input: String,
     pub focused: bool,
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
+    pub copied_to_clipboard: bool, // Flag to show "Copied!" message
+}
+
+/// State for viewing a simple message popup
+#[derive(Clone, Debug)]
+pub struct MessageViewState {
+    pub message_content: String, // The message content to display
+    pub order_id: Option<uuid::Uuid>,
+    pub action: Action,
+    pub selected_button: bool, // true for YES, false for NO
 }
 
 pub struct AppState {
@@ -176,6 +196,34 @@ pub struct AppState {
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
+}
+
+/// Build a `MessageNotification` from an `OrderMessage` for use in popups.
+pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification {
+    let inner_message_kind = msg.message.get_inner_message_kind();
+    let action = inner_message_kind.action.clone();
+
+    let action_str = match action {
+        Action::AddInvoice => "Invoice Request",
+        Action::PayInvoice => "Payment Request",
+        Action::FiatSent => "Fiat Sent",
+        Action::FiatSentOk => "Fiat Received",
+        Action::WaitingSellerToPay => "Waiting for Seller to Pay",
+        Action::Rate => "Rate Counterparty",
+        Action::RateReceived => "Rate Counterparty received",
+        Action::Release | Action::Released => "Release",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        _ => "Message",
+    };
+
+    MessageNotification {
+        order_id: msg.order_id,
+        message_preview: action_str.to_string(),
+        timestamp: msg.timestamp,
+        action,
+        sat_amount: msg.sat_amount,
+        invoice: msg.buyer_invoice.clone(),
+    }
 }
 
 impl Default for AppState {
@@ -313,5 +361,10 @@ pub fn ui_draw(
     // New message notification popup overlay
     if let UiMode::NewMessageNotification(notification, action, invoice_state) = &app.mode {
         tab_content::render_message_notification(f, notification, action.clone(), invoice_state);
+    }
+
+    // Viewing message popup overlay
+    if let UiMode::ViewingMessage(view_state) = &app.mode {
+        tab_content::render_message_view(f, view_state);
     }
 }
