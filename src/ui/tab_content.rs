@@ -552,7 +552,11 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     let order_id_str = if let Some(order_id) = view_state.order_id {
         format!(
             "Order: {}",
-            order_id.to_string().chars().take(8).collect::<String>()
+            order_id
+                .to_string()
+                .chars()
+                .take(order_id.to_string().len())
+                .collect::<String>()
         )
     } else {
         "Order: Unknown".to_string()
