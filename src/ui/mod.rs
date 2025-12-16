@@ -209,6 +209,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat Received",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
+        Action::HoldInvoicePaymentAccepted => "Hold Invoice Payment Accepted",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rate Counterparty received",
         Action::Release | Action::Released => "Release",

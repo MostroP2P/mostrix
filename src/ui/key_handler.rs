@@ -1,5 +1,5 @@
-use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode};
-use crate::util::order_utils::execute_add_invoice;
+use crate::ui::{AppState, FormState, MessageViewState, Tab, TakeOrderState, UiMode};
+use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::*;
@@ -288,11 +288,17 @@ pub fn handle_enter_key(
             );
             // Mode is updated inside handle_enter_message_notification
         }
-        UiMode::ViewingMessage(_view_state) => {
+        UiMode::ViewingMessage(view_state) => {
             // Enter confirms the selected button (YES or NO)
-            // For now, just close the popup regardless of selection
-            // In the future, you could add specific actions based on the button
-            app.mode = UiMode::Normal;
+            handle_enter_viewing_message(
+                app,
+                &view_state,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
+            // Mode is updated inside handle_enter_viewing_message
         }
     }
 }
@@ -422,6 +428,73 @@ fn handle_enter_taking_order(
         // NO selected - cancel
         app.mode = UiMode::Normal;
     }
+}
+
+fn handle_enter_viewing_message(
+    app: &mut AppState,
+    view_state: &MessageViewState,
+    pool: &sqlx::SqlitePool,
+    client: &nostr_sdk::Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
+) {
+    // Only proceed if YES is selected
+    if !view_state.selected_button {
+        app.mode = UiMode::Normal;
+        return;
+    }
+
+    // Map the action from the message to the action we need to send
+    let action_to_send = match view_state.action {
+        Action::HoldInvoicePaymentAccepted => Action::FiatSent,
+        Action::FiatSent => Action::FiatSentOk,
+        _ => {
+            let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+                "Invalid action for send message".to_string(),
+            ));
+            app.mode = UiMode::Normal;
+            return;
+        }
+    };
+
+    // Get order_id from view_state
+    let Some(order_id) = view_state.order_id else {
+        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+            "No order ID in message".to_string(),
+        ));
+        app.mode = UiMode::Normal;
+        return;
+    };
+
+    // Set waiting mode
+    app.mode = UiMode::WaitingAddInvoice; // Reuse waiting mode for now
+
+    // Spawn async task to send message
+    let pool_clone = pool.clone();
+    let client_clone = client.clone();
+    let result_tx = order_result_tx.clone();
+
+    tokio::spawn(async move {
+        match execute_send_msg(
+            &order_id,
+            action_to_send,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = result_tx.send(crate::ui::OrderResult::Info(
+                    "Message sent successfully".to_string(),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to send message: {}", e);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
