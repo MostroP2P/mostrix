@@ -8,6 +8,39 @@ use crate::models::{Order, User};
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::order_utils::helper::handle_mostro_response;
 
+async fn create_msg_payload(
+    action: &Action,
+    order: &Order,
+    pool: &sqlx::SqlitePool,
+) -> Result<Option<Payload>> {
+    match action {
+        Action::FiatSent | Action::Release => {
+            // Check if this is a range order that needs NextTrade payload
+            if let (Some(min_amount), Some(max_amount)) = (order.min_amount, order.max_amount) {
+                if max_amount - order.fiat_amount >= min_amount {
+                    // This is a range order with remaining amount, create NextTrade payload
+                    let user = User::get(pool).await?;
+                    let next_trade_index = user.last_trade_index.unwrap_or(0) + 1;
+                    let next_trade_keys = user.derive_trade_keys(next_trade_index)?;
+
+                    // Update last trade index
+                    User::update_last_trade_index(pool, next_trade_index).await?;
+
+                    Ok(Some(Payload::NextTrade(
+                        next_trade_keys.public_key().to_string(),
+                        next_trade_index as u32,
+                    )))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 pub async fn execute_send_msg(
     order_id: &Uuid,
     action: Action,
@@ -31,45 +64,17 @@ pub async fn execute_send_msg(
 
     // Determine payload based on action
     // For FiatSent on range orders, we might need NextTrade payload
-    let payload: Option<Payload> = match action {
-        Action::FiatSent | Action::Release => {
-            // Check if this is a range order that needs NextTrade payload
-            if let (Some(min_amount), Some(max_amount)) = (order.min_amount, order.max_amount) {
-                if max_amount - order.fiat_amount >= min_amount {
-                    // This is a range order with remaining amount, create NextTrade payload
-                    let user = User::get(pool).await?;
-                    let next_trade_index = user.last_trade_index.unwrap_or(0) + 1;
-                    let next_trade_keys = user.derive_trade_keys(next_trade_index)?;
-
-                    // Update last trade index
-                    User::update_last_trade_index(pool, next_trade_index).await?;
-
-                    Some(Payload::NextTrade(
-                        next_trade_keys.public_key().to_string(),
-                        next_trade_index as u32,
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
+    let payload: Option<Payload> = create_msg_payload(&action, &order, pool).await?;
 
     // Create request id
     let request_id = Uuid::new_v4().as_u128() as u64;
-
-    // Clone action before moving it into the message
-    let action_clone = action.clone();
 
     // Create message
     let message = Message::new_order(
         Some(*order_id),
         Some(request_id),
         None,
-        action_clone,
+        action.clone(),
         payload,
     );
 

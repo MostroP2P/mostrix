@@ -257,10 +257,11 @@ async fn main() -> Result<(), anyhow::Error> {
                     match notification.action {
                         Action::PayInvoice | Action::AddInvoice => {
                             let mut should_show_popup = false;
+                            let mut 
+                            messages = app.messages.lock().unwrap();
 
                             if let Some(order_id) = notification.order_id {
                                 // Try to find the corresponding OrderMessage and check its popup flag.
-                                let mut messages = app.messages.lock().unwrap();
                                 if let Some(order_msg) = messages
                                     .iter_mut()
                                     .find(|m| m.order_id == Some(order_id))
@@ -291,8 +292,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                     UiMode::NewMessageNotification(notification, action, invoice_state);
                             } else {
                                 // Popup already shown once; just bump pending counter.
-                                let mut pending = app.pending_notifications.lock().unwrap();
-                                *pending += 1;
+                                if let Some(order_id) = notification.order_id {
+                                    if messages.iter().any(|m| m.order_id == Some(order_id)) {
+                                        continue;
+                                    }
+                                    else {
+                                        let mut pending = app.pending_notifications.lock().unwrap();
+                                        *pending += 1;
+                                    }
+                                }
                             }
                         }
                         _ => {

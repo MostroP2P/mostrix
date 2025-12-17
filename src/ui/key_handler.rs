@@ -447,7 +447,7 @@ fn handle_enter_viewing_message(
     // Map the action from the message to the action we need to send
     let action_to_send = match view_state.action {
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
-        Action::FiatSent => Action::FiatSentOk,
+        Action::FiatSentOk => Action::Release,
         _ => {
             let _ = order_result_tx.send(crate::ui::OrderResult::Error(
                 "Invalid action for send message".to_string(),
