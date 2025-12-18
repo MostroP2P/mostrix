@@ -5,7 +5,10 @@ pub mod ui;
 pub mod util;
 
 use crate::settings::{init_settings, Settings};
-use crate::util::{fetch_events_list, listen_for_order_messages, Event as UtilEvent, ListKind};
+use crate::util::{
+    fetch_events_list, handle_message_notification, handle_order_result, listen_for_order_messages,
+    Event as UtilEvent, ListKind,
+};
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
 
@@ -192,123 +195,12 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
-                    // Handle PaymentRequestRequired - show invoice popup for buy orders
-                    if let crate::ui::OrderResult::PaymentRequestRequired { order, invoice, sat_amount, trade_index } = &result {
-                        // Track trade_index
-                        if let Some(order_id) = order.id {
-                            let mut indices = app.active_order_trade_indices.lock().unwrap();
-                            indices.insert(order_id, *trade_index);
-                            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
-                        }
-
-                        // Create MessageNotification to show PayInvoice popup
-                        let notification = crate::ui::MessageNotification {
-                            order_id: order.id,
-                            message_preview: "Payment Request".to_string(),
-                            timestamp: chrono::Utc::now().timestamp() as u64,
-                            action: mostro_core::prelude::Action::PayInvoice,
-                            sat_amount: *sat_amount,
-                            invoice: Some(invoice.clone()),
-                        };
-
-                        // Create invoice state (not focused since this is display-only)
-                        let invoice_state = crate::ui::InvoiceInputState {
-                            invoice_input: String::new(),
-                            focused: false,
-                            just_pasted: false,
-                            copied_to_clipboard: false,
-                        };
-                        // Reuse pay invoice popup for buy orders when taking an order
-                        app.mode = UiMode::NewMessageNotification(notification, mostro_core::prelude::Action::PayInvoice, invoice_state);
-                        continue;
-                    }
-
-                    // Track trade_index for taken orders
-                    if let crate::ui::OrderResult::Success { order_id, trade_index, .. } = &result {
-                        if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
-                            let mut indices = app.active_order_trade_indices.lock().unwrap();
-                            indices.insert(*order_id, *trade_index);
-                            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
-                        }
-                    }
-
-                    // Set appropriate result mode based on current state
-                    match app.mode {
-                        UiMode::WaitingTakeOrder(_) => {
-                            app.mode = UiMode::OrderResult(result);
-                        }
-                        UiMode::WaitingAddInvoice => {
-                            app.mode = UiMode::OrderResult(result);
-                        }
-                        UiMode::NewMessageNotification(_, _, _) => {
-                            // If we have a notification, replace it with the result
-                            app.mode = UiMode::OrderResult(result);
-                        }
-                        _ => {
-                            app.mode = UiMode::OrderResult(result);
-                        }
-                    }
+                    handle_order_result(result, &mut app);
                 }
             }
             notification = message_notification_rx.recv() => {
                 if let Some(notification) = notification {
-                    // Only show popup automatically for PayInvoice and AddInvoice,
-                    // and only if we haven't already shown it for this message.
-                    match notification.action {
-                        Action::PayInvoice | Action::AddInvoice => {
-                            let mut should_show_popup = false;
-                            let mut 
-                            messages = app.messages.lock().unwrap();
-
-                            if let Some(order_id) = notification.order_id {
-                                // Try to find the corresponding OrderMessage and check its popup flag.
-                                if let Some(order_msg) = messages
-                                    .iter_mut()
-                                    .find(|m| m.order_id == Some(order_id))
-                                {
-                                    if !order_msg.auto_popup_shown {
-                                        order_msg.auto_popup_shown = true;
-                                        should_show_popup = true;
-                                    }
-                                } else {
-                                    // No matching message found (e.g. race condition) - fall back to showing once.
-                                    should_show_popup = true;
-                                }
-                            } else {
-                                // No order_id associated, show once.
-                                should_show_popup = true;
-                            }
-
-                            if should_show_popup {
-                                let invoice_state = crate::ui::InvoiceInputState {
-                                    invoice_input: String::new(),
-                                    // Only focus input for AddInvoice, PayInvoice is display-only.
-                                    focused: matches!(notification.action, Action::AddInvoice),
-                                    just_pasted: false,
-                                    copied_to_clipboard: false,
-                                };
-                                let action = notification.action.clone();
-                                app.mode =
-                                    UiMode::NewMessageNotification(notification, action, invoice_state);
-                            } else {
-                                // Popup already shown once; just bump pending counter.
-                                if let Some(order_id) = notification.order_id {
-                                    if messages.iter().any(|m| m.order_id == Some(order_id)) {
-                                        continue;
-                                    }
-                                    else {
-                                        let mut pending = app.pending_notifications.lock().unwrap();
-                                        *pending += 1;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            // For other actions, just increment pending notifications counter
-                            let mut pending = app.pending_notifications.lock().unwrap();
-                            *pending += 1;
-                        }
-                    }
+                    handle_message_notification(notification, &mut app);
                 }
             }
             maybe_event = events.next() => {
