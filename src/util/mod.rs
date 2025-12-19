@@ -12,5 +12,5 @@ pub use dm_utils::{
     send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
 };
 pub use filters::{create_filter, create_seven_days_filter};
-pub use order_utils::{fetch_events_list, send_new_order, take_order};
+pub use order_utils::{fetch_events_list, get_orders, send_new_order, take_order};
 pub use types::{get_cant_do_description, Event, ListKind};

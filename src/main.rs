@@ -6,8 +6,7 @@ pub mod util;
 
 use crate::settings::{init_settings, Settings};
 use crate::util::{
-    fetch_events_list, handle_message_notification, handle_order_result, listen_for_order_messages,
-    Event as UtilEvent, ListKind,
+    get_orders, handle_message_notification, handle_order_result, listen_for_order_messages,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -135,28 +134,16 @@ async fn main() -> Result<(), anyhow::Error> {
     let client_clone = client.clone();
     let mostro_pubkey_clone = mostro_pubkey;
     tokio::spawn(async move {
-        // Periodically refresh orders list (immediate first fetch, then every 30 seconds)
+        // Periodically refresh orders list (immediate first fetch, then every 10 seconds)
         let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(10));
         loop {
             refresh_interval.tick().await;
-            if let Ok(fetched_events) = fetch_events_list(
-                ListKind::Orders,
-                Some(Status::Pending),
-                None,
-                None,
-                &client_clone,
-                mostro_pubkey_clone,
-                None,
-            )
-            .await
+            if let Ok(orders) =
+                get_orders(&client_clone, mostro_pubkey_clone, Some(Status::Pending)).await
             {
                 let mut orders_lock = orders_clone.lock().unwrap();
                 orders_lock.clear();
-                for event in fetched_events {
-                    if let UtilEvent::SmallOrder(order) = event {
-                        orders_lock.push(order);
-                    }
-                }
+                orders_lock.extend(orders);
             }
         }
     });
@@ -180,6 +167,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
+    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
     tokio::spawn(async move {
         listen_for_order_messages(
             client_for_messages,
@@ -187,6 +175,7 @@ async fn main() -> Result<(), anyhow::Error> {
             active_order_trade_indices_clone,
             messages_clone,
             message_notification_tx_clone,
+            pending_notifications_clone,
         )
         .await;
     });

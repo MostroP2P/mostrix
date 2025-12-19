@@ -66,4 +66,3 @@ pub(crate) async fn create_gift_wrap_event(
 
     Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
 }
-

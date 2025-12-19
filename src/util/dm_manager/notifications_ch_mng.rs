@@ -16,7 +16,7 @@ fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppS
             .iter_mut()
             .find(|m| m.order_id == Some(order_id))
             .expect("Message should exist in vector when notification is received");
-        
+
         if order_msg.auto_popup_shown {
             return false;
         } else {
@@ -49,12 +49,8 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 copied_to_clipboard: false,
             };
             let action = notification.action.clone();
-            app.mode =
-                UiMode::NewMessageNotification(notification, action, invoice_state);
+            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
         }
-        _ => {
-
-        }
+        _ => {}
     }
 }
-

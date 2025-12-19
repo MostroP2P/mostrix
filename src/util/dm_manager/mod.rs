@@ -2,11 +2,11 @@
 // Contains functions for handling direct messages, order channels, and notifications
 
 mod dm_helpers;
-mod order_ch_mng;
 mod notifications_ch_mng;
+mod order_ch_mng;
 
-pub use order_ch_mng::handle_order_result;
 pub use notifications_ch_mng::handle_message_notification;
+pub use order_ch_mng::handle_order_result;
 
 use anyhow::Result;
 use mostro_core::prelude::*;
@@ -218,6 +218,7 @@ pub async fn listen_for_order_messages(
     active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
     messages: Arc<Mutex<Vec<crate::ui::OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
+    pending_notifications: Arc<Mutex<usize>>,
 ) {
     use crate::models::User;
 
@@ -317,6 +318,22 @@ pub async fn listen_for_order_messages(
                     }
                     _ => (None, None),
                 };
+                // Check if the message already exists in the messages list
+                // If it does, increment pending notifications counter
+                match messages_lock.iter().find(|m| m.order_id == Some(*order_id)) {
+                    None => {
+                        // If the message does not exist, increment pending notifications counter
+                        let mut pending_notifications = pending_notifications.lock().unwrap();
+                        *pending_notifications += 1;
+                    }
+                    Some(m) => {
+                        // If the message is older than the existing message, increment pending notifications counter
+                        if m.timestamp > timestamp {
+                            let mut pending_notifications = pending_notifications.lock().unwrap();
+                            *pending_notifications += 1;
+                        }
+                    }
+                }
 
                 let order_message = crate::ui::OrderMessage {
                     message: message.clone(),
@@ -329,6 +346,7 @@ pub async fn listen_for_order_messages(
                     buyer_invoice: invoice.clone(),
                     auto_popup_shown: false,
                 };
+
                 // Add to messages list
                 messages_lock.push(order_message.clone());
                 // Sort by time
@@ -340,6 +358,8 @@ pub async fn listen_for_order_messages(
                 let action_str = match &action {
                     Action::AddInvoice => "Invoice Request",
                     Action::PayInvoice => "Payment Request",
+                    Action::TakeSell => "Take Sell",
+                    Action::TakeBuy => "Take Buy",
                     Action::FiatSent => "Fiat Sent",
                     Action::FiatSentOk => "Fiat Received",
                     Action::Release | Action::Released => "Release",
@@ -365,4 +385,3 @@ pub async fn listen_for_order_messages(
         }
     }
 }
-

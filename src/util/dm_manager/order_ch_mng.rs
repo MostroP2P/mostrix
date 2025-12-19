@@ -16,7 +16,11 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
         if let Some(order_id) = order.id {
             let mut indices = app.active_order_trade_indices.lock().unwrap();
             indices.insert(order_id, *trade_index);
-            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
+            log::info!(
+                "Tracking order {} with trade_index {}",
+                order_id,
+                trade_index
+            );
         }
 
         // Create MessageNotification to show PayInvoice popup
@@ -51,7 +55,11 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
         if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
             let mut indices = app.active_order_trade_indices.lock().unwrap();
             indices.insert(*order_id, *trade_index);
-            log::info!("Tracking order {} with trade_index {}", order_id, trade_index);
+            log::info!(
+                "Tracking order {} with trade_index {}",
+                order_id,
+                trade_index
+            );
         }
     }
 
@@ -72,4 +80,3 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
         }
     }
 }
-
