@@ -204,10 +204,12 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     let action = inner_message_kind.action.clone();
 
     let action_str = match action {
+        Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat payment completed",
+        Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
         Action::HoldInvoicePaymentAccepted => {
             "Hold Invoice Payment Accepted - Press Yes to confirm fiat payment"

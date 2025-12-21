@@ -62,6 +62,7 @@ pub fn render_messages_tab(
             let action_str = match msg.message.get_inner_message_kind().action {
                 Action::AddInvoice => "📝 Invoice Request",
                 Action::PayInvoice => "💳 Payment Request",
+                Action::WaitingSellerToPay => "💳 Waiting for Seller to Pay",
                 Action::FiatSent => "✅ Fiat Sent",
                 Action::FiatSentOk => "✅ Fiat Received",
                 Action::Release | Action::Released => "🔓 Release",
@@ -113,7 +114,7 @@ pub fn render_message_notification(
     // Different widths based on action type
     let popup_width = match action {
         Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
-        Action::PayInvoice => 400, // Wide enough to show full Bolt11 invoice (383 chars) on one line
+        Action::PayInvoice => 90, // Wide enough to show invoice with wrapping, but fits within terminal
         _ => 70,
     };
 
@@ -351,43 +352,48 @@ pub fn render_message_notification(
             );
 
             // Invoice to pay
-            if let Some(invoice) = &notification.invoice {
-                let amount_text = if let Some(amount) = notification.sat_amount {
-                    format!("Lightning invoice to pay ({} sats):", amount)
-                } else {
-                    "Lightning invoice to pay:".to_string()
-                };
+            let amount_text = if let Some(amount) = notification.sat_amount {
+                format!("Lightning invoice to pay ({} sats):", amount)
+            } else {
+                "Lightning invoice to pay:".to_string()
+            };
 
-                // Invoice label
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        amount_text,
-                        Style::default()
-                            .fg(PRIMARY_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    )]))
-                    .alignment(ratatui::layout::Alignment::Center),
-                    chunks[4],
-                );
+            // Invoice label
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    amount_text,
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                )]))
+                .alignment(ratatui::layout::Alignment::Center),
+                chunks[4],
+            );
 
-                // Show full invoice with text wrapping (no truncation)
-                // Bordered block for visual clarity - hold Shift while selecting to copy
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        invoice.clone(),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    )]))
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .style(Style::default().fg(PRIMARY_COLOR)),
-                    ),
-                    chunks[5],
-                );
-            }
+            // Show full invoice with text wrapping (no truncation)
+            // Bordered block for visual clarity - hold Shift while selecting to copy
+            let (invoice_text, text_color) = match &notification.invoice {
+                Some(invoice) if !invoice.is_empty() => (invoice.clone(), Color::White),
+                Some(_) => (
+                    "⚠️  Invoice not available (empty)".to_string(),
+                    Color::Yellow,
+                ),
+                None => ("⚠️  Invoice not available".to_string(), Color::Yellow),
+            };
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    invoice_text,
+                    Style::default().fg(text_color).add_modifier(Modifier::BOLD),
+                )]))
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .style(Style::default().fg(PRIMARY_COLOR)),
+                ),
+                chunks[5],
+            );
 
             // Help text - first line (show "Copied!" message if invoice was just copied)
             if invoice_state.copied_to_clipboard {

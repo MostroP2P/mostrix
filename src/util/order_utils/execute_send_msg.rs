@@ -130,7 +130,7 @@ pub async fn execute_send_msg(
             )),
         },
         Action::Release => match inner_message.action {
-            Action::PurchaseCompleted | Action::Rate => Ok(()),
+            Action::HoldInvoicePaymentSettled | Action::Rate => Ok(()),
             _ => Err(anyhow::anyhow!(
                 "Unexpected action in response: {:?}",
                 inner_message.action

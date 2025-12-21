@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use crate::models::User;
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -220,9 +221,15 @@ pub async fn listen_for_order_messages(
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
 ) {
-    use crate::models::User;
-
     let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    // Get user key from db
+    let user = match User::get(&pool).await {
+        Ok(u) => u,
+        Err(e) => {
+            log::error!("Failed to get user: {}", e);
+            return;
+        }
+    };
 
     loop {
         refresh_interval.tick().await;
@@ -236,15 +243,6 @@ pub async fn listen_for_order_messages(
         if active_orders.is_empty() {
             continue;
         }
-
-        // Get user key from db
-        let user = match User::get(&pool).await {
-            Ok(u) => u,
-            Err(e) => {
-                log::error!("Failed to get user: {}", e);
-                continue;
-            }
-        };
 
         // For each active order, check for new messages
         for (order_id, trade_index) in active_orders.iter() {
@@ -265,7 +263,7 @@ pub async fn listen_for_order_messages(
             let filter_giftwrap = Filter::new()
                 .pubkey(trade_keys.public_key())
                 .kind(nostr_sdk::Kind::GiftWrap)
-                .limit(10);
+                .limit(5);
 
             let events = match client
                 .fetch_events(filter_giftwrap, FETCH_EVENTS_TIMEOUT)
@@ -318,21 +316,32 @@ pub async fn listen_for_order_messages(
                     }
                     _ => (None, None),
                 };
-                // Check if the message already exists in the messages list
-                // If it does, increment pending notifications counter
-                match messages_lock.iter().find(|m| m.order_id == Some(*order_id)) {
+                // Check if this is a new message for this order_id
+                // Find the latest message for this order_id (if any exists)
+                let existing_message = messages_lock
+                    .iter()
+                    .filter(|m| m.order_id == Some(*order_id))
+                    .max_by_key(|m| m.timestamp);
+
+                // Only increment pending notifications if this is a truly new message
+                let is_new_message = match existing_message {
                     None => {
-                        // If the message does not exist, increment pending notifications counter
-                        let mut pending_notifications = pending_notifications.lock().unwrap();
-                        *pending_notifications += 1;
+                        // No message exists for this order_id - this is new
+                        true
                     }
-                    Some(m) => {
-                        // If the message is older than the existing message, increment pending notifications counter
-                        if m.timestamp > timestamp {
-                            let mut pending_notifications = pending_notifications.lock().unwrap();
-                            *pending_notifications += 1;
-                        }
+                    Some(existing) => {
+                        // Check if the new message is newer than what we already have
+                        // Also check action to avoid counting exact duplicates
+                        let existing_action =
+                            existing.message.get_inner_message_kind().action.clone();
+                        timestamp > existing.timestamp
+                            || (timestamp == existing.timestamp && action != existing_action)
                     }
+                };
+
+                if is_new_message {
+                    let mut pending_notifications = pending_notifications.lock().unwrap();
+                    *pending_notifications += 1;
                 }
 
                 let order_message = crate::ui::OrderMessage {
