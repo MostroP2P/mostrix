@@ -35,7 +35,7 @@ use tokio::time::{interval, interval_at, Duration, Instant};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AppState, TakeOrderState, UiMode};
+use crate::ui::{AppState, TakeOrderState, UiMode, UserRole};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -151,7 +151,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(500));
-    let mut app = AppState::new();
+    let user_role = &settings.user_mode;
+    let mut app = AppState::new(UserRole::from_str(user_role)?);
 
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =

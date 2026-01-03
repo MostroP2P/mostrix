@@ -1,5 +1,4 @@
 pub mod db_utils;
-pub mod dm_manager;
 pub mod dm_utils;
 pub mod filters;
 pub mod order_utils;

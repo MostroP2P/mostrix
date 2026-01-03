@@ -1,5 +1,5 @@
 // Order channel manager - handles order result messages from async tasks
-use crate::ui::{AppState, InvoiceInputState, MessageNotification, OrderResult, UiMode};
+use crate::ui::{AppState, InvoiceInputState, MessageNotification, OrderResult, UiMode, UserMode};
 use mostro_core::prelude::Action;
 
 /// Handle order result from the order result channel
@@ -65,10 +65,10 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
 
     // Set appropriate result mode based on current state
     match app.mode {
-        UiMode::WaitingTakeOrder(_) => {
+        UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
             app.mode = UiMode::OrderResult(result);
         }
-        UiMode::WaitingAddInvoice => {
+        UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             app.mode = UiMode::OrderResult(result);
         }
         UiMode::NewMessageNotification(_, _, _) => {

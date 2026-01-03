@@ -5,7 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use super::{MessageNotification, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{
+    MessageNotification, MessageViewState, OrderMessage, UserRole, BACKGROUND_COLOR, PRIMARY_COLOR,
+};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -112,22 +114,13 @@ pub fn render_message_notification(
 ) {
     let area = f.area();
     // Different widths based on action type
-    let popup_width = match action {
-        Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
-        Action::PayInvoice => 90, // Wide enough to show invoice with wrapping, but fits within terminal
-        _ => 70,
-    };
-
-    // Different heights based on action type
-    let popup_height = match action {
-        Action::AddInvoice => 18, // More height for multi-line invoice display
-        Action::PayInvoice => 18, // More height for multi-line invoice display
-        _ => 8,
+    let (popup_width, popup_height) = match action {
+        Action::AddInvoice | Action::PayInvoice => (90, 18), // Much wider to show full invoice (383 chars)
+        _ => (70, 8),
     };
 
     // Clamp popup dimensions to fit within available area to prevent overflow
-    let popup_width = popup_width.min(area.width);
-    let popup_height = popup_height.min(area.height);
+    let (popup_width, popup_height) = (popup_width.min(area.width), popup_height.min(area.height));
 
     // Center the popup using Flex::Center
     let popup = {
@@ -761,4 +754,59 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             inner_chunks[6],
         );
     }
+}
+
+pub fn render_settings_tab(f: &mut ratatui::Frame, area: Rect, user_role: UserRole) {
+    let block = Block::default()
+        .title("⚙️  Settings")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(3), // mode section
+            Constraint::Length(1), // spacer
+            Constraint::Min(0),    // rest
+        ],
+    )
+    .split(inner_area);
+
+    // Current mode display
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Current Mode: ", Style::default()),
+            Span::styled(
+                match user_role {
+                    UserRole::User => "User",
+                    UserRole::Admin => "Admin",
+                },
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[1],
+    );
+
+    // Instructions
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "M",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to switch mode", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[3],
+    );
 }
