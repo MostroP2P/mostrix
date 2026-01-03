@@ -147,6 +147,38 @@ pub async fn fetch_events_list(
     }
 }
 
+/// Fetch orders from the Mostro network
+/// Returns a vector of SmallOrder items filtered by the specified status
+pub async fn get_orders(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    status: Option<Status>,
+) -> Result<Vec<SmallOrder>> {
+    let fetched_events = fetch_events_list(
+        ListKind::Orders,
+        status,
+        None,
+        None,
+        client,
+        mostro_pubkey,
+        None,
+    )
+    .await?;
+
+    let orders: Vec<SmallOrder> = fetched_events
+        .into_iter()
+        .filter_map(|event| {
+            if let Event::SmallOrder(order) = event {
+                Some(order)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(orders)
+}
+
 /// Helper function to create OrderResult::Success from an order
 pub(super) fn create_order_result_success(
     order: &SmallOrder,

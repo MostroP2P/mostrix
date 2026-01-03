@@ -1,9 +1,14 @@
-use crate::ui::{AppState, FormState, MessageViewState, Tab, TakeOrderState, UiMode};
+use crate::ui::{
+    AdminMode, AdminTab, AppState, FormState, MessageViewState, Tab, TakeOrderState, UiMode,
+    UserMode, UserRole, UserTab,
+};
 use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
 use crate::SETTINGS;
 use crossterm::event::{KeyCode, KeyEvent};
+use dirs;
 use mostro_core::prelude::*;
 use std::sync::{Arc, Mutex};
+use toml;
 use uuid::Uuid;
 
 /// Handle invoice input for AddInvoice notifications
@@ -50,16 +55,23 @@ pub fn handle_navigation(code: KeyCode, app: &mut AppState, orders: &Arc<Mutex<V
 
 fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
-        UiMode::Normal => {
+        UiMode::Normal
+        | UiMode::UserMode(UserMode::Normal)
+        | UiMode::AdminMode(AdminMode::Normal) => {
             let prev_tab = app.active_tab;
-            app.active_tab = app.active_tab.prev();
+            app.active_tab = app.active_tab.prev(app.user_role);
             handle_tab_switch(app, prev_tab);
-            // Exit form mode when leaving Create New Order tab
-            if app.active_tab != Tab::CreateNewOrder {
-                app.mode = UiMode::Normal;
+            // Exit form mode when leaving Create New Order tab (user mode only)
+            if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
+                // Stay in creating order mode
+            } else {
+                match app.user_role {
+                    UserRole::User => app.mode = UiMode::UserMode(UserMode::Normal),
+                    UserRole::Admin => app.mode = UiMode::AdminMode(AdminMode::Normal),
+                }
             }
         }
-        UiMode::TakingOrder(ref mut take_state) => {
+        UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
             // Switch to YES button (left side)
             take_state.selected_button = true;
         }
@@ -76,12 +88,14 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 
 fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
-        UiMode::Normal => {
+        UiMode::Normal
+        | UiMode::UserMode(UserMode::Normal)
+        | UiMode::AdminMode(AdminMode::Normal) => {
             let prev_tab = app.active_tab;
-            app.active_tab = app.active_tab.next();
+            app.active_tab = app.active_tab.next(app.user_role);
             handle_tab_switch(app, prev_tab);
-            // Auto-initialize form when switching to Create New Order tab
-            if app.active_tab == Tab::CreateNewOrder {
+            // Auto-initialize form when switching to Create New Order tab (user mode only)
+            if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
                 let form = FormState {
                     kind: "buy".to_string(),
                     fiat_code: "USD".to_string(),
@@ -91,10 +105,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                     focused: 1,
                     ..Default::default()
                 };
-                app.mode = UiMode::CreatingOrder(form);
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
             }
         }
-        UiMode::TakingOrder(ref mut take_state) => {
+        UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
             // Switch to NO button (right side)
             take_state.selected_button = false;
         }
@@ -111,13 +125,15 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 
 fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
-        UiMode::Normal => {
-            if app.active_tab == Tab::Orders {
+        UiMode::Normal
+        | UiMode::UserMode(UserMode::Normal)
+        | UiMode::AdminMode(AdminMode::Normal) => {
+            if let Tab::User(UserTab::Orders) = app.active_tab {
                 let orders_len = orders.lock().unwrap().len();
                 if orders_len > 0 && app.selected_order_idx > 0 {
                     app.selected_order_idx -= 1;
                 }
-            } else if app.active_tab == Tab::Messages {
+            } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = app.messages.lock().unwrap();
                 let messages_len = messages.len();
                 if messages_len > 0 && app.selected_message_idx > 0 {
@@ -129,7 +145,7 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 }
             }
         }
-        UiMode::CreatingOrder(form) => {
+        UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             if form.focused > 0 {
                 form.focused -= 1;
                 // Skip field 4 if not using range (go from 5 to 3)
@@ -138,11 +154,11 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 }
             }
         }
-        UiMode::ConfirmingOrder(_)
-        | UiMode::TakingOrder(_)
-        | UiMode::WaitingForMostro(_)
-        | UiMode::WaitingTakeOrder(_)
-        | UiMode::WaitingAddInvoice
+        UiMode::UserMode(UserMode::ConfirmingOrder(_))
+        | UiMode::UserMode(UserMode::TakingOrder(_))
+        | UiMode::UserMode(UserMode::WaitingForMostro(_))
+        | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
+        | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_) => {
@@ -153,13 +169,15 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 
 fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
-        UiMode::Normal => {
-            if app.active_tab == Tab::Orders {
+        UiMode::Normal
+        | UiMode::UserMode(UserMode::Normal)
+        | UiMode::AdminMode(AdminMode::Normal) => {
+            if let Tab::User(UserTab::Orders) = app.active_tab {
                 let orders_len = orders.lock().unwrap().len();
                 if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
                     app.selected_order_idx += 1;
                 }
-            } else if app.active_tab == Tab::Messages {
+            } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = app.messages.lock().unwrap();
                 let messages_len = messages.len();
                 if messages_len > 0 && app.selected_message_idx < messages_len.saturating_sub(1) {
@@ -171,7 +189,7 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 }
             }
         }
-        UiMode::CreatingOrder(form) => {
+        UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             if form.focused < 8 {
                 form.focused += 1;
                 // Skip field 4 if not using range (go from 3 to 5)
@@ -180,11 +198,11 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 }
             }
         }
-        UiMode::ConfirmingOrder(_)
-        | UiMode::TakingOrder(_)
-        | UiMode::WaitingForMostro(_)
-        | UiMode::WaitingTakeOrder(_)
-        | UiMode::WaitingAddInvoice
+        UiMode::UserMode(UserMode::ConfirmingOrder(_))
+        | UiMode::UserMode(UserMode::TakingOrder(_))
+        | UiMode::UserMode(UserMode::WaitingForMostro(_))
+        | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
+        | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_) => {
@@ -194,14 +212,18 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 }
 
 fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
-    // Clear pending notifications and mark messages as read when switching to Messages tab
-    if app.active_tab == Tab::Messages && prev_tab != Tab::Messages {
-        let mut pending = app.pending_notifications.lock().unwrap();
-        *pending = 0;
-        // Mark all messages as read when entering Messages tab
-        let mut messages = app.messages.lock().unwrap();
-        for msg in messages.iter_mut() {
-            msg.read = true;
+    // Clear pending notifications and mark messages as read when switching to Messages tab (user mode only)
+    if let Tab::User(UserTab::Messages) = app.active_tab {
+        if let Tab::User(UserTab::Messages) = prev_tab {
+            // Already on Messages tab, do nothing
+        } else {
+            let mut pending = app.pending_notifications.lock().unwrap();
+            *pending = 0;
+            // Mark all messages as read when entering Messages tab
+            let mut messages = app.messages.lock().unwrap();
+            for msg in messages.iter_mut() {
+                msg.read = true;
+            }
         }
     }
 }
@@ -210,7 +232,7 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
 pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
     match code {
         KeyCode::Tab => {
-            if let UiMode::CreatingOrder(ref mut form) = app.mode {
+            if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = (form.focused + 1) % 9;
                 // Skip field 4 if not using range
                 if form.focused == 4 && !form.use_range {
@@ -219,7 +241,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
             }
         }
         KeyCode::BackTab => {
-            if let UiMode::CreatingOrder(ref mut form) = app.mode {
+            if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = if form.focused == 0 {
                     8
                 } else {
@@ -245,18 +267,24 @@ pub fn handle_enter_key(
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
 ) {
-    match std::mem::replace(&mut app.mode, UiMode::Normal) {
-        UiMode::Normal => {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    match std::mem::replace(&mut app.mode, default_mode.clone()) {
+        UiMode::Normal
+        | UiMode::UserMode(UserMode::Normal)
+        | UiMode::AdminMode(AdminMode::Normal) => {
             handle_enter_normal_mode(app, orders);
         }
-        UiMode::CreatingOrder(form) => {
+        UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             handle_enter_creating_order(app, &form);
         }
-        UiMode::ConfirmingOrder(_) => {
+        UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
             // Enter acts as Yes in confirmation - handled by 'y' key
-            app.mode = UiMode::Normal;
+            app.mode = default_mode;
         }
-        UiMode::TakingOrder(take_state) => {
+        UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             handle_enter_taking_order(
                 app,
                 take_state,
@@ -267,13 +295,15 @@ pub fn handle_enter_key(
                 order_result_tx,
             );
         }
-        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) | UiMode::WaitingAddInvoice => {
+        UiMode::UserMode(UserMode::WaitingForMostro(_))
+        | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
+        | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             // No action while waiting
-            app.mode = UiMode::Normal;
+            app.mode = default_mode;
         }
         UiMode::OrderResult(_) => {
-            // Close result popup, return to Orders tab
-            app.active_tab = Tab::Orders;
+            // Close result popup, return to first tab for current role
+            app.active_tab = Tab::first(app.user_role);
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
             handle_enter_message_notification(
@@ -304,8 +334,8 @@ pub fn handle_enter_key(
 }
 
 fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
-    // Show take order popup when Enter is pressed in Orders tab
-    if app.active_tab == Tab::Orders {
+    // Show take order popup when Enter is pressed in Orders tab (user mode only)
+    if let Tab::User(UserTab::Orders) = app.active_tab {
         let orders_lock = orders.lock().unwrap();
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
@@ -316,9 +346,9 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
                 validation_error: None,
                 selected_button: true, // Default to YES
             };
-            app.mode = UiMode::TakingOrder(take_state);
+            app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
         }
-    } else if app.active_tab == Tab::Messages {
+    } else if let Tab::User(UserTab::Messages) = app.active_tab {
         let messages_lock = app.messages.lock().unwrap();
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
@@ -352,10 +382,10 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
 
 fn handle_enter_creating_order(app: &mut AppState, form: &FormState) {
     // Show confirmation popup when Enter is pressed
-    if app.active_tab == Tab::CreateNewOrder {
-        app.mode = UiMode::ConfirmingOrder(form.clone());
+    if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
+        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder(form.clone()));
     } else {
-        app.mode = UiMode::CreatingOrder(form.clone());
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     }
 }
 
@@ -374,18 +404,18 @@ fn handle_enter_taking_order(
         if take_state.is_range_order {
             if take_state.amount_input.is_empty() {
                 // Can't proceed without amount
-                app.mode = UiMode::TakingOrder(take_state);
+                app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
                 return;
             }
             if take_state.validation_error.is_some() {
                 // Can't proceed with invalid amount
-                app.mode = UiMode::TakingOrder(take_state);
+                app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
                 return;
             }
         }
         // Proceed with taking the order
         let take_state_clone = take_state.clone();
-        app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
+        app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
 
         // Parse amount if it's a range order
         let amount = if take_state_clone.is_range_order {
@@ -447,12 +477,16 @@ fn handle_enter_viewing_message(
     // Map the action from the message to the action we need to send
     let action_to_send = match view_state.action {
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
-        Action::FiatSent => Action::FiatSentOk,
+        Action::FiatSentOk => Action::Release,
         _ => {
             let _ = order_result_tx.send(crate::ui::OrderResult::Error(
                 "Invalid action for send message".to_string(),
             ));
-            app.mode = UiMode::Normal;
+            let default_mode = match app.user_role {
+                UserRole::User => UiMode::UserMode(UserMode::Normal),
+                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+            };
+            app.mode = default_mode;
             return;
         }
     };
@@ -462,12 +496,16 @@ fn handle_enter_viewing_message(
         let _ = order_result_tx.send(crate::ui::OrderResult::Error(
             "No order ID in message".to_string(),
         ));
-        app.mode = UiMode::Normal;
+        let default_mode = match app.user_role {
+            UserRole::User => UiMode::UserMode(UserMode::Normal),
+            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+        };
+        app.mode = default_mode;
         return;
     };
 
-    // Set waiting mode
-    app.mode = UiMode::WaitingAddInvoice; // Reuse waiting mode for now
+    // Set waiting mode (user mode only)
+    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
 
     // Spawn async task to send message
     let pool_clone = pool.clone();
@@ -515,7 +553,7 @@ fn handle_enter_message_notification(
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
                     // Set waiting mode before sending invoice
-                    app.mode = UiMode::WaitingAddInvoice;
+                    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
 
                     // Send invoice to Mostro
                     let invoice_state_clone = invoice_state.clone();
@@ -557,29 +595,35 @@ fn handle_enter_message_notification(
 /// Handle Esc key
 pub fn handle_esc_key(app: &mut AppState) -> bool {
     // Returns true if should continue, false if should break
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
     match &mut app.mode {
-        UiMode::CreatingOrder(_) => {
-            app.mode = UiMode::Normal;
+        UiMode::UserMode(UserMode::CreatingOrder(_)) => {
+            app.mode = default_mode.clone();
             true
         }
-        UiMode::ConfirmingOrder(form) => {
+        UiMode::UserMode(UserMode::ConfirmingOrder(form)) => {
             // Cancel confirmation, go back to form
-            app.mode = UiMode::CreatingOrder(form.clone());
+            app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
             true
         }
-        UiMode::TakingOrder(_) => {
+        UiMode::UserMode(UserMode::TakingOrder(_)) => {
             // Cancel taking order, return to normal mode
-            app.mode = UiMode::Normal;
+            app.mode = default_mode.clone();
             true
         }
-        UiMode::WaitingForMostro(_) | UiMode::WaitingTakeOrder(_) | UiMode::WaitingAddInvoice => {
+        UiMode::UserMode(UserMode::WaitingForMostro(_))
+        | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
+        | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             // Can't cancel while waiting
             true
         }
         UiMode::OrderResult(_) => {
-            // Close result popup, return to Orders tab
-            app.mode = UiMode::Normal;
-            app.active_tab = Tab::Orders;
+            // Close result popup, return to first tab for current role
+            app.mode = default_mode.clone();
+            app.active_tab = Tab::first(app.user_role);
             true
         }
         UiMode::NewMessageNotification(_, _, _) => {
@@ -604,7 +648,7 @@ pub fn handle_char_input(
 ) {
     match code {
         KeyCode::Char(' ') => {
-            if let UiMode::CreatingOrder(ref mut form) = app.mode {
+            if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 if form.focused == 0 {
                     // Toggle buy/sell
                     form.kind = if form.kind.to_lowercase() == "buy" {
@@ -619,7 +663,7 @@ pub fn handle_char_input(
             }
         }
         KeyCode::Char(c) => {
-            if let UiMode::CreatingOrder(ref mut form) = app.mode {
+            if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 if form.focused == 0 {
                     // ignore typing on toggle field
                 } else {
@@ -636,7 +680,7 @@ pub fn handle_char_input(
                     };
                     target.push(c);
                 }
-            } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
+            } else if let UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) = app.mode {
                 // Allow typing in the amount input field for range orders
                 if take_state.is_range_order {
                     // Only allow digits and decimal point
@@ -654,7 +698,7 @@ pub fn handle_char_input(
 
 /// Handle backspace for forms
 pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut TakeOrderState)) {
-    if let UiMode::CreatingOrder(ref mut form) = app.mode {
+    if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
         if form.focused == 0 {
             // ignore
         } else {
@@ -671,7 +715,7 @@ pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut 
             };
             target.pop();
         }
-    } else if let UiMode::TakingOrder(ref mut take_state) = app.mode {
+    } else if let UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) = app.mode {
         // Allow backspace in the amount input field
         if take_state.is_range_order {
             take_state.amount_input.pop();
@@ -691,11 +735,15 @@ pub fn handle_confirm_key(
     order_result_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::OrderResult>,
 ) -> bool {
     // Returns true if should continue (skip further processing)
-    match std::mem::replace(&mut app.mode, UiMode::Normal) {
-        UiMode::ConfirmingOrder(form) => {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    match std::mem::replace(&mut app.mode, default_mode.clone()) {
+        UiMode::UserMode(UserMode::ConfirmingOrder(form)) => {
             // User confirmed, send the order
             let form_clone = form.clone();
-            app.mode = UiMode::WaitingForMostro(form_clone.clone());
+            app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
 
             // Spawn async task to send order
             let pool_clone = pool.clone();
@@ -723,24 +771,24 @@ pub fn handle_confirm_key(
             });
             true
         }
-        UiMode::TakingOrder(take_state) => {
+        UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             // User confirmed taking the order (same as Enter key)
             // Check validation first
             if take_state.is_range_order {
                 if take_state.amount_input.is_empty() {
                     // Can't proceed without amount
-                    app.mode = UiMode::TakingOrder(take_state);
+                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
                     return true;
                 }
                 if take_state.validation_error.is_some() {
                     // Can't proceed with invalid amount
-                    app.mode = UiMode::TakingOrder(take_state);
+                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
                     return true;
                 }
             }
             // Proceed with taking the order
             let take_state_clone = take_state.clone();
-            app.mode = UiMode::WaitingTakeOrder(take_state_clone.clone());
+            app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
 
             // Parse amount if it's a range order
             let amount = if take_state_clone.is_range_order {
@@ -790,12 +838,52 @@ pub fn handle_confirm_key(
 
 /// Handle 'n' key for cancellation
 pub fn handle_cancel_key(app: &mut AppState) {
-    if let UiMode::ConfirmingOrder(form) = &app.mode {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
         // User cancelled, go back to form
-        app.mode = UiMode::CreatingOrder(form.clone());
-    } else if let UiMode::TakingOrder(_) = &app.mode {
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
+    } else if let UiMode::UserMode(UserMode::TakingOrder(_)) = &app.mode {
         // User cancelled taking the order
-        app.mode = UiMode::Normal;
+        app.mode = default_mode;
+    }
+}
+
+/// Handle mode switching (M key in Settings tab)
+fn handle_mode_switch(app: &mut AppState, _settings: &crate::settings::Settings) {
+    let new_role = match app.user_role {
+        UserRole::User => UserRole::Admin,
+        UserRole::Admin => UserRole::User,
+    };
+
+    // Update app state
+    app.switch_role(new_role);
+
+    // Save to settings file
+    // Note: We need to create a new Settings struct with updated user_mode
+    // Since SETTINGS is a OnceLock, we can't modify it directly
+    // We'll need to read the file, update it, and write it back
+    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let package_name = env!("CARGO_PKG_NAME");
+    let hidden_file = home_dir
+        .join(format!(".{package_name}"))
+        .join("settings.toml");
+
+    // Read current settings
+    if let Ok(mut current_settings) = std::fs::read_to_string(&hidden_file).and_then(|content| {
+        toml::from_str::<crate::settings::Settings>(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }) {
+        // Update user_mode
+        current_settings.user_mode = new_role.to_string();
+
+        // Write back
+        if let Ok(toml_string) = toml::to_string_pretty(&current_settings) {
+            let _ = std::fs::write(&hidden_file, toml_string);
+            log::info!("Mode switched to: {}", new_role.to_string());
+        }
     }
 }
 
@@ -868,6 +956,16 @@ pub fn handle_key_event(
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
             Some(true)
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            // Switch mode when in Settings tab
+            match app.active_tab {
+                Tab::User(UserTab::Settings) | Tab::Admin(AdminTab::Settings) => {
+                    handle_mode_switch(app, settings);
+                    Some(true)
+                }
+                _ => None, // Not in settings, continue normally
+            }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
             // Handle copy invoice for PayInvoice notifications

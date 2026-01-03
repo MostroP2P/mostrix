@@ -1,77 +1,25 @@
-// Direct message utilities for Nostr
-use anyhow::{Error, Result};
-use base64::engine::general_purpose;
-use base64::Engine;
+// Direct message manager module
+// Contains functions for handling direct messages, order channels, and notifications
+
+mod dm_helpers;
+mod notifications_ch_mng;
+mod order_ch_mng;
+
+pub use notifications_ch_mng::handle_message_notification;
+pub use order_ch_mng::handle_order_result;
+
+use anyhow::Result;
 use mostro_core::prelude::*;
-use nip44::v2::encrypt_to_bytes;
-use nip44::v2::{decrypt_to_bytes, ConversationKey};
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crate::util::types::{create_expiration_tags, determine_message_type, MessageType};
+use crate::models::User;
+use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Create a private direct message event
-async fn create_private_dm_event(
-    trade_keys: &Keys,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    pow: u8,
-) -> Result<nostr_sdk::Event> {
-    let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)?;
-    let encrypted_content = encrypt_to_bytes(&ck, payload.as_bytes())?;
-    let b64decoded_content = general_purpose::STANDARD.encode(encrypted_content);
-    Ok(
-        EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64decoded_content)
-            .pow(pow)
-            .tag(Tag::public_key(*receiver_pubkey))
-            .sign_with_keys(trade_keys)?,
-    )
-}
-
-/// Create a gift wrap event (private or signed)
-async fn create_gift_wrap_event(
-    trade_keys: &Keys,
-    identity_keys: Option<&Keys>,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    pow: u8,
-    expiration: Option<Timestamp>,
-    signed: bool,
-) -> Result<nostr_sdk::Event> {
-    let message = Message::from_json(&payload)
-        .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
-
-    let content = if signed {
-        let _identity_keys = identity_keys
-            .ok_or_else(|| Error::msg("identity_keys required for signed messages"))?;
-        let sig = Message::sign(payload, trade_keys);
-        serde_json::to_string(&(message, sig))
-            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
-    } else {
-        let content: (Message, Option<Signature>) = (message, None);
-        serde_json::to_string(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?
-    };
-
-    let rumor = EventBuilder::text_note(content)
-        .pow(pow)
-        .build(trade_keys.public_key());
-
-    let tags = create_expiration_tags(expiration);
-
-    let signer_keys = if signed {
-        identity_keys.ok_or_else(|| Error::msg("identity_keys required for signed messages"))?
-    } else {
-        trade_keys
-    };
-
-    Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
-}
 
 /// Send a direct message to a receiver
 pub async fn send_dm(
@@ -88,10 +36,10 @@ pub async fn send_dm(
 
     let event = match message_type {
         MessageType::PrivateDirectMessage => {
-            create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
+            dm_helpers::create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
         }
         MessageType::PrivateGiftWrap => {
-            create_gift_wrap_event(
+            dm_helpers::create_gift_wrap_event(
                 trade_keys,
                 identity_keys,
                 receiver_pubkey,
@@ -103,7 +51,7 @@ pub async fn send_dm(
             .await?
         }
         MessageType::SignedGiftWrap => {
-            create_gift_wrap_event(
+            dm_helpers::create_gift_wrap_event(
                 trade_keys,
                 identity_keys,
                 receiver_pubkey,
@@ -173,6 +121,10 @@ pub async fn parse_dm_events(
     pubkey: &Keys,
     since: Option<&i64>,
 ) -> Vec<(Message, u64, PublicKey)> {
+    use base64::engine::general_purpose;
+    use base64::Engine;
+    use nip44::v2::{decrypt_to_bytes, ConversationKey};
+
     let mut id_set = HashSet::<EventId>::new();
     let mut direct_messages: Vec<(Message, u64, PublicKey)> = Vec::new();
 
@@ -267,10 +219,17 @@ pub async fn listen_for_order_messages(
     active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
     messages: Arc<Mutex<Vec<crate::ui::OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
+    pending_notifications: Arc<Mutex<usize>>,
 ) {
-    use crate::models::User;
-
     let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    // Get user key from db
+    let user = match User::get(&pool).await {
+        Ok(u) => u,
+        Err(e) => {
+            log::error!("Failed to get user: {}", e);
+            return;
+        }
+    };
 
     loop {
         refresh_interval.tick().await;
@@ -284,15 +243,6 @@ pub async fn listen_for_order_messages(
         if active_orders.is_empty() {
             continue;
         }
-
-        // Get user key from db
-        let user = match User::get(&pool).await {
-            Ok(u) => u,
-            Err(e) => {
-                log::error!("Failed to get user: {}", e);
-                continue;
-            }
-        };
 
         // For each active order, check for new messages
         for (order_id, trade_index) in active_orders.iter() {
@@ -313,7 +263,7 @@ pub async fn listen_for_order_messages(
             let filter_giftwrap = Filter::new()
                 .pubkey(trade_keys.public_key())
                 .kind(nostr_sdk::Kind::GiftWrap)
-                .limit(10);
+                .limit(5);
 
             let events = match client
                 .fetch_events(filter_giftwrap, FETCH_EVENTS_TIMEOUT)
@@ -366,6 +316,33 @@ pub async fn listen_for_order_messages(
                     }
                     _ => (None, None),
                 };
+                // Check if this is a new message for this order_id
+                // Find the latest message for this order_id (if any exists)
+                let existing_message = messages_lock
+                    .iter()
+                    .filter(|m| m.order_id == Some(*order_id))
+                    .max_by_key(|m| m.timestamp);
+
+                // Only increment pending notifications if this is a truly new message
+                let is_new_message = match existing_message {
+                    None => {
+                        // No message exists for this order_id - this is new
+                        true
+                    }
+                    Some(existing) => {
+                        // Check if the new message is newer than what we already have
+                        // Also check action to avoid counting exact duplicates
+                        let existing_action =
+                            existing.message.get_inner_message_kind().action.clone();
+                        timestamp > existing.timestamp
+                            || (timestamp == existing.timestamp && action != existing_action)
+                    }
+                };
+
+                if is_new_message {
+                    let mut pending_notifications = pending_notifications.lock().unwrap();
+                    *pending_notifications += 1;
+                }
 
                 let order_message = crate::ui::OrderMessage {
                     message: message.clone(),
@@ -378,6 +355,7 @@ pub async fn listen_for_order_messages(
                     buyer_invoice: invoice.clone(),
                     auto_popup_shown: false,
                 };
+
                 // Add to messages list
                 messages_lock.push(order_message.clone());
                 // Sort by time
@@ -389,6 +367,8 @@ pub async fn listen_for_order_messages(
                 let action_str = match &action {
                     Action::AddInvoice => "Invoice Request",
                     Action::PayInvoice => "Payment Request",
+                    Action::TakeSell => "Take Sell",
+                    Action::TakeBuy => "Take Buy",
                     Action::FiatSent => "Fiat Sent",
                     Action::FiatSentOk => "Fiat Received",
                     Action::Release | Action::Released => "Release",

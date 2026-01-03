@@ -5,7 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use super::{MessageNotification, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{
+    MessageNotification, MessageViewState, OrderMessage, UserRole, BACKGROUND_COLOR, PRIMARY_COLOR,
+};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -62,6 +64,7 @@ pub fn render_messages_tab(
             let action_str = match msg.message.get_inner_message_kind().action {
                 Action::AddInvoice => "📝 Invoice Request",
                 Action::PayInvoice => "💳 Payment Request",
+                Action::WaitingSellerToPay => "💳 Waiting for Seller to Pay",
                 Action::FiatSent => "✅ Fiat Sent",
                 Action::FiatSentOk => "✅ Fiat Received",
                 Action::Release | Action::Released => "🔓 Release",
@@ -111,22 +114,13 @@ pub fn render_message_notification(
 ) {
     let area = f.area();
     // Different widths based on action type
-    let popup_width = match action {
-        Action::AddInvoice => 120, // Much wider to show full invoice (383 chars)
-        Action::PayInvoice => 400, // Wide enough to show full Bolt11 invoice (383 chars) on one line
-        _ => 70,
-    };
-
-    // Different heights based on action type
-    let popup_height = match action {
-        Action::AddInvoice => 18, // More height for multi-line invoice display
-        Action::PayInvoice => 18, // More height for multi-line invoice display
-        _ => 8,
+    let (popup_width, popup_height) = match action {
+        Action::AddInvoice | Action::PayInvoice => (90, 18), // Much wider to show full invoice (383 chars)
+        _ => (70, 8),
     };
 
     // Clamp popup dimensions to fit within available area to prevent overflow
-    let popup_width = popup_width.min(area.width);
-    let popup_height = popup_height.min(area.height);
+    let (popup_width, popup_height) = (popup_width.min(area.width), popup_height.min(area.height));
 
     // Center the popup using Flex::Center
     let popup = {
@@ -351,43 +345,48 @@ pub fn render_message_notification(
             );
 
             // Invoice to pay
-            if let Some(invoice) = &notification.invoice {
-                let amount_text = if let Some(amount) = notification.sat_amount {
-                    format!("Lightning invoice to pay ({} sats):", amount)
-                } else {
-                    "Lightning invoice to pay:".to_string()
-                };
+            let amount_text = if let Some(amount) = notification.sat_amount {
+                format!("Lightning invoice to pay ({} sats):", amount)
+            } else {
+                "Lightning invoice to pay:".to_string()
+            };
 
-                // Invoice label
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        amount_text,
-                        Style::default()
-                            .fg(PRIMARY_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    )]))
-                    .alignment(ratatui::layout::Alignment::Center),
-                    chunks[4],
-                );
+            // Invoice label
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    amount_text,
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                )]))
+                .alignment(ratatui::layout::Alignment::Center),
+                chunks[4],
+            );
 
-                // Show full invoice with text wrapping (no truncation)
-                // Bordered block for visual clarity - hold Shift while selecting to copy
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        invoice.clone(),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    )]))
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .style(Style::default().fg(PRIMARY_COLOR)),
-                    ),
-                    chunks[5],
-                );
-            }
+            // Show full invoice with text wrapping (no truncation)
+            // Bordered block for visual clarity - hold Shift while selecting to copy
+            let (invoice_text, text_color) = match &notification.invoice {
+                Some(invoice) if !invoice.is_empty() => (invoice.clone(), Color::White),
+                Some(_) => (
+                    "⚠️  Invoice not available (empty)".to_string(),
+                    Color::Yellow,
+                ),
+                None => ("⚠️  Invoice not available".to_string(), Color::Yellow),
+            };
+
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    invoice_text,
+                    Style::default().fg(text_color).add_modifier(Modifier::BOLD),
+                )]))
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .style(Style::default().fg(PRIMARY_COLOR)),
+                ),
+                chunks[5],
+            );
 
             // Help text - first line (show "Copied!" message if invoice was just copied)
             if invoice_state.copied_to_clipboard {
@@ -512,7 +511,20 @@ pub fn render_message_notification(
 pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
-    let popup_height = 12;
+
+    // Check if we need YES/NO buttons (only for FiatSent or Release actions)
+    let show_buttons = matches!(
+        view_state.action,
+        Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+    );
+
+    // Adjust popup height based on whether we show buttons
+    let popup_height = if show_buttons {
+        14 // Need space for button blocks with borders
+    } else {
+        10 // Simpler layout without buttons
+    };
+
     // Center the popup using Flex::Center
     let popup = {
         let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
@@ -527,20 +539,31 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     // Clear the popup area to make it fully opaque
     f.render_widget(Clear, popup);
 
-    let inner_chunks = Layout::new(
-        Direction::Vertical,
-        [
+    // Adjust layout constraints based on whether we show buttons
+    let constraints = if show_buttons {
+        vec![
             Constraint::Length(1), // spacer
             Constraint::Length(1), // title
             Constraint::Length(1), // separator
             Constraint::Length(1), // order id
             Constraint::Length(1), // message content
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // buttons
+            Constraint::Length(3), // buttons (need space for borders)
             Constraint::Length(1), // help text
-        ],
-    )
-    .split(popup);
+        ]
+    } else {
+        vec![
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // title
+            Constraint::Length(1), // separator
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // message content
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // exit text
+        ]
+    };
+
+    let inner_chunks = Layout::new(Direction::Vertical, constraints).split(popup);
 
     let block = Block::default()
         .title("📨 Message")
@@ -584,65 +607,206 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
         inner_chunks[4],
     );
 
-    // Yes/No buttons
-    let yes_style = if view_state.selected_button {
-        Style::default()
-            .fg(Color::Black)
-            .bg(PRIMARY_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(PRIMARY_COLOR)
-    };
+    if show_buttons {
+        // Yes/No buttons - center them in the popup
+        let button_area = inner_chunks[6];
 
-    let no_style = if !view_state.selected_button {
-        Style::default()
-            .fg(Color::Black)
-            .bg(PRIMARY_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(PRIMARY_COLOR)
-    };
+        // Calculate button width (each button + separator)
+        let button_width = 15; // Width for each button
+        let separator_width = 1;
+        let total_button_width = (button_width * 2) + separator_width;
 
+        // Center the buttons horizontally
+        let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
+        let centered_button_area = Rect {
+            x: button_x,
+            y: button_area.y,
+            width: total_button_width.min(button_area.width),
+            height: button_area.height,
+        };
+
+        let button_chunks = Layout::new(
+            Direction::Horizontal,
+            [
+                Constraint::Length(button_width),
+                Constraint::Length(separator_width), // separator
+                Constraint::Length(button_width),
+            ],
+        )
+        .split(centered_button_area);
+
+        // YES button
+        let yes_style = if view_state.selected_button {
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        };
+
+        let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
+        f.render_widget(yes_block, button_chunks[0]);
+
+        let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+            .margin(1)
+            .split(button_chunks[0]);
+
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ YES",
+                Style::default()
+                    .fg(if view_state.selected_button {
+                        Color::Black
+                    } else {
+                        Color::Green
+                    })
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            yes_inner[0],
+        );
+
+        // NO button
+        let no_style = if !view_state.selected_button {
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        };
+
+        let no_block = Block::default().borders(Borders::ALL).style(no_style);
+        f.render_widget(no_block, button_chunks[2]);
+
+        let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+            .margin(1)
+            .split(button_chunks[2]);
+
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✗ NO",
+                Style::default()
+                    .fg(if !view_state.selected_button {
+                        Color::Black
+                    } else {
+                        Color::Red
+                    })
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            no_inner[0],
+        );
+
+        // Help text for buttons
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Use ", Style::default()),
+                Span::styled(
+                    "Left/Right",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to select, ", Style::default()),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to confirm, ", Style::default()),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to dismiss", Style::default()),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            inner_chunks[7],
+        );
+    } else {
+        // Simple exit text for other actions
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Press ", Style::default()),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" or ", Style::default()),
+                Span::styled(
+                    "Return",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to exit", Style::default()),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            inner_chunks[6],
+        );
+    }
+}
+
+pub fn render_settings_tab(f: &mut ratatui::Frame, area: Rect, user_role: UserRole) {
+    let block = Block::default()
+        .title("⚙️  Settings")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(3), // mode section
+            Constraint::Length(1), // spacer
+            Constraint::Min(0),    // rest
+        ],
+    )
+    .split(inner_area);
+
+    // Current mode display
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  [", Style::default()),
-            Span::styled("YES", yes_style),
-            Span::styled("]  ", Style::default()),
-            Span::styled("  [", Style::default()),
-            Span::styled("NO", no_style),
-            Span::styled("]  ", Style::default()),
+            Span::styled("Current Mode: ", Style::default()),
+            Span::styled(
+                match user_role {
+                    UserRole::User => "User",
+                    UserRole::Admin => "Admin",
+                },
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        inner_chunks[6],
+        chunks[1],
     );
 
-    // Help text
+    // Instructions
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Use ", Style::default()),
+            Span::styled("Press ", Style::default()),
             Span::styled(
-                "Left/Right",
+                "M",
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" to select, ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to dismiss", Style::default()),
+            Span::styled(" to switch mode", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        inner_chunks[7],
+        chunks[3],
     );
 }

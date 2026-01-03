@@ -3,19 +3,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Tabs};
 
-use super::{Tab, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{Tab, UserRole};
 
-pub fn render_tabs(f: &mut ratatui::Frame, area: Rect, active_tab: Tab) {
-    let tab_titles = [
-        "Orders",
-        "My Trades",
-        "Messages",
-        "Settings",
-        "Create New Order",
-    ]
-    .iter()
-    .map(|t| Line::from(*t))
-    .collect::<Vec<Line>>();
+pub fn render_tabs(f: &mut ratatui::Frame, area: Rect, active_tab: Tab, role: UserRole) {
+    let titles = Tab::get_titles(role);
+    let tab_titles: Vec<Line> = titles.iter().map(|t| Line::from(t.as_str())).collect();
+
     let tabs = Tabs::new(tab_titles)
         .select(active_tab.as_index())
         .block(

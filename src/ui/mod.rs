@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::fmt::{self, Display};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 
 pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
@@ -21,7 +24,7 @@ pub mod tabs;
 pub mod waiting;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab {
+pub enum UserTab {
     Orders,
     MyTrades,
     Messages,
@@ -29,58 +32,261 @@ pub enum Tab {
     CreateNewOrder,
 }
 
-impl Tab {
-    /// Convert tab to usize index for ratatui Tabs widget
-    pub fn as_index(self) -> usize {
-        match self {
-            Tab::Orders => 0,
-            Tab::MyTrades => 1,
-            Tab::Messages => 2,
-            Tab::Settings => 3,
-            Tab::CreateNewOrder => 4,
+impl Display for UserTab {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                UserTab::Orders => "Orders",
+                UserTab::MyTrades => "My Trades",
+                UserTab::Messages => "Messages",
+                UserTab::Settings => "Settings",
+                UserTab::CreateNewOrder => "Create New Order",
+            }
+        )
+    }
+}
+
+impl UserTab {
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            0 => UserTab::Orders,
+            1 => UserTab::MyTrades,
+            2 => UserTab::Messages,
+            3 => UserTab::Settings,
+            4 => UserTab::CreateNewOrder,
+            _ => panic!("Invalid user tab index: {}", index),
         }
     }
 
-    /// Get the total number of tabs
+    pub fn as_index(self) -> usize {
+        match self {
+            UserTab::Orders => 0,
+            UserTab::MyTrades => 1,
+            UserTab::Messages => 2,
+            UserTab::Settings => 3,
+            UserTab::CreateNewOrder => 4,
+        }
+    }
+
     pub fn count() -> usize {
         5
     }
 
-    /// Get the first tab
     pub fn first() -> Self {
-        Tab::Orders
+        UserTab::Orders
     }
 
-    /// Get the last tab
     pub fn last() -> Self {
-        Tab::CreateNewOrder
+        UserTab::CreateNewOrder
     }
 
-    /// Move to the previous tab, wrapping around
     pub fn prev(self) -> Self {
         match self {
-            Tab::Orders => Tab::Orders, // Don't wrap, stay at first
-            Tab::MyTrades => Tab::Orders,
-            Tab::Messages => Tab::MyTrades,
-            Tab::Settings => Tab::Messages,
-            Tab::CreateNewOrder => Tab::Settings,
+            UserTab::Orders => UserTab::Orders,
+            UserTab::MyTrades => UserTab::Orders,
+            UserTab::Messages => UserTab::MyTrades,
+            UserTab::Settings => UserTab::Messages,
+            UserTab::CreateNewOrder => UserTab::Settings,
         }
     }
 
-    /// Move to the next tab, wrapping around
     pub fn next(self) -> Self {
         match self {
-            Tab::Orders => Tab::MyTrades,
-            Tab::MyTrades => Tab::Messages,
-            Tab::Messages => Tab::Settings,
-            Tab::Settings => Tab::CreateNewOrder,
-            Tab::CreateNewOrder => Tab::CreateNewOrder, // Don't wrap, stay at last
+            UserTab::Orders => UserTab::MyTrades,
+            UserTab::MyTrades => UserTab::Messages,
+            UserTab::Messages => UserTab::Settings,
+            UserTab::Settings => UserTab::CreateNewOrder,
+            UserTab::CreateNewOrder => UserTab::CreateNewOrder,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdminTab {
+    Disputes,
+    Chat,
+    Settings,
+}
+
+impl Display for AdminTab {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AdminTab::Disputes => "Disputes",
+                AdminTab::Chat => "Chat",
+                AdminTab::Settings => "Settings",
+            }
+        )
+    }
+}
+
+impl AdminTab {
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            0 => AdminTab::Disputes,
+            1 => AdminTab::Chat,
+            2 => AdminTab::Settings,
+            _ => panic!("Invalid admin tab index: {}", index),
+        }
+    }
+
+    pub fn as_index(self) -> usize {
+        match self {
+            AdminTab::Disputes => 0,
+            AdminTab::Chat => 1,
+            AdminTab::Settings => 2,
+        }
+    }
+
+    pub fn count() -> usize {
+        3
+    }
+
+    pub fn first() -> Self {
+        AdminTab::Disputes
+    }
+
+    pub fn last() -> Self {
+        AdminTab::Settings
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            AdminTab::Disputes => AdminTab::Disputes,
+            AdminTab::Chat => AdminTab::Disputes,
+            AdminTab::Settings => AdminTab::Chat,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            AdminTab::Disputes => AdminTab::Chat,
+            AdminTab::Chat => AdminTab::Settings,
+            AdminTab::Settings => AdminTab::Settings,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    User(UserTab),
+    Admin(AdminTab),
+}
+
+impl Display for Tab {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Tab::User(tab) => write!(f, "{}", tab),
+            Tab::Admin(tab) => write!(f, "{}", tab),
+        }
+    }
+}
+
+impl Tab {
+    pub fn from_index(index: usize, role: UserRole) -> Self {
+        match role {
+            UserRole::User => Tab::User(UserTab::from_index(index)),
+            UserRole::Admin => Tab::Admin(AdminTab::from_index(index)),
+        }
+    }
+
+    pub fn as_index(self) -> usize {
+        match self {
+            Tab::User(tab) => tab.as_index(),
+            Tab::Admin(tab) => tab.as_index(),
+        }
+    }
+
+    pub fn to_line<'a>(self) -> Line<'a> {
+        Line::from(self.to_string())
+    }
+
+    pub fn count(role: UserRole) -> usize {
+        match role {
+            UserRole::User => UserTab::count(),
+            UserRole::Admin => AdminTab::count(),
+        }
+    }
+
+    pub fn first(role: UserRole) -> Self {
+        match role {
+            UserRole::User => Tab::User(UserTab::first()),
+            UserRole::Admin => Tab::Admin(AdminTab::first()),
+        }
+    }
+
+    pub fn last(role: UserRole) -> Self {
+        match role {
+            UserRole::User => Tab::User(UserTab::last()),
+            UserRole::Admin => Tab::Admin(AdminTab::last()),
+        }
+    }
+
+    pub fn prev(self, role: UserRole) -> Self {
+        match (self, role) {
+            (Tab::User(tab), UserRole::User) => Tab::User(tab.prev()),
+            (Tab::Admin(tab), UserRole::Admin) => Tab::Admin(tab.prev()),
+            _ => self, // Invalid combination, return self
+        }
+    }
+
+    pub fn next(self, role: UserRole) -> Self {
+        match (self, role) {
+            (Tab::User(tab), UserRole::User) => Tab::User(tab.next()),
+            (Tab::Admin(tab), UserRole::Admin) => Tab::Admin(tab.next()),
+            _ => self, // Invalid combination, return self
+        }
+    }
+
+    pub fn get_titles(role: UserRole) -> Vec<String> {
+        match role {
+            UserRole::User => (0..UserTab::count())
+                .map(|i| UserTab::from_index(i).to_string())
+                .collect(),
+            UserRole::Admin => (0..AdminTab::count())
+                .map(|i| AdminTab::from_index(i).to_string())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserRole {
+    User,
+    Admin,
+}
+
+impl Display for UserRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                UserRole::User => "User",
+                UserRole::Admin => "Admin",
+            }
+        )
+    }
+}
+
+impl FromStr for UserRole {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "User" => Ok(UserRole::User),
+            "Admin" => Ok(UserRole::Admin),
+            _ => Err(anyhow::anyhow!("Invalid user role: {s}")),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum UiMode {
+pub enum UserMode {
     Normal,
     CreatingOrder(FormState),
     ConfirmingOrder(FormState),       // Confirmation popup
@@ -88,9 +294,27 @@ pub enum UiMode {
     WaitingForMostro(FormState),      // Waiting for Mostro response (order creation)
     WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)
     WaitingAddInvoice,                // Waiting for Mostro response (adding invoice)
-    OrderResult(OrderResult),         // Show order result (success or error)
-    NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
+}
+
+#[derive(Clone, Debug)]
+pub enum AdminMode {
+    Normal,
+    // Future admin-specific modes can be added here
+}
+
+#[derive(Clone, Debug)]
+pub enum UiMode {
+    // Shared modes (available to both user and admin)
+    Normal,
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
+    NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
+    OrderResult(OrderResult), // Show order result (success or error)
+
+    // User-specific modes
+    UserMode(UserMode),
+
+    // Admin-specific modes
+    AdminMode(AdminMode),
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +413,7 @@ pub struct MessageViewState {
 }
 
 pub struct AppState {
+    pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
     pub mode: UiMode,
@@ -204,12 +429,16 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     let action = inner_message_kind.action.clone();
 
     let action_str = match action {
+        Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
         Action::FiatSent => "Fiat Sent",
-        Action::FiatSentOk => "Fiat Received",
+        Action::FiatSentOk => "Fiat payment completed",
+        Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::HoldInvoicePaymentAccepted => "Hold Invoice Payment Accepted",
+        Action::HoldInvoicePaymentAccepted => {
+            "Hold Invoice Payment Accepted - Press Yes to confirm fiat payment"
+        }
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rate Counterparty received",
         Action::Release | Action::Released => "Release",
@@ -227,10 +456,12 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     }
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    pub fn new(user_role: UserRole) -> Self {
+        let initial_tab = Tab::first(user_role);
         Self {
-            active_tab: Tab::Orders,
+            user_role,
+            active_tab: initial_tab,
             selected_order_idx: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
@@ -239,11 +470,11 @@ impl Default for AppState {
             pending_notifications: Arc::new(Mutex::new(0)),
         }
     }
-}
 
-impl AppState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn switch_role(&mut self, new_role: UserRole) {
+        self.user_role = new_role;
+        self.active_tab = Tab::first(new_role);
+        self.mode = UiMode::Normal;
     }
 }
 
@@ -300,26 +531,43 @@ pub fn ui_draw(
     .split(f.area());
 
     // Render tabs
-    tabs::render_tabs(f, chunks[0], app.active_tab);
+    tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
 
-    // Render content based on active tab
+    // Render content based on active tab and role
     let content_area = chunks[1];
-    match app.active_tab {
-        Tab::Orders => {
+    match (&app.active_tab, app.user_role) {
+        (Tab::User(UserTab::Orders), UserRole::User) => {
             orders_tab::render_orders_tab(f, content_area, orders, app.selected_order_idx)
         }
-        Tab::MyTrades => tab_content::render_coming_soon(f, content_area, "My Trades"),
-        Tab::Messages => {
+        (Tab::User(UserTab::MyTrades), UserRole::User) => {
+            tab_content::render_coming_soon(f, content_area, "My Trades")
+        }
+        (Tab::User(UserTab::Messages), UserRole::User) => {
             let messages = app.messages.lock().unwrap();
             tab_content::render_messages_tab(f, content_area, &messages, app.selected_message_idx)
         }
-        Tab::Settings => tab_content::render_coming_soon(f, content_area, "Settings"),
-        Tab::CreateNewOrder => {
-            if let UiMode::CreatingOrder(form) = &app.mode {
+        (Tab::User(UserTab::Settings), UserRole::User) => {
+            tab_content::render_settings_tab(f, content_area, app.user_role)
+        }
+        (Tab::User(UserTab::CreateNewOrder), UserRole::User) => {
+            if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
                 order_form::render_order_form(f, content_area, form);
             } else {
                 order_form::render_form_initializing(f, content_area);
             }
+        }
+        (Tab::Admin(AdminTab::Disputes), UserRole::Admin) => {
+            tab_content::render_coming_soon(f, content_area, "Disputes")
+        }
+        (Tab::Admin(AdminTab::Chat), UserRole::Admin) => {
+            tab_content::render_coming_soon(f, content_area, "Chat")
+        }
+        (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
+            tab_content::render_settings_tab(f, content_area, app.user_role)
+        }
+        _ => {
+            // Fallback for invalid combinations
+            tab_content::render_coming_soon(f, content_area, "Unknown")
         }
     }
 
@@ -329,33 +577,33 @@ pub fn ui_draw(
         status::render_status_bar(f, chunks[2], line, pending_count);
     }
 
-    // Confirmation popup overlay
-    if let UiMode::ConfirmingOrder(form) = &app.mode {
+    // Confirmation popup overlay (user mode only)
+    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
         order_confirm::render_order_confirm(f, form);
     }
 
-    // Waiting for Mostro popup overlay
-    if let UiMode::WaitingForMostro(_) = &app.mode {
+    // Waiting for Mostro popup overlay (user mode only)
+    if let UiMode::UserMode(UserMode::WaitingForMostro(_)) = &app.mode {
         waiting::render_waiting(f);
     }
 
-    // Waiting for take order popup overlay
-    if let UiMode::WaitingTakeOrder(_) = &app.mode {
+    // Waiting for take order popup overlay (user mode only)
+    if let UiMode::UserMode(UserMode::WaitingTakeOrder(_)) = &app.mode {
         waiting::render_waiting(f);
     }
 
-    // Waiting for AddInvoice popup overlay
-    if let UiMode::WaitingAddInvoice = &app.mode {
+    // Waiting for AddInvoice popup overlay (user mode only)
+    if let UiMode::UserMode(UserMode::WaitingAddInvoice) = &app.mode {
         waiting::render_waiting(f);
     }
 
-    // Order result popup overlay
+    // Order result popup overlay (shared)
     if let UiMode::OrderResult(result) = &app.mode {
         order_result::render_order_result(f, result);
     }
 
-    // Taking order popup overlay
-    if let UiMode::TakingOrder(take_state) = &app.mode {
+    // Taking order popup overlay (user mode only)
+    if let UiMode::UserMode(UserMode::TakingOrder(take_state)) = &app.mode {
         order_take::render_order_take(f, take_state);
     }
 
