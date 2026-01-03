@@ -13,6 +13,26 @@ Mostrix uses two Nostr protocols for secure communication:
 
 When a user creates a new order through the TUI, the following sequence occurs:
 
+```mermaid
+flowchart TD
+    Start([User Fills Order Form]) --> Confirm{User Confirms?}
+    Confirm -->|Press 'y'| DeriveKey[Derive Trade Key<br/>Index: last_trade_index + 1]
+    DeriveKey --> ConstructMsg[Construct Message<br/>- request_id<br/>- trade_index<br/>- Action: NewOrder<br/>- Order payload]
+    ConstructMsg --> SendDM[Send NIP-59 Gift Wrap<br/>- Identity Key signs Seal<br/>- Trade Key signs Rumor]
+    SendDM --> Subscribe[Subscribe to Trade Key Events]
+    Subscribe --> Wait[Wait for Mostro Response<br/>Timeout: 15s]
+    Wait --> Receive{Response Received?}
+    Receive -->|No| Timeout[Timeout Error]
+    Receive -->|Yes| Decrypt[Decrypt Gift Wrap<br/>using Trade Key]
+    Decrypt --> Validate{Request ID Matches?}
+    Validate -->|No| Mismatch[Reject: Mismatched request_id]
+    Validate -->|Yes| Parse[Parse Response Message]
+    Parse --> SaveDB[Save Order to Database<br/>- Order details<br/>- Trade keys<br/>- Trade index]
+    SaveDB --> Success([Order Created Successfully])
+    Timeout --> End([Error State])
+    Mismatch --> End
+```
+
 ### 1. User Input → Form Validation
 **Source**: `src/ui/key_handler.rs:743`
 ```743:746:src/ui/key_handler.rs
@@ -136,6 +156,23 @@ The response is:
 
 When a user takes an existing order from the order book:
 
+```mermaid
+flowchart TD
+    Start([User Selects Order<br/>Press Enter]) --> DeriveKey[Derive New Trade Key<br/>Index: last_trade_index + 1]
+    DeriveKey --> ConstructMsg[Construct Take Order Message<br/>- order_id<br/>- request_id<br/>- trade_index<br/>- Action: TakeBuy/TakeSell]
+    ConstructMsg --> SendDM[Send NIP-59 Gift Wrap<br/>to Mostro Daemon]
+    SendDM --> Subscribe[Subscribe to Trade Key Events]
+    Subscribe --> Wait[Wait for Mostro Response]
+    Wait --> Receive{Response Type?}
+    Receive -->|PaymentRequest| Invoice[Receive Lightning Invoice<br/>for Buy Orders]
+    Receive -->|Order Update| Update[Order Status Updated]
+    Receive -->|Error| Error[Order Unavailable<br/>or Error Message]
+    Invoice --> Process[Process Payment Request]
+    Update --> Success([Trade Initiated])
+    Process --> Success
+    Error --> End([Error State])
+```
+
 ### 1. User Selection
 The user navigates to an order in the Orders tab and presses `Enter`.
 
@@ -177,6 +214,24 @@ Similar to order creation, the client waits for Mostro's response, which may inc
 ## Background Message Listening
 
 Mostrix runs a background task that continuously monitors for new messages related to active trades.
+
+```mermaid
+flowchart TD
+    Start([Background Task Started]) --> Loop[Every 5 Seconds]
+    Loop --> GetOrders[Get Active Orders<br/>from Database]
+    GetOrders --> Iterate{More Orders?}
+    Iterate -->|Yes| DeriveKey[Re-derive Trade Key<br/>for Order]
+    DeriveKey --> FetchEvents[Fetch Gift Wrap Events<br/>for Trade Public Key]
+    FetchEvents --> Parse{Parse Events}
+    Parse -->|NIP-59| DecryptGW[Decrypt Gift Wrap<br/>Extract Rumor]
+    Parse -->|NIP-44| DecryptDM[Decrypt Direct Message]
+    DecryptGW --> ParseJSON[Parse JSON Message]
+    DecryptDM --> ParseJSON
+    ParseJSON --> Notify[Send Notification<br/>to UI Channel]
+    Notify --> Iterate
+    Iterate -->|No| Wait[Wait 5 Seconds]
+    Wait --> Loop
+```
 
 ### Message Listener Task
 **Source**: `src/util/dm_utils/mod.rs:216`
@@ -235,6 +290,22 @@ The parser handles:
 ## Sending Trade Messages
 
 When a user needs to send a message during an active trade (e.g., "Fiat Sent", "Release"):
+
+```mermaid
+flowchart TD
+    Start([User Triggers Action<br/>e.g., Fiat Sent, Release]) --> GetOrder[Get Order from Database]
+    GetOrder --> GetTradeKeys[Retrieve Trade Keys<br/>from Order Record]
+    GetTradeKeys --> GetIdentity[Get Identity Keys]
+    GetIdentity --> CreatePayload[Create Message Payload<br/>based on Action]
+    CreatePayload --> GenerateID[Generate request_id]
+    GenerateID --> ConstructMsg[Construct Message<br/>- order_id<br/>- request_id<br/>- action<br/>- payload]
+    ConstructMsg --> Serialize[Serialize to JSON]
+    Serialize --> SendDM[Send NIP-59 Gift Wrap<br/>- Identity Key signs Seal<br/>- Trade Key signs Rumor]
+    SendDM --> Wait[Wait for Mostro<br/>Acknowledgment]
+    Wait --> Response{Response?}
+    Response -->|Success| Success([Message Sent])
+    Response -->|Error| Error([Error State])
+```
 
 ### Message Sending Flow
 **Source**: `src/util/order_utils/execute_send_msg.rs:44`
@@ -335,10 +406,18 @@ Database operations (saving orders, updating trade indices) log errors but don't
 
 Mostrix's message handling is designed to be stateless:
 
-1. **On startup**, the client retrieves all active order IDs and their `trade_index` from the database.
-2. **It re-derives the trade keys** for each active order.
-3. **It queries Nostr relays** for recent Gift Wrap events directed to those trade public keys.
-4. **It reconstructs the current state** of each trade by parsing the latest messages.
+```mermaid
+flowchart TD
+    Start([Client Startup]) --> LoadOrders[Load Active Orders<br/>from Database<br/>- order_id<br/>- trade_index]
+    LoadOrders --> DeriveKeys[Re-derive Trade Keys<br/>for Each Order]
+    DeriveKeys --> QueryRelays[Query Nostr Relays<br/>for Gift Wrap Events<br/>Directed to Trade Keys]
+    QueryRelays --> ParseEvents[Parse & Decrypt Events]
+    ParseEvents --> Reconstruct[Reconstruct Trade State<br/>from Latest Messages]
+    Reconstruct --> Sync([State Synchronized<br/>with Mostro])
+    
+    style Start fill:#e1f5ff
+    style Sync fill:#d4edda
+```
 
 This approach means:
 - No local message database is required
