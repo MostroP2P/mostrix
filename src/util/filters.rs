@@ -32,6 +32,7 @@ pub fn create_filter(
 ) -> Result<Filter> {
     match list_kind {
         ListKind::Orders => create_seven_days_filter(Alphabet::Z, "order".to_string(), pubkey),
+        ListKind::Disputes => create_seven_days_filter(Alphabet::Z, "dispute".to_string(), pubkey),
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
     }
 }

@@ -6,13 +6,14 @@ pub mod util;
 
 use crate::settings::{init_settings, Settings};
 use crate::util::{
-    get_orders, handle_message_notification, handle_order_result, listen_for_order_messages,
+    handle_message_notification, handle_order_result, listen_for_order_messages,
+    order_utils::{start_fetch_scheduler, FetchSchedulerResult},
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
 
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use chrono::Local;
 use crossterm::execute;
@@ -30,7 +31,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
 use std::sync::OnceLock;
-use tokio::time::{interval, interval_at, Duration, Instant};
+use tokio::time::{interval, Duration};
 
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
@@ -111,9 +112,6 @@ async fn main() -> Result<(), anyhow::Error> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    // Shared state: orders are stored in memory.
-    let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
-
     // Configure Nostr client.
     let my_keys = settings
         .nsec_privkey
@@ -129,24 +127,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
 
-    // Asynchronous task to handle incoming notifications.
-    let orders_clone = Arc::clone(&orders);
-    let client_clone = client.clone();
-    let mostro_pubkey_clone = mostro_pubkey;
-    tokio::spawn(async move {
-        // Periodically refresh orders list (immediate first fetch, then every 10 seconds)
-        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(10));
-        loop {
-            refresh_interval.tick().await;
-            if let Ok(orders) =
-                get_orders(&client_clone, mostro_pubkey_clone, Some(Status::Pending)).await
-            {
-                let mut orders_lock = orders_clone.lock().unwrap();
-                orders_lock.clear();
-                orders_lock.extend(orders);
-            }
-        }
-    });
+    // Start background tasks to fetch orders and disputes
+    let FetchSchedulerResult { orders, disputes } =
+        start_fetch_scheduler(client.clone(), mostro_pubkey);
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
@@ -239,6 +222,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         key_event,
                         &mut app,
                         &orders,
+                        &disputes,
                         &pool,
                         &client,
                         settings,
@@ -268,6 +252,14 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
+        // Ensure the selected dispute index is valid when disputes list changes.
+        {
+            let disputes_len = disputes.lock().unwrap().len();
+            if disputes_len > 0 && app.selected_dispute_idx >= disputes_len {
+                app.selected_dispute_idx = disputes_len - 1;
+            }
+        }
+
         // Status bar text
         let relays_str = settings.relays.join(" - ");
         // let mostro_short = if settings.mostro_pubkey.len { format!("{}…", &settings.mostro_pubkey[..12]) } else { settings.mostro_pubkey.clone() };
@@ -275,7 +267,7 @@ async fn main() -> Result<(), anyhow::Error> {
             "🧌 pubkey - {}   🔗 {}",
             &settings.mostro_pubkey, relays_str
         );
-        terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
+        terminal.draw(|f| ui_draw(f, &app, &orders, &disputes, Some(&status_line)))?;
     }
 
     // Restore terminal to its original state.

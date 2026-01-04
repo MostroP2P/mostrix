@@ -43,12 +43,17 @@ pub fn handle_invoice_input(
 }
 
 /// Handle navigation keys (Left, Right, Up, Down)
-pub fn handle_navigation(code: KeyCode, app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
+pub fn handle_navigation(
+    code: KeyCode,
+    app: &mut AppState,
+    orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
+) {
     match code {
         KeyCode::Left => handle_left_key(app, orders),
         KeyCode::Right => handle_right_key(app, orders),
-        KeyCode::Up => handle_up_key(app, orders),
-        KeyCode::Down => handle_down_key(app, orders),
+        KeyCode::Up => handle_up_key(app, orders, disputes),
+        KeyCode::Down => handle_down_key(app, orders, disputes),
         _ => {}
     }
 }
@@ -123,7 +128,11 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     }
 }
 
-fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
+fn handle_up_key(
+    app: &mut AppState,
+    orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+) {
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
@@ -132,6 +141,11 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 let orders_len = orders.lock().unwrap().len();
                 if orders_len > 0 && app.selected_order_idx > 0 {
                     app.selected_order_idx -= 1;
+                }
+            } else if let Tab::Admin(AdminTab::Disputes) = app.active_tab {
+                let disputes_len = disputes.lock().unwrap().len();
+                if disputes_len > 0 && app.selected_dispute_idx > 0 {
+                    app.selected_dispute_idx -= 1;
                 }
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = app.messages.lock().unwrap();
@@ -167,7 +181,11 @@ fn handle_up_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     }
 }
 
-fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
+fn handle_down_key(
+    app: &mut AppState,
+    orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+) {
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
@@ -176,6 +194,11 @@ fn handle_down_key(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 let orders_len = orders.lock().unwrap().len();
                 if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
                     app.selected_order_idx += 1;
+                }
+            } else if let Tab::Admin(AdminTab::Disputes) = app.active_tab {
+                let disputes_len = disputes.lock().unwrap().len();
+                if disputes_len > 0 && app.selected_dispute_idx < disputes_len.saturating_sub(1) {
+                    app.selected_dispute_idx += 1;
                 }
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = app.messages.lock().unwrap();
@@ -882,17 +905,19 @@ fn handle_mode_switch(app: &mut AppState, _settings: &crate::settings::Settings)
         // Write back
         if let Ok(toml_string) = toml::to_string_pretty(&current_settings) {
             let _ = std::fs::write(&hidden_file, toml_string);
-            log::info!("Mode switched to: {}", new_role.to_string());
+            log::info!("Mode switched to: {}", new_role);
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
+#[allow(clippy::too_many_arguments)]
 pub fn handle_key_event(
     key_event: KeyEvent,
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
     pool: &sqlx::SqlitePool,
     client: &nostr_sdk::Client,
     settings: &crate::settings::Settings,
@@ -924,7 +949,7 @@ pub fn handle_key_event(
 
     match code {
         KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
-            handle_navigation(code, app, orders);
+            handle_navigation(code, app, orders, disputes);
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {

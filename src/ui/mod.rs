@@ -12,6 +12,7 @@ use ratatui::text::Line;
 pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
+pub mod disputes_tab;
 pub mod key_handler;
 pub mod order_confirm;
 pub mod order_form;
@@ -416,6 +417,7 @@ pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
+    pub selected_dispute_idx: usize, // Selected dispute in Disputes tab
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
@@ -463,6 +465,7 @@ impl AppState {
             user_role,
             active_tab: initial_tab,
             selected_order_idx: 0,
+            selected_dispute_idx: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
@@ -517,6 +520,7 @@ pub fn ui_draw(
     f: &mut ratatui::Frame,
     app: &AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     status_line: Option<&str>,
 ) {
     // Create layout: one row for tabs and the rest for content.
@@ -557,7 +561,7 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::Disputes), UserRole::Admin) => {
-            tab_content::render_coming_soon(f, content_area, "Disputes")
+            disputes_tab::render_disputes_tab(f, content_area, disputes, app.selected_dispute_idx)
         }
         (Tab::Admin(AdminTab::Chat), UserRole::Admin) => {
             tab_content::render_coming_soon(f, content_area, "Chat")

@@ -65,6 +65,75 @@ pub(super) fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     Ok(order)
 }
 
+/// Parse dispute from nostr tags
+pub(super) fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
+    let mut dispute = Dispute::default();
+    for tag in tags {
+        let t = tag.to_vec();
+
+        // Check if tag has at least 2 elements
+        if t.len() < 2 {
+            continue;
+        }
+
+        let key = t.first().map(|s| s.as_str()).unwrap_or("");
+        let value = t.get(1).map(|s| s.as_str()).unwrap_or("");
+
+        match key {
+            "d" => {
+                let id = value
+                    .parse::<Uuid>()
+                    .map_err(|_| anyhow::anyhow!("Invalid dispute id"))?;
+                dispute.id = id;
+            }
+            "s" => {
+                let status = DisputeStatus::from_str(value)
+                    .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
+                dispute.status = status.to_string();
+            }
+            _ => {}
+        }
+    }
+
+    Ok(dispute)
+}
+
+/// Parse disputes from events
+pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
+    let mut disputes_list = Vec::<Dispute>::new();
+
+    // Scan events to extract all disputes
+    for event in events.iter() {
+        let mut dispute = match dispute_from_tags(event.tags.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("Failed to parse dispute from tags: {:?}", e);
+                continue;
+            }
+        };
+        // Get created at field from Nostr event
+        dispute.created_at = event.created_at.as_u64() as i64;
+        disputes_list.push(dispute);
+    }
+
+    let buffer_dispute_list = disputes_list.clone();
+    // Order all elements (disputes) received to filter - discard disaligned messages
+    // if a dispute has an older message with the state we received is discarded for the latest one
+    disputes_list.retain(|keep| {
+        !buffer_dispute_list
+            .iter()
+            .any(|x| x.id == keep.id && x.created_at > keep.created_at)
+    });
+
+    // Sort by id to remove duplicates
+    disputes_list.sort_by(|a, b| b.id.cmp(&a.id));
+    disputes_list.dedup_by(|a, b| a.id == b.id);
+
+    // Finally sort list by creation time (newest first)
+    disputes_list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    disputes_list
+}
+
 /// Parse orders from events
 pub fn parse_orders_events(
     events: Events,
@@ -143,6 +212,12 @@ pub async fn fetch_events_list(
             let orders = parse_orders_events(fetched_events, currency, status, kind);
             Ok(orders.into_iter().map(Event::SmallOrder).collect())
         }
+        ListKind::Disputes => {
+            let filters = create_filter(list_kind, mostro_pubkey, None)?;
+            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
+            let disputes = parse_disputes_events(fetched_events);
+            Ok(disputes.into_iter().map(Event::Dispute).collect())
+        }
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
     }
 }
@@ -177,6 +252,34 @@ pub async fn get_orders(
         .collect();
 
     Ok(orders)
+}
+
+/// Fetch disputes from the Mostro network
+/// Returns a vector of Dispute items
+pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<Vec<Dispute>> {
+    let fetched_events = fetch_events_list(
+        ListKind::Disputes,
+        None,
+        None,
+        None,
+        client,
+        mostro_pubkey,
+        None,
+    )
+    .await?;
+
+    let disputes: Vec<Dispute> = fetched_events
+        .into_iter()
+        .filter_map(|event| {
+            if let Event::Dispute(dispute) = event {
+                Some(dispute)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(disputes)
 }
 
 /// Helper function to create OrderResult::Success from an order
