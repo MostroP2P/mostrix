@@ -6,13 +6,14 @@ This guide documents the database structure used by Mostrix to persist critical 
 
 Mostrix uses SQLite for local data persistence. The database file is located at:
 
-```
+```text
 ~/.mostrix/mostrix.db
 ```
 
 The database is automatically created on first startup if it doesn't exist.
 
 **Source**: `src/db.rs:14`
+
 ```14:15:src/db.rs
     let app_dir = home_dir.join(format!(".{}", name));
     let db_path = app_dir.join(format!("{}.db", name));
@@ -21,6 +22,7 @@ The database is automatically created on first startup if it doesn't exist.
 ## Database Initialization
 
 On first startup, Mostrix:
+
 1. Creates the `~/.mostrix/` directory if it doesn't exist
 2. Creates the SQLite database file
 3. Creates the necessary tables (`users` and `orders`)
@@ -28,6 +30,7 @@ On first startup, Mostrix:
 5. Creates the initial user record
 
 **Source**: `src/db.rs:66`
+
 ```66:73:src/db.rs
         // Check if a user exists, if not, create one
         let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
@@ -46,6 +49,7 @@ On first startup, Mostrix:
 Stores the user's identity and key derivation state.
 
 **Schema**:
+
 ```sql
 CREATE TABLE IF NOT EXISTS users (
     i0_pubkey char(64) PRIMARY KEY,
@@ -57,7 +61,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 **Source**: `src/db.rs:55`
 
-#### Fields
+#### User Table Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -69,6 +73,7 @@ CREATE TABLE IF NOT EXISTS users (
 #### Purpose
 
 The `users` table is critical for:
+
 - **Key Recovery**: The mnemonic allows recovery of all derived keys
 - **Trade Index Tracking**: `last_trade_index` ensures deterministic key derivation for each trade
 - **Identity Management**: `i0_pubkey` identifies the user's primary Nostr identity
@@ -79,6 +84,7 @@ The `users` table is critical for:
 - **Trade Index**: Updated every time a new order is created or taken to ensure no key reuse.
 
 **Source**: `src/util/db_utils.rs:25`
+
 ```25:27:src/util/db_utils.rs
                 if let Err(e) = User::update_last_trade_index(pool, trade_index).await {
                     log::error!("Failed to update user: {}", e);
@@ -90,6 +96,7 @@ The `users` table is critical for:
 Stores order information and associated trade keys for active orders.
 
 **Schema**:
+
 ```sql
 CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
@@ -114,7 +121,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 **Source**: `src/db.rs:36`
 
-#### Fields
+#### Order Table Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -139,6 +146,7 @@ CREATE TABLE IF NOT EXISTS orders (
 #### Purpose
 
 The `orders` table is essential for:
+
 - **Trade Key Persistence**: Stores the trade keys needed to decrypt messages and sign actions for each active trade
 - **Order Recovery**: Allows the client to recover active orders on startup
 - **State Synchronization**: Enables the "fetch-on-startup" strategy to sync with Mostro daemon
@@ -150,6 +158,7 @@ The `orders` table is essential for:
 - **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic.
 
 **Source**: `src/models.rs:154`
+
 ```154:172:src/models.rs
         // Try insert; if id already exists, perform an update instead
         let insert_result = order.insert_db(pool).await;
@@ -190,6 +199,7 @@ The relationship between `users.last_trade_index` and `orders.trade_keys` is cri
    - The client can decrypt messages and interact with active trades
 
 **Source**: `src/util/order_utils/send_new_order.rs:84`
+
 ```84:87:src/util/order_utils/send_new_order.rs
     let user = User::get(pool).await?;
     let next_idx = user.last_trade_index.unwrap_or(1) + 1;
@@ -210,6 +220,7 @@ Mostrix uses a "fetch-on-startup" strategy rather than storing all messages loca
    - Reconstructs the current state from the latest messages
 
 This approach ensures:
+
 - **Always Up-to-Date**: State is synchronized with Mostro daemon on every startup
 - **No State Drift**: Local state matches what Mostro knows
 - **Simpler Architecture**: No need to maintain a message database

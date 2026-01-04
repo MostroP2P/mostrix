@@ -7,6 +7,7 @@ This guide explains the admin mode functionality for dispute resolution in Mostr
 Admin mode is activated when the `user_mode` setting is set to `"admin"` and a valid `admin_privkey` is configured in `settings.toml`. Only the admin private key can be used to sign dispute resolution actions.
 
 **Source**: `src/settings.rs:12`
+
 ```12:12:src/settings.rs
     pub admin_privkey: String,
 ```
@@ -16,40 +17,49 @@ Admin mode is activated when the `user_mode` setting is set to `"admin"` and a v
 The admin interface provides dedicated tabs for dispute management:
 
 ### 1. Disputes Tab
+
 Lists all active disputes on the Mostro network. Admins can:
+
 - **View dispute details**: Order ID, parties involved, status
 - **Take a dispute**: Select a dispute and take ownership to resolve it
 - **Navigate**: Use arrow keys to browse the dispute list
 
 ### 2. Add Solver Tab
+
 Allows admins to add another dispute solver to the network. This enables:
+
 - **Network expansion**: Add additional trusted admins to help resolve disputes
 - **Solver management**: Maintain a list of authorized dispute resolvers
 - **Decentralization**: Distribute dispute resolution across multiple admins
 
 ### 3. Disputes with Buyer Tab
+
 Dedicated chat interface for communicating with the **buyer** in an active dispute.
 
 **Visual Safety Feature**: This tab is **differently colored** (e.g., blue/green) to prevent admins from accidentally sending messages to the wrong party.
 
 **Functionality**:
+
 - View message history with the buyer
 - Send messages to the buyer
 - Request additional information or evidence
 - Coordinate resolution steps
 
 ### 4. Disputes with Seller Tab
+
 Dedicated chat interface for communicating with the **seller** in an active dispute.
 
 **Visual Safety Feature**: This tab is **differently colored** (e.g., red/orange) to clearly distinguish it from the buyer chat tab.
 
 **Functionality**:
+
 - View message history with the seller
 - Send messages to the seller
 - Request additional information or evidence
 - Coordinate resolution steps
 
 ### 5. Settings Tab
+
 Admin-specific configuration and settings.
 
 ## Dispute States
@@ -77,6 +87,7 @@ pub enum Status {
 ### State Descriptions
 
 #### 1. `Initiated` (Default)
+
 - **Meaning**: The dispute has been created and is waiting for an admin/solver to take ownership.
 - **Admin Actions Available**:
   - Take the dispute (moves to `InProgress`)
@@ -84,6 +95,7 @@ pub enum Status {
 - **Next State**: `InProgress` (when taken by admin)
 
 #### 2. `InProgress`
+
 - **Meaning**: An admin/solver has taken ownership of the dispute and is actively working on resolution.
 - **Admin Actions Available**:
   - Communicate with buyer and seller
@@ -93,12 +105,14 @@ pub enum Status {
 - **Next States**: `Settled`, `SellerRefunded`, or `Released`
 
 #### 3. `SellerRefunded`
+
 - **Meaning**: The dispute was resolved in favor of the seller. The seller has been refunded, and the buyer's payment was returned.
 - **Admin Actions Available**:
   - View dispute history (dispute is closed)
 - **Final State**: No further actions possible
 
 #### 4. `Settled`
+
 - **Meaning**: The admin/solver has settled the seller's invoice and started the process of paying sats to the buyer. This indicates resolution in favor of the buyer.
 - **Admin Actions Available**:
   - Monitor payment completion
@@ -106,6 +120,7 @@ pub enum Status {
 - **Next State**: `Released` (when seller releases)
 
 #### 5. `Released`
+
 - **Meaning**: The seller has released the funds, completing the dispute resolution process.
 - **Admin Actions Available**:
   - View dispute history (dispute is closed)
@@ -170,6 +185,7 @@ sequenceDiagram
 ```
 
 **Key Points**:
+
 - Only the `admin_privkey` can sign dispute resolution actions
 - The dispute is assigned to the admin who takes it
 - Other admins cannot take a dispute that's already been taken
@@ -211,18 +227,21 @@ pub struct SolverDisputeInfo {
 #### Field Descriptions
 
 **Identity & Status**:
+
 - **`id`**: Unique identifier (UUID) for the dispute
 - **`kind`**: Order kind (e.g., "Buy" or "Sell")
 - **`status`**: Current dispute status (see [Dispute States](#dispute-states) section)
 - **`order_previous_status`**: The order's status before the dispute was initiated
 
 **Lightning Network Details**:
+
 - **`hash`**: Lightning invoice hash (if applicable)
 - **`preimage`**: Lightning invoice preimage (if available)
 - **`buyer_invoice`**: Lightning invoice provided by the buyer (if applicable)
 - **`invoice_held_at`**: Timestamp when the invoice was held/created
 
 **Parties Involved**:
+
 - **`initiator_pubkey`**: Public key of the user who initiated the dispute
 - **`buyer_pubkey`**: Public key of the buyer (if available)
 - **`seller_pubkey`**: Public key of the seller (if available)
@@ -232,6 +251,7 @@ pub struct SolverDisputeInfo {
 - **`counterpart_info`**: Optional user information for the counterparty (name, reputation, etc.)
 
 **Financial Details**:
+
 - **`amount`**: Amount in satoshis
 - **`fiat_amount`**: Amount in fiat currency
 - **`premium`**: Premium amount (in satoshis)
@@ -240,12 +260,14 @@ pub struct SolverDisputeInfo {
 - **`payment_method`**: Payment method used
 
 **Timestamps**:
+
 - **`created_at`**: Timestamp when the dispute was created
 - **`taken_at`**: Timestamp when the admin took the dispute
 
 #### Using Dispute Information
 
 This comprehensive information allows admins to:
+
 1. **Understand the context**: Review order details, parties involved, and dispute circumstances
 2. **Assess privacy settings**: Know if parties have full privacy enabled (affects available information)
 3. **Review financial details**: Understand amounts, fees, and payment methods
@@ -253,6 +275,7 @@ This comprehensive information allows admins to:
 5. **Make informed decisions**: Use all available information to resolve the dispute fairly
 
 **Privacy Considerations**:
+
 - If `initiator_full_privacy` or `counterpart_full_privacy` is `true`, some user information may be limited
 - `initiator_info` and `counterpart_info` may be `None` if privacy is enabled
 - Admins should respect privacy settings while gathering necessary information for resolution
@@ -289,6 +312,7 @@ sequenceDiagram
 ```
 
 **Key Points**:
+
 - Requires admin privileges (signed with `admin_privkey`)
 - Adds a new public key to the list of authorized dispute solvers
 - The new solver can then take and resolve disputes
@@ -351,6 +375,7 @@ sequenceDiagram
 ```
 
 **Visual Safety Features**:
+
 - **Different colors**: Buyer and Seller chat tabs use distinct color schemes
 - **Clear labeling**: Tab names explicitly indicate which party you're communicating with
 - **Context preservation**: Each tab maintains its own message history and context
@@ -360,15 +385,17 @@ sequenceDiagram
 Once an admin has taken a dispute (state: `InProgress`), they can perform various resolution actions:
 
 ### 1. Resolve in Favor of Buyer
+
 - **Action**: Settle seller's invoice and initiate payment to buyer
 - **State Transition**: `InProgress` → `Settled`
-- **Result**: 
+- **Result**:
   - Seller's invoice is settled
   - Payment process to buyer begins
   - Dispute moves to `Settled` state
 - **Final State**: When seller releases, state becomes `Released` (dispute closed)
 
 ### 2. Resolve in Favor of Seller
+
 - **Action**: Cancel dispute and refund seller
 - **State Transition**: `InProgress` → `SellerRefunded`
 - **Result**:
@@ -378,27 +405,32 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 - **Final State**: `SellerRefunded` (dispute closed)
 
 ### 3. Request Additional Information
+
 - Send messages to either party requesting evidence
 - Coordinate between buyer and seller
 - Gather necessary documentation
 
 ### 4. Escalate or Transfer
+
 - Transfer dispute to another admin/solver if needed
 - Escalate complex cases
 
 ## Security Considerations
 
 ### Admin Key Management
+
 - **`admin_privkey`**: Must be kept secure and never shared
 - **Key derivation**: Admin keys are not derived from the user's mnemonic (separate key)
 - **Access control**: Only the configured admin key can sign dispute actions
 
 ### Dispute Assignment
+
 - **Single admin per dispute**: Once taken, a dispute is assigned to one admin
 - **Prevents conflicts**: Other admins cannot take an already-assigned dispute
 - **Clear ownership**: The assigned admin is responsible for resolution
 
 ### Communication Security
+
 - **Encrypted messages**: All communication uses NIP-44 or NIP-59 encryption
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
@@ -406,11 +438,13 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 ## Implementation Status
 
 **Current Implementation**:
+
 - Admin role detection via `user_mode` setting
 - Admin tab structure defined in `AdminTab` enum
 - Basic UI scaffolding for admin tabs
 
 **Planned Implementation**:
+
 - Dispute list fetching and display
 - Take dispute functionality
 - Add solver functionality
@@ -418,6 +452,7 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 - Dispute resolution actions (resolve in favor of buyer/seller)
 
 **Source**: `src/ui/mod.rs:107`
+
 ```107:111:src/ui/mod.rs
 pub enum AdminTab {
     Disputes,

@@ -80,6 +80,7 @@ This document outlines the coding standards and best practices for the Mostrix p
 - **Log errors**: Use `log::error!`, `log::warn!` appropriately.
 
 **Example**:
+
 ```rust
 pub async fn send_new_order(...) -> Result<OrderResult> {
     let trade_keys = user.derive_trade_keys(next_idx)?; // Propagate error
@@ -108,6 +109,7 @@ pub async fn send_new_order(...) -> Result<OrderResult> {
 - **Code examples**: Include examples in documentation when helpful.
 
 **Example**:
+
 ```rust
 /// Derives a trade key for the given index using NIP-06.
 /// 
@@ -123,7 +125,7 @@ pub fn derive_trade_keys(&self, index: i64) -> Result<Keys> {
 
 ### Module Structure
 
-```
+```text
 src/
 ├── main.rs              # Entry point
 ├── settings.rs          # Configuration
@@ -145,6 +147,7 @@ src/
 Use `mod.rs` files to re-export commonly used items:
 
 **Source**: `src/util/mod.rs:7`
+
 ```7:14:src/util/mod.rs
 // Re-export commonly used items
 pub use db_utils::save_order;
