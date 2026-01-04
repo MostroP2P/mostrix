@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `min_amount` | `INTEGER` | Minimum amount for range orders (NULL for fixed orders). |
 | `max_amount` | `INTEGER` | Maximum amount for range orders (NULL for fixed orders). |
 | `fiat_amount` | `INTEGER` | Amount in fiat currency (smallest unit, e.g., cents). |
-| `payment_method` | `TEXT` | Payment method (comma separated list of methods). |
+| `payment_method` | `TEXT` | Payment method (comma-separated list of methods). |
 | `premium` | `INTEGER` | Premium amount in satoshis. |
 | `trade_keys` | `TEXT` | **Critical**: The trade keys (secret key in hex) for this order. Used to decrypt messages and sign actions for this specific trade. |
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
