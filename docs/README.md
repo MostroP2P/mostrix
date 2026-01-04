@@ -9,6 +9,8 @@ Quick links to architecture and feature guides for the Mostrix TUI client.
 - **Key Management**: [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) - Deterministic key derivation, identity keys, and trade keys
 - **Message Flow & Protocol**: [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) - How Mostrix communicates with Mostro daemon and handles messages
 - **Range Orders**: [RANGE_ORDERS.md](RANGE_ORDERS.md) - Variable amount orders and NextTrade payload mechanism
+- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) - Admin mode dispute resolution workflows and tabs
+- **Database**: [DATABASE.md](DATABASE.md) - Database schema, tables, and data persistence
 - **Coding Standards**: [CODING_STANDARDS.md](CODING_STANDARDS.md) - Code quality guidelines and best practices
 
 ## Tips

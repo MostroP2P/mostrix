@@ -60,9 +60,12 @@ Focused on trading and order management.
 ### Admin Role
 Focused on dispute resolution and protocol management.
 - **Disputes**: List of active disputes where the admin can take action (e.g., resolving in favor of buyer/seller).
-- **Chat**: Dedicated interfaces for communicating with disputed parties.
-  - *Future Implementation*: Mostrix intends to implement split or color-coded chat tabs for the Buyer and Seller in a dispute to prevent accidental cross-communication.
+- **Add Solver**: Add another dispute solver to the network.
+- **Disputes with Buyer**: Dedicated chat interface for communicating with the buyer in a dispute (differently colored to prevent confusion).
+- **Disputes with Seller**: Dedicated chat interface for communicating with the seller in a dispute (differently colored to prevent confusion).
 - **Settings**: Role-specific configuration.
+
+For detailed information about admin dispute resolution workflows, see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
 ## UI Modes & State Machine
 
