@@ -410,11 +410,6 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 - Coordinate between buyer and seller
 - Gather necessary documentation
 
-### 4. Escalate or Transfer
-
-- Transfer dispute to another admin/solver if needed
-- Escalate complex cases
-
 ## Security Considerations
 
 ### Admin Key Management

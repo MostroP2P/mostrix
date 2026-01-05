@@ -25,7 +25,9 @@ On first startup, Mostrix:
 
 1. Creates the `~/.mostrix/` directory if it doesn't exist
 2. Creates the SQLite database file
-3. Creates the necessary tables (`users` and `orders`)
+3. Creates the necessary tables:
+   - **User Mode Tables**: `users` and `orders`
+   - **Admin Mode Tables**: `disputes`
 4. Generates a new 12-word BIP-39 mnemonic if no user exists
 5. Creates the initial user record
 
@@ -42,9 +44,20 @@ On first startup, Mostrix:
         }
 ```
 
+## Mode Separation
+
+Mostrix operates in two distinct modes, each using different database tables:
+
+- **User Mode**: Uses `users` and `orders` tables for trading operations
+- **Admin Mode**: Uses `disputes` table for dispute resolution
+
+The tables are designed to be independent, allowing the same database to support both user and admin functionality.
+
 ## Tables
 
-### 1. `users` Table
+### User Mode Tables
+
+#### 1. `users` Table
 
 Stores the user's identity and key derivation state.
 
@@ -91,7 +104,7 @@ The `users` table is critical for:
                 }
 ```
 
-### 2. `orders` Table
+#### 2. `orders` Table
 
 Stores order information and associated trade keys for active orders.
 
@@ -159,6 +172,94 @@ The `orders` table is essential for:
 
 **Source**: `src/models.rs:154`
 
+### Admin Mode Tables
+
+#### 3. `disputes` Table
+
+Stores dispute information received from Mostro when an admin takes a dispute. This table is used exclusively in admin mode to track and manage disputes that the admin has taken responsibility for resolving.
+
+**Schema**:
+
+```sql
+CREATE TABLE IF NOT EXISTS disputes (
+    id TEXT PRIMARY KEY,
+    kind TEXT,
+    status TEXT,
+    hash TEXT,
+    preimage TEXT,
+    order_previous_status TEXT,
+    initiator_pubkey TEXT NOT NULL,
+    buyer_pubkey TEXT,
+    seller_pubkey TEXT,
+    initiator_full_privacy INTEGER NOT NULL,
+    counterpart_full_privacy INTEGER NOT NULL,
+    initiator_info TEXT,
+    counterpart_info TEXT,
+    premium INTEGER NOT NULL,
+    payment_method TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    fiat_amount INTEGER NOT NULL,
+    fee INTEGER NOT NULL,
+    routing_fee INTEGER NOT NULL,
+    buyer_invoice TEXT,
+    invoice_held_at INTEGER NOT NULL,
+    taken_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+```
+
+**Source**: Based on `SolverDisputeInfo` struct from Mostro protocol
+
+#### Dispute Table Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `TEXT` | Primary key. UUID of the dispute. |
+| `kind` | `TEXT` | Order kind: "Buy" or "Sell". |
+| `status` | `TEXT` | Current dispute status (e.g., "WaitingBuyer", "WaitingSeller", "Resolved"). |
+| `hash` | `TEXT` | Lightning invoice hash (if applicable). NULL if not available. |
+| `preimage` | `TEXT` | Lightning invoice preimage (if available). NULL if not available. |
+| `order_previous_status` | `TEXT` | The order's status before the dispute was initiated. |
+| `initiator_pubkey` | `TEXT` | Public key of the user who initiated the dispute. |
+| `buyer_pubkey` | `TEXT` | Public key of the buyer (if applicable). NULL if not available. |
+| `seller_pubkey` | `TEXT` | Public key of the seller (if applicable). NULL if not available. |
+| `initiator_full_privacy` | `INTEGER` | Boolean (0 or 1). Indicates if the initiator is using full privacy mode. |
+| `counterpart_full_privacy` | `INTEGER` | Boolean (0 or 1). Indicates if the counterparty is using full privacy mode. |
+| `initiator_info` | `TEXT` | JSON-encoded `UserInfo` struct for the initiator (if available). NULL if not available. |
+| `counterpart_info` | `TEXT` | JSON-encoded `UserInfo` struct for the counterparty (if available). NULL if not available. |
+| `premium` | `INTEGER` | Premium amount in satoshis. |
+| `payment_method` | `TEXT` | Payment method used for the order. |
+| `amount` | `INTEGER` | Amount in satoshis. |
+| `fiat_amount` | `INTEGER` | Amount in fiat currency (smallest unit, e.g., cents). |
+| `fee` | `INTEGER` | Fee amount in satoshis. |
+| `routing_fee` | `INTEGER` | Lightning routing fee in satoshis. |
+| `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). NULL if not available. |
+| `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created. |
+| `taken_at` | `INTEGER` | Unix timestamp when the admin took the dispute. |
+| `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
+
+#### Purpose
+
+The `disputes` table is essential for:
+
+- **Dispute Tracking**: Maintains a local record of all disputes the admin has taken
+- **State Persistence**: Allows the admin to see active disputes across application restarts
+- **Resolution Context**: Stores all necessary information for resolving disputes (parties, amounts, invoices, etc.)
+- **Privacy Mode Tracking**: Records which parties are using full privacy mode, which affects communication methods
+
+#### Data Persistence
+
+- **Dispute Reception**: When an admin takes a dispute, Mostro sends a `SolverDisputeInfo` message containing all dispute details
+- **Local Storage**: The dispute information is stored locally in this table for quick access
+- **Status Updates**: The dispute status is updated as the resolution process progresses
+- **JSON Fields**: `initiator_info` and `counterpart_info` are stored as JSON-encoded strings for complex nested data
+
+**Note**: The disputes table is populated when an admin takes a dispute from the Mostro network. The admin receives a `SolverDisputeInfo` struct via direct message from Mostro, which is then persisted to this table.
+
+**Source**: `SolverDisputeInfo` struct definition (see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#dispute-information-structure))
+
+**Source**: `src/models.rs:154`
+
 ```154:172:src/models.rs
         // Try insert; if id already exists, perform an update instead
         let insert_result = order.insert_db(pool).await;
@@ -183,7 +284,7 @@ The `orders` table is essential for:
 
 ## Key Data Relationships
 
-### Trade Index and Keys
+### User Mode: Trade Index and Keys
 
 The relationship between `users.last_trade_index` and `orders.trade_keys` is critical:
 
@@ -257,13 +358,13 @@ The database contains highly sensitive information:
 
 ## Future Evolution
 
-This is the first version of the database schema. As Mostrix evolves, additional tables or fields may be added for:
+As Mostrix evolves, additional tables or fields may be added for:
 
-- **Dispute Management**: Storing dispute information and resolution history
-- **Admin State**: Admin-specific data and solver information
 - **Message Caching**: Optional local message cache for offline access
 - **Settings Persistence**: User preferences and UI state
 - **Analytics**: Trade history and statistics (privacy-preserving)
+- **Dispute Resolution History**: Tracking resolution actions and outcomes
+- **Admin State**: Additional admin-specific data and solver information
 
 When new tables or fields are added, this documentation will be updated accordingly.
 
@@ -272,3 +373,4 @@ When new tables or fields are added, this documentation will be updated accordin
 - [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) - Key derivation and management
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) - Message handling and stateless recovery
 - [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) - Database initialization during startup
+- [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) - Admin mode dispute resolution workflows and dispute information structure
