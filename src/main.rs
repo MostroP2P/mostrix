@@ -36,7 +36,7 @@ use tokio::time::{interval, Duration};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AppState, TakeOrderState, UiMode, UserRole};
+use crate::ui::{AdminMode, AppState, TakeOrderState, UiMode, UserRole};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -192,6 +192,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle paste events (bracketed paste mode)
                 if let Event::Paste(pasted_text) = event {
+                    // Handle paste for invoice input
                     if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
                         if invoice_state.focused {
                             // Filter out control characters (especially newlines) that could trigger unwanted actions
@@ -202,6 +203,21 @@ async fn main() -> Result<(), anyhow::Error> {
                             invoice_state.invoice_input.push_str(&filtered_text);
                             // Set flag to ignore Enter key immediately after paste
                             invoice_state.just_pasted = true;
+                        }
+                    }
+                    // Handle paste for admin key input popups
+                    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut key_state))
+                    | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
+                    {
+                        if key_state.focused {
+                            // Filter out control characters (especially newlines) that could trigger unwanted actions
+                            let filtered_text: String = pasted_text
+                                .chars()
+                                .filter(|c| !c.is_control() || *c == '\t')
+                                .collect();
+                            key_state.key_input.push_str(&filtered_text);
+                            // Set flag to ignore Enter key immediately after paste
+                            key_state.just_pasted = true;
                         }
                     }
                     continue;

@@ -42,6 +42,34 @@ pub fn handle_invoice_input(
     }
 }
 
+/// Handle key input for admin key input popups (AddSolver, SetupAdminKey)
+/// Returns true if the key was handled and should skip further processing
+pub fn handle_key_input(code: KeyCode, key_state: &mut crate::ui::KeyInputState) -> bool {
+    // Clear the just_pasted flag on any key press (except Enter)
+    if code != KeyCode::Enter {
+        key_state.just_pasted = false;
+    }
+
+    // Ignore Enter if it comes immediately after paste
+    if code == KeyCode::Enter && key_state.just_pasted {
+        key_state.just_pasted = false;
+        return true; // Skip processing this Enter key
+    }
+
+    // Handle character input
+    match code {
+        KeyCode::Char(c) => {
+            key_state.key_input.push(c);
+            true // Skip further processing
+        }
+        KeyCode::Backspace => {
+            key_state.key_input.pop();
+            true // Skip further processing
+        }
+        _ => false, // Let Enter and Esc fall through to app logic
+    }
+}
+
 /// Handle navigation keys (Left, Right, Up, Down)
 pub fn handle_navigation(
     code: KeyCode,
@@ -84,6 +112,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to YES button (left side)
             view_state.selected_button = true;
         }
+        UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button)) => {
+            // Switch to YES button (left side)
+            *selected_button = true;
+        }
         UiMode::NewMessageNotification(_, _, _) => {
             // No action in notification mode
         }
@@ -121,6 +153,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to NO button (right side)
             view_state.selected_button = false;
         }
+        UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button)) => {
+            // Switch to NO button (right side)
+            *selected_button = false;
+        }
         UiMode::NewMessageNotification(_, _, _) => {
             // No action in notification mode
         }
@@ -157,6 +193,10 @@ fn handle_up_key(
                         msg.read = true;
                     }
                 }
+            } else if let Tab::Admin(AdminTab::Settings) = app.active_tab {
+                if app.selected_settings_option > 0 {
+                    app.selected_settings_option -= 1;
+                }
             }
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
@@ -175,7 +215,10 @@ fn handle_up_key(
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _)
-        | UiMode::ViewingMessage(_) => {
+        | UiMode::ViewingMessage(_)
+        | UiMode::AdminMode(AdminMode::AddSolver(_))
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
+        | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
             // No navigation in these modes
         }
     }
@@ -210,6 +253,11 @@ fn handle_down_key(
                         msg.read = true;
                     }
                 }
+            } else if let Tab::Admin(AdminTab::Settings) = app.active_tab {
+                // Two options: 0 = Add Solver, 1 = Setup Admin Key
+                if app.selected_settings_option < 1 {
+                    app.selected_settings_option += 1;
+                }
             }
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
@@ -228,7 +276,10 @@ fn handle_down_key(
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::OrderResult(_)
         | UiMode::NewMessageNotification(_, _, _)
-        | UiMode::ViewingMessage(_) => {
+        | UiMode::ViewingMessage(_)
+        | UiMode::AdminMode(AdminMode::AddSolver(_))
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
+        | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
             // No navigation in these modes
         }
     }
@@ -353,6 +404,39 @@ pub fn handle_enter_key(
             );
             // Mode is updated inside handle_enter_viewing_message
         }
+        UiMode::AdminMode(AdminMode::AddSolver(_key_state)) => {
+            // TODO: Implement add solver logic
+            // For now, just close the popup
+            app.mode = default_mode;
+        }
+        UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {
+            // Show confirmation popup with the entered key
+            if !key_state.key_input.is_empty() {
+                app.mode = UiMode::AdminMode(AdminMode::ConfirmAdminKey(
+                    key_state.key_input.clone(),
+                    true, // Default to YES selected
+                ));
+            } else {
+                // Empty key, just close
+                app.mode = default_mode;
+            }
+        }
+        UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) => {
+            // Enter confirms the selected button (YES or NO)
+            if selected_button {
+                // YES selected - save the key
+                save_admin_key_to_settings(&key_string);
+                app.mode = default_mode;
+            } else {
+                // NO selected - go back to input
+                let key_state = crate::ui::KeyInputState {
+                    key_input: key_string.clone(),
+                    focused: true,
+                    just_pasted: false,
+                };
+                app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            }
+        }
     }
 }
 
@@ -399,6 +483,20 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
             }
+        }
+    } else if let Tab::Admin(AdminTab::Settings) = app.active_tab {
+        // Open key input popup based on selected option
+        let key_state = crate::ui::KeyInputState {
+            key_input: String::new(),
+            focused: true,
+            just_pasted: false,
+        };
+        if app.selected_settings_option == 0 {
+            // Add Solver
+            app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
+        } else {
+            // Setup Admin Key
+            app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
         }
     }
 }
@@ -659,6 +757,22 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::Normal;
             true
         }
+        UiMode::AdminMode(AdminMode::AddSolver(_))
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(_)) => {
+            // Dismiss admin key input popup
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, _)) => {
+            // Cancel confirmation, go back to input
+            let key_state = crate::ui::KeyInputState {
+                key_input: key_string.clone(),
+                focused: true,
+                just_pasted: false,
+            };
+            app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            true
+        }
         _ => false, // Break the loop
     }
 }
@@ -874,6 +988,35 @@ pub fn handle_cancel_key(app: &mut AppState) {
     }
 }
 
+/// Save admin key to settings file
+fn save_admin_key_to_settings(key_string: &str) {
+    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let package_name = env!("CARGO_PKG_NAME");
+    let hidden_file = home_dir
+        .join(format!(".{package_name}"))
+        .join("settings.toml");
+
+    // Read current settings
+    if let Ok(mut current_settings) = std::fs::read_to_string(&hidden_file).and_then(|content| {
+        toml::from_str::<crate::settings::Settings>(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }) {
+        // Update admin_privkey
+        current_settings.admin_privkey = key_string.to_string();
+
+        // Write back
+        if let Ok(toml_string) = toml::to_string_pretty(&current_settings) {
+            if let Err(e) = std::fs::write(&hidden_file, toml_string) {
+                log::error!("Failed to save admin key to settings: {}", e);
+            } else {
+                log::info!("Admin key saved to settings file");
+            }
+        }
+    } else {
+        log::error!("Failed to read settings file for saving admin key");
+    }
+}
+
 /// Handle mode switching (M key in Settings tab)
 fn handle_mode_switch(app: &mut AppState, _settings: &crate::settings::Settings) {
     let new_role = match app.user_role {
@@ -940,6 +1083,15 @@ pub fn handle_key_event(
         }
     }
 
+    // Handle key input for admin popups
+    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut key_state))
+    | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
+    {
+        if key_state.focused && handle_key_input(code, key_state) {
+            return Some(true); // Skip further processing
+        }
+    }
+
     // Clear "copied" indicator when any key is pressed (except C which sets it)
     if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
         if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
@@ -948,7 +1100,23 @@ pub fn handle_key_event(
     }
 
     match code {
-        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+        KeyCode::Left | KeyCode::Right => {
+            // Handle Left/Right for button selection in confirmation popups
+            match &mut app.mode {
+                UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button)) => {
+                    *selected_button = !*selected_button; // Toggle between YES and NO
+                    return Some(true);
+                }
+                UiMode::ViewingMessage(ref mut view_state) => {
+                    view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
+                    return Some(true);
+                }
+                _ => {}
+            }
+            handle_navigation(code, app, orders, disputes);
+            Some(true)
+        }
+        KeyCode::Up | KeyCode::Down => {
             handle_navigation(code, app, orders, disputes);
             Some(true)
         }
