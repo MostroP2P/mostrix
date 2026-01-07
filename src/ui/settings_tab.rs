@@ -25,7 +25,8 @@ pub fn render_settings_tab(
             Constraint::Length(1), // spacer
             Constraint::Length(3), // mode section
             Constraint::Length(1), // spacer
-            Constraint::Min(0),    // rest
+            Constraint::Min(0),    // list area
+            Constraint::Length(1), // footer
         ],
     )
     .split(inner_area);
@@ -88,20 +89,32 @@ pub fn render_settings_tab(
     );
 
     // Instructions footer
-    if user_role == UserRole::User {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Press ", Style::default()),
-                Span::styled(
-                    "M",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to switch to Admin mode", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[3], // Re-using chunks[3] might overlap, but list is Min(0)
-        );
-    }
+    let footer_text = if user_role == UserRole::User {
+        vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "M",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to switch to Admin mode", Style::default()),
+        ]
+    } else {
+        vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "M",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to switch to User mode", Style::default()),
+        ]
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(footer_text)).alignment(ratatui::layout::Alignment::Center),
+        chunks[4], // Footer area
+    );
 }
