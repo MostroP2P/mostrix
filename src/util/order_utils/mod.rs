@@ -1,5 +1,6 @@
 // Order utilities module
 mod execute_add_invoice;
+mod execute_admin_add_solver;
 mod execute_send_msg;
 mod fetch_scheduler;
 mod helper;
@@ -8,6 +9,7 @@ mod take_order;
 
 // Re-export public functions
 pub use execute_add_invoice::execute_add_invoice;
+pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_send_msg::execute_send_msg;
 pub use fetch_scheduler::{start_fetch_scheduler, FetchSchedulerResult};
 pub use helper::{

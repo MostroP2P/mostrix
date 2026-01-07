@@ -5,8 +5,24 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-/// Renders the admin key confirmation popup
-pub fn render_admin_key_confirm(f: &mut ratatui::Frame, key_string: &str, selected_button: bool) {
+/// Renders a generic key confirmation popup
+pub fn render_admin_key_confirm(
+    f: &mut ratatui::Frame,
+    title: &str,
+    key_string: &str,
+    selected_button: bool,
+) {
+    render_admin_key_confirm_with_message(f, title, key_string, selected_button, None);
+}
+
+/// Renders a generic key confirmation popup with optional custom message
+pub fn render_admin_key_confirm_with_message(
+    f: &mut ratatui::Frame,
+    title: &str,
+    key_string: &str,
+    selected_button: bool,
+    custom_message: Option<&str>,
+) {
     let area = f.area();
     let popup_width = 80;
     let popup_height = 12;
@@ -15,7 +31,7 @@ pub fn render_admin_key_confirm(f: &mut ratatui::Frame, key_string: &str, select
     f.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title("🔐 Confirm Admin Key")
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     f.render_widget(block, popup);
@@ -35,7 +51,7 @@ pub fn render_admin_key_confirm(f: &mut ratatui::Frame, key_string: &str, select
     .split(popup);
 
     // Confirmation message
-    let message = "Do you want to save this key in settings file?";
+    let message = custom_message.unwrap_or("Do you want to save this key in settings file?");
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             message,
@@ -47,24 +63,28 @@ pub fn render_admin_key_confirm(f: &mut ratatui::Frame, key_string: &str, select
     );
 
     // Display truncated key (show first 20 chars + ...)
-    let display_key = if key_string.len() > 30 {
-        format!("{}...", &key_string[..30])
-    } else {
-        key_string.to_string()
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Key: ", Style::default()),
-            Span::styled(
-                display_key,
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[3],
-    );
+    // Only show key if no custom message (for settings saves) or if custom message is provided but we still want to show it
+    // For AddSolver, we hide the key display
+    if custom_message.is_none() {
+        let display_key = if key_string.len() > 30 {
+            format!("{}...", &key_string[..30])
+        } else {
+            key_string.to_string()
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Key: ", Style::default()),
+                Span::styled(
+                    display_key,
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[3],
+        );
+    }
 
     // Yes/No buttons
     let button_area = chunks[5];
@@ -156,8 +176,35 @@ pub fn render_admin_key_confirm(f: &mut ratatui::Frame, key_string: &str, select
         no_inner[0],
     );
 
-    // Help text
-    helpers::render_help_text(f, chunks[6], "Use ", "Left/Right", " to select, ");
-    helpers::render_help_text(f, chunks[6], "", "Enter", " to confirm, ");
-    helpers::render_help_text(f, chunks[6], "", "Esc", " to cancel");
+    // Help text - combine all messages into a single Paragraph
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Use ", Style::default()),
+            Span::styled(
+                "Left/Right",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to select, ", Style::default()),
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to cancel", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[6],
+    );
 }

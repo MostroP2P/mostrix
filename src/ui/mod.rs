@@ -306,6 +306,7 @@ pub enum UserMode {
 pub enum AdminMode {
     Normal,
     AddSolver(KeyInputState),
+    ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
 }
@@ -317,6 +318,10 @@ pub enum UiMode {
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OrderResult(OrderResult), // Show order result (success or error)
+    AddMostroPubkey(KeyInputState),
+    ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    AddRelay(KeyInputState),
+    ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
 
     // User-specific modes
     UserMode(UserMode),
@@ -495,6 +500,7 @@ impl AppState {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
         self.mode = UiMode::Normal;
+        self.selected_settings_option = 0;
     }
 }
 
@@ -567,9 +573,12 @@ pub fn ui_draw(
             let messages = app.messages.lock().unwrap();
             tab_content::render_messages_tab(f, content_area, &messages, app.selected_message_idx)
         }
-        (Tab::User(UserTab::Settings), UserRole::User) => {
-            settings_tab::render_settings_tab(f, content_area, app.user_role, 0)
-        }
+        (Tab::User(UserTab::Settings), UserRole::User) => settings_tab::render_settings_tab(
+            f,
+            content_area,
+            app.user_role,
+            app.selected_settings_option,
+        ),
         (Tab::User(UserTab::CreateNewOrder), UserRole::User) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
                 order_form::render_order_form(f, content_area, form);
@@ -626,17 +635,85 @@ pub fn ui_draw(
         order_result::render_order_result(f, result);
     }
 
-    // Admin key input popup overlay
-    if let UiMode::AdminMode(AdminMode::AddSolver(key_state)) = &app.mode {
-        key_input_popup::render_key_input_popup(f, false, key_state);
+    // Shared settings popups
+    if let UiMode::AddMostroPubkey(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "🌐 Add Mostro Pubkey",
+            "Enter Mostro public key (npub...):",
+            "npub...",
+            key_state,
+            false,
+        );
     }
-    if let UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) = &app.mode {
-        key_input_popup::render_key_input_popup(f, true, key_state);
+    if let UiMode::ConfirmMostroPubkey(key_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "🌐 Confirm Mostro Pubkey",
+            key_string,
+            *selected_button,
+        );
+    }
+    if let UiMode::AddRelay(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📡 Add Relay",
+            "Enter relay URL (wss://...):",
+            "wss://...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmRelay(relay_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "📡 Confirm Relay",
+            relay_string,
+            *selected_button,
+        );
     }
 
-    // Admin key confirmation popup overlay
+    // Admin key input popup overlay
+    if let UiMode::AdminMode(AdminMode::AddSolver(key_state)) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "Add Solver",
+            "Enter solver public key (npub...):",
+            "npub...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "🔐 Setup Admin Key",
+            "Enter admin private key (nsec...):",
+            "nsec...",
+            key_state,
+            true,
+        );
+    }
+
+    // Admin confirmation popups
+    if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) =
+        &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "Add Solver",
+            solver_pubkey,
+            *selected_button,
+            Some("Are you sure you want to add this pubkey as dispute solver?"),
+        );
+    }
     if let UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) = &app.mode {
-        admin_key_confirm::render_admin_key_confirm(f, key_string, *selected_button);
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "🔐 Confirm Admin Key",
+            key_string,
+            *selected_button,
+        );
     }
 
     // Taking order popup overlay (user mode only)

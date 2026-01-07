@@ -5,21 +5,22 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, KeyInputState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-pub fn render_key_input_popup(f: &mut ratatui::Frame, is_privkey: bool, key_state: &KeyInputState) {
+pub fn render_key_input_popup(
+    f: &mut ratatui::Frame,
+    title: &str,
+    label: &str,
+    placeholder: &str,
+    key_state: &KeyInputState,
+    is_sensitive: bool,
+) {
     let area = f.area();
     let popup_width = 80;
-    let popup_height = if is_privkey { 12 } else { 10 };
+    let popup_height = if is_sensitive { 12 } else { 10 };
 
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
 
     // Clear the popup area
     f.render_widget(Clear, popup);
-
-    let title = if is_privkey {
-        "🔐 Setup Admin Key"
-    } else {
-        "➕ Add Solver"
-    };
 
     let block = Block::default()
         .title(title)
@@ -30,19 +31,19 @@ pub fn render_key_input_popup(f: &mut ratatui::Frame, is_privkey: bool, key_stat
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(1),                              // spacer
-            Constraint::Length(if is_privkey { 2 } else { 1 }), // warning (if privkey) or label
-            Constraint::Length(1),                              // spacer
-            Constraint::Length(3),                              // input field
-            Constraint::Length(1),                              // spacer
-            Constraint::Length(1),                              // help text
-            Constraint::Length(1),                              // help text
+            Constraint::Length(1),                                // spacer
+            Constraint::Length(if is_sensitive { 2 } else { 1 }), // warning (if sensitive) or label
+            Constraint::Length(1),                                // spacer
+            Constraint::Length(3),                                // input field
+            Constraint::Length(1),                                // spacer
+            Constraint::Length(1),                                // help text
+            Constraint::Length(1),                                // help text
         ],
     )
     .split(popup);
 
-    // Warning for private key (emphasized)
-    if is_privkey {
+    // Warning for sensitive data (emphasized)
+    if is_sensitive {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 "⚠️  SENSITIVE DATA: Private keys are confidential!",
@@ -54,11 +55,6 @@ pub fn render_key_input_popup(f: &mut ratatui::Frame, is_privkey: bool, key_stat
     }
 
     // Label
-    let label = if is_privkey {
-        "Enter admin private key (nsec...):"
-    } else {
-        "Enter solver public key (npub...):"
-    };
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             label,
@@ -67,12 +63,12 @@ pub fn render_key_input_popup(f: &mut ratatui::Frame, is_privkey: bool, key_stat
                 .add_modifier(Modifier::BOLD),
         )]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[if is_privkey { 2 } else { 1 }],
+        chunks[if is_sensitive { 2 } else { 1 }],
     );
 
     // Input field
     let input_display = if key_state.key_input.is_empty() {
-        if is_privkey { "nsec..." } else { "npub..." }.to_string()
+        placeholder.to_string()
     } else {
         key_state.key_input.clone()
     };

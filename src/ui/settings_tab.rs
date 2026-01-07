@@ -48,37 +48,47 @@ pub fn render_settings_tab(
         chunks[1],
     );
 
-    // Admin mode: show two options
-    if user_role == UserRole::Admin {
-        let options = ["Add Solver", "Setup Admin Key"];
-        let items: Vec<ListItem> = options
-            .iter()
-            .enumerate()
-            .map(|(idx, opt)| {
-                let style = if idx == selected_option {
-                    Style::default()
-                        .bg(PRIMARY_COLOR)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                ListItem::new(Line::from(vec![Span::styled(*opt, style)]))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::NONE))
-            .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-            .highlight_symbol(">> ");
-
-        f.render_stateful_widget(
-            list,
-            chunks[3],
-            &mut ratatui::widgets::ListState::default().with_selected(Some(selected_option)),
-        );
+    // Options based on user role
+    let options = if user_role == UserRole::Admin {
+        vec![
+            "Change Mostro Pubkey",
+            "Add Nostr Relay",
+            "Add Dispute Solver",
+            "Change Admin Key",
+        ]
     } else {
-        // User mode: Instructions
+        vec!["Change Mostro Pubkey", "Add Nostr Relay"]
+    };
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(idx, opt)| {
+            let style = if idx == selected_option {
+                Style::default()
+                    .bg(PRIMARY_COLOR)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(vec![Span::styled(*opt, style)]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
+        .highlight_symbol(">> ");
+
+    f.render_stateful_widget(
+        list,
+        chunks[3],
+        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_option)),
+    );
+
+    // Instructions footer
+    if user_role == UserRole::User {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("Press ", Style::default()),
@@ -88,10 +98,10 @@ pub fn render_settings_tab(
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" to switch mode", Style::default()),
+                Span::styled(" to switch to Admin mode", Style::default()),
             ]))
             .alignment(ratatui::layout::Alignment::Center),
-            chunks[3],
+            chunks[3], // Re-using chunks[3] might overlap, but list is Min(0)
         );
     }
 }
