@@ -62,7 +62,7 @@ pub fn render_admin_key_confirm_with_message(
         chunks[1],
     );
 
-    // Display truncated key (show first 20 chars + ...)
+    // Display truncated key (show first 30 chars + ...)
     // Only show key if no custom message (for settings saves) or if custom message is provided but we still want to show it
     // For AddSolver, we hide the key display
     if custom_message.is_none() {
