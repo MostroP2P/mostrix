@@ -7,7 +7,7 @@ pub fn validate_npub(npub_str: &str) -> Result<(), String> {
         return Err("Public key cannot be empty".to_string());
     }
 
-    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid pubkey format".to_string())?;
+    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid key format".to_string())?;
 
     Ok(())
 }

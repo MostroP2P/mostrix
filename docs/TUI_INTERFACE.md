@@ -119,7 +119,6 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
                 orders,
                 pool,
                 client,
-                settings,
                 mostro_pubkey,
                 order_result_tx,
             );
@@ -130,7 +129,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 ### Specialized Input
 - **Forms**: Character input and Backspace are handled by `handle_char_input` and `handle_backspace` for fields in `FormState`.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
-- **Copy to Clipboard**: Pressing `C` in a `PayInvoice` notification uses the `arboard` crate to copy the invoice.
+- **Copy to Clipboard**: Pressing `C` in a `PayInvoice` notification uses the `arboard` crate to copy the invoice. On Linux, it uses the `SetExtLinux::wait()` method to properly wait until the clipboard is overwritten, ensuring reliable clipboard handling without arbitrary delays.
 
 ## UI Components
 

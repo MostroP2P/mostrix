@@ -68,7 +68,6 @@ pub fn handle_confirm_key(
     app: &mut AppState,
     pool: &SqlitePool,
     client: &Client,
-    _settings: &crate::settings::Settings,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
 ) -> bool {

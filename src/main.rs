@@ -241,7 +241,6 @@ async fn main() -> Result<(), anyhow::Error> {
                         &disputes,
                         &pool,
                         &client,
-                        settings,
                         mostro_pubkey,
                         &order_result_tx,
                         &validate_range_amount,
@@ -278,7 +277,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
         // Status bar text
         let relays_str = settings.relays.join(" - ");
-        // let mostro_short = if settings.mostro_pubkey.len { format!("{}…", &settings.mostro_pubkey[..12]) } else { settings.mostro_pubkey.clone() };
         let status_line = format!(
             "🧌 pubkey - {}   🔗 {}",
             &settings.mostro_pubkey, relays_str

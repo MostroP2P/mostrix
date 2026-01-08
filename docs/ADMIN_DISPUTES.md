@@ -342,7 +342,7 @@ sequenceDiagram
     Admin->>TUI: Press Enter
     TUI->>Validation: Validate npub format
     alt Invalid Format
-        Validation-->>TUI: Error: "Invalid pubkey format"
+        Validation-->>TUI: Error: "Invalid key format"
         TUI-->>Admin: Show error popup
     else Valid Format
         TUI->>TUI: Show confirmation popup
@@ -415,7 +415,7 @@ pub fn validate_npub(npub_str: &str) -> Result<(), String> {
         return Err("Public key cannot be empty".to_string());
     }
 
-    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid pubkey format".to_string())?;
+    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid key format".to_string())?;
 
     Ok(())
 }

@@ -34,7 +34,6 @@ pub fn handle_key_event(
     disputes: &Arc<Mutex<Vec<Dispute>>>,
     pool: &SqlitePool,
     client: &Client,
-    settings: &crate::settings::Settings,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
@@ -113,15 +112,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            handle_enter_key(
-                app,
-                orders,
-                pool,
-                client,
-                settings,
-                mostro_pubkey,
-                order_result_tx,
-            );
+            handle_enter_key(app, orders, pool, client, mostro_pubkey, order_result_tx);
             Some(true)
         }
         KeyCode::Esc => {
@@ -131,7 +122,7 @@ pub fn handle_key_event(
         KeyCode::Char('q') => Some(false), // Break the loop
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let should_continue =
-                handle_confirm_key(app, pool, client, settings, mostro_pubkey, order_result_tx);
+                handle_confirm_key(app, pool, client, mostro_pubkey, order_result_tx);
             Some(should_continue)
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -142,7 +133,7 @@ pub fn handle_key_event(
             // Switch mode when in Settings tab
             match app.active_tab {
                 Tab::User(UserTab::Settings) | Tab::Admin(AdminTab::Settings) => {
-                    handle_mode_switch(app, settings);
+                    handle_mode_switch(app);
                     Some(true)
                 }
                 _ => None, // Not in settings, continue normally
@@ -157,14 +148,20 @@ pub fn handle_key_event(
             ) = app.mode
             {
                 if let Some(invoice) = &notification.invoice {
-                    // Copy to clipboard - keep instance alive to avoid "dropped too quickly" warning
+                    // Copy to clipboard using proper arboard methods
                     let copy_result = {
                         match arboard::Clipboard::new() {
                             Ok(mut clipboard) => {
-                                let result = clipboard.set_text(invoice.clone());
-                                // Keep clipboard in scope a bit longer
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                                result
+                                // Use builder pattern with wait() on Linux for proper clipboard handling
+                                #[cfg(target_os = "linux")]
+                                {
+                                    use arboard::SetExtLinux;
+                                    clipboard.set().wait().text(invoice.clone())
+                                }
+                                #[cfg(not(target_os = "linux"))]
+                                {
+                                    clipboard.set_text(invoice.clone())
+                                }
                             }
                             Err(e) => Err(e),
                         }

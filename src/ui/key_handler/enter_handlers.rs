@@ -25,7 +25,6 @@ pub fn handle_enter_key(
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     pool: &SqlitePool,
     client: &Client,
-    _settings: &crate::settings::Settings,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
 ) {
@@ -52,7 +51,6 @@ pub fn handle_enter_key(
                 take_state,
                 pool,
                 client,
-                _settings,
                 mostro_pubkey,
                 order_result_tx,
             );
@@ -150,9 +148,18 @@ pub fn handle_enter_key(
             }
         }
         UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {
-            app.mode = handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                UiMode::AdminMode(AdminMode::ConfirmAdminKey(input, true))
-            });
+            match validate_npub(&key_state.key_input) {
+                Ok(_) => {
+                    app.mode =
+                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
+                            UiMode::AdminMode(AdminMode::ConfirmAdminKey(input, true))
+                        });
+                }
+                Err(e) => {
+                    // Show error popup
+                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                }
+            }
         }
         UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) => {
             app.mode = handle_confirmation_enter(
@@ -291,7 +298,6 @@ fn handle_enter_taking_order(
     take_state: TakeOrderState,
     pool: &SqlitePool,
     client: &Client,
-    _settings: &crate::settings::Settings,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
 ) {

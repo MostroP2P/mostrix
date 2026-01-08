@@ -49,7 +49,7 @@ pub fn save_relay_to_settings(relay_string: &str) {
 }
 
 /// Handle mode switching (M key in Settings tab)
-pub fn handle_mode_switch(app: &mut AppState, _settings: &crate::settings::Settings) {
+pub fn handle_mode_switch(app: &mut AppState) {
     let new_role = match app.user_role {
         UserRole::User => UserRole::Admin,
         UserRole::Admin => UserRole::User,
