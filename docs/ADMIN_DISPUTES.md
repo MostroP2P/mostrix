@@ -24,13 +24,25 @@ Lists all active disputes on the Mostro network. Admins can:
 - **Take a dispute**: Select a dispute and take ownership to resolve it
 - **Navigate**: Use arrow keys to browse the dispute list
 
-### 2. Add Solver Tab
+### 2. Add Solver (Settings Tab)
 
-Allows admins to add another dispute solver to the network. This enables:
+**Status**: ✅ **Implemented and Working**
+
+Allows admins to add another dispute solver to the network directly from the Settings tab. This enables:
 
 - **Network expansion**: Add additional trusted admins to help resolve disputes
 - **Solver management**: Maintain a list of authorized dispute resolvers
 - **Decentralization**: Distribute dispute resolution across multiple admins
+
+**Implementation Details**:
+
+- Located in the Settings tab (option 3 for Admin mode)
+- Input validation: Validates nostr public key format before sending
+- Confirmation popup: Shows "Are you sure you want to add this pubkey as dispute solver?"
+- Error handling: Displays error popup for invalid pubkey format
+- UI state: Stays on Settings tab after successful addition
+
+**Source**: `src/ui/settings_tab.rs:57`, `src/util/order_utils/execute_admin_add_solver.rs`
 
 ### 3. Disputes with Buyer Tab
 
@@ -60,7 +72,33 @@ Dedicated chat interface for communicating with the **seller** in an active disp
 
 ### 5. Settings Tab
 
-Admin-specific configuration and settings.
+**Status**: ✅ **Fully Implemented and Working**
+
+The Settings tab provides comprehensive configuration options for both User and Admin modes. The available options differ based on the current role.
+
+#### User Mode Options
+
+1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client
+2. **Add Nostr Relay**: Add a new Nostr relay to the relay list
+
+#### Admin Mode Options
+
+1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client
+2. **Add Nostr Relay**: Add a new Nostr relay to the relay list
+3. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section)
+4. **Change Admin Key**: Update the admin private key used for signing dispute actions
+
+#### Features
+
+- **Mode Display**: Shows current mode (User/Admin) at the top
+- **Mode Switching**: Press `M` key to switch between User and Admin modes
+- **Confirmation Popups**: All settings changes require confirmation before saving
+- **Input Validation**: Pubkey inputs are validated for correct format
+- **Keyboard Input**: All inputs support both paste and keyboard entry
+- **Settings Persistence**: All changes are saved to `settings.toml` file
+- **Error Handling**: Invalid inputs display error popups with clear messages
+
+**Source**: `src/ui/settings_tab.rs`, `src/ui/key_handler/settings.rs`
 
 ## Dispute States
 
@@ -282,41 +320,118 @@ This comprehensive information allows admins to:
 
 ### Adding a Solver
 
-When an admin adds another dispute solver:
+**Status**: ✅ **Implemented and Working**
+
+When an admin adds another dispute solver from the Settings tab:
 
 ```mermaid
 sequenceDiagram
     participant Admin
     participant TUI
     participant Client
+    participant Validation
     participant AdminKey
     participant NostrRelays
     participant Mostro
     participant NewSolver
 
-    Admin->>TUI: Navigate to Add Solver tab
-    TUI->>Client: Display add solver form
-    Admin->>TUI: Enter solver public key
-    Admin->>TUI: Confirm (press 'y')
-    TUI->>Client: add_solver(solver_pubkey)
-    Client->>AdminKey: Sign with admin key
-    Client->>Client: Construct AddSolver message
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
-    NostrRelays->>Mostro: Forward AddSolver action
-    Mostro->>Mostro: Validate & add solver
-    Mostro->>NostrRelays: Confirmation
-    NostrRelays-->>Client: Response
-    Client-->>TUI: Solver added successfully
-    TUI-->>Admin: Show confirmation
-    Note over Mostro,NewSolver: New solver can now<br/>resolve disputes
+    Admin->>TUI: Navigate to Settings tab
+    Admin->>TUI: Select "Add Dispute Solver"
+    TUI->>TUI: Show input popup
+    Admin->>TUI: Enter solver public key (npub...)
+    Admin->>TUI: Press Enter
+    TUI->>Validation: Validate npub format
+    alt Invalid Format
+        Validation-->>TUI: Error: "Invalid key format"
+        TUI-->>Admin: Show error popup
+    else Valid Format
+        TUI->>TUI: Show confirmation popup
+        Admin->>TUI: Confirm (press 'y')
+        TUI->>Client: execute_admin_add_solver(solver_pubkey)
+        Client->>AdminKey: Get & parse admin_privkey
+        Client->>Client: Construct AdminAddSolver message
+        Client->>NostrRelays: Send NIP-59 Gift Wrap DM
+        NostrRelays->>Mostro: Forward AdminAddSolver action
+        Mostro->>Mostro: Validate & add solver
+        Client-->>TUI: Success/Error result
+        TUI-->>Admin: Show result popup
+        TUI->>TUI: Stay on Settings tab
+        Note over Mostro,NewSolver: New solver can now<br/>resolve disputes
+    end
+```
+
+**Implementation Function**:
+
+```12:53:src/util/order_utils/execute_admin_add_solver.rs
+pub async fn execute_admin_add_solver(
+    solver_pubkey: &str,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+) -> Result<()> {
+    // Get admin keys from settings
+    let settings = SETTINGS
+        .get()
+        .ok_or(anyhow::anyhow!("Settings not initialized"))?;
+
+    if settings.admin_privkey.is_empty() {
+        return Err(anyhow::anyhow!("Admin private key not configured"));
+    }
+
+    let admin_keys = Keys::parse(&settings.admin_privkey)?;
+
+    // Create AddSolver message
+    let add_solver_message = Message::new_dispute(
+        Some(Uuid::new_v4()),
+        None,
+        None,
+        Action::AdminAddSolver,
+        Some(Payload::TextMessage(solver_pubkey.to_string())),
+    )
+    .as_json()
+    .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
+
+    // Send the DM using admin keys (signed gift wrap)
+    // Note: Following the example pattern, we don't wait for a response
+    send_dm(
+        client,
+        Some(&admin_keys),
+        &admin_keys,
+        &mostro_pubkey,
+        add_solver_message,
+        None,
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+```
+
+**Validation Function**:
+
+```3:13:src/ui/key_handler/validation.rs
+pub fn validate_npub(npub_str: &str) -> Result<(), String> {
+    if npub_str.trim().is_empty() {
+        return Err("Public key cannot be empty".to_string());
+    }
+
+    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid key format".to_string())?;
+
+    Ok(())
+}
 ```
 
 **Key Points**:
 
-- Requires admin privileges (signed with `admin_privkey`)
-- Adds a new public key to the list of authorized dispute solvers
-- The new solver can then take and resolve disputes
-- Helps distribute dispute resolution workload
+- ✅ Requires admin privileges (signed with `admin_privkey`)
+- ✅ Input validation: Validates npub format using `PublicKey::from_bech32`
+- ✅ Error handling: Shows error popup for invalid pubkey format
+- ✅ Confirmation popup: Custom message "Are you sure you want to add this pubkey as dispute solver?"
+- ✅ UI state management: Stays on Settings tab after operation
+- ✅ Adds a new public key to the list of authorized dispute solvers
+- ✅ The new solver can then take and resolve disputes
+- ✅ Helps distribute dispute resolution workload
+- ✅ Uses NIP-59 Gift Wrap for secure message delivery
 
 ### Chatting with Parties
 
@@ -432,17 +547,83 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 
 ## Implementation Status
 
-**Current Implementation**:
+### ✅ Completed Features (Current PR)
 
-- Admin role detection via `user_mode` setting
-- Admin tab structure defined in `AdminTab` enum
-- Basic UI scaffolding for admin tabs
+The following features have been fully implemented and are working:
 
-**Planned Implementation**:
+#### Settings Tab Improvements
+
+1. **Settings Tab for Both Modes** (`src/ui/settings_tab.rs`)
+   - ✅ User and Admin mode support with role-specific options
+   - ✅ Mode display showing current role
+   - ✅ Mode switching via `M` key with footer instructions
+   - ✅ Dynamic option list based on user role
+
+2. **Common Settings Functions** (Available to both User and Admin)
+   - ✅ **Change Mostro Pubkey** (`src/ui/key_handler/settings.rs:29-36`)
+     - Input popup with keyboard support
+     - Confirmation popup before saving
+     - Persists to `settings.toml`
+   - ✅ **Add Nostr Relay** (`src/ui/key_handler/settings.rs:38-49`)
+     - Input popup with keyboard support
+     - Confirmation popup before saving
+     - Adds to relay list in `settings.toml`
+     - Prevents duplicate relays
+
+3. **Admin-Only Settings Functions**
+   - ✅ **Add Dispute Solver** (`src/util/order_utils/execute_admin_add_solver.rs`)
+     - Input validation for npub format
+     - Error popup for invalid input
+     - Confirmation popup with custom message
+     - Sends `AdminAddSolver` action to Mostro
+     - Stays on Settings tab after completion
+   - ✅ **Change Admin Key** (`src/ui/key_handler/settings.rs:20-27`)
+     - Input popup with keyboard support
+     - Confirmation popup before saving
+     - Persists to `settings.toml`
+
+#### Code Quality Improvements
+
+1. **Modular Key Handler** (`src/ui/key_handler/`)
+   - ✅ Refactored monolithic `key_handler.rs` into modular structure
+   - ✅ `mod.rs`: Main dispatcher
+   - ✅ `input_helpers.rs`: Generic text input handling
+   - ✅ `navigation.rs`: Navigation and tab switching
+   - ✅ `enter_handlers.rs`: Enter key handling with validation
+   - ✅ `esc_handlers.rs`: Escape key handling
+   - ✅ `form_input.rs`: Character input and backspace
+   - ✅ `confirmation.rs`: Confirmation popup logic
+   - ✅ `settings.rs`: Settings persistence functions
+   - ✅ `validation.rs`: Input validation utilities
+
+2. **UI Components**
+   - ✅ Generic key input popup (`src/ui/key_input_popup.rs`)
+   - ✅ Enhanced confirmation popup (`src/ui/admin_key_confirm.rs`)
+     - Supports custom messages
+     - Conditionally hides key display
+     - Proper text formatting
+
+#### Commits Made
+
+The following commits were made in this PR:
+
+1. **`0aee5fa`** - `refactor: split key_handler into modular structure and improve settings UX`
+   - Refactored key handler into modular structure
+   - Added settings functions for Mostro pubkey and relay
+   - Improved code organization and reusability
+
+2. **`afd7ed9`** - `feat: add admin key confirmation popup with settings persistence`
+   - Added admin key confirmation popup
+   - Implemented settings persistence
+
+3. **`c42fab8`** - `fix:` (latest commit)
+   - Fixed footer instruction display for Admin mode
+   - Ensured proper layout for Settings tab
+
+### 🔄 Planned Implementation
 
 - Dispute list fetching and display
 - Take dispute functionality
-- Add solver functionality
 - Separate buyer/seller chat interfaces with color coding
 - Dispute resolution actions (resolve in favor of buyer/seller)
 
@@ -456,10 +637,73 @@ pub enum AdminTab {
 }
 ```
 
-*Note: The `AdminTab` enum will be updated to include `AddSolver`, `DisputesWithBuyer`, and `DisputesWithSeller` tabs as implementation progresses.*
+*Note: The `AdminTab` enum will be updated to include `DisputesWithBuyer` and `DisputesWithSeller` tabs as implementation progresses. The "Add Solver" functionality is now accessible through the Settings tab.*
+
+## Testing
+
+Mostrix includes a comprehensive test suite to ensure reliability and correctness of critical components.
+
+### Test Organization
+
+Tests are organized into two categories:
+
+1. **Unit Tests** (inline in source files): Test pure functions and isolated logic
+   - Parsing functions (`src/util/order_utils/helper.rs`)
+   - Validation functions (`src/ui/key_handler/validation.rs`)
+   - Helper functions (`src/util/types.rs`)
+
+2. **Integration Tests** (`tests/` directory): Test database operations and end-to-end flows
+   - Database operations (`tests/db_tests.rs`)
+   - Shared test utilities (`tests/common/mod.rs`)
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run only unit tests (faster)
+cargo test --lib
+
+# Run only integration tests
+cargo test --test db_tests
+
+# Run with output
+cargo test -- --nocapture
+```
+
+### Test Coverage
+
+The test suite covers:
+
+- **Parsing Logic**: Order and dispute parsing from Nostr tags
+- **Validation**: Public key validation, range amount validation
+- **Database Operations**: User creation, key derivation, order persistence
+- **Key Derivation**: Critical security component - ensures deterministic key generation
+- **Error Handling**: Error message generation and validation
+
+### Key Derivation Tests
+
+Key derivation is a critical security component and is thoroughly tested:
+
+- Same mnemonic + index produces same keys (deterministic)
+- Different indices produce different keys
+- Identity keys are correctly derived from mnemonic
+
+**Source**: `src/models.rs` (inline tests), `tests/db_tests.rs`
+
+### Future Test Expansion
+
+The test infrastructure is designed for easy expansion. Future additions could include:
+
+- Mock-based tests for async operations (Nostr client interactions)
+- UI state transition tests (using `ratatui_testlib`)
+- Snapshot testing for complex data structures
+- End-to-end workflow tests
 
 ## Related Documentation
 
 - [TUI_INTERFACE.md](TUI_INTERFACE.md) - General TUI architecture and navigation
 - [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) - Key derivation and management
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) - Message protocols and flows
+- [CODING_STANDARDS.md](CODING_STANDARDS.md) - Code quality guidelines including testing practices

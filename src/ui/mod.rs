@@ -12,12 +12,18 @@ use ratatui::text::Line;
 pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
+pub mod admin_key_confirm;
+pub mod disputes_tab;
+pub mod helpers;
 pub mod key_handler;
+pub mod key_input_popup;
+pub mod message_notification;
 pub mod order_confirm;
 pub mod order_form;
 pub mod order_result;
 pub mod order_take;
 pub mod orders_tab;
+pub mod settings_tab;
 pub mod status;
 pub mod tab_content;
 pub mod tabs;
@@ -299,7 +305,10 @@ pub enum UserMode {
 #[derive(Clone, Debug)]
 pub enum AdminMode {
     Normal,
-    // Future admin-specific modes can be added here
+    AddSolver(KeyInputState),
+    ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
+    SetupAdminKey(KeyInputState),
+    ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
 }
 
 #[derive(Clone, Debug)]
@@ -309,6 +318,10 @@ pub enum UiMode {
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OrderResult(OrderResult), // Show order result (success or error)
+    AddMostroPubkey(KeyInputState),
+    ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    AddRelay(KeyInputState),
+    ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
 
     // User-specific modes
     UserMode(UserMode),
@@ -403,6 +416,14 @@ pub struct InvoiceInputState {
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
 }
 
+/// State for handling key input (pubkey or privkey) in admin settings
+#[derive(Clone, Debug)]
+pub struct KeyInputState {
+    pub key_input: String,
+    pub focused: bool,
+    pub just_pasted: bool, // Flag to ignore Enter immediately after paste
+}
+
 /// State for viewing a simple message popup
 #[derive(Clone, Debug)]
 pub struct MessageViewState {
@@ -416,6 +437,8 @@ pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
+    pub selected_dispute_idx: usize, // Selected dispute in Disputes tab
+    pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
@@ -463,6 +486,8 @@ impl AppState {
             user_role,
             active_tab: initial_tab,
             selected_order_idx: 0,
+            selected_dispute_idx: 0,
+            selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
@@ -475,6 +500,7 @@ impl AppState {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
         self.mode = UiMode::Normal;
+        self.selected_settings_option = 0;
     }
 }
 
@@ -517,6 +543,7 @@ pub fn ui_draw(
     f: &mut ratatui::Frame,
     app: &AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     status_line: Option<&str>,
 ) {
     // Create layout: one row for tabs and the rest for content.
@@ -546,9 +573,12 @@ pub fn ui_draw(
             let messages = app.messages.lock().unwrap();
             tab_content::render_messages_tab(f, content_area, &messages, app.selected_message_idx)
         }
-        (Tab::User(UserTab::Settings), UserRole::User) => {
-            tab_content::render_settings_tab(f, content_area, app.user_role)
-        }
+        (Tab::User(UserTab::Settings), UserRole::User) => settings_tab::render_settings_tab(
+            f,
+            content_area,
+            app.user_role,
+            app.selected_settings_option,
+        ),
         (Tab::User(UserTab::CreateNewOrder), UserRole::User) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
                 order_form::render_order_form(f, content_area, form);
@@ -557,14 +587,17 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::Disputes), UserRole::Admin) => {
-            tab_content::render_coming_soon(f, content_area, "Disputes")
+            disputes_tab::render_disputes_tab(f, content_area, disputes, app.selected_dispute_idx)
         }
         (Tab::Admin(AdminTab::Chat), UserRole::Admin) => {
             tab_content::render_coming_soon(f, content_area, "Chat")
         }
-        (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
-            tab_content::render_settings_tab(f, content_area, app.user_role)
-        }
+        (Tab::Admin(AdminTab::Settings), UserRole::Admin) => settings_tab::render_settings_tab(
+            f,
+            content_area,
+            app.user_role,
+            app.selected_settings_option,
+        ),
         _ => {
             // Fallback for invalid combinations
             tab_content::render_coming_soon(f, content_area, "Unknown")
@@ -602,6 +635,87 @@ pub fn ui_draw(
         order_result::render_order_result(f, result);
     }
 
+    // Shared settings popups
+    if let UiMode::AddMostroPubkey(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "🌐 Add Mostro Pubkey",
+            "Enter Mostro public key (npub...):",
+            "npub...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmMostroPubkey(key_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "🌐 Confirm Mostro Pubkey",
+            key_string,
+            *selected_button,
+        );
+    }
+    if let UiMode::AddRelay(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📡 Add Relay",
+            "Enter relay URL (wss://...):",
+            "wss://...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmRelay(relay_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "📡 Confirm Relay",
+            relay_string,
+            *selected_button,
+        );
+    }
+
+    // Admin key input popup overlay
+    if let UiMode::AdminMode(AdminMode::AddSolver(key_state)) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "Add Solver",
+            "Enter solver public key (npub...):",
+            "npub...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "🔐 Setup Admin Key",
+            "Enter admin private key (nsec...):",
+            "nsec...",
+            key_state,
+            true,
+        );
+    }
+
+    // Admin confirmation popups
+    if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) =
+        &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "Add Solver",
+            solver_pubkey,
+            *selected_button,
+            Some("Are you sure you want to add this pubkey as dispute solver?"),
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "🔐 Confirm Admin Key",
+            key_string,
+            *selected_button,
+        );
+    }
+
     // Taking order popup overlay (user mode only)
     if let UiMode::UserMode(UserMode::TakingOrder(take_state)) = &app.mode {
         order_take::render_order_take(f, take_state);
@@ -609,7 +723,12 @@ pub fn ui_draw(
 
     // New message notification popup overlay
     if let UiMode::NewMessageNotification(notification, action, invoice_state) = &app.mode {
-        tab_content::render_message_notification(f, notification, action.clone(), invoice_state);
+        message_notification::render_message_notification(
+            f,
+            notification,
+            action.clone(),
+            invoice_state,
+        );
     }
 
     // Viewing message popup overlay

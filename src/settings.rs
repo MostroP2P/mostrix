@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
     pub mostro_pubkey: String,
     pub nsec_privkey: String,
