@@ -23,6 +23,7 @@ pub use form_input::{handle_backspace, handle_char_input};
 pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
+pub use validation::validate_npub;
 
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers

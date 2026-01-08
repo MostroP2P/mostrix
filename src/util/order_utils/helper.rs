@@ -11,7 +11,7 @@ use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
 
 /// Parse order from nostr tags
-pub(super) fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
+pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     let mut order = SmallOrder::default();
 
     for tag in tags {
@@ -66,7 +66,7 @@ pub(super) fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
 }
 
 /// Parse dispute from nostr tags
-pub(super) fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
+pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();
     for tag in tags {
         let t = tag.to_vec();

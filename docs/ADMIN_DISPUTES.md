@@ -644,8 +644,71 @@ pub enum AdminTab {
 
 *Note: The `AdminTab` enum will be updated to include `DisputesWithBuyer` and `DisputesWithSeller` tabs as implementation progresses. The "Add Solver" functionality is now accessible through the Settings tab.*
 
+## Testing
+
+Mostrix includes a comprehensive test suite to ensure reliability and correctness of critical components.
+
+### Test Organization
+
+Tests are organized into two categories:
+
+1. **Unit Tests** (inline in source files): Test pure functions and isolated logic
+   - Parsing functions (`src/util/order_utils/helper.rs`)
+   - Validation functions (`src/ui/key_handler/validation.rs`)
+   - Helper functions (`src/util/types.rs`)
+
+2. **Integration Tests** (`tests/` directory): Test database operations and end-to-end flows
+   - Database operations (`tests/db_tests.rs`)
+   - Shared test utilities (`tests/common/mod.rs`)
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run only unit tests (faster)
+cargo test --lib
+
+# Run only integration tests
+cargo test --test db_tests
+
+# Run with output
+cargo test -- --nocapture
+```
+
+### Test Coverage
+
+The test suite covers:
+
+- **Parsing Logic**: Order and dispute parsing from Nostr tags
+- **Validation**: Public key validation, range amount validation
+- **Database Operations**: User creation, key derivation, order persistence
+- **Key Derivation**: Critical security component - ensures deterministic key generation
+- **Error Handling**: Error message generation and validation
+
+### Key Derivation Tests
+
+Key derivation is a critical security component and is thoroughly tested:
+
+- Same mnemonic + index produces same keys (deterministic)
+- Different indices produce different keys
+- Identity keys are correctly derived from mnemonic
+
+**Source**: `src/models.rs` (inline tests), `tests/db_tests.rs`
+
+### Future Test Expansion
+
+The test infrastructure is designed for easy expansion. Future additions could include:
+
+- Mock-based tests for async operations (Nostr client interactions)
+- UI state transition tests (using `ratatui_testlib`)
+- Snapshot testing for complex data structures
+- End-to-end workflow tests
+
 ## Related Documentation
 
 - [TUI_INTERFACE.md](TUI_INTERFACE.md) - General TUI architecture and navigation
 - [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) - Key derivation and management
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) - Message protocols and flows
+- [CODING_STANDARDS.md](CODING_STANDARDS.md) - Code quality guidelines including testing practices

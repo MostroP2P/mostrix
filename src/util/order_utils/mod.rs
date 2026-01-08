@@ -13,7 +13,8 @@ pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_send_msg::execute_send_msg;
 pub use fetch_scheduler::{start_fetch_scheduler, FetchSchedulerResult};
 pub use helper::{
-    fetch_events_list, get_disputes, get_orders, parse_disputes_events, parse_orders_events,
+    dispute_from_tags, fetch_events_list, get_disputes, get_orders, order_from_tags,
+    parse_disputes_events, parse_orders_events,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;
