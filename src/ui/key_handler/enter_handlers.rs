@@ -480,8 +480,12 @@ fn handle_enter_taking_order(
             }
         });
     } else {
-        // NO selected - cancel
-        app.mode = UiMode::Normal;
+        // NO selected - cancel and return to the appropriate normal mode
+        let default_mode = match app.user_role {
+            UserRole::User => UiMode::UserMode(UserMode::Normal),
+            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+        };
+        app.mode = default_mode;
     }
 }
 
