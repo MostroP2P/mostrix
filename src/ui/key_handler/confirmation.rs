@@ -229,6 +229,20 @@ pub fn handle_confirm_key(
             app.mode = default_mode;
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) => {
+            // Delegate to the same handler used for Enter to keep logic DRY
+            // (synthesize a mode with YES selected)
+            let mode = UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, true));
+            crate::ui::key_handler::enter_handlers::handle_enter_admin_mode(
+                app,
+                mode,
+                default_mode,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
+            true
+        }
         UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, _)) => {
             let default_mode = match app.user_role {
                 UserRole::User => UiMode::UserMode(UserMode::Normal),

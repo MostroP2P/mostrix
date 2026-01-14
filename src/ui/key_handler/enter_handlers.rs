@@ -126,7 +126,9 @@ pub fn handle_enter_key(
 }
 
 /// Handle Enter key for admin-specific modes (AddSolver, SetupAdminKey, etc.)
-fn handle_enter_admin_mode(
+/// Kept `pub(crate)` so it can be reused by the 'y' confirmation handler
+/// to avoid duplicating the AddSolver execution logic (DRY).
+pub(crate) fn handle_enter_admin_mode(
     app: &mut AppState,
     mode: UiMode,
     default_mode: UiMode,
