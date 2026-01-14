@@ -661,7 +661,7 @@ pub fn ui_draw(
         key_input_popup::render_key_input_popup(
             f,
             "📡 Add Relay",
-            "Enter relay URL (wss://...):",
+            "Enter relay URL (wss:// or ws://...):",
             "wss://...",
             key_state,
             false,

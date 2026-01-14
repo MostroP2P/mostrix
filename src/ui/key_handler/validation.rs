@@ -36,8 +36,8 @@ pub fn validate_relay(relay_str: &str) -> Result<(), String> {
         return Err("Relay URL cannot be empty".to_string());
     }
 
-    if !relay.starts_with("wss://") {
-        return Err("Relay URL must start with \"wss://\"".to_string());
+    if !relay.starts_with("wss://") && !relay.starts_with("ws://") {
+        return Err("Relay URL must start with \"wss://\" or \"ws://\"".to_string());
     }
 
     Ok(())
