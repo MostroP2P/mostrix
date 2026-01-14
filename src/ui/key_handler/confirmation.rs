@@ -5,7 +5,8 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ui::key_handler::settings::{
-    save_admin_key_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings,
 };
 
 /// Helper: Transition from input mode to confirmation mode
@@ -192,6 +193,40 @@ pub fn handle_confirm_key(
                 save_relay_to_settings,
                 |input| UiMode::AddRelay(create_key_input_state(input)),
             );
+
+            // Also add the new relay to the running Nostr client immediately
+            let relay_to_add = relay_string.clone();
+            let client_clone = client.clone();
+            tokio::spawn(async move {
+                if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
+                    log::error!("Failed to add relay at runtime: {}", e);
+                }
+            });
+            true
+        }
+        UiMode::ConfirmCurrency(currency_string, _) => {
+            let default_mode = match app.user_role {
+                UserRole::User => UiMode::UserMode(UserMode::Normal),
+                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+            };
+            app.mode = handle_confirmation_enter(
+                true, // 'y' key means YES
+                &currency_string,
+                default_mode,
+                save_currency_to_settings,
+                |input| UiMode::AddCurrency(create_key_input_state(input)),
+            );
+            true
+        }
+        UiMode::ConfirmClearCurrencies(_) => {
+            let default_mode = match app.user_role {
+                UserRole::User => UiMode::UserMode(UserMode::Normal),
+                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+            };
+            // YES selected - clear currency filters
+            use crate::ui::key_handler::settings::clear_currency_filters;
+            clear_currency_filters();
+            app.mode = default_mode;
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, _)) => {

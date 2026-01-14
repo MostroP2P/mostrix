@@ -39,37 +39,46 @@ impl Default for Settings {
 
 /// Constructs (or copies) the configuration file and loads it
 pub fn init_settings() -> &'static Settings {
-    SETTINGS.get_or_init(|| {
-        // HOME and package name at compile time
-        let home_dir = dirs::home_dir().expect("Could not find home directory");
-        let package_name = env!("CARGO_PKG_NAME");
-        let hidden_dir = home_dir.join(format!(".{package_name}"));
-        let hidden_file = hidden_dir.join("settings.toml");
+    SETTINGS.get_or_init(|| init_or_load_settings_from_disk().expect("Error loading settings.toml"))
+}
 
-        println!("hidden_file: {:?}", hidden_file);
+/// Internal helper: ensure settings file exists and load it from disk
+fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
+    // HOME and package name at compile time
+    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let package_name = env!("CARGO_PKG_NAME");
+    let hidden_dir = home_dir.join(format!(".{package_name}"));
+    let hidden_file = hidden_dir.join("settings.toml");
 
-        // Path to the settings.toml included in the repo (next to Cargo.toml)
-        let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
+    // Path to the settings.toml included in the repo (next to Cargo.toml)
+    let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
 
-        // Create ~/.mostrix if it doesn't exist
-        if !hidden_dir.exists() {
-            fs::create_dir(&hidden_dir).expect("The configuration directory could not be created");
-        }
+    // Create ~/.mostrix if it doesn't exist
+    if !hidden_dir.exists() {
+        fs::create_dir(&hidden_dir).map_err(|e| {
+            anyhow::anyhow!("The configuration directory could not be created: {}", e)
+        })?;
+    }
 
-        // Copy settings.toml if it isn't already in ~/.mostrix
-        if !hidden_file.exists() {
-            fs::copy(&default_file, &hidden_file).expect("Could not copy default settings.toml");
-        }
+    // Copy settings.toml if it isn't already in ~/.mostrix
+    if !hidden_file.exists() {
+        fs::copy(&default_file, &hidden_file)
+            .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
+    }
 
-        // Use the `config` crate to deserialize to the Settings struct
-        let cfg = config::Config::builder()
-            .add_source(config::File::from(hidden_file))
-            .build()
-            .expect("settings.toml malformed");
+    // Use the `config` crate to deserialize to the Settings struct
+    let cfg = config::Config::builder()
+        .add_source(config::File::from(hidden_file.as_path()))
+        .build()
+        .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
 
-        cfg.try_deserialize::<Settings>()
-            .expect("Error deserializing settings.toml")
-    })
+    cfg.try_deserialize::<Settings>()
+        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
+}
+
+/// Public helper: reload current settings from disk (reflects all previous saves)
+pub fn load_settings_from_disk() -> Result<Settings, anyhow::Error> {
+    init_or_load_settings_from_disk()
 }
 
 /// Save settings to file

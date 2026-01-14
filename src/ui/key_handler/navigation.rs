@@ -23,21 +23,22 @@ pub fn handle_navigation(
 
 fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
+        // From Create New Order form → single Left press moves to previous tab (e.g. Messages)
+        UiMode::UserMode(UserMode::CreatingOrder(_))
+            if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) =>
+        {
+            let prev_tab = app.active_tab;
+            app.active_tab = app.active_tab.prev(app.user_role);
+            handle_tab_switch(app, prev_tab);
+            // Leave form mode
+            app.mode = UiMode::UserMode(UserMode::Normal);
+        }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
             let prev_tab = app.active_tab;
             app.active_tab = app.active_tab.prev(app.user_role);
             handle_tab_switch(app, prev_tab);
-            // Exit form mode when leaving Create New Order tab (user mode only)
-            if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-                // Stay in creating order mode
-            } else {
-                match app.user_role {
-                    UserRole::User => app.mode = UiMode::UserMode(UserMode::Normal),
-                    UserRole::Admin => app.mode = UiMode::AdminMode(AdminMode::Normal),
-                }
-            }
         }
         UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
             // Switch to YES button (left side)
@@ -50,7 +51,9 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
-        | UiMode::ConfirmRelay(_, ref mut selected_button) => {
+        | UiMode::ConfirmRelay(_, ref mut selected_button)
+        | UiMode::ConfirmCurrency(_, ref mut selected_button)
+        | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
         }
@@ -63,6 +66,16 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 
 fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     match &mut app.mode {
+        // From Create New Order form → single Right press moves to next tab (Settings)
+        UiMode::UserMode(UserMode::CreatingOrder(_))
+            if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) =>
+        {
+            let prev_tab = app.active_tab;
+            app.active_tab = app.active_tab.next(app.user_role);
+            handle_tab_switch(app, prev_tab);
+            // Leave form mode
+            app.mode = UiMode::UserMode(UserMode::Normal);
+        }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
@@ -94,7 +107,9 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
-        | UiMode::ConfirmRelay(_, ref mut selected_button) => {
+        | UiMode::ConfirmRelay(_, ref mut selected_button)
+        | UiMode::ConfirmCurrency(_, ref mut selected_button)
+        | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
         }
@@ -166,7 +181,10 @@ fn handle_up_key(
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
-        | UiMode::ConfirmRelay(_, _) => {
+        | UiMode::ConfirmRelay(_, _)
+        | UiMode::AddCurrency(_)
+        | UiMode::ConfirmCurrency(_, _)
+        | UiMode::ConfirmClearCurrencies(_) => {
             // No navigation in these modes
         }
     }
@@ -206,9 +224,9 @@ fn handle_down_key(
                 Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
             ) {
                 let max_options = if app.user_role == UserRole::Admin {
-                    3
+                    5
                 } else {
-                    1
+                    3
                 };
                 if app.selected_settings_option < max_options {
                     app.selected_settings_option += 1;
@@ -239,7 +257,10 @@ fn handle_down_key(
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
-        | UiMode::ConfirmRelay(_, _) => {
+        | UiMode::ConfirmRelay(_, _)
+        | UiMode::AddCurrency(_)
+        | UiMode::ConfirmCurrency(_, _)
+        | UiMode::ConfirmClearCurrencies(_) => {
             // No navigation in these modes
         }
     }

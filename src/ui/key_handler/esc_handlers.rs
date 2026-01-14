@@ -54,7 +54,8 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         UiMode::AdminMode(AdminMode::AddSolver(_))
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)
-        | UiMode::AddRelay(_) => {
+        | UiMode::AddRelay(_)
+        | UiMode::AddCurrency(_) => {
             // Dismiss key input popup
             app.mode = default_mode.clone();
             true
@@ -82,6 +83,17 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = handle_confirmation_esc(relay_string, |input| {
                 UiMode::AddRelay(create_key_input_state(input))
             });
+            true
+        }
+        UiMode::ConfirmCurrency(currency_string, _) => {
+            app.mode = handle_confirmation_esc(currency_string, |input| {
+                UiMode::AddCurrency(create_key_input_state(input))
+            });
+            true
+        }
+        UiMode::ConfirmClearCurrencies(_) => {
+            // Cancel clearing - return to normal mode
+            app.mode = default_mode.clone();
             true
         }
         _ => false, // Break the loop

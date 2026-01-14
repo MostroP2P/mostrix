@@ -137,7 +137,7 @@ pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
 /// Parse orders from events
 pub fn parse_orders_events(
     events: Events,
-    currency: Option<String>,
+    currencies: Option<Vec<String>>,
     status: Option<Status>,
     kind: Option<mostro_core::order::Kind>,
 ) -> Vec<SmallOrder> {
@@ -183,7 +183,14 @@ pub fn parse_orders_events(
     let mut requested: Vec<SmallOrder> = latest_by_id
         .into_values()
         .filter(|o| status.map(|s| o.status == Some(s)).unwrap_or(true))
-        .filter(|o| currency.as_ref().map(|c| o.fiat_code == *c).unwrap_or(true))
+        .filter(|o| {
+            // If currencies filter is provided and not empty, filter by any currency in the list
+            // If currencies is None or empty, show all orders (no filter)
+            currencies
+                .as_ref()
+                .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
+                .unwrap_or(true)
+        })
         .filter(|o| {
             kind.as_ref()
                 .map(|k| o.kind.as_ref() == Some(k))
@@ -199,7 +206,7 @@ pub fn parse_orders_events(
 pub async fn fetch_events_list(
     list_kind: ListKind,
     status: Option<Status>,
-    currency: Option<String>,
+    currencies: Option<Vec<String>>,
     kind: Option<mostro_core::order::Kind>,
     client: &Client,
     mostro_pubkey: PublicKey,
@@ -209,7 +216,7 @@ pub async fn fetch_events_list(
         ListKind::Orders => {
             let filters = create_filter(list_kind, mostro_pubkey, None)?;
             let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
-            let orders = parse_orders_events(fetched_events, currency, status, kind);
+            let orders = parse_orders_events(fetched_events, currencies, status, kind);
             Ok(orders.into_iter().map(Event::SmallOrder).collect())
         }
         ListKind::Disputes => {
@@ -223,16 +230,17 @@ pub async fn fetch_events_list(
 }
 
 /// Fetch orders from the Mostro network
-/// Returns a vector of SmallOrder items filtered by the specified status
+/// Returns a vector of SmallOrder items filtered by the specified status and currencies
 pub async fn get_orders(
     client: &Client,
     mostro_pubkey: PublicKey,
     status: Option<Status>,
+    currencies: Option<Vec<String>>,
 ) -> Result<Vec<SmallOrder>> {
     let fetched_events = fetch_events_list(
         ListKind::Orders,
         status,
-        None,
+        currencies,
         None,
         client,
         mostro_pubkey,

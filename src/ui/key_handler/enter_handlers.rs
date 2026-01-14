@@ -15,9 +15,12 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    save_admin_key_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings,
 };
-use crate::ui::key_handler::validation::validate_npub;
+use crate::ui::key_handler::validation::{
+    validate_currency, validate_mostro_pubkey, validate_npub, validate_relay,
+};
 
 /// Handle Enter key - dispatches to mode-specific handlers
 pub fn handle_enter_key(
@@ -32,7 +35,8 @@ pub fn handle_enter_key(
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
-    match std::mem::replace(&mut app.mode, default_mode.clone()) {
+    let current_mode = std::mem::replace(&mut app.mode, default_mode.clone());
+    match current_mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
@@ -96,6 +100,41 @@ pub fn handle_enter_key(
             );
             // Mode is updated inside handle_enter_viewing_message
         }
+        UiMode::AdminMode(AdminMode::AddSolver(_))
+        | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
+        | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
+            handle_enter_admin_mode(
+                app,
+                current_mode,
+                default_mode,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
+        }
+        UiMode::AddMostroPubkey(_)
+        | UiMode::ConfirmMostroPubkey(_, _)
+        | UiMode::AddRelay(_)
+        | UiMode::ConfirmRelay(_, _)
+        | UiMode::AddCurrency(_)
+        | UiMode::ConfirmCurrency(_, _)
+        | UiMode::ConfirmClearCurrencies(_) => {
+            handle_enter_settings_mode(app, current_mode, default_mode, client);
+        }
+    }
+}
+
+/// Handle Enter key for admin-specific modes (AddSolver, SetupAdminKey, etc.)
+fn handle_enter_admin_mode(
+    app: &mut AppState,
+    mode: UiMode,
+    default_mode: UiMode,
+    client: &Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+) {
+    match mode {
         UiMode::AdminMode(AdminMode::AddSolver(key_state)) => {
             // Validate npub before proceeding to confirmation
             match validate_npub(&key_state.key_input) {
@@ -170,9 +209,25 @@ pub fn handle_enter_key(
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
             );
         }
+        _ => {
+            // This should not happen, but handle gracefully
+            app.mode = default_mode;
+        }
+    }
+}
+
+/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
+/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
+fn handle_enter_settings_mode(
+    app: &mut AppState,
+    mode: UiMode,
+    default_mode: UiMode,
+    client: &Client,
+) {
+    match mode {
         UiMode::AddMostroPubkey(key_state) => {
-            // Validate npub before proceeding to confirmation
-            match validate_npub(&key_state.key_input) {
+            // Validate Mostro pubkey (hex format) before proceeding to confirmation
+            match validate_mostro_pubkey(&key_state.key_input) {
                 Ok(_) => {
                     app.mode =
                         handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
@@ -195,9 +250,19 @@ pub fn handle_enter_key(
             );
         }
         UiMode::AddRelay(key_state) => {
-            app.mode = handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                UiMode::ConfirmRelay(input, true)
-            });
+            // Validate relay URL format before proceeding to confirmation
+            match validate_relay(&key_state.key_input) {
+                Ok(_) => {
+                    app.mode =
+                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
+                            UiMode::ConfirmRelay(input, true)
+                        });
+                }
+                Err(e) => {
+                    // Show error popup
+                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                }
+            }
         }
         UiMode::ConfirmRelay(relay_string, selected_button) => {
             app.mode = handle_confirmation_enter(
@@ -207,6 +272,53 @@ pub fn handle_enter_key(
                 save_relay_to_settings,
                 |input| UiMode::AddRelay(create_key_input_state(input)),
             );
+
+            // If YES was selected, also add the relay to the running Nostr client
+            if selected_button {
+                let relay_to_add = relay_string.clone();
+                let client_clone = client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
+                        log::error!("Failed to add relay at runtime: {}", e);
+                    }
+                });
+            }
+        }
+        UiMode::AddCurrency(key_state) => {
+            // Validate currency code before proceeding to confirmation
+            match validate_currency(&key_state.key_input) {
+                Ok(_) => {
+                    app.mode =
+                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
+                            UiMode::ConfirmCurrency(input, true)
+                        });
+                }
+                Err(e) => {
+                    // Show error popup
+                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                }
+            }
+        }
+        UiMode::ConfirmCurrency(currency_string, selected_button) => {
+            app.mode = handle_confirmation_enter(
+                selected_button,
+                &currency_string,
+                default_mode,
+                save_currency_to_settings,
+                |input| UiMode::AddCurrency(create_key_input_state(input)),
+            );
+        }
+        UiMode::ConfirmClearCurrencies(selected_button) => {
+            if selected_button {
+                // YES selected - clear currency filters
+                use crate::ui::key_handler::settings::clear_currency_filters;
+                clear_currency_filters();
+            }
+            app.mode = default_mode;
+        }
+        _ => {
+            // This should not happen, but handle gracefully
+            app.mode = default_mode;
         }
     }
 }
@@ -271,11 +383,19 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
                 // Add Relay (Common for both roles)
                 app.mode = UiMode::AddRelay(key_state);
             }
-            2 if app.user_role == UserRole::Admin => {
+            2 => {
+                // Add Currency Filter (Common for both roles)
+                app.mode = UiMode::AddCurrency(key_state);
+            }
+            3 => {
+                // Clear Currency Filters (Common for both roles) - show confirmation
+                app.mode = UiMode::ConfirmClearCurrencies(true);
+            }
+            4 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
             }
-            3 if app.user_role == UserRole::Admin => {
+            5 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
             }

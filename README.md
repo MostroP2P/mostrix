@@ -45,8 +45,8 @@ This means:
 #### Example `settings.toml`
 
 ```toml
-# Mostro pubkey, hex format
-mostro_pubkey = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
+# Mostro pubkey, hex format - only a placeholder replace with yours
+mostro_pubkey = "82fa8cb978b43c79b2156585bac2c022276a21d2aead6d9f7c575c005be88390"
 
 # Nostr user private key (nsec format, KEEP THIS SECRET)
 nsec_privkey = "nsec1zpmjgd00jckr90zpa0wjhjldgrwy0p6cg3m2m4qcqh5fsx3c786q3c5ksu"
@@ -57,11 +57,11 @@ admin_privkey = ""
 # Nostr relays to connect to
 relays = [
   "wss://relay.mostro.network",
-  "wss://damus.realy.io",
+  "wss://damus.relay.io",
 ]
 
 # Log verbosity level: "trace", "debug", "info", "warn", "error"
-log_level = "info"
+log_level = "info" - not managed from tui at the moment
 
 # Fiat currencies you want to see / use (ISO codes)
 currencies = ["VES", "ARS", "USD"]
@@ -70,7 +70,7 @@ currencies = ["VES", "ARS", "USD"]
 user_mode = "user"
 
 # Proof-of-work difficulty for events (0 = disabled, higher = more work)
-pow = 0
+pow = 0 - not managed from tui at the moment
 ```
 
 #### Field explanations
@@ -99,7 +99,7 @@ pow = 0
 
 - **`currencies`**  
   - List of fiat currencies (by ISO code) you are interested in trading/seeing in the UI.  
-  - You can customize this to only show relevant markets, e.g. `["USD", "EUR"]`.
+  - You can customize this to only show relevant markets, e.g. `["USD", "EUR"]`or leave it empty to clear all filters.
 
 - **`user_mode`**  
   - `"user"` (default): normal user interface and actions.  

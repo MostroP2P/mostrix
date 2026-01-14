@@ -4,7 +4,12 @@ This guide explains the admin mode functionality for dispute resolution in Mostr
 
 ## Admin Mode Overview
 
-Admin mode is activated when the `user_mode` setting is set to `"admin"` and a valid `admin_privkey` is configured in `settings.toml`. Only the admin private key can be used to sign dispute resolution actions.
+Admin mode can be activated in two ways:
+
+- **On startup (default mode)**: set `user_mode = "admin"` and configure a valid `admin_privkey` in `settings.toml`.
+- **At runtime (TUI switch)**: start in user mode and press **`M`** in the **Settings** tab to toggle between User and Admin modes. The selected mode is persisted back to `settings.toml` (`user_mode` field).
+
+Only the admin private key can be used to sign dispute resolution actions.
 
 **Source**: `src/settings.rs:12`
 
@@ -24,53 +29,7 @@ Lists all active disputes on the Mostro network. Admins can:
 - **Take a dispute**: Select a dispute and take ownership to resolve it
 - **Navigate**: Use arrow keys to browse the dispute list
 
-### 2. Add Solver (Settings Tab)
-
-**Status**: ✅ **Implemented and Working**
-
-Allows admins to add another dispute solver to the network directly from the Settings tab. This enables:
-
-- **Network expansion**: Add additional trusted admins to help resolve disputes
-- **Solver management**: Maintain a list of authorized dispute resolvers
-- **Decentralization**: Distribute dispute resolution across multiple admins
-
-**Implementation Details**:
-
-- Located in the Settings tab (option 3 for Admin mode)
-- Input validation: Validates nostr public key format before sending
-- Confirmation popup: Shows "Are you sure you want to add this pubkey as dispute solver?"
-- Error handling: Displays error popup for invalid pubkey format
-- UI state: Stays on Settings tab after successful addition
-
-**Source**: `src/ui/settings_tab.rs:57`, `src/util/order_utils/execute_admin_add_solver.rs`
-
-### 3. Disputes with Buyer Tab
-
-Dedicated chat interface for communicating with the **buyer** in an active dispute.
-
-**Visual Safety Feature**: This tab is **differently colored** (e.g., blue/green) to prevent admins from accidentally sending messages to the wrong party.
-
-**Functionality**:
-
-- View message history with the buyer
-- Send messages to the buyer
-- Request additional information or evidence
-- Coordinate resolution steps
-
-### 4. Disputes with Seller Tab
-
-Dedicated chat interface for communicating with the **seller** in an active dispute.
-
-**Visual Safety Feature**: This tab is **differently colored** (e.g., red/orange) to clearly distinguish it from the buyer chat tab.
-
-**Functionality**:
-
-- View message history with the seller
-- Send messages to the seller
-- Request additional information or evidence
-- Coordinate resolution steps
-
-### 5. Settings Tab
+### 2. Settings Tab
 
 **Status**: ✅ **Fully Implemented and Working**
 
@@ -78,27 +37,39 @@ The Settings tab provides comprehensive configuration options for both User and 
 
 #### User Mode Options
 
-1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client
-2. **Add Nostr Relay**: Add a new Nostr relay to the relay list
+1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
+2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
+3. **Add Currency Filter**: Add a fiat currency code (e.g., USD, EUR) to filter orders displayed. When one or more currencies are configured, only orders matching those fiat codes are shown. Filters are applied in real-time.
+4. **Clear Currency Filters**: Remove all currency filters to show orders for all currencies. This clears the `currencies` array in `settings.toml`.
 
 #### Admin Mode Options
 
-1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client
-2. **Add Nostr Relay**: Add a new Nostr relay to the relay list
-3. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section)
-4. **Change Admin Key**: Update the admin private key used for signing dispute actions
+1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
+2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
+3. **Add Currency Filter**: Add a fiat currency code (e.g., USD, EUR) to filter orders displayed. Filters are applied in real-time.
+4. **Clear Currency Filters**: Remove all currency filters to show orders for all currencies.
+5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
+6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 
 #### Features
 
 - **Mode Display**: Shows current mode (User/Admin) at the top
 - **Mode Switching**: Press `M` key to switch between User and Admin modes
 - **Confirmation Popups**: All settings changes require confirmation before saving
-- **Input Validation**: Pubkey inputs are validated for correct format
+- **Input Validation**: All inputs are validated before processing:
+  - Mostro pubkey: Must be 64-character hex string
+  - Relay URLs: Must start with `wss://`
+  - Currency codes: Non-empty, max 10 characters
+  - Admin/Solver pubkeys: Must be valid `npub` format
 - **Keyboard Input**: All inputs support both paste and keyboard entry
 - **Settings Persistence**: All changes are saved to `settings.toml` file
 - **Error Handling**: Invalid inputs display error popups with clear messages
+- **Dynamic Updates**: 
+  - Relays are added to the running Nostr client immediately
+  - Currency filters are applied in real-time to order fetching
+  - Status bar displays current settings (Mostro pubkey, relays, currencies)
 
-**Source**: `src/ui/settings_tab.rs`, `src/ui/key_handler/settings.rs`
+**Source**: `src/ui/settings_tab.rs`, `src/ui/key_handler/settings.rs`, `src/ui/key_handler/validation.rs`
 
 ## Dispute States
 
@@ -497,38 +468,7 @@ sequenceDiagram
 
 ## Dispute Resolution Actions
 
-Once an admin has taken a dispute (state: `InProgress`), they can perform various resolution actions:
-
-### 1. Resolve in Favor of Buyer
-
-- **Action**: Settle seller's invoice and initiate payment to buyer
-- **State Transition**: `InProgress` → `Settled`
-- **Result**:
-  - Seller's invoice is settled
-  - Payment process to buyer begins
-  - Dispute moves to `Settled` state
-- **Final State**: When seller releases, state becomes `Released` (dispute closed)
-
-### 2. Resolve in Favor of Seller
-
-- **Action**: Cancel dispute and refund seller
-- **State Transition**: `InProgress` → `SellerRefunded`
-- **Result**:
-  - Seller receives refund
-  - Buyer's payment is returned
-  - Dispute is closed
-- **Final State**: `SellerRefunded` (dispute closed)
-
-### 3. Request Additional Information
-
-- Send messages to either party requesting evidence
-- Coordinate between buyer and seller
-- Gather necessary documentation
-
-### 4. Escalate or Transfer
-
-- Transfer dispute to another admin/solver if needed
-- Escalate complex cases
+Once an admin has taken a dispute (state: `InProgress`), they are expected to perform resolution actions such as resolving in favor of buyer or seller, requesting additional information, or transferring/escalating the dispute. The exact UI flows for these actions are still under active development in Mostrix and may change; refer to the Mostro protocol documentation for the canonical dispute actions and state transitions.
 
 ## Security Considerations
 
@@ -550,6 +490,133 @@ Once an admin has taken a dispute (state: `InProgress`), they can perform variou
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
 
+## New Features: Currency Filters & Relay Management
+
+### Currency Filter Management
+
+**Status**: ✅ **Fully Implemented**
+
+Currency filters allow admins (and users) to focus on specific fiat currencies when viewing orders. This is particularly useful for admins monitoring disputes in specific markets.
+
+#### Features
+
+- **Add Currency Filter**: Add fiat currency codes (e.g., USD, EUR, ARS) to filter orders
+  - Currency codes are validated (non-empty, max 10 characters)
+  - Filters are applied in real-time to order fetching
+  - Multiple currencies can be added to show orders for any of them
+- **Clear Currency Filters**: Remove all currency filters with a single action
+  - Clears the `currencies` array in `settings.toml`
+  - Can also be cleared by manually editing `settings.toml` and setting `currencies = []`
+- **Dynamic Filtering**: Currency filters are applied immediately without restart
+- **Status Bar Display**: Active currency filters are displayed in the status bar
+
+#### Implementation
+
+**Source**: `src/ui/key_handler/settings.rs:55-78`
+
+```rust
+/// Save currency to settings file
+pub fn save_currency_to_settings(currency_string: &str) {
+    save_settings_with(
+        |s| {
+            let currency_upper = currency_string.trim().to_uppercase();
+            if !s.currencies.contains(&currency_upper) {
+                s.currencies.push(currency_upper);
+            }
+        },
+        "Failed to save currency to settings",
+        "Currency filter added to settings file",
+    );
+}
+
+/// Clear all currency filters (sets currencies to empty vector)
+pub fn clear_currency_filters() {
+    save_settings_with(
+        |s| {
+            s.currencies.clear();
+        },
+        "Failed to clear currency filters",
+        "All currency filters cleared",
+    );
+}
+```
+
+### Relay Management Improvements
+
+**Status**: ✅ **Fully Implemented**
+
+Enhanced relay management allows admins to dynamically add relays without restarting the application.
+
+#### Features
+
+- **Dynamic Relay Addition**: New relays are added to the running Nostr client immediately
+  - No restart required
+  - Relays are connected asynchronously in the background
+- **Settings Persistence**: Relays are saved to `settings.toml` and persist across restarts
+- **Duplicate Prevention**: The system prevents adding the same relay twice
+- **Status Bar Display**: Active relays are displayed in the status bar
+
+#### Implementation
+
+**Source**: `src/ui/key_handler/enter_handlers.rs` (relay addition logic)
+
+When a relay is added:
+1. Input is validated (must start with `wss://`)
+2. Confirmation popup is shown
+3. Relay is added to `settings.toml`
+4. Relay is added to the running Nostr client via `tokio::spawn`
+5. Success/error feedback is provided
+
+### Validation Enhancements
+
+**Status**: ✅ **Fully Implemented**
+
+Comprehensive input validation ensures data integrity and provides clear error messages.
+
+#### Validation Rules
+
+1. **Mostro Pubkey Validation** (`validate_mostro_pubkey`)
+   - Format: 64-character hex string
+   - Changed from `npub` format to hex format for consistency
+   - Example: `627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae`
+
+2. **Relay Validation** (`validate_relay`)
+   - Must start with `wss://` or `ws://`
+   - Prevents invalid relay URLs
+
+3. **Currency Validation** (`validate_currency`)
+   - Non-empty string
+   - Maximum 10 characters
+   - Automatically converted to uppercase
+
+4. **Nostr Public Key Validation** (`validate_npub`)
+   - Must be valid `npub` format (bech32 encoded)
+   - Used for admin keys and dispute solver pubkeys
+
+**Source**: `src/ui/key_handler/validation.rs`
+
+### Status Bar Improvements
+
+**Status**: ✅ **Fully Implemented**
+
+The status bar now provides comprehensive information about current settings and configuration.
+
+#### Multi-line Display
+
+The status bar displays 3 separate lines:
+
+1. **Mostro Pubkey**: Shows the current Mostro instance pubkey (truncated if long)
+2. **Relays List**: Shows all active relays (comma-separated, truncated if many)
+3. **Currencies List**: Shows active currency filters (comma-separated, or "All" if none)
+
+#### Dynamic Updates
+
+- Status bar reloads settings from disk on each draw cycle
+- Ensures the displayed information is always current
+- Updates immediately when settings are changed
+
+**Source**: `src/ui/status.rs`, `src/ui/mod.rs` (status bar rendering)
+
 ## Implementation Status
 
 ### ✅ Completed Features (Current PR)
@@ -567,13 +634,28 @@ The following features have been fully implemented and are working:
 2. **Common Settings Functions** (Available to both User and Admin)
    - ✅ **Change Mostro Pubkey** (`src/ui/key_handler/settings.rs:29-36`)
      - Input popup with keyboard support
+     - Hex format validation (64 characters)
      - Confirmation popup before saving
      - Persists to `settings.toml`
    - ✅ **Add Nostr Relay** (`src/ui/key_handler/settings.rs:38-49`)
      - Input popup with keyboard support
+     - Validation (must start with `wss://`)
      - Confirmation popup before saving
      - Adds to relay list in `settings.toml`
      - Prevents duplicate relays
+     - Dynamically adds relay to running Nostr client
+   - ✅ **Add Currency Filter** (`src/ui/key_handler/settings.rs:55-67`)
+     - Input popup with keyboard support
+     - Currency code validation (non-empty, max 10 chars)
+     - Automatically converts to uppercase
+     - Prevents duplicate currencies
+     - Applied in real-time to order filtering
+     - Persists to `settings.toml`
+   - ✅ **Clear Currency Filters** (`src/ui/key_handler/settings.rs:69-78`)
+     - Confirmation popup before clearing
+     - Clears all currency filters
+     - Updates `settings.toml` immediately
+     - Applied in real-time to order filtering
 
 3. **Admin-Only Settings Functions**
    - ✅ **Add Dispute Solver** (`src/util/order_utils/execute_admin_add_solver.rs`)
@@ -608,6 +690,19 @@ The following features have been fully implemented and are working:
      - Conditionally hides key display
      - Proper text formatting
 
+3. **Validation System** (`src/ui/key_handler/validation.rs`)
+   - ✅ `validate_mostro_pubkey`: Hex format validation (64 characters)
+   - ✅ `validate_relay`: URL format validation (`wss://` or `ws://`)
+   - ✅ `validate_currency`: Currency code validation (non-empty, max 10 chars)
+   - ✅ `validate_npub`: Nostr public key validation (bech32 format)
+   - ✅ All validation functions return `Result<(), String>` with clear error messages
+
+4. **Status Bar Enhancements** (`src/ui/status.rs`)
+   - ✅ Multi-line display (Mostro pubkey, relays, currencies)
+   - ✅ Dynamic settings reloading from disk
+   - ✅ Real-time updates when settings change
+   - ✅ Truncation for long lists
+
 #### Commits Made
 
 The following commits were made in this PR:
@@ -627,14 +722,12 @@ The following commits were made in this PR:
 
 ### 🔄 Planned Implementation
 
-- Dispute list fetching and display
-- Take dispute functionality
-- Separate buyer/seller chat interfaces with color coding
-- Dispute resolution actions (resolve in favor of buyer/seller)
+- Enhanced **Chat** tab for admins (separate buyer/seller views with color coding).
+- Additional dispute resolution actions and workflows in the UI.
 
-**Source**: `src/ui/mod.rs:107`
+**Source**: `src/ui/mod.rs:113`
 
-```107:111:src/ui/mod.rs
+```113:120:src/ui/mod.rs
 pub enum AdminTab {
     Disputes,
     Chat,
@@ -642,7 +735,7 @@ pub enum AdminTab {
 }
 ```
 
-*Note: The `AdminTab` enum will be updated to include `DisputesWithBuyer` and `DisputesWithSeller` tabs as implementation progresses. The "Add Solver" functionality is now accessible through the Settings tab.*
+*Note: The `Chat` tab is currently rendered as “coming soon” in the UI. Buyer/seller‑specific chat tabs described above are design goals and not yet implemented.*
 
 ## Testing
 
@@ -712,3 +805,4 @@ The test infrastructure is designed for easy expansion. Future additions could i
 - [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) - Key derivation and management
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) - Message protocols and flows
 - [CODING_STANDARDS.md](CODING_STANDARDS.md) - Code quality guidelines including testing practices
+- [FEATURE_ANALYSIS.md](FEATURE_ANALYSIS.md) - Comprehensive analysis of currency filters and relay management features

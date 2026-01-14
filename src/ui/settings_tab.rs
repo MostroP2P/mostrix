@@ -1,10 +1,15 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use super::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// Render the Settings tab UI
+///
+/// Displays settings options based on user role (User or Admin).
+/// The options list is centered when terminal width allows, otherwise uses full width
+/// to prevent text clipping on narrow terminals.
 pub fn render_settings_tab(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -54,11 +59,18 @@ pub fn render_settings_tab(
         vec![
             "Change Mostro Pubkey",
             "Add Nostr Relay",
+            "Add Currency Filter",
+            "Clear Currency Filters",
             "Add Dispute Solver",
             "Change Admin Key",
         ]
     } else {
-        vec!["Change Mostro Pubkey", "Add Nostr Relay"]
+        vec![
+            "Change Mostro Pubkey",
+            "Add Nostr Relay",
+            "Add Currency Filter",
+            "Clear Currency Filters",
+        ]
     };
 
     let items: Vec<ListItem> = options
@@ -82,9 +94,22 @@ pub fn render_settings_tab(
         .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
         .highlight_symbol(">> ");
 
+    // Determine list area: center when there's enough width, otherwise use full width
+    let list_width = 30u16; // Desired width for the options list
+    let list_area = if chunks[3].width <= list_width {
+        // Terminal is narrow: use the full available width to avoid clipping text
+        chunks[3]
+    } else {
+        // Terminal is wide enough: center the list horizontally
+        let [centered_area] = Layout::horizontal([Constraint::Length(list_width)])
+            .flex(Flex::Center)
+            .areas(chunks[3]);
+        centered_area
+    };
+
     f.render_stateful_widget(
         list,
-        chunks[3],
+        list_area,
         &mut ratatui::widgets::ListState::default().with_selected(Some(selected_option)),
     );
 

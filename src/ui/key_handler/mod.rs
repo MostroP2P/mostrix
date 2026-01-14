@@ -23,7 +23,7 @@ pub use form_input::{handle_backspace, handle_char_input};
 pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
-pub use validation::validate_npub;
+pub use validation::{validate_currency, validate_mostro_pubkey, validate_npub, validate_relay};
 
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
@@ -58,12 +58,14 @@ pub fn handle_key_event(
         app.mode,
         UiMode::AddMostroPubkey(_)
             | UiMode::AddRelay(_)
+            | UiMode::AddCurrency(_)
             | UiMode::AdminMode(AdminMode::AddSolver(_))
             | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
     ) {
         let key_state = match &mut app.mode {
             UiMode::AddMostroPubkey(ref mut ks) => Some(ks),
             UiMode::AddRelay(ref mut ks) => Some(ks),
+            UiMode::AddCurrency(ref mut ks) => Some(ks),
             UiMode::AdminMode(AdminMode::AddSolver(ref mut ks)) => Some(ks),
             UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
             _ => None,
@@ -90,7 +92,9 @@ pub fn handle_key_event(
                 UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
-                | UiMode::ConfirmRelay(_, ref mut selected_button) => {
+                | UiMode::ConfirmRelay(_, ref mut selected_button)
+                | UiMode::ConfirmCurrency(_, ref mut selected_button)
+                | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
                 }

@@ -1,18 +1,22 @@
 use crate::ui::{AppState, UserRole};
-use crate::SETTINGS;
 
 /// Generic helper to save settings with a custom update function
 pub fn save_settings_with<F>(update_fn: F, error_msg: &str, success_msg: &str)
 where
     F: FnOnce(&mut crate::settings::Settings),
 {
-    if let Some(settings) = SETTINGS.get() {
-        let mut new_settings = settings.clone();
-        update_fn(&mut new_settings);
-        if let Err(e) = crate::settings::save_settings(&new_settings) {
-            log::error!("{}: {}", error_msg, e);
-        } else {
-            log::info!("{}", success_msg);
+    match crate::settings::load_settings_from_disk() {
+        Ok(mut current_settings) => {
+            // Apply the caller's mutation on top of the latest on-disk state
+            update_fn(&mut current_settings);
+            if let Err(e) = crate::settings::save_settings(&current_settings) {
+                log::error!("{}: {}", error_msg, e);
+            } else {
+                log::info!("{}", success_msg);
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to load settings for update: {}", e);
         }
     }
 }
@@ -45,6 +49,31 @@ pub fn save_relay_to_settings(relay_string: &str) {
         },
         "Failed to save relay to settings",
         "Relay added to settings file",
+    );
+}
+
+/// Save currency to settings file
+pub fn save_currency_to_settings(currency_string: &str) {
+    save_settings_with(
+        |s| {
+            let currency_upper = currency_string.trim().to_uppercase();
+            if !s.currencies.contains(&currency_upper) {
+                s.currencies.push(currency_upper);
+            }
+        },
+        "Failed to save currency to settings",
+        "Currency filter added to settings file",
+    );
+}
+
+/// Clear all currency filters (sets currencies to empty vector)
+pub fn clear_currency_filters() {
+    save_settings_with(
+        |s| {
+            s.currencies.clear();
+        },
+        "Failed to clear currency filters",
+        "All currency filters cleared",
     );
 }
 

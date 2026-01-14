@@ -60,8 +60,8 @@ impl UserTab {
             0 => UserTab::Orders,
             1 => UserTab::MyTrades,
             2 => UserTab::Messages,
-            3 => UserTab::Settings,
-            4 => UserTab::CreateNewOrder,
+            3 => UserTab::CreateNewOrder,
+            4 => UserTab::Settings,
             _ => panic!("Invalid user tab index: {}", index),
         }
     }
@@ -71,8 +71,8 @@ impl UserTab {
             UserTab::Orders => 0,
             UserTab::MyTrades => 1,
             UserTab::Messages => 2,
-            UserTab::Settings => 3,
-            UserTab::CreateNewOrder => 4,
+            UserTab::CreateNewOrder => 3,
+            UserTab::Settings => 4,
         }
     }
 
@@ -85,7 +85,7 @@ impl UserTab {
     }
 
     pub fn last() -> Self {
-        UserTab::CreateNewOrder
+        UserTab::Settings
     }
 
     pub fn prev(self) -> Self {
@@ -93,8 +93,8 @@ impl UserTab {
             UserTab::Orders => UserTab::Orders,
             UserTab::MyTrades => UserTab::Orders,
             UserTab::Messages => UserTab::MyTrades,
-            UserTab::Settings => UserTab::Messages,
-            UserTab::CreateNewOrder => UserTab::Settings,
+            UserTab::CreateNewOrder => UserTab::Messages,
+            UserTab::Settings => UserTab::CreateNewOrder,
         }
     }
 
@@ -102,9 +102,9 @@ impl UserTab {
         match self {
             UserTab::Orders => UserTab::MyTrades,
             UserTab::MyTrades => UserTab::Messages,
-            UserTab::Messages => UserTab::Settings,
-            UserTab::Settings => UserTab::CreateNewOrder,
-            UserTab::CreateNewOrder => UserTab::CreateNewOrder,
+            UserTab::Messages => UserTab::CreateNewOrder,
+            UserTab::CreateNewOrder => UserTab::Settings,
+            UserTab::Settings => UserTab::Settings,
         }
     }
 }
@@ -272,8 +272,8 @@ impl Display for UserRole {
             f,
             "{}",
             match self {
-                UserRole::User => "User",
-                UserRole::Admin => "Admin",
+                UserRole::User => "user",
+                UserRole::Admin => "admin",
             }
         )
     }
@@ -283,9 +283,9 @@ impl FromStr for UserRole {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "User" => Ok(UserRole::User),
-            "Admin" => Ok(UserRole::Admin),
+        match s.to_ascii_lowercase() {
+            val if val == UserRole::User.to_string() => Ok(UserRole::User),
+            val if val == UserRole::Admin.to_string() => Ok(UserRole::Admin),
             _ => Err(anyhow::anyhow!("Invalid user role: {s}")),
         }
     }
@@ -322,6 +322,9 @@ pub enum UiMode {
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
     ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
+    AddCurrency(KeyInputState),
+    ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
+    ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
 
     // User-specific modes
     UserMode(UserMode),
@@ -544,15 +547,15 @@ pub fn ui_draw(
     app: &AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
-    status_line: Option<&str>,
+    status_line: Option<&[String]>,
 ) {
-    // Create layout: one row for tabs and the rest for content.
+    // Create layout: one row for tabs, content area, and status bar (3 lines for status)
     let chunks = Layout::new(
         Direction::Vertical,
         [
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(3), // Status bar with 3 lines
         ],
     )
     .split(f.area());
@@ -605,9 +608,9 @@ pub fn ui_draw(
     }
 
     // Bottom status bar
-    if let Some(line) = status_line {
+    if let Some(lines) = status_line {
         let pending_count = *app.pending_notifications.lock().unwrap();
-        status::render_status_bar(f, chunks[2], line, pending_count);
+        status::render_status_bar(f, chunks[2], lines, pending_count);
     }
 
     // Confirmation popup overlay (user mode only)
@@ -670,6 +673,34 @@ pub fn ui_draw(
             "📡 Confirm Relay",
             relay_string,
             *selected_button,
+        );
+    }
+    if let UiMode::AddCurrency(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "💱 Add Currency Filter",
+            "Enter currency code (e.g., USD, EUR):",
+            "USD",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmCurrency(currency_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "💱 Confirm Currency Filter",
+            currency_string,
+            *selected_button,
+            Some("Do you want to add this currency filter?"),
+        );
+    }
+    if let UiMode::ConfirmClearCurrencies(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "💱 Clear Currency Filters",
+            "",
+            *selected_button,
+            Some("Are you sure you want to clear all currencies filters?"),
         );
     }
 

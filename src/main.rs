@@ -275,13 +275,22 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        // Status bar text
-        let relays_str = settings.relays.join(" - ");
-        let status_line = format!(
-            "🧌 pubkey - {}   🔗 {}",
-            &settings.mostro_pubkey, relays_str
-        );
-        terminal.draw(|f| ui_draw(f, &app, &orders, &disputes, Some(&status_line)))?;
+        // Status bar text - 3 separate lines
+        // Reload settings from disk so newly added relays and currencies are reflected immediately.
+        let current_settings =
+            crate::settings::load_settings_from_disk().unwrap_or_else(|_| settings.clone());
+        let relays_str = current_settings.relays.join(" - ");
+        let currencies_str = if current_settings.currencies.is_empty() {
+            "All".to_string()
+        } else {
+            current_settings.currencies.join(", ")
+        };
+        let status_lines = vec![
+            format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
+            format!("🔗 Relays: {}", relays_str),
+            format!("💱 Currencies: {}", currencies_str),
+        ];
+        terminal.draw(|f| ui_draw(f, &app, &orders, &disputes, Some(&status_lines)))?;
     }
 
     // Restore terminal to its original state.
