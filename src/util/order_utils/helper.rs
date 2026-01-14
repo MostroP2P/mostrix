@@ -99,8 +99,11 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
 }
 
 /// Parse disputes from events
+///
+/// Uses a HashMap keyed by dispute id to keep only the latest dispute per id,
+/// mirroring the strategy used in `parse_orders_events` for orders.
 pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
-    let mut disputes_list = Vec::<Dispute>::new();
+    let mut latest_by_id: HashMap<Uuid, Dispute> = HashMap::new();
 
     // Scan events to extract all disputes
     for event in events.iter() {
@@ -111,25 +114,22 @@ pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
                 continue;
             }
         };
-        // Get created at field from Nostr event
+
+        // Get created_at field from Nostr event
         dispute.created_at = event.created_at.as_u64() as i64;
-        disputes_list.push(dispute);
+
+        latest_by_id
+            .entry(dispute.id)
+            .and_modify(|existing| {
+                if dispute.created_at > existing.created_at {
+                    *existing = dispute.clone();
+                }
+            })
+            .or_insert(dispute);
     }
 
-    let buffer_dispute_list = disputes_list.clone();
-    // Order all elements (disputes) received to filter - discard disaligned messages
-    // if a dispute has an older message with the state we received is discarded for the latest one
-    disputes_list.retain(|keep| {
-        !buffer_dispute_list
-            .iter()
-            .any(|x| x.id == keep.id && x.created_at > keep.created_at)
-    });
-
-    // Sort by id to remove duplicates
-    disputes_list.sort_by(|a, b| b.id.cmp(&a.id));
-    disputes_list.dedup_by(|a, b| a.id == b.id);
-
-    // Finally sort list by creation time (newest first)
+    // Collect latest disputes and sort by creation time (newest first)
+    let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().collect();
     disputes_list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     disputes_list
 }

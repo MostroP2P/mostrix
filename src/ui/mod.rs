@@ -283,9 +283,9 @@ impl FromStr for UserRole {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase() {
-            val if val == UserRole::User.to_string() => Ok(UserRole::User),
-            val if val == UserRole::Admin.to_string() => Ok(UserRole::Admin),
+        match s.to_ascii_lowercase().as_str() {
+            "user" => Ok(UserRole::User),
+            "admin" => Ok(UserRole::Admin),
             _ => Err(anyhow::anyhow!("Invalid user role: {s}")),
         }
     }
@@ -503,6 +503,7 @@ impl AppState {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
         self.mode = UiMode::Normal;
+        self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
     }
 }
