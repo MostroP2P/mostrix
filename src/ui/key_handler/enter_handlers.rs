@@ -19,7 +19,7 @@ use crate::ui::key_handler::settings::{
     save_relay_to_settings,
 };
 use crate::ui::key_handler::validation::{
-    validate_currency, validate_mostro_pubkey, validate_npub, validate_relay,
+    validate_currency, validate_mostro_pubkey, validate_npub, validate_nsec, validate_relay,
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -189,7 +189,7 @@ pub(crate) fn handle_enter_admin_mode(
             }
         }
         UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {
-            match validate_npub(&key_state.key_input) {
+            match validate_nsec(&key_state.key_input) {
                 Ok(_) => {
                     app.mode =
                         handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {

@@ -13,6 +13,19 @@ pub fn validate_npub(npub_str: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate if a string is a valid nsec (Nostr secret key)
+/// Returns Ok(()) if valid, Err with error message if invalid
+pub fn validate_nsec(nsec_str: &str) -> Result<(), String> {
+    let nsec = nsec_str.trim();
+    if nsec.is_empty() {
+        return Err("Secret key cannot be empty".to_string());
+    }
+
+    SecretKey::from_bech32(nsec).map_err(|_| "Invalid nsec key format".to_string())?;
+
+    Ok(())
+}
+
 /// Validate if a string is a valid hex-encoded Mostro pubkey
 /// Example: 627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae
 pub fn validate_mostro_pubkey(pubkey_str: &str) -> Result<(), String> {
