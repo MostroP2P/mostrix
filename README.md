@@ -10,7 +10,7 @@ Terminal client for p2p using Mostro protocol.
 
 ## Requirements:
 
-0. You need Rust version 1.70 or higher to compile.
+0. You need Rust version 1.90 or higher to compile.
 
 ## Install dependencies:
 
@@ -61,7 +61,8 @@ relays = [
 ]
 
 # Log verbosity level: "trace", "debug", "info", "warn", "error"
-log_level = "info" - not managed from tui at the moment
+# Not managed from tui at the moment
+log_level = "info" 
 
 # Fiat currencies you want to see / use (ISO codes)
 currencies = ["VES", "ARS", "USD"]
@@ -70,7 +71,8 @@ currencies = ["VES", "ARS", "USD"]
 user_mode = "user"
 
 # Proof-of-work difficulty for events (0 = disabled, higher = more work)
-pow = 0 - not managed from tui at the moment
+# Not managed from tui at the moment
+pow = 0
 ```
 
 #### Field explanations
@@ -99,7 +101,7 @@ pow = 0 - not managed from tui at the moment
 
 - **`currencies`**  
   - List of fiat currencies (by ISO code) you are interested in trading/seeing in the UI.  
-  - You can customize this to only show relevant markets, e.g. `["USD", "EUR"]`or leave it empty to clear all filters.
+  - You can customize this to only show relevant markets, e.g. `["USD", "EUR"]` or leave it empty to clear all filters.
 
 - **`user_mode`**  
   - `"user"` (default): normal user interface and actions.  

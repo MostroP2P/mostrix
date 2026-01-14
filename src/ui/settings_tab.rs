@@ -5,6 +5,12 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use super::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// Number of settings options for Admin role
+pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 6; // Change Mostro Pubkey, Add Nostr Relay, Add Currency Filter, Clear Currency Filters, Add Dispute Solver, Change Admin Key
+
+/// Number of settings options for User role
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = 4; // Change Mostro Pubkey, Add Nostr Relay, Add Currency Filter, Clear Currency Filters
+
 /// Render the Settings tab UI
 ///
 /// Displays settings options based on user role (User or Admin).

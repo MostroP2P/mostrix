@@ -270,6 +270,14 @@ pub fn handle_cancel_key(app: &mut AppState) {
         app.mode = handle_confirmation_esc(relay_string, |input| {
             UiMode::AddRelay(create_key_input_state(input))
         });
+    } else if let UiMode::ConfirmCurrency(currency_string, _) = &app.mode {
+        // Cancel currency confirmation, go back to AddCurrency input
+        app.mode = handle_confirmation_esc(currency_string, |input| {
+            UiMode::AddCurrency(create_key_input_state(input))
+        });
+    } else if let UiMode::ConfirmClearCurrencies(_) = &app.mode {
+        // Cancel clear-all confirmation, just return to default mode
+        app.mode = default_mode;
     } else if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) = &app.mode {
         app.mode = handle_confirmation_esc(solver_pubkey, |input| {
             UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(input)))

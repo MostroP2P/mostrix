@@ -223,12 +223,13 @@ fn handle_down_key(
                 app.active_tab,
                 Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
             ) {
-                let max_options = if app.user_role == UserRole::Admin {
-                    5
-                } else {
-                    3
+                // Derive max index from actual options count (max_index = count - 1)
+                let options_count = match app.user_role {
+                    UserRole::Admin => crate::ui::settings_tab::ADMIN_SETTINGS_OPTIONS_COUNT,
+                    UserRole::User => crate::ui::settings_tab::USER_SETTINGS_OPTIONS_COUNT,
                 };
-                if app.selected_settings_option < max_options {
+                let max_index = options_count.saturating_sub(1);
+                if app.selected_settings_option < max_index {
                     app.selected_settings_option += 1;
                 }
             }
