@@ -91,6 +91,7 @@ pub fn handle_key_event(
             match &mut app.mode {
                 UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+                | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
@@ -116,7 +117,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            handle_enter_key(app, orders, pool, client, mostro_pubkey, order_result_tx);
+            handle_enter_key(app, orders, disputes, pool, client, mostro_pubkey, order_result_tx);
             Some(true)
         }
         KeyCode::Esc => {

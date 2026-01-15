@@ -58,6 +58,29 @@ pub async fn init_db() -> Result<SqlitePool> {
                 last_trade_index INTEGER,
                 created_at INTEGER
             );
+            CREATE TABLE IF NOT EXISTS admin_disputes (
+                id TEXT PRIMARY KEY,
+                kind TEXT,
+                status TEXT,
+                hash TEXT,
+                preimage TEXT,
+                order_previous_status TEXT,
+                initiator_pubkey TEXT NOT NULL,
+                buyer_pubkey TEXT,
+                seller_pubkey TEXT,
+                initiator_full_privacy INTEGER NOT NULL,
+                counterpart_full_privacy INTEGER NOT NULL,
+                premium INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                fiat_amount INTEGER NOT NULL,
+                fee INTEGER NOT NULL,
+                routing_fee INTEGER NOT NULL,
+                buyer_invoice TEXT,
+                invoice_held_at INTEGER,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             "#,
         )
         .execute(&pool)

@@ -309,6 +309,8 @@ pub enum AdminMode {
     ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
+    WaitingTakeDispute(uuid::Uuid), // (dispute_id)
 }
 
 #[derive(Clone, Debug)]
@@ -634,6 +636,11 @@ pub fn ui_draw(
         waiting::render_waiting(f);
     }
 
+    // Waiting for take dispute popup overlay (admin mode only)
+    if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
+        waiting::render_waiting(f);
+    }
+
     // Order result popup overlay (shared)
     if let UiMode::OrderResult(result) = &app.mode {
         order_result::render_order_result(f, result);
@@ -728,6 +735,17 @@ pub fn ui_draw(
     }
 
     // Admin confirmation popups
+    if let UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) =
+        &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "👑 Take Dispute",
+            &dispute_id.to_string(),
+            *selected_button,
+            Some(&format!("Do you want to take the dispute with id: {}?", dispute_id)),
+        );
+    }
     if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) =
         &app.mode
     {

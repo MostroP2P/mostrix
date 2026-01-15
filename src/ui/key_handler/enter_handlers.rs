@@ -22,10 +22,51 @@ use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_npub, validate_nsec, validate_relay,
 };
 
+/// Helper function to execute taking a dispute.
+///
+/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Sets the UI mode to waiting and spawns an async task to take the dispute.
+pub(crate) fn execute_take_dispute_action(
+    app: &mut AppState,
+    dispute_id: uuid::Uuid,
+    client: &Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+) {
+    app.mode = UiMode::AdminMode(AdminMode::WaitingTakeDispute(dispute_id));
+
+    // Spawn async task to take dispute
+    let client_clone = client.clone();
+    let result_tx = order_result_tx.clone();
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        match crate::util::order_utils::execute_take_dispute(
+            &dispute_id,
+            &client_clone,
+            mostro_pubkey,
+            &pool_clone,
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = result_tx.send(crate::ui::OrderResult::Info(
+                    format!("✅ Dispute {} taken successfully!", dispute_id),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to take dispute: {}", e);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+            }
+        }
+    });
+}
+
 /// Handle Enter key - dispatches to mode-specific handlers
 pub fn handle_enter_key(
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
@@ -40,7 +81,7 @@ pub fn handle_enter_key(
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
-            handle_enter_normal_mode(app, orders);
+            handle_enter_normal_mode(app, orders, disputes, pool);
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             handle_enter_creating_order(app, &form);
@@ -322,10 +363,28 @@ fn handle_enter_settings_mode(
             // This should not happen, but handle gracefully
             app.mode = default_mode;
         }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
+            if selected_button {
+                // YES selected - take the dispute
+                execute_take_dispute_action(app, dispute_id, client, mostro_pubkey, pool, order_result_tx);
+            } else {
+                // NO selected - go back to normal mode
+                app.mode = default_mode;
+            }
+        }
+        UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
+            // No action while waiting
+            app.mode = default_mode;
+        }
     }
 }
 
-fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrder>>>) {
+fn handle_enter_normal_mode(
+    app: &mut AppState,
+    orders: &Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
+    pool: &SqlitePool,
+) {
     // Show take order popup when Enter is pressed in Orders tab (user mode only)
     if let Tab::User(UserTab::Orders) = app.active_tab {
         let orders_lock = orders.lock().unwrap();
@@ -339,6 +398,40 @@ fn handle_enter_normal_mode(app: &mut AppState, orders: &Arc<Mutex<Vec<SmallOrde
                 selected_button: true, // Default to YES
             };
             app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
+        }
+    } else if let Tab::Admin(AdminTab::Disputes) = app.active_tab {
+        // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
+        // First check if there's already an InProgress dispute
+        let pool_clone = pool.clone();
+        let has_in_progress = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                crate::models::AdminDispute::has_in_progress_dispute(&pool_clone),
+            )
+        });
+
+        match has_in_progress {
+            Ok(Some(existing_dispute_id)) => {
+                // There's already an InProgress dispute, show error
+                app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
+                    "⚠️  You already have a dispute in progress (ID: {}). Please resolve it before taking another dispute.",
+                    existing_dispute_id
+                )));
+            }
+            Ok(None) => {
+                // No InProgress dispute, proceed with confirmation
+                let disputes_lock = disputes.lock().unwrap();
+                if let Some(dispute) = disputes_lock.get(app.selected_dispute_idx) {
+                    app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true)); // Default to YES
+                }
+            }
+            Err(e) => {
+                // Database error, show error popup
+                log::error!("Failed to check for in-progress disputes: {}", e);
+                app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
+                    "Failed to check dispute status: {}",
+                    e
+                )));
+            }
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
         let messages_lock = app.messages.lock().unwrap();

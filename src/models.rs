@@ -254,3 +254,195 @@ impl Order {
         Ok(order)
     }
 }
+
+/// Admin dispute model for storing SolverDisputeInfo
+#[derive(Debug, Default, Clone, sqlx::FromRow)]
+pub struct AdminDispute {
+    pub id: String,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub hash: Option<String>,
+    pub preimage: Option<String>,
+    pub order_previous_status: Option<String>,
+    pub initiator_pubkey: String,
+    pub buyer_pubkey: Option<String>,
+    pub seller_pubkey: Option<String>,
+    pub initiator_full_privacy: bool,
+    pub counterpart_full_privacy: bool,
+    pub premium: i64,
+    pub payment_method: String,
+    pub amount: i64,
+    pub fiat_amount: i64,
+    pub fee: i64,
+    pub routing_fee: i64,
+    pub buyer_invoice: Option<String>,
+    pub invoice_held_at: Option<i64>,
+    pub taken_at: i64,
+    pub created_at: i64,
+}
+
+impl AdminDispute {
+    /// Create a new admin dispute from SolverDisputeInfo and save it to the database
+    pub async fn new(
+        pool: &SqlitePool,
+        dispute_info: mostro_core::dispute::SolverDisputeInfo,
+    ) -> Result<Self> {
+        let dispute = AdminDispute {
+            id: dispute_info.id.to_string(),
+            kind: Some(dispute_info.kind),
+            status: Some(dispute_info.status),
+            hash: dispute_info.hash,
+            preimage: dispute_info.preimage,
+            order_previous_status: Some(dispute_info.order_previous_status),
+            initiator_pubkey: dispute_info.initiator_pubkey,
+            buyer_pubkey: dispute_info.buyer_pubkey,
+            seller_pubkey: dispute_info.seller_pubkey,
+            initiator_full_privacy: dispute_info.initiator_full_privacy,
+            counterpart_full_privacy: dispute_info.counterpart_full_privacy,
+            premium: dispute_info.premium,
+            payment_method: dispute_info.payment_method,
+            amount: dispute_info.amount,
+            fiat_amount: dispute_info.fiat_amount,
+            fee: dispute_info.fee,
+            routing_fee: dispute_info.routing_fee,
+            buyer_invoice: dispute_info.buyer_invoice,
+            invoice_held_at: Some(dispute_info.invoice_held_at),
+            taken_at: dispute_info.taken_at,
+            created_at: dispute_info.created_at,
+        };
+
+        // Try insert; if id already exists, perform an update instead
+        let insert_result = dispute.insert_db(pool).await;
+
+        if let Err(e) = insert_result {
+            // If the error is due to unique constraint (id already present), update instead
+            let is_unique_violation = match e.as_database_error() {
+                Some(db_err) => {
+                    let code = db_err.code().map(|c| c.to_string()).unwrap_or_default();
+                    code == "1555" || code == "2067"
+                }
+                None => false,
+            };
+
+            if is_unique_violation {
+                dispute.update_db(pool).await?;
+            } else {
+                return Err(e.into());
+            }
+        }
+
+        Ok(dispute)
+    }
+
+    async fn insert_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO admin_disputes (
+                id, kind, status, hash, preimage, order_previous_status,
+                initiator_pubkey, buyer_pubkey, seller_pubkey,
+                initiator_full_privacy, counterpart_full_privacy,
+                premium, payment_method, amount, fiat_amount, fee, routing_fee,
+                buyer_invoice, invoice_held_at, taken_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&self.id)
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(&self.hash)
+        .bind(&self.preimage)
+        .bind(&self.order_previous_status)
+        .bind(&self.initiator_pubkey)
+        .bind(&self.buyer_pubkey)
+        .bind(&self.seller_pubkey)
+        .bind(self.initiator_full_privacy)
+        .bind(self.counterpart_full_privacy)
+        .bind(self.premium)
+        .bind(&self.payment_method)
+        .bind(self.amount)
+        .bind(self.fiat_amount)
+        .bind(self.fee)
+        .bind(self.routing_fee)
+        .bind(&self.buyer_invoice)
+        .bind(self.invoice_held_at)
+        .bind(self.taken_at)
+        .bind(self.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn update_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE admin_disputes 
+            SET kind = ?, status = ?, hash = ?, preimage = ?, order_previous_status = ?,
+                initiator_pubkey = ?, buyer_pubkey = ?, seller_pubkey = ?,
+                initiator_full_privacy = ?, counterpart_full_privacy = ?,
+                premium = ?, payment_method = ?, amount = ?, fiat_amount = ?,
+                fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
+                taken_at = ?, created_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(&self.hash)
+        .bind(&self.preimage)
+        .bind(&self.order_previous_status)
+        .bind(&self.initiator_pubkey)
+        .bind(&self.buyer_pubkey)
+        .bind(&self.seller_pubkey)
+        .bind(self.initiator_full_privacy)
+        .bind(self.counterpart_full_privacy)
+        .bind(self.premium)
+        .bind(&self.payment_method)
+        .bind(self.amount)
+        .bind(self.fiat_amount)
+        .bind(self.fee)
+        .bind(self.routing_fee)
+        .bind(&self.buyer_invoice)
+        .bind(self.invoice_held_at)
+        .bind(self.taken_at)
+        .bind(self.created_at)
+        .bind(&self.id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get all admin disputes from the database
+    pub async fn get_all(pool: &SqlitePool) -> Result<Vec<AdminDispute>> {
+        let disputes = sqlx::query_as::<_, AdminDispute>(
+            r#"SELECT * FROM admin_disputes ORDER BY taken_at DESC"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(disputes)
+    }
+
+    /// Get a dispute by ID
+    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<AdminDispute> {
+        let dispute = sqlx::query_as::<_, AdminDispute>(
+            r#"SELECT * FROM admin_disputes WHERE id = ? LIMIT 1"#,
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+        Ok(dispute)
+    }
+
+    /// Check if there is an active dispute in InProgress state
+    ///
+    /// Returns `Ok(Some(dispute_id))` if an InProgress dispute exists,
+    /// `Ok(None)` if no InProgress dispute exists, or an error if the query fails.
+    pub async fn has_in_progress_dispute(pool: &SqlitePool) -> Result<Option<String>> {
+        let result = sqlx::query_as::<_, (String,)>(
+            r#"SELECT id FROM admin_disputes WHERE status = 'InProgress' LIMIT 1"#,
+        )
+        .fetch_optional(pool)
+        .await?;
+        Ok(result.map(|(id,)| id))
+    }
+}
