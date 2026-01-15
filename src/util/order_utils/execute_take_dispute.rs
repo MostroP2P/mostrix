@@ -92,12 +92,40 @@ pub async fn execute_take_dispute(
         if inner_message.action == Action::AdminTookDispute {
             // Extract SolverDisputeInfo from payload
             if let Some(Payload::Dispute(_, Some(dispute_info))) = &inner_message.payload {
-                // Save dispute info to database
-                if let Err(e) = AdminDispute::new(pool, dispute_info.clone()).await {
+                // Verify the dispute ID matches
+                if dispute_info.id != *dispute_id {
+                    return Err(anyhow::anyhow!(
+                        "Dispute ID mismatch: expected {}, got {}",
+                        dispute_id,
+                        dispute_info.id
+                    ));
+                }
+
+                // Clone and override status to InProgress before saving - this admin is now resolving it
+                let mut dispute_info_clone = dispute_info.clone();
+                dispute_info_clone.status = "InProgress".to_string();
+
+                // Save dispute info to database with InProgress status
+                if let Err(e) = AdminDispute::new(pool, dispute_info_clone).await {
                     log::error!("Failed to save dispute to database: {}", e);
                     return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));
                 }
-                log::info!("✅ Dispute {} taken successfully and saved to database!", dispute_id);
+
+                // Also explicitly update status to ensure it's set (in case of update path)
+                // Use dispute_info.id to ensure we're updating the correct record
+                if let Err(e) =
+                    AdminDispute::set_status_in_progress(pool, &dispute_info.id.to_string()).await
+                {
+                    log::error!("Failed to update dispute status to InProgress: {}", e);
+                    return Err(anyhow::anyhow!(
+                        "Failed to update dispute status to InProgress: {}",
+                        e
+                    ));
+                }
+                log::info!(
+                    "✅ Dispute {} taken successfully and saved to database with InProgress status!",
+                    dispute_info.id
+                );
                 Ok(())
             } else {
                 Err(anyhow::anyhow!(

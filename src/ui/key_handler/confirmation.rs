@@ -4,6 +4,10 @@ use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ui::key_handler::enter_handlers::{
+    execute_add_solver_action, execute_take_order_action,
+};
+
 use crate::ui::key_handler::settings::{
     save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
     save_relay_to_settings,
@@ -111,60 +115,14 @@ pub fn handle_confirm_key(
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             // User confirmed taking the order (same as Enter key)
-            // Check validation first
-            if take_state.is_range_order {
-                if take_state.amount_input.is_empty() {
-                    // Can't proceed without amount
-                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                    return true;
-                }
-                if take_state.validation_error.is_some() {
-                    // Can't proceed with invalid amount
-                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                    return true;
-                }
-            }
-            // Proceed with taking the order
-            let take_state_clone = take_state.clone();
-            app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
-
-            // Parse amount if it's a range order
-            let amount = if take_state_clone.is_range_order {
-                take_state_clone.amount_input.trim().parse::<i64>().ok()
-            } else {
-                None
-            };
-
-            // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-            // TODO: Add invoice input for buy orders
-            let invoice = None;
-
-            // Spawn async task to take order
-            let pool_clone = pool.clone();
-            let client_clone = client.clone();
-            let result_tx = order_result_tx.clone();
-
-            tokio::spawn(async move {
-                match crate::util::take_order(
-                    &pool_clone,
-                    &client_clone,
-                    SETTINGS.get().unwrap(),
-                    mostro_pubkey,
-                    &take_state_clone.order,
-                    amount,
-                    invoice,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let _ = result_tx.send(result);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to take order: {}", e);
-                        let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                    }
-                }
-            });
+            execute_take_order_action(
+                app,
+                take_state,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
             true
         }
         UiMode::ConfirmMostroPubkey(key_string, _) => {
@@ -255,6 +213,23 @@ pub fn handle_confirm_key(
                 save_admin_key_to_settings,
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
             );
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
+            if selected_button {
+                // YES selected - add the solver (same as Enter key)
+                execute_add_solver_action(
+                    app,
+                    solver_pubkey,
+                    client,
+                    mostro_pubkey,
+                    order_result_tx,
+                );
+            } else {
+                // NO selected - go back to input
+                app.mode =
+                    UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(&solver_pubkey)));
+            }
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {

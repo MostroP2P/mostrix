@@ -26,7 +26,7 @@ pub fn render_disputes_tab(
         ))
         .block(
             Block::default()
-                .title("Disputes")
+                .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
@@ -77,7 +77,7 @@ pub fn render_disputes_tab(
         .header(header)
         .block(
             Block::default()
-                .title("Disputes")
+                .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );

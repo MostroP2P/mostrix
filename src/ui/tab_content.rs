@@ -104,6 +104,183 @@ pub fn render_messages_tab(
     );
 }
 
+pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &super::AppState) {
+    let chunks = Layout::new(
+        Direction::Horizontal,
+        [Constraint::Percentage(30), Constraint::Percentage(70)],
+    )
+    .split(area);
+
+    let sidebar_area = chunks[0];
+    let main_area = chunks[1];
+
+    // 1. Sidebar - Dispute List
+    let disputes_block = Block::default()
+        .title("Disputes in Progress")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+
+    if app.admin_disputes_in_progress.is_empty() {
+        let empty_msg = Paragraph::new("No disputes in progress")
+            .block(disputes_block)
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(empty_msg, sidebar_area);
+    } else {
+        let items: Vec<ListItem> = app
+            .admin_disputes_in_progress
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let style = if i == app.selected_in_progress_idx {
+                    Style::default().bg(PRIMARY_COLOR).fg(Color::Black)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(vec![Span::styled(
+                    format!("ID: {}...", &d.id[..8]),
+                    style,
+                )]))
+            })
+            .collect();
+
+        let list = List::new(items).block(disputes_block);
+        f.render_widget(list, sidebar_area);
+    }
+
+    // 2. Main Area
+    if let Some(selected_dispute) = app
+        .admin_disputes_in_progress
+        .get(app.selected_in_progress_idx)
+    {
+        let main_chunks = Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Length(3), // Header
+                Constraint::Length(3), // Party Tabs
+                Constraint::Min(0),    // Chat
+                Constraint::Length(3), // Input
+                Constraint::Length(1), // Footer
+            ],
+        )
+        .split(main_area);
+
+        // Header
+        let header_text = format!(
+            "Dispute ID: {} | Type: {:?} | Status: {:?}",
+            selected_dispute.id, selected_dispute.kind, selected_dispute.status
+        );
+        let header = Paragraph::new(header_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(PRIMARY_COLOR)),
+        );
+        f.render_widget(header, main_chunks[0]);
+
+        // Party Tabs
+        let buyer_style = if app.active_chat_party == super::ChatParty::Buyer {
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        let seller_style = if app.active_chat_party == super::ChatParty::Seller {
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Red)
+        };
+
+        let party_tabs_area = main_chunks[1];
+        let party_chunks = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .split(party_tabs_area);
+
+        f.render_widget(
+            Paragraph::new("BUYER")
+                .block(Block::default().borders(Borders::ALL).style(buyer_style))
+                .alignment(ratatui::layout::Alignment::Center),
+            party_chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new("SELLER")
+                .block(Block::default().borders(Borders::ALL).style(seller_style))
+                .alignment(ratatui::layout::Alignment::Center),
+            party_chunks[1],
+        );
+
+        // Chat History (Filtered)
+        let messages_lock = app.messages.lock().unwrap();
+        // For admin disputes, we need to filter messages that belong to this dispute ID
+        // AND are either from/to the active chat party.
+        // NOTE: Admin messages usually have the order_id set.
+        let chat_party_pubkey = match app.active_chat_party {
+            super::ChatParty::Buyer => selected_dispute.buyer_pubkey.as_ref(),
+            super::ChatParty::Seller => selected_dispute.seller_pubkey.as_ref(),
+        };
+
+        let filtered_messages: Vec<ListItem> = messages_lock
+            .iter()
+            .filter(|m| {
+                let is_same_order =
+                    m.order_id.map(|id| id.to_string()) == Some(selected_dispute.id.clone());
+                let _is_correct_party = if let Some(party_pk) = chat_party_pubkey {
+                    m.sender.to_string() == *party_pk
+                        || m.message.get_inner_message_kind().action == Action::AdminTookDispute
+                // Placeholder check
+                } else {
+                    false
+                };
+                is_same_order // For now, just show all messages for this order ID
+            })
+            .map(|m| {
+                let sender_label = if m.sender.to_string() == selected_dispute.initiator_pubkey {
+                    "Initiator"
+                } else {
+                    "Other"
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("[{}] ", sender_label),
+                        Style::default().fg(PRIMARY_COLOR),
+                    ),
+                    Span::raw(format!("{:?}", m.message.get_inner_message_kind().action)),
+                ]))
+            })
+            .collect();
+
+        let chat_list = List::new(filtered_messages).block(
+            Block::default()
+                .title(format!("Chat with {}", app.active_chat_party))
+                .borders(Borders::ALL),
+        );
+        f.render_widget(chat_list, main_chunks[2]);
+
+        // Input Area
+        let input = Paragraph::new(app.admin_chat_input.as_str()).block(
+            Block::default()
+                .title("Message")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(input, main_chunks[3]);
+
+        // Footer
+        let footer = Paragraph::new("Tab: Switch Party | Enter: Send | S: Settle (Full Buyer) | X: Settle (Full Seller) | C: Cancel Order");
+        f.render_widget(footer, main_chunks[4]);
+    } else {
+        let no_selection = Paragraph::new("Select a dispute from the sidebar")
+            .block(Block::default().borders(Borders::ALL))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(no_selection, main_area);
+    }
+}
+
 pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);

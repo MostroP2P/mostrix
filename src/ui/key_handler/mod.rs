@@ -117,7 +117,15 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            handle_enter_key(app, orders, disputes, pool, client, mostro_pubkey, order_result_tx);
+            handle_enter_key(
+                app,
+                orders,
+                disputes,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
             Some(true)
         }
         KeyCode::Esc => {
@@ -186,6 +194,16 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
+            // Handle chat input for admin in Disputes in Progress tab
+            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                if code == KeyCode::Backspace {
+                    app.admin_chat_input.pop();
+                } else if let KeyCode::Char(c) = code {
+                    app.admin_chat_input.push(c);
+                }
+                return Some(true);
+            }
+
             handle_char_input(code, app, validate_range_amount);
             if code == KeyCode::Backspace {
                 handle_backspace(app, validate_range_amount);

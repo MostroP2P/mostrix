@@ -50,9 +50,10 @@ pub(crate) fn execute_take_dispute_action(
         .await
         {
             Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(
-                    format!("✅ Dispute {} taken successfully!", dispute_id),
-                ));
+                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
+                    "✅ Dispute {} taken successfully!",
+                    dispute_id
+                )));
             }
             Err(e) => {
                 log::error!("Failed to take dispute: {}", e);
@@ -60,6 +61,113 @@ pub(crate) fn execute_take_dispute_action(
             }
         }
     });
+}
+
+/// Helper function to execute adding a solver.
+///
+/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Sets the UI mode to normal and spawns an async task to add the solver.
+pub(crate) fn execute_add_solver_action(
+    app: &mut AppState,
+    solver_pubkey: String,
+    client: &Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+) {
+    // Stay on Settings tab after confirmation
+    app.mode = UiMode::AdminMode(AdminMode::Normal);
+
+    let solver_pubkey_clone = solver_pubkey.clone();
+    let client_clone = client.clone();
+    let result_tx = order_result_tx.clone();
+    let mostro_pubkey_clone = mostro_pubkey;
+
+    tokio::spawn(async move {
+        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey_clone)
+            .await
+        {
+            Ok(_) => {
+                let _ = result_tx.send(crate::ui::OrderResult::Info(
+                    "Solver added successfully".to_string(),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to add solver: {}", e);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+/// Helper function to execute taking an order.
+///
+/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Validates the take_state, sets the UI mode to waiting, and spawns an async task to take the order.
+pub(crate) fn execute_take_order_action(
+    app: &mut AppState,
+    take_state: TakeOrderState,
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+) -> bool {
+    // Validate range order if needed
+    if take_state.is_range_order {
+        if take_state.amount_input.is_empty() {
+            // Can't proceed without amount
+            app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
+            return false;
+        }
+        if take_state.validation_error.is_some() {
+            // Can't proceed with invalid amount
+            app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
+            return false;
+        }
+    }
+
+    // Proceed with taking the order
+    let take_state_clone = take_state.clone();
+    app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
+
+    // Parse amount if it's a range order
+    let amount = if take_state_clone.is_range_order {
+        take_state_clone.amount_input.trim().parse::<i64>().ok()
+    } else {
+        None
+    };
+
+    // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
+    // TODO: Add invoice input for buy orders
+    let invoice = None;
+
+    // Spawn async task to take order
+    let pool_clone = pool.clone();
+    let client_clone = client.clone();
+    let result_tx = order_result_tx.clone();
+
+    tokio::spawn(async move {
+        match crate::util::take_order(
+            &pool_clone,
+            &client_clone,
+            SETTINGS.get().unwrap(),
+            mostro_pubkey,
+            &take_state_clone.order,
+            amount,
+            invoice,
+        )
+        .await
+        {
+            Ok(result) => {
+                let _ = result_tx.send(result);
+            }
+            Err(e) => {
+                log::error!("Failed to take order: {}", e);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+            }
+        }
+    });
+
+    true
 }
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -81,7 +189,7 @@ pub fn handle_enter_key(
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
-            handle_enter_normal_mode(app, orders, disputes, pool);
+            handle_enter_normal_mode(app, orders, disputes);
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             handle_enter_creating_order(app, &form);
@@ -196,33 +304,13 @@ pub(crate) fn handle_enter_admin_mode(
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
             if selected_button {
                 // YES selected - send AddSolver message
-                let solver_pubkey_clone = solver_pubkey.clone();
-                let client_clone = client.clone();
-                let result_tx = order_result_tx.clone();
-                let mostro_pubkey_clone = mostro_pubkey;
-
-                // Stay on Settings tab after confirmation
-                app.mode = UiMode::AdminMode(AdminMode::Normal);
-
-                tokio::spawn(async move {
-                    match execute_admin_add_solver(
-                        &solver_pubkey_clone,
-                        &client_clone,
-                        mostro_pubkey_clone,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            let _ = result_tx.send(crate::ui::OrderResult::Info(
-                                "Solver added successfully".to_string(),
-                            ));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to add solver: {}", e);
-                            let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                        }
-                    }
-                });
+                execute_add_solver_action(
+                    app,
+                    solver_pubkey,
+                    client,
+                    mostro_pubkey,
+                    order_result_tx,
+                );
             } else {
                 // NO selected - go back to input
                 app.mode =
@@ -366,7 +454,14 @@ fn handle_enter_settings_mode(
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
             if selected_button {
                 // YES selected - take the dispute
-                execute_take_dispute_action(app, dispute_id, client, mostro_pubkey, pool, order_result_tx);
+                execute_take_dispute_action(
+                    app,
+                    dispute_id,
+                    client,
+                    mostro_pubkey,
+                    pool,
+                    order_result_tx,
+                );
             } else {
                 // NO selected - go back to normal mode
                 app.mode = default_mode;
@@ -376,6 +471,17 @@ fn handle_enter_settings_mode(
             // No action while waiting
             app.mode = default_mode;
         }
+        UiMode::AdminMode(AdminMode::ManagingDispute) => {
+            // Handle Enter in Disputes in Progress tab - send message if input is not empty
+            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                if !app.admin_chat_input.trim().is_empty() {
+                    // TODO: Send message to active chat party
+                    // This will be implemented when we add the DM sending logic
+                    // For now, just clear the input
+                    app.admin_chat_input.clear();
+                }
+            }
+        }
     }
 }
 
@@ -383,7 +489,6 @@ fn handle_enter_normal_mode(
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
-    pool: &SqlitePool,
 ) {
     // Show take order popup when Enter is pressed in Orders tab (user mode only)
     if let Tab::User(UserTab::Orders) = app.active_tab {
@@ -399,39 +504,12 @@ fn handle_enter_normal_mode(
             };
             app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
         }
-    } else if let Tab::Admin(AdminTab::Disputes) = app.active_tab {
+    } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
-        // First check if there's already an InProgress dispute
-        let pool_clone = pool.clone();
-        let has_in_progress = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(
-                crate::models::AdminDispute::has_in_progress_dispute(&pool_clone),
-            )
-        });
-
-        match has_in_progress {
-            Ok(Some(existing_dispute_id)) => {
-                // There's already an InProgress dispute, show error
-                app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
-                    "⚠️  You already have a dispute in progress (ID: {}). Please resolve it before taking another dispute.",
-                    existing_dispute_id
-                )));
-            }
-            Ok(None) => {
-                // No InProgress dispute, proceed with confirmation
-                let disputes_lock = disputes.lock().unwrap();
-                if let Some(dispute) = disputes_lock.get(app.selected_dispute_idx) {
-                    app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true)); // Default to YES
-                }
-            }
-            Err(e) => {
-                // Database error, show error popup
-                log::error!("Failed to check for in-progress disputes: {}", e);
-                app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
-                    "Failed to check dispute status: {}",
-                    e
-                )));
-            }
+        let disputes_lock = disputes.lock().unwrap();
+        if let Some(dispute) = disputes_lock.get(app.selected_dispute_idx) {
+            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
+            // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
         let messages_lock = app.messages.lock().unwrap();
@@ -518,60 +596,15 @@ fn handle_enter_taking_order(
 ) {
     // Enter confirms the selected button
     if take_state.selected_button {
-        // YES selected - check validation and proceed
-        if take_state.is_range_order {
-            if take_state.amount_input.is_empty() {
-                // Can't proceed without amount
-                app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                return;
-            }
-            if take_state.validation_error.is_some() {
-                // Can't proceed with invalid amount
-                app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                return;
-            }
-        }
-        // Proceed with taking the order
-        let take_state_clone = take_state.clone();
-        app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
-
-        // Parse amount if it's a range order
-        let amount = if take_state_clone.is_range_order {
-            take_state_clone.amount_input.trim().parse::<i64>().ok()
-        } else {
-            None
-        };
-
-        // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-        // TODO: Add invoice input for buy orders
-        let invoice = None;
-
-        // Spawn async task to take order
-        let pool_clone = pool.clone();
-        let client_clone = client.clone();
-        let result_tx = order_result_tx.clone();
-
-        tokio::spawn(async move {
-            match crate::util::take_order(
-                &pool_clone,
-                &client_clone,
-                SETTINGS.get().unwrap(),
-                mostro_pubkey,
-                &take_state_clone.order,
-                amount,
-                invoice,
-            )
-            .await
-            {
-                Ok(result) => {
-                    let _ = result_tx.send(result);
-                }
-                Err(e) => {
-                    log::error!("Failed to take order: {}", e);
-                    let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                }
-            }
-        });
+        // YES selected - execute take order action
+        execute_take_order_action(
+            app,
+            take_state,
+            pool,
+            client,
+            mostro_pubkey,
+            order_result_tx,
+        );
     } else {
         // NO selected - cancel and return to the appropriate normal mode
         let default_mode = match app.user_role {

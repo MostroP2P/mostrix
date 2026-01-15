@@ -137,6 +137,26 @@ async fn main() -> Result<(), anyhow::Error> {
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
+    // Load admin disputes in progress from database if admin mode
+    if app.user_role == UserRole::Admin {
+        match crate::models::AdminDispute::get_all(&pool).await {
+            Ok(all_disputes) => {
+                app.admin_disputes_in_progress = all_disputes
+                    .into_iter()
+                    .filter(|d| {
+                        d.status
+                            .as_ref()
+                            .map(|s| s == "InProgress")
+                            .unwrap_or(false)
+                    })
+                    .collect();
+            }
+            Err(e) => {
+                log::warn!("Failed to load admin disputes: {}", e);
+            }
+        }
+    }
+
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
@@ -168,7 +188,35 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
+                    // Check if this is a dispute taken result before handling
+                    let is_dispute_taken = matches!(&result, crate::ui::OrderResult::Info(msg)
+                        if msg.contains("Dispute") && msg.contains("taken successfully"));
+
                     handle_order_result(result, &mut app);
+
+                    // If this is an Info result about taking a dispute, refresh the disputes list
+                    if is_dispute_taken && app.user_role == UserRole::Admin {
+                        match crate::models::AdminDispute::get_all(&pool).await {
+                            Ok(all_disputes) => {
+                                app.admin_disputes_in_progress = all_disputes
+                                    .into_iter()
+                                    .filter(|d| {
+                                        d.status
+                                            .as_ref()
+                                            .map(|s| s == "InProgress")
+                                            .unwrap_or(false)
+                                    })
+                                    .collect();
+                                log::info!(
+                                    "Refreshed admin disputes list: {} in progress",
+                                    app.admin_disputes_in_progress.len()
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to refresh admin disputes: {}", e);
+                            }
+                        }
+                    }
                 }
             }
             notification = message_notification_rx.recv() => {
