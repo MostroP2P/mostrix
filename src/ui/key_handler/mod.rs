@@ -7,10 +7,10 @@ mod navigation;
 mod settings;
 mod validation;
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab};
+use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab, OrderResult};
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::*;
-use nostr_sdk::Client;
+use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
@@ -34,7 +34,7 @@ pub fn handle_key_event(
     disputes: &Arc<Mutex<Vec<Dispute>>>,
     pool: &SqlitePool,
     client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
+    mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
 ) -> Option<bool> {
@@ -42,12 +42,7 @@ pub fn handle_key_event(
     let code = key_event.code;
 
     // Handle invoice input first (before other key handling)
-    if let UiMode::NewMessageNotification(
-        _,
-        mostro_core::prelude::Action::AddInvoice,
-        ref mut invoice_state,
-    ) = app.mode
-    {
+    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
         if invoice_state.focused && handle_invoice_input(code, invoice_state) {
             return Some(true); // Skip further processing
         }

@@ -271,6 +271,37 @@ pub fn handle_enter_key(
         | UiMode::ConfirmClearCurrencies(_) => {
             handle_enter_settings_mode(app, current_mode, default_mode, client);
         }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
+            if selected_button {
+                // YES selected - take the dispute
+                execute_take_dispute_action(
+                    app,
+                    dispute_id,
+                    client,
+                    mostro_pubkey,
+                    pool,
+                    order_result_tx,
+                );
+            } else {
+                // NO selected - go back to normal mode
+                app.mode = default_mode;
+            }
+        }
+        UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
+            // No action while waiting
+            app.mode = default_mode;
+        }
+        UiMode::AdminMode(AdminMode::ManagingDispute) => {
+            // Handle Enter in Disputes in Progress tab - send message if input is not empty
+            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                if !app.admin_chat_input.trim().is_empty() {
+                    // TODO: Send message to active chat party
+                    // This will be implemented when we add the DM sending logic
+                    // For now, just clear the input
+                    app.admin_chat_input.clear();
+                }
+            }
+        }
     }
 }
 
@@ -347,7 +378,6 @@ pub(crate) fn handle_enter_admin_mode(
     }
 }
 
-/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
 /// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
 fn handle_enter_settings_mode(
     app: &mut AppState,
@@ -450,37 +480,6 @@ fn handle_enter_settings_mode(
         _ => {
             // This should not happen, but handle gracefully
             app.mode = default_mode;
-        }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
-            if selected_button {
-                // YES selected - take the dispute
-                execute_take_dispute_action(
-                    app,
-                    dispute_id,
-                    client,
-                    mostro_pubkey,
-                    pool,
-                    order_result_tx,
-                );
-            } else {
-                // NO selected - go back to normal mode
-                app.mode = default_mode;
-            }
-        }
-        UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
-            // No action while waiting
-            app.mode = default_mode;
-        }
-        UiMode::AdminMode(AdminMode::ManagingDispute) => {
-            // Handle Enter in Disputes in Progress tab - send message if input is not empty
-            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if !app.admin_chat_input.trim().is_empty() {
-                    // TODO: Send message to active chat party
-                    // This will be implemented when we add the DM sending logic
-                    // For now, just clear the input
-                    app.admin_chat_input.clear();
-                }
-            }
         }
     }
 }

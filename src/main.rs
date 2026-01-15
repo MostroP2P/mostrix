@@ -9,6 +9,7 @@ use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{start_fetch_scheduler, FetchSchedulerResult},
 };
+use crate::ui::key_handler::handle_key_event;
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
 
@@ -282,7 +283,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
-                    match crate::ui::key_handler::handle_key_event(
+                    match handle_key_event(
                         key_event,
                         &mut app,
                         &orders,

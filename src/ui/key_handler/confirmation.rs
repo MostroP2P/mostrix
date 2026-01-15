@@ -4,9 +4,7 @@ use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::ui::key_handler::enter_handlers::{
-    execute_add_solver_action, execute_take_order_action,
-};
+use crate::ui::key_handler::enter_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
     save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
@@ -213,23 +211,6 @@ pub fn handle_confirm_key(
                 save_admin_key_to_settings,
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
             );
-            true
-        }
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
-            if selected_button {
-                // YES selected - add the solver (same as Enter key)
-                execute_add_solver_action(
-                    app,
-                    solver_pubkey,
-                    client,
-                    mostro_pubkey,
-                    order_result_tx,
-                );
-            } else {
-                // NO selected - go back to input
-                app.mode =
-                    UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(&solver_pubkey)));
-            }
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
