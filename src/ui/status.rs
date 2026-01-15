@@ -1,16 +1,19 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_status_bar(
     f: &mut ratatui::Frame,
     area: Rect,
-    line: &str,
+    lines: &[String],
     pending_notifications: usize,
 ) {
+    // Clear the area first to avoid leftover text
+    f.render_widget(Clear, area);
+
     // Create blinking indicator for pending notifications
     // Blink every 500ms (on/off every 500ms)
     let now = std::time::SystemTime::now()
@@ -19,29 +22,36 @@ pub fn render_status_bar(
         .as_millis();
     let blink_on = (now / 500).is_multiple_of(2);
 
-    let mut spans = vec![Span::styled(
-        line.to_string(),
-        Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR),
-    )];
+    // Split area into lines
+    let constraints: Vec<Constraint> = (0..lines.len()).map(|_| Constraint::Length(1)).collect();
+    let chunks = Layout::new(Direction::Vertical, constraints).split(area);
 
-    // Add blinking notification indicator if there are pending notifications
-    if pending_notifications > 0 {
-        let indicator_text = format!(" 🔔 {} new notification(s)", pending_notifications);
-        let indicator_style = if blink_on {
-            Style::default()
-                .bg(BACKGROUND_COLOR)
-                .fg(Color::Yellow)
-                .add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)
-        };
-        spans.push(Span::styled(indicator_text, indicator_style));
+    // Render each line
+    for (idx, line) in lines.iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            line.to_string(),
+            Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR),
+        )];
+
+        // Add blinking notification indicator on the last line if there are pending notifications
+        if idx == lines.len() - 1 && pending_notifications > 0 {
+            let indicator_text = format!(" 🔔 {} new notification(s)", pending_notifications);
+            let indicator_style = if blink_on {
+                Style::default()
+                    .bg(BACKGROUND_COLOR)
+                    .fg(Color::Yellow)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)
+            };
+            spans.push(Span::styled(indicator_text, indicator_style));
+        }
+
+        let bar = Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::NONE)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+        );
+        f.render_widget(bar, chunks[idx]);
     }
-
-    let bar = Paragraph::new(Line::from(spans)).block(
-        Block::default()
-            .borders(Borders::NONE)
-            .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
-    );
-    f.render_widget(bar, area);
 }

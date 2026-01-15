@@ -11,7 +11,7 @@ use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
 
 /// Parse order from nostr tags
-pub(super) fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
+pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     let mut order = SmallOrder::default();
 
     for tag in tags {
@@ -65,10 +65,79 @@ pub(super) fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     Ok(order)
 }
 
+/// Parse dispute from nostr tags
+pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
+    let mut dispute = Dispute::default();
+    for tag in tags {
+        let t = tag.to_vec();
+
+        // Check if tag has at least 2 elements
+        if t.len() < 2 {
+            continue;
+        }
+
+        let key = t.first().map(|s| s.as_str()).unwrap_or("");
+        let value = t.get(1).map(|s| s.as_str()).unwrap_or("");
+
+        match key {
+            "d" => {
+                let id = value
+                    .parse::<Uuid>()
+                    .map_err(|_| anyhow::anyhow!("Invalid dispute id"))?;
+                dispute.id = id;
+            }
+            "s" => {
+                let status = DisputeStatus::from_str(value)
+                    .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
+                dispute.status = status.to_string();
+            }
+            _ => {}
+        }
+    }
+
+    Ok(dispute)
+}
+
+/// Parse disputes from events
+///
+/// Uses a HashMap keyed by dispute id to keep only the latest dispute per id,
+/// mirroring the strategy used in `parse_orders_events` for orders.
+pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
+    let mut latest_by_id: HashMap<Uuid, Dispute> = HashMap::new();
+
+    // Scan events to extract all disputes
+    for event in events.iter() {
+        let mut dispute = match dispute_from_tags(event.tags.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("Failed to parse dispute from tags: {:?}", e);
+                continue;
+            }
+        };
+
+        // Get created_at field from Nostr event
+        dispute.created_at = event.created_at.as_u64() as i64;
+
+        latest_by_id
+            .entry(dispute.id)
+            .and_modify(|existing| {
+                if dispute.created_at > existing.created_at {
+                    *existing = dispute.clone();
+                }
+            })
+            .or_insert(dispute);
+    }
+
+    // Collect latest disputes and sort by creation time (newest first)
+    let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().collect();
+    disputes_list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    disputes_list
+}
+
 /// Parse orders from events
 pub fn parse_orders_events(
     events: Events,
-    currency: Option<String>,
+    currencies: Option<Vec<String>>,
     status: Option<Status>,
     kind: Option<mostro_core::order::Kind>,
 ) -> Vec<SmallOrder> {
@@ -114,7 +183,14 @@ pub fn parse_orders_events(
     let mut requested: Vec<SmallOrder> = latest_by_id
         .into_values()
         .filter(|o| status.map(|s| o.status == Some(s)).unwrap_or(true))
-        .filter(|o| currency.as_ref().map(|c| o.fiat_code == *c).unwrap_or(true))
+        .filter(|o| {
+            // If currencies filter is provided and not empty, filter by any currency in the list
+            // If currencies is None or empty, show all orders (no filter)
+            currencies
+                .as_ref()
+                .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
+                .unwrap_or(true)
+        })
         .filter(|o| {
             kind.as_ref()
                 .map(|k| o.kind.as_ref() == Some(k))
@@ -130,7 +206,7 @@ pub fn parse_orders_events(
 pub async fn fetch_events_list(
     list_kind: ListKind,
     status: Option<Status>,
-    currency: Option<String>,
+    currencies: Option<Vec<String>>,
     kind: Option<mostro_core::order::Kind>,
     client: &Client,
     mostro_pubkey: PublicKey,
@@ -140,24 +216,31 @@ pub async fn fetch_events_list(
         ListKind::Orders => {
             let filters = create_filter(list_kind, mostro_pubkey, None)?;
             let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
-            let orders = parse_orders_events(fetched_events, currency, status, kind);
+            let orders = parse_orders_events(fetched_events, currencies, status, kind);
             Ok(orders.into_iter().map(Event::SmallOrder).collect())
+        }
+        ListKind::Disputes => {
+            let filters = create_filter(list_kind, mostro_pubkey, None)?;
+            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
+            let disputes = parse_disputes_events(fetched_events);
+            Ok(disputes.into_iter().map(Event::Dispute).collect())
         }
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
     }
 }
 
 /// Fetch orders from the Mostro network
-/// Returns a vector of SmallOrder items filtered by the specified status
+/// Returns a vector of SmallOrder items filtered by the specified status and currencies
 pub async fn get_orders(
     client: &Client,
     mostro_pubkey: PublicKey,
     status: Option<Status>,
+    currencies: Option<Vec<String>>,
 ) -> Result<Vec<SmallOrder>> {
     let fetched_events = fetch_events_list(
         ListKind::Orders,
         status,
-        None,
+        currencies,
         None,
         client,
         mostro_pubkey,
@@ -177,6 +260,34 @@ pub async fn get_orders(
         .collect();
 
     Ok(orders)
+}
+
+/// Fetch disputes from the Mostro network
+/// Returns a vector of Dispute items
+pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<Vec<Dispute>> {
+    let fetched_events = fetch_events_list(
+        ListKind::Disputes,
+        None,
+        None,
+        None,
+        client,
+        mostro_pubkey,
+        None,
+    )
+    .await?;
+
+    let disputes: Vec<Dispute> = fetched_events
+        .into_iter()
+        .filter_map(|event| {
+            if let Event::Dispute(dispute) = event {
+                Some(dispute)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(disputes)
 }
 
 /// Helper function to create OrderResult::Success from an order
