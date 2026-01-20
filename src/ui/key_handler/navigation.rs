@@ -172,6 +172,14 @@ fn handle_up_key(
                 }
             }
         }
+        UiMode::AdminMode(AdminMode::ManagingDispute) => {
+            // Navigate within disputes in progress list
+            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                if !app.admin_disputes_in_progress.is_empty() && app.selected_in_progress_idx > 0 {
+                    app.selected_in_progress_idx -= 1;
+                }
+            }
+        }
         UiMode::UserMode(UserMode::ConfirmingOrder(_))
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -186,7 +194,8 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
-        | UiMode::AdminMode(AdminMode::ManagingDispute)
+        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
+        | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
@@ -259,6 +268,17 @@ fn handle_down_key(
                 }
             }
         }
+        UiMode::AdminMode(AdminMode::ManagingDispute) => {
+            // Navigate within disputes in progress list
+            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                if !app.admin_disputes_in_progress.is_empty()
+                    && app.selected_in_progress_idx
+                        < app.admin_disputes_in_progress.len().saturating_sub(1)
+                {
+                    app.selected_in_progress_idx += 1;
+                }
+            }
+        }
         UiMode::UserMode(UserMode::ConfirmingOrder(_))
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -273,7 +293,8 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
-        | UiMode::AdminMode(AdminMode::ManagingDispute)
+        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
+        | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)

@@ -96,6 +96,15 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _)) => {
+            // Cancel finalization, return to managing disputes
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
+            // Can't cancel while waiting
+            true
+        }
         _ => false, // Break the loop
     }
 }

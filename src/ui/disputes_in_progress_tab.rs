@@ -390,7 +390,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &App
         f.render_widget(input, main_chunks[3]);
 
         // Footer
-        let footer = Paragraph::new("Tab: Switch Party | Enter: Send | S: Settle (Full Buyer) | X: Settle (Full Seller) | C: Cancel Order");
+        let footer =
+            Paragraph::new("Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute");
         f.render_widget(footer, main_chunks[4]);
     } else {
         let no_selection = Paragraph::new("Select a dispute from the sidebar")

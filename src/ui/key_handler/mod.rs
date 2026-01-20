@@ -98,6 +98,26 @@ pub fn handle_key_event(
                     view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
+                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                    _dispute_id,
+                    ref mut selected_button,
+                )) => {
+                    // Cycle through 3 buttons: 0=Pay Buyer, 1=Refund Seller, 2=Exit
+                    if code == KeyCode::Left {
+                        *selected_button = if *selected_button == 0 {
+                            2
+                        } else {
+                            *selected_button - 1
+                        };
+                    } else {
+                        *selected_button = if *selected_button == 2 {
+                            0
+                        } else {
+                            *selected_button + 1
+                        };
+                    }
+                    return Some(true);
+                }
                 _ => {}
             }
             handle_navigation(code, app, orders, disputes);

@@ -13,6 +13,7 @@ pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
 pub mod admin_key_confirm;
+pub mod dispute_finalization_popup;
 pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
 pub mod helpers;
@@ -313,6 +314,8 @@ pub enum AdminMode {
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
     ManagingDispute,               // Mode for "Disputes in Progress" tab
+    ReviewingDisputeForFinalization(uuid::Uuid, usize), // (dispute_id, selected_button: 0=Pay Buyer, 1=Refund Seller, 2=Exit)
+    WaitingDisputeFinalization(uuid::Uuid),             // (dispute_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -795,6 +798,20 @@ pub fn ui_draw(
             key_string,
             *selected_button,
         );
+    }
+
+    // Dispute finalization popup
+    if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+        dispute_id,
+        selected_button,
+    )) = &app.mode
+    {
+        dispute_finalization_popup::render_finalization_popup(f, app, dispute_id, *selected_button);
+    }
+
+    // Waiting for dispute finalization
+    if let UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) = &app.mode {
+        waiting::render_waiting(f);
     }
 
     // Taking order popup overlay (user mode only)

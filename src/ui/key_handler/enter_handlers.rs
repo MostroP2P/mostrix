@@ -2,7 +2,10 @@ use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, MessageViewState, Tab, TakeOrderState, UiMode,
     UserMode, UserRole, UserTab,
 };
-use crate::util::order_utils::{execute_add_invoice, execute_admin_add_solver, execute_send_msg};
+use crate::util::order_utils::{
+    execute_add_invoice, execute_admin_add_solver, execute_admin_cancel, execute_admin_settle,
+    execute_send_msg,
+};
 use crate::SETTINGS;
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
@@ -292,15 +295,68 @@ pub fn handle_enter_key(
             app.mode = default_mode;
         }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
-            // Handle Enter in Disputes in Progress tab - send message if input is not empty
+            // Handle Enter in Disputes in Progress tab
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                // Check if chat input is focused (not empty) - send message
                 if !app.admin_chat_input.trim().is_empty() {
                     // TODO: Send message to active chat party
                     // This will be implemented when we add the DM sending logic
                     // For now, just clear the input
                     app.admin_chat_input.clear();
+                } else if let Some(selected_dispute) = app
+                    .admin_disputes_in_progress
+                    .get(app.selected_in_progress_idx)
+                {
+                    // If no chat input, and a dispute is selected, open finalization popup
+                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.id) {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                            dispute_id, 0, // Default to first button (Pay Buyer)
+                        ));
+                    }
                 }
             }
+        }
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+            dispute_id,
+            selected_button,
+        )) => {
+            // Handle Enter in finalization popup
+            match selected_button {
+                0 => {
+                    // Pay Buyer - execute AdminSettle
+                    execute_finalize_dispute_action(
+                        app,
+                        dispute_id,
+                        client,
+                        mostro_pubkey,
+                        order_result_tx,
+                        true, // is_settle
+                    );
+                }
+                1 => {
+                    // Refund Seller - execute AdminCancel
+                    execute_finalize_dispute_action(
+                        app,
+                        dispute_id,
+                        client,
+                        mostro_pubkey,
+                        order_result_tx,
+                        false, // is_settle
+                    );
+                }
+                2 => {
+                    // Exit - return to normal mode
+                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                }
+                _ => {
+                    // Invalid button, return to normal mode
+                    app.mode = default_mode;
+                }
+            }
+        }
+        UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
+            // No action while waiting
+            app.mode = default_mode;
         }
     }
 }
@@ -744,4 +800,48 @@ fn handle_enter_message_notification(
                 order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
         }
     }
+}
+
+/// Helper function to execute dispute finalization (settle or cancel).
+///
+/// This avoids code duplication between Pay Buyer and Refund Seller actions.
+/// Sets the UI mode to waiting and spawns an async task to finalize the dispute.
+pub(crate) fn execute_finalize_dispute_action(
+    app: &mut AppState,
+    dispute_id: uuid::Uuid,
+    client: &Client,
+    mostro_pubkey: nostr_sdk::PublicKey,
+    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
+) {
+    app.mode = UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(dispute_id));
+
+    // Spawn async task to finalize dispute
+    let client_clone = client.clone();
+    let result_tx = order_result_tx.clone();
+    tokio::spawn(async move {
+        let result = if is_settle {
+            execute_admin_settle(&dispute_id, &client_clone, mostro_pubkey).await
+        } else {
+            execute_admin_cancel(&dispute_id, &client_clone, mostro_pubkey).await
+        };
+
+        match result {
+            Ok(_) => {
+                let action_name = if is_settle {
+                    "settled (buyer paid)"
+                } else {
+                    "canceled (seller refunded)"
+                };
+                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
+                    "✅ Dispute {} {}!",
+                    dispute_id, action_name
+                )));
+            }
+            Err(e) => {
+                log::error!("Failed to finalize dispute: {}", e);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+            }
+        }
+    });
 }
