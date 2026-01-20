@@ -91,9 +91,9 @@ pub async fn execute_take_dispute(
         let inner_message = response_message.get_inner_message_kind();
         if inner_message.action == Action::AdminTookDispute {
             // Extract SolverDisputeInfo from payload
-            if let Some(Payload::Dispute(_, Some(dispute_info))) = &inner_message.payload {
+            if let Some(Payload::Dispute(id, Some(dispute_info))) = &inner_message.payload {
                 // Verify the dispute ID matches
-                if dispute_info.id != *dispute_id {
+                if *id != *dispute_id {
                     return Err(anyhow::anyhow!(
                         "Dispute ID mismatch: expected {}, got {}",
                         dispute_id,

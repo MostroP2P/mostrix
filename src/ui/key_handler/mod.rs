@@ -7,7 +7,7 @@ mod navigation;
 mod settings;
 mod validation;
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab, OrderResult};
+use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab};
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;

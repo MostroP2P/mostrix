@@ -11,7 +11,7 @@ description = "Mostro TUI client"
 [dependencies]
 ratatui = "0.30.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-mostro-core = "0.6.57"
+mostro-core = "0.7.0"
 nostr-sdk = { version = "0.43.0", features = ["nip06", "nip44", "nip59"] }
 bip39 = { version = "2.1.0", features = ["rand"] }
 sqlx = { version = "0.8.5", features = ["sqlite", "runtime-tokio-native-tls"] }
@@ -24,10 +24,10 @@ fern = "0.7.1"
 log = "0.4.27"
 config = { version = "0.15.11", features = ["toml"] }
 serde = { version = "1.0.219", features = ["derive"] }
-toml = "0.8"
+toml = "0.9.8"
 base64 = "0.22.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 reqwest = { version = "0.12", features = ["json"] }
-lightning-invoice = { version = "0.33.2", features = ["std"] }
+lightning-invoice = { version = "0.34.0", features = ["std"] }
 lnurl-rs = { version = "0.9.0", default-features = false, features = ["ureq"] }
 arboard = "3.3"

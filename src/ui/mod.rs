@@ -13,6 +13,7 @@ pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
 pub mod admin_key_confirm;
+pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
 pub mod helpers;
 pub mod key_handler;
@@ -624,7 +625,7 @@ pub fn ui_draw(
             disputes_tab::render_disputes_tab(f, content_area, disputes, app.selected_dispute_idx)
         }
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
-            tab_content::render_disputes_in_progress(f, content_area, app)
+            disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
         }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => settings_tab::render_settings_tab(
             f,

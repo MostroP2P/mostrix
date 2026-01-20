@@ -5,11 +5,11 @@ pub mod ui;
 pub mod util;
 
 use crate::settings::{init_settings, Settings};
+use crate::ui::key_handler::handle_key_event;
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{start_fetch_scheduler, FetchSchedulerResult},
 };
-use crate::ui::key_handler::handle_key_event;
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
 

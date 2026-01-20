@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use mostro_core::prelude::NOSTR_REPLACEABLE_EVENT_KIND;
+use mostro_core::prelude::*;
 use nip06::FromMnemonic;
 use nostr_sdk::prelude::*;
 use sqlx::sqlite::SqlitePool;
@@ -16,7 +16,7 @@ pub struct User {
 impl User {
     pub async fn new(mnemonic: String, pool: &SqlitePool) -> Result<Self> {
         let mut user = User::default();
-        let account: u32 = NOSTR_REPLACEABLE_EVENT_KIND as u32;
+        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let i0_keys =
             Keys::from_mnemonic_advanced(&mnemonic, None, Some(account), Some(0), Some(0))?;
         user.i0_pubkey = i0_keys.public_key().to_string();
@@ -76,7 +76,7 @@ impl User {
 
     pub async fn get_identity_keys(pool: &SqlitePool) -> Result<Keys> {
         let user = User::get(pool).await?;
-        let account = NOSTR_REPLACEABLE_EVENT_KIND as u32;
+        let account = NOSTR_ORDER_EVENT_KIND as u32;
         let keys =
             Keys::from_mnemonic_advanced(&user.mnemonic, None, Some(account), Some(0), Some(0))?;
 
@@ -84,7 +84,7 @@ impl User {
     }
 
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
-        let account: u32 = NOSTR_REPLACEABLE_EVENT_KIND as u32;
+        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(
             &self.mnemonic,
             None,
@@ -269,6 +269,12 @@ pub struct AdminDispute {
     pub seller_pubkey: Option<String>,
     pub initiator_full_privacy: bool,
     pub counterpart_full_privacy: bool,
+    #[sqlx(skip)]
+    pub initiator_info_data: Option<mostro_core::prelude::UserInfo>,
+    #[sqlx(skip)]
+    pub counterpart_info_data: Option<mostro_core::prelude::UserInfo>,
+    pub initiator_info: Option<String>,   // JSON serialized
+    pub counterpart_info: Option<String>, // JSON serialized
     pub premium: i64,
     pub payment_method: String,
     pub amount: i64,
@@ -287,6 +293,16 @@ impl AdminDispute {
         pool: &SqlitePool,
         dispute_info: mostro_core::dispute::SolverDisputeInfo,
     ) -> Result<Self> {
+        // Serialize UserInfo to JSON
+        let initiator_info_json = dispute_info
+            .initiator_info
+            .as_ref()
+            .and_then(|info| serde_json::to_string(info).ok());
+        let counterpart_info_json = dispute_info
+            .counterpart_info
+            .as_ref()
+            .and_then(|info| serde_json::to_string(info).ok());
+
         let dispute = AdminDispute {
             id: dispute_info.id.to_string(),
             kind: Some(dispute_info.kind),
@@ -299,6 +315,10 @@ impl AdminDispute {
             seller_pubkey: dispute_info.seller_pubkey,
             initiator_full_privacy: dispute_info.initiator_full_privacy,
             counterpart_full_privacy: dispute_info.counterpart_full_privacy,
+            initiator_info_data: dispute_info.initiator_info.clone(),
+            counterpart_info_data: dispute_info.counterpart_info.clone(),
+            initiator_info: initiator_info_json,
+            counterpart_info: counterpart_info_json,
             premium: dispute_info.premium,
             payment_method: dispute_info.payment_method,
             amount: dispute_info.amount,
@@ -341,10 +361,11 @@ impl AdminDispute {
                 id, kind, status, hash, preimage, order_previous_status,
                 initiator_pubkey, buyer_pubkey, seller_pubkey,
                 initiator_full_privacy, counterpart_full_privacy,
+                initiator_info, counterpart_info,
                 premium, payment_method, amount, fiat_amount, fee, routing_fee,
                 buyer_invoice, invoice_held_at, taken_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -358,6 +379,8 @@ impl AdminDispute {
         .bind(&self.seller_pubkey)
         .bind(self.initiator_full_privacy)
         .bind(self.counterpart_full_privacy)
+        .bind(&self.initiator_info)
+        .bind(&self.counterpart_info)
         .bind(self.premium)
         .bind(&self.payment_method)
         .bind(self.amount)
@@ -380,6 +403,7 @@ impl AdminDispute {
             SET kind = ?, status = ?, hash = ?, preimage = ?, order_previous_status = ?,
                 initiator_pubkey = ?, buyer_pubkey = ?, seller_pubkey = ?,
                 initiator_full_privacy = ?, counterpart_full_privacy = ?,
+                initiator_info = ?, counterpart_info = ?,
                 premium = ?, payment_method = ?, amount = ?, fiat_amount = ?,
                 fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
                 taken_at = ?, created_at = ?
@@ -396,6 +420,8 @@ impl AdminDispute {
         .bind(&self.seller_pubkey)
         .bind(self.initiator_full_privacy)
         .bind(self.counterpart_full_privacy)
+        .bind(&self.initiator_info)
+        .bind(&self.counterpart_info)
         .bind(self.premium)
         .bind(&self.payment_method)
         .bind(self.amount)
@@ -414,23 +440,43 @@ impl AdminDispute {
 
     /// Get all admin disputes from the database
     pub async fn get_all(pool: &SqlitePool) -> Result<Vec<AdminDispute>> {
-        let disputes = sqlx::query_as::<_, AdminDispute>(
+        let mut disputes = sqlx::query_as::<_, AdminDispute>(
             r#"SELECT * FROM admin_disputes ORDER BY taken_at DESC"#,
         )
         .fetch_all(pool)
         .await?;
+
+        // Deserialize UserInfo from JSON
+        for dispute in &mut disputes {
+            dispute.deserialize_user_info();
+        }
+
         Ok(disputes)
     }
 
     /// Get a dispute by ID
     pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<AdminDispute> {
-        let dispute = sqlx::query_as::<_, AdminDispute>(
+        let mut dispute = sqlx::query_as::<_, AdminDispute>(
             r#"SELECT * FROM admin_disputes WHERE id = ? LIMIT 1"#,
         )
         .bind(id)
         .fetch_one(pool)
         .await?;
+
+        // Deserialize UserInfo from JSON
+        dispute.deserialize_user_info();
+
         Ok(dispute)
+    }
+
+    /// Helper method to deserialize JSON UserInfo fields
+    fn deserialize_user_info(&mut self) {
+        if let Some(ref json_str) = self.initiator_info {
+            self.initiator_info_data = serde_json::from_str(json_str).ok();
+        }
+        if let Some(ref json_str) = self.counterpart_info {
+            self.counterpart_info_data = serde_json::from_str(json_str).ok();
+        }
     }
 
     /// Check if there is an active dispute in InProgress state

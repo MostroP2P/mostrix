@@ -35,7 +35,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
-        | UiMode::AdminMode(AdminMode::Normal) => {
+        | UiMode::AdminMode(AdminMode::Normal)
+        | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             let prev_tab = app.active_tab;
             app.active_tab = app.active_tab.prev(app.user_role);
             handle_tab_switch(app, prev_tab);
@@ -78,7 +79,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
-        | UiMode::AdminMode(AdminMode::Normal) => {
+        | UiMode::AdminMode(AdminMode::Normal)
+        | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             let prev_tab = app.active_tab;
             app.active_tab = app.active_tab.next(app.user_role);
             handle_tab_switch(app, prev_tab);
@@ -305,6 +307,11 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
             // Already on Disputes in Progress tab, do nothing
         } else {
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        }
+    } else if let Tab::Admin(AdminTab::DisputesInProgress) = prev_tab {
+        // Switching away from Disputes in Progress tab, reset to Normal mode
+        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+            app.mode = UiMode::AdminMode(AdminMode::Normal);
         }
     }
 }

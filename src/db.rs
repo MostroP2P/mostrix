@@ -70,6 +70,8 @@ pub async fn init_db() -> Result<SqlitePool> {
                 seller_pubkey TEXT,
                 initiator_full_privacy INTEGER NOT NULL,
                 counterpart_full_privacy INTEGER NOT NULL,
+                initiator_info TEXT,
+                counterpart_info TEXT,
                 premium INTEGER NOT NULL,
                 payment_method TEXT NOT NULL,
                 amount INTEGER NOT NULL,
@@ -96,9 +98,48 @@ pub async fn init_db() -> Result<SqlitePool> {
         }
     } else {
         pool = SqlitePool::connect(&db_url).await?;
+
+        // Run migrations for existing databases
+        migrate_db(&pool).await?;
     }
 
     Ok(pool)
+}
+
+/// Run database migrations for existing databases
+async fn migrate_db(pool: &SqlitePool) -> Result<()> {
+    // Migration: Add initiator_info and counterpart_info columns if they don't exist
+    let result = sqlx::query(
+        r#"
+        SELECT initiator_info FROM admin_disputes LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await;
+
+    // If the query fails, the column doesn't exist, so add it
+    if result.is_err() {
+        log::info!("Running migration: Adding initiator_info and counterpart_info columns to admin_disputes table");
+        sqlx::query(
+            r#"
+            ALTER TABLE admin_disputes ADD COLUMN initiator_info TEXT;
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            ALTER TABLE admin_disputes ADD COLUMN counterpart_info TEXT;
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
+        log::info!("Migration completed successfully");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
