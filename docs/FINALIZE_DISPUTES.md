@@ -9,8 +9,12 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 1. **Navigate to Disputes**: Admin opens the "Disputes in Progress" tab
 2. **Select Dispute**: Use Up/Down arrows to select a dispute from the left sidebar
 3. **Review Details**: View dispute information in the header (parties, amounts, ratings, privacy)
-4. **Chat with Parties**: Use Tab to switch between buyer and seller chat views
-5. **Open Finalization**: Press Enter on selected dispute to open finalization popup
+4. **Chat with Parties**:
+   - Use Tab to switch between buyer and seller chat views
+   - Type messages directly in the input box
+   - Press Enter to send messages
+   - Use PageUp/PageDown to scroll through chat history
+5. **Open Finalization**: Press Enter when input is empty to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
 7. **Choose Action**: Use Left/Right arrows to select action button
 8. **Execute**: Press Enter to execute the selected action
@@ -43,22 +47,26 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 The popup displays comprehensive dispute information:
 
 **Header Section**:
+
 - Dispute ID (full UUID)
 - Dispute type and status
 - Creation timestamp
 
 **Parties Section**:
-- Buyer information: pubkey (truncated), role, privacy status, rating
-- Seller information: pubkey (truncated), role, privacy status, rating
+
+- Buyer information: pubkey (truncated), role, privacy status (🟢 info available / 🔴 private), rating with operating days
+- Seller information: pubkey (truncated), role, privacy status (🟢 info available / 🔴 private), rating with operating days
 - Initiator indicator (shows who started the dispute)
 
 **Financial Section**:
+
 - Amount in satoshis
 - Fiat amount and currency
 - Premium percentage
 - Fee amounts
 
 **Action Buttons**:
+
 - Pay Buyer (Full) - Green background when selected
 - Refund Seller (Full) - Red background when selected
 - Exit - Gray/default when selected
@@ -66,12 +74,17 @@ The popup displays comprehensive dispute information:
 ### Keyboard Navigation
 
 **In Dispute List**:
-- Up/Down: Select dispute
-- Tab: Switch between buyer/seller chat
-- Enter: Open finalization popup
+
+- Up/Down: Select dispute in sidebar
+- Tab: Switch between buyer/seller chat party
+- Type: Start typing message in input box
+- Enter: Send message (if input has text) or Open finalization popup (if input is empty)
+- PageUp/PageDown: Scroll through chat history
+- Backspace: Delete characters from input
 
 **In Finalization Popup**:
-- Left/Right: Navigate between action buttons
+
+- Left/Right: Navigate between action buttons (cycles through 3 buttons)
 - Enter: Execute selected action
 - Esc: Cancel and return to dispute list
 
@@ -100,6 +113,7 @@ Message::new_dispute(
 ### Expected Responses
 
 After sending a finalization action, Mostro should respond with:
+
 - Success confirmation
 - Updated dispute status
 - Transaction details
@@ -107,6 +121,7 @@ After sending a finalization action, Mostro should respond with:
 ## Database Updates
 
 After successful finalization:
+
 1. Dispute status updated in local database
 2. Dispute may be moved to "resolved" list
 3. Local dispute cache refreshed
@@ -114,6 +129,7 @@ After successful finalization:
 ## Error Handling
 
 Possible error scenarios:
+
 - Mostro daemon unresponsive
 - Invalid admin credentials
 - Dispute already finalized
@@ -121,22 +137,72 @@ Possible error scenarios:
 
 All errors are displayed in a result popup with appropriate error messages.
 
+## Chat System
+
+### Features
+
+The chat interface provides real-time communication with dispute parties:
+
+**Visual Design**:
+
+- **Color-coded senders**:
+  - Cyan with `▶` prefix: Admin messages
+  - Green with `◀` prefix: Buyer messages
+  - Red with `◀` prefix: Seller messages
+- **Dynamic input box**: Automatically grows from 1 to 10 lines based on message length
+- **Focus indicators**: Bold yellow border when typing, gray when inactive
+- **Chat history**: Scrollable message history per dispute
+
+**Message Management**:
+
+- **Per-dispute storage**: Each dispute has its own chat history (stored in `admin_dispute_chats`)
+- **Party filtering**: Only shows messages from the active chat party (Buyer or Seller)
+- **Scroll control**: PageUp/PageDown to navigate history, auto-scrolls to newest after sending
+- **Empty state**: Shows "No messages yet" when starting a new conversation
+
+**Input Handling**:
+
+- **Text wrapping**: Input wraps at word boundaries, respects available width
+- **Character limit**: Grows up to 10 lines, with visual feedback
+- **Send behavior**: Enter sends message (or opens finalization if input is empty)
+- **Clear on send**: Input automatically clears after sending
+
+### Chat Footer
+
+The footer shows context-sensitive shortcuts:
+
+**When typing**:
+
+```text
+Tab: Switch Party | Enter: Send Message (or Finalize if empty) | PgUp/PgDn: Scroll Chat | ↑↓: Select Dispute
+```
+
+**When not typing**:
+
+```text
+Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat
+```
+
 ## Best Practices
 
 1. **Always chat first**: Communicate with both parties before finalizing
 2. **Review all evidence**: Check chat history, payment proofs, timestamps
-3. **Consider reputation**: Factor in user ratings and operating days
-4. **Document reasoning**: Keep notes on why you chose a specific action
+3. **Consider reputation**: Factor in user ratings and operating days (shown in header)
+4. **Document reasoning**: All chat messages are stored per dispute for review
 5. **Be impartial**: Base decisions on facts, not party behavior alone
-6. **Check privacy**: Understand if parties want public or private resolution
+6. **Check privacy**: Privacy icons (🟢 info available / 🔴 private) indicate data availability
+7. **Switch parties**: Use Tab to alternate between buyer and seller chats
+8. **Scroll history**: Use PageUp/PageDown to review full conversation history
 
 ## Related Files
 
 - `src/ui/dispute_finalization_popup.rs` - Popup rendering logic
 - `src/util/order_utils/execute_admin_settle.rs` - AdminSettle implementation
 - `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel implementation
-- `src/ui/disputes_in_progress_tab.rs` - Main disputes UI
-- `src/ui/key_handler/enter_handlers.rs` - Enter key handling
+- `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
+- `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending
+- `src/ui/key_handler/mod.rs` - Chat input handling and clipboard operations
+- `src/ui/mod.rs` - AppState with chat storage (DisputeChatMessage, ChatSender)
 - `src/models.rs` - AdminDispute data model
 
 ## See Also
