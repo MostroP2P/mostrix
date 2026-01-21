@@ -299,10 +299,70 @@ pub fn handle_enter_key(
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 // Check if chat input is focused (not empty) - send message
                 if !app.admin_chat_input.trim().is_empty() {
-                    // TODO: Send message to active chat party
-                    // This will be implemented when we add the DM sending logic
-                    // For now, just clear the input
+                    if let Some(selected_dispute) = app
+                        .admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx)
+                    {
+                        let dispute_id = selected_dispute.id.clone();
+                        let message_content = app.admin_chat_input.trim().to_string();
+                        let timestamp = chrono::Utc::now().timestamp();
+                        
+                        // Add admin's message
+                        let admin_message = crate::ui::DisputeChatMessage {
+                            sender: crate::ui::ChatSender::Admin,
+                            content: message_content.clone(),
+                            timestamp,
+                        };
+                        
+                        app.admin_dispute_chats
+                            .entry(dispute_id.clone())
+                            .or_insert_with(Vec::new)
+                            .push(admin_message);
+                        
+                        // TODO: Send message to active chat party via Nostr DM
+                        // This will be implemented when we add the DM sending logic
+                        
+                        // Generate mockup response from buyer or seller
+                        let mockup_responses = [
+                            "I understand, let me check the payment details.",
+                            "Can you please provide more information?",
+                            "Yes, I have completed my part of the transaction.",
+                            "I'm waiting for confirmation from my bank.",
+                            "The payment was sent on time as agreed.",
+                            "I have the screenshots if you need them.",
+                            "No, I did not receive the payment yet.",
+                            "Can we extend the deadline by 24 hours?",
+                        ];
+                        
+                        // Use message length to pseudo-randomly select a response
+                        let response_idx = message_content.len() % mockup_responses.len();
+                        let mockup_response = mockup_responses[response_idx];
+                        
+                        // Add mockup response from the active chat party
+                        let party_sender = match app.active_chat_party {
+                            crate::ui::ChatParty::Buyer => crate::ui::ChatSender::Buyer,
+                            crate::ui::ChatParty::Seller => crate::ui::ChatSender::Seller,
+                        };
+                        
+                        let party_message = crate::ui::DisputeChatMessage {
+                            sender: party_sender,
+                            content: mockup_response.to_string(),
+                            timestamp: timestamp + 2, // 2 seconds later
+                        };
+                        
+                        app.admin_dispute_chats
+                            .entry(dispute_id)
+                            .or_insert_with(Vec::new)
+                            .push(party_message);
+                        
+                        // Reset scroll to bottom to show new messages
+                        app.admin_chat_scroll_offset = 0;
+                    }
+                    
+                    // Clear the input and keep focus
                     app.admin_chat_input.clear();
+                    // IMPORTANT: Stay in ManagingDispute mode to keep input focus
+                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
                 } else if let Some(selected_dispute) = app
                     .admin_disputes_in_progress
                     .get(app.selected_in_progress_idx)

@@ -25,6 +25,75 @@ pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
 pub use validation::{validate_currency, validate_mostro_pubkey, validate_npub, validate_relay};
 
+/// Check if we're in admin chat input mode and handle character input
+/// Returns Some(true) if handled, None if should continue to normal processing
+fn handle_admin_chat_input(app: &mut AppState, code: KeyCode) -> Option<bool> {
+    if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+            match code {
+                KeyCode::Char(c) => {
+                    app.admin_chat_input.push(c);
+                    return Some(true);
+                }
+                KeyCode::Backspace => {
+                    app.admin_chat_input.pop();
+                    return Some(true);
+                }
+                _ => {} // For other keys, continue to normal handling
+            }
+        }
+    }
+    None
+}
+
+/// Handle clipboard copy for invoice
+fn handle_clipboard_copy(invoice: String) -> bool {
+    let copy_result = {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::SetExtLinux;
+                    clipboard.set().wait().text(invoice)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    clipboard.set_text(invoice)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    };
+
+    match copy_result {
+        Ok(_) => {
+            log::info!("Invoice copied to clipboard");
+            true
+        }
+        Err(e) => {
+            log::warn!("Failed to copy invoice to clipboard: {}", e);
+            false
+        }
+    }
+}
+
+/// Cycle through 3 buttons (Pay Buyer, Refund Seller, Exit) for dispute finalization
+fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode) {
+    if direction == KeyCode::Left {
+        *selected_button = if *selected_button == 0 {
+            2
+        } else {
+            *selected_button - 1
+        };
+    } else {
+        *selected_button = if *selected_button == 2 {
+            0
+        } else {
+            *selected_button + 1
+        };
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -80,6 +149,12 @@ pub fn handle_key_event(
         }
     }
 
+    // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
+    // (except invoice and key input which are handled earlier)
+    if let Some(result) = handle_admin_chat_input(app, code) {
+        return Some(result);
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups
@@ -102,20 +177,7 @@ pub fn handle_key_event(
                     _dispute_id,
                     ref mut selected_button,
                 )) => {
-                    // Cycle through 3 buttons: 0=Pay Buyer, 1=Refund Seller, 2=Exit
-                    if code == KeyCode::Left {
-                        *selected_button = if *selected_button == 0 {
-                            2
-                        } else {
-                            *selected_button - 1
-                        };
-                    } else {
-                        *selected_button = if *selected_button == 2 {
-                            0
-                        } else {
-                            *selected_button + 1
-                        };
-                    }
+                    cycle_finalization_button(selected_button, code);
                     return Some(true);
                 }
                 _ => {}
@@ -125,6 +187,23 @@ pub fn handle_key_event(
         }
         KeyCode::Up | KeyCode::Down => {
             handle_navigation(code, app, orders, disputes);
+            Some(true)
+        }
+        KeyCode::PageUp | KeyCode::PageDown => {
+            // Handle chat scrolling in ManagingDispute mode
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    // Scroll chat messages
+                    if code == KeyCode::PageUp {
+                        // Scroll up (show older messages)
+                        app.admin_chat_scroll_offset = app.admin_chat_scroll_offset.saturating_add(5);
+                    } else {
+                        // Scroll down (show newer messages)
+                        app.admin_chat_scroll_offset = app.admin_chat_scroll_offset.saturating_sub(5);
+                    }
+                    return Some(true);
+                }
+            }
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -176,49 +255,14 @@ pub fn handle_key_event(
             ) = app.mode
             {
                 if let Some(invoice) = &notification.invoice {
-                    // Copy to clipboard using proper arboard methods
-                    let copy_result = {
-                        match arboard::Clipboard::new() {
-                            Ok(mut clipboard) => {
-                                // Use builder pattern with wait() on Linux for proper clipboard handling
-                                #[cfg(target_os = "linux")]
-                                {
-                                    use arboard::SetExtLinux;
-                                    clipboard.set().wait().text(invoice.clone())
-                                }
-                                #[cfg(not(target_os = "linux"))]
-                                {
-                                    clipboard.set_text(invoice.clone())
-                                }
-                            }
-                            Err(e) => Err(e),
-                        }
-                    };
-
-                    match copy_result {
-                        Ok(_) => {
-                            log::info!("Invoice copied to clipboard");
-                            invoice_state.copied_to_clipboard = true;
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to copy invoice to clipboard: {}", e);
-                        }
-                    }
+                    invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
                 }
             }
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
-            // Handle chat input for admin in Disputes in Progress tab
-            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if code == KeyCode::Backspace {
-                    app.admin_chat_input.pop();
-                } else if let KeyCode::Char(c) = code {
-                    app.admin_chat_input.push(c);
-                }
-                return Some(true);
-            }
-
+            // Chat input is handled at the top of this function (takes priority)
+            // This handles form inputs and other character entry
             handle_char_input(code, app, validate_range_amount);
             if code == KeyCode::Backspace {
                 handle_backspace(app, validate_range_amount);

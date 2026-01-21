@@ -333,6 +333,22 @@ impl Display for ChatParty {
     }
 }
 
+/// Represents the sender of a chat message in dispute resolution
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatSender {
+    Admin,
+    Buyer,
+    Seller,
+}
+
+/// A chat message in the dispute resolution interface
+#[derive(Clone, Debug)]
+pub struct DisputeChatMessage {
+    pub sender: ChatSender,
+    pub content: String,
+    pub timestamp: i64, // Unix timestamp
+}
+
 #[derive(Clone, Debug)]
 pub enum UiMode {
     // Shared modes (available to both user and admin)
@@ -466,6 +482,8 @@ pub struct AppState {
     pub selected_in_progress_idx: usize, // Selected dispute in Disputes in Progress tab
     pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
     pub admin_chat_input: String,    // Current message being typed by admin
+    pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
+    pub admin_chat_scroll_offset: usize, // Scroll position in chat (0 = bottom/newest)
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -519,6 +537,8 @@ impl AppState {
             selected_in_progress_idx: 0,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
+            admin_dispute_chats: HashMap::new(),
+            admin_chat_scroll_offset: 0,
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),

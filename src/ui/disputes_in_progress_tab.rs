@@ -1,11 +1,10 @@
 use chrono::DateTime;
-use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{apply_status_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{apply_status_color, AdminMode, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Render the "Disputes in Progress" tab for admin mode
 /// This shows a sidebar with active disputes and a detailed view with chat interface
@@ -57,14 +56,65 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &App
         .admin_disputes_in_progress
         .get(app.selected_in_progress_idx)
     {
+        // Calculate dynamic input box height based on text content with proper wrapping
+        // Account for borders (2 chars on each side) and some padding
+        let available_width = main_area.width.saturating_sub(4).max(1) as usize;
+        
+        // Calculate how many lines we need - simulate ratatui's wrapping behavior with trim: true
+        let input_lines = if app.admin_chat_input.is_empty() {
+            1 // Empty input = 1 line minimum
+        } else {
+            let text = &app.admin_chat_input;
+            let mut lines = 0;
+            let mut current_pos = 0;
+            
+            while current_pos < text.len() {
+                let remaining = &text[current_pos..];
+                
+                // Skip leading whitespace (trim behavior)
+                let trimmed_remaining = remaining.trim_start();
+                if trimmed_remaining.is_empty() {
+                    break; // No more non-whitespace content
+                }
+                
+                // Adjust position for skipped whitespace
+                let skipped = remaining.len() - trimmed_remaining.len();
+                current_pos += skipped;
+                
+                // Find how much fits on this line
+                if trimmed_remaining.len() <= available_width {
+                    // Rest of text fits on this line
+                    lines += 1;
+                    break;
+                }
+                
+                // Find last space within available width
+                let chunk = &trimmed_remaining[..available_width.min(trimmed_remaining.len())];
+                if let Some(last_space) = chunk.rfind(char::is_whitespace) {
+                    // Wrap at last space
+                    current_pos += last_space + 1; // +1 to skip the space
+                    lines += 1;
+                } else {
+                    // No space found, hard break at width
+                    current_pos += available_width;
+                    lines += 1;
+                }
+            }
+            
+            lines.max(1) // At least 1 line
+        };
+        
+        // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
+        let input_height = (input_lines.min(10) as u16) + 2;
+        
         let main_chunks = Layout::new(
             Direction::Vertical,
             [
-                Constraint::Length(8), // Header (expanded for ratings)
-                Constraint::Length(3), // Party Tabs
-                Constraint::Min(0),    // Chat
-                Constraint::Length(3), // Input
-                Constraint::Length(1), // Footer
+                Constraint::Length(8),            // Header (expanded for ratings)
+                Constraint::Length(3),            // Party Tabs
+                Constraint::Min(0),               // Chat
+                Constraint::Length(input_height), // Input (dynamic!)
+                Constraint::Length(1),            // Footer
             ],
         )
         .split(main_area);
@@ -107,20 +157,20 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &App
             ("Seller", seller_pubkey_display.clone())
         };
 
-        // Privacy indicators (🕶️ = private/anonymous, 👁️ = public/visible)
+        // Privacy indicators (🟢 = info available, 🔴 = no info/private)
         let buyer_privacy_icon = if selected_dispute.initiator_full_privacy && is_initiator_buyer
             || selected_dispute.counterpart_full_privacy && !is_initiator_buyer
         {
-            "🕶️"
+            "🔴"
         } else {
-            "👁️"
+            "🟢"
         };
         let seller_privacy_icon = if selected_dispute.initiator_full_privacy && !is_initiator_buyer
             || selected_dispute.counterpart_full_privacy && is_initiator_buyer
         {
-            "🕶️"
+            "🔴"
         } else {
-            "👁️"
+            "🟢"
         };
 
         // Labels for privacy line
@@ -333,65 +383,114 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &App
             party_chunks[1],
         );
 
-        // Chat History (Filtered)
-        let messages_lock = app.messages.lock().unwrap();
-        // For admin disputes, we need to filter messages that belong to this dispute ID
-        // AND are either from/to the active chat party.
-        // NOTE: Admin messages usually have the order_id set.
-        let chat_party_pubkey = match app.active_chat_party {
-            super::ChatParty::Buyer => selected_dispute.buyer_pubkey.as_ref(),
-            super::ChatParty::Seller => selected_dispute.seller_pubkey.as_ref(),
-        };
-
-        let filtered_messages: Vec<ListItem> = messages_lock
-            .iter()
-            .filter(|m| {
-                let is_same_order =
-                    m.order_id.map(|id| id.to_string()) == Some(selected_dispute.id.clone());
-                let _is_correct_party = if let Some(party_pk) = chat_party_pubkey {
-                    m.sender.to_string() == *party_pk
-                        || m.message.get_inner_message_kind().action == Action::AdminTookDispute
-                // Placeholder check
-                } else {
-                    false
+        // Chat History - Display chat messages for this dispute
+        let dispute_id = &selected_dispute.id;
+        let chat_messages = app.admin_dispute_chats.get(dispute_id);
+        
+        let mut chat_lines: Vec<Line> = Vec::new();
+        
+        if let Some(messages) = chat_messages {
+            // Calculate how many messages can fit in the visible area
+            let chat_area_height = main_chunks[2].height.saturating_sub(2) as usize; // Subtract borders
+            
+            // Get messages with scroll offset (0 = show latest)
+            let total_messages = messages.len();
+            let start_idx = if total_messages > chat_area_height {
+                total_messages.saturating_sub(chat_area_height + app.admin_chat_scroll_offset)
+            } else {
+                0
+            };
+            
+            let visible_messages = &messages[start_idx..];
+            
+            for msg in visible_messages {
+                let (sender_label, sender_color, alignment_prefix) = match msg.sender {
+                    super::ChatSender::Admin => ("Admin", Color::Cyan, "  ▶ "),
+                    super::ChatSender::Buyer => {
+                        if app.active_chat_party == super::ChatParty::Buyer {
+                            ("Buyer", Color::Green, "  ◀ ")
+                        } else {
+                            continue; // Skip if not active party
+                        }
+                    }
+                    super::ChatSender::Seller => {
+                        if app.active_chat_party == super::ChatParty::Seller {
+                            ("Seller", Color::Red, "  ◀ ")
+                        } else {
+                            continue; // Skip if not active party
+                        }
+                    }
                 };
-                is_same_order // For now, just show all messages for this order ID
-            })
-            .map(|m| {
-                let sender_label = if m.sender.to_string() == selected_dispute.initiator_pubkey {
-                    "Initiator"
-                } else {
-                    "Other"
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("[{}] ", sender_label),
-                        Style::default().fg(PRIMARY_COLOR),
-                    ),
-                    Span::raw(format!("{:?}", m.message.get_inner_message_kind().action)),
-                ]))
-            })
-            .collect();
+                
+                // Format message with sender label and content
+                let formatted_message = format!("{}{}: {}", alignment_prefix, sender_label, msg.content);
+                
+                chat_lines.push(Line::from(vec![
+                    Span::styled(formatted_message, Style::default().fg(sender_color)),
+                ]));
+                
+                // Add empty line for spacing
+                chat_lines.push(Line::from(""));
+            }
+        } else {
+            // No messages yet
+            chat_lines.push(Line::from(Span::styled(
+                "No messages yet. Start the conversation!",
+                Style::default().fg(Color::Gray),
+            )));
+        }
 
-        let chat_list = List::new(filtered_messages).block(
+        let chat_paragraph = ratatui::widgets::Paragraph::new(chat_lines).block(
             Block::default()
                 .title(format!("Chat with {}", app.active_chat_party))
                 .borders(Borders::ALL),
         );
-        f.render_widget(chat_list, main_chunks[2]);
+        f.render_widget(chat_paragraph, main_chunks[2]);
 
         // Input Area
-        let input = Paragraph::new(app.admin_chat_input.as_str()).block(
-            Block::default()
-                .title("Message")
-                .borders(Borders::ALL)
-                .style(Style::default().fg(Color::Yellow)),
-        );
+        // Check if we're in ManagingDispute mode (input is active)
+        let is_input_focused = matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+        
+        let input_style = if is_input_focused {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        
+        let input_title = if is_input_focused {
+            "💬 Message (typing enabled)"
+        } else {
+            "Message"
+        };
+        
+        let input_border_style = if is_input_focused {
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        
+        let input = Paragraph::new(app.admin_chat_input.as_str())
+            .block(
+                Block::default()
+                    .title(input_title)
+                    .borders(Borders::ALL)
+                    .border_style(input_border_style)
+                    .style(input_style),
+            )
+            .wrap(ratatui::widgets::Wrap { trim: true }); // Enable text wrapping with trimmed spaces
         f.render_widget(input, main_chunks[3]);
 
         // Footer
-        let footer =
-            Paragraph::new("Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute");
+        let footer_text = if is_input_focused {
+            "Tab: Switch Party | Enter: Send Message (or Finalize if empty) | PgUp/PgDn: Scroll Chat | ↑↓: Select Dispute"
+        } else {
+            "Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat"
+        };
+        let footer = Paragraph::new(footer_text);
         f.render_widget(footer, main_chunks[4]);
     } else {
         let no_selection = Paragraph::new("Select a dispute from the sidebar")
