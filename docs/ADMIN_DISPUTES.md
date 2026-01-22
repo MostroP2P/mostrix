@@ -41,7 +41,7 @@ Shows disputes that have been taken by this admin (state: `InProgress`). This is
 The interface is divided into three main sections:
 
 1. **Left Sidebar (20%)**: List of disputes in progress
-   - Shows truncated dispute IDs
+   - Shows truncated dispute IDs (safely handles short IDs without panicking)
    - Highlighted selection with Up/Down arrow keys
    - Updates main area when selection changes
 
@@ -474,10 +474,6 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 
 **Visual Design**:
 
-- **Color-coded messages**:
-  - **Cyan** with `▶` prefix: Admin messages
-  - **Green** with `◀` prefix: Buyer messages (when viewing buyer chat)
-  - **Red** with `◀` prefix: Seller messages (when viewing seller chat)
 - **Dynamic input box**: Grows from 1 to 10 lines based on message length
 - **Focus indicators**: Bold yellow border when typing, gray when inactive
 - **Party switching**: Use Tab key to switch between Buyer and Seller chat views
@@ -588,7 +584,7 @@ pub struct DisputeChatMessage {
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
-pub admin_chat_scroll_offset: usize, // 0 = bottom/newest
+pub admin_chat_list_state: ratatui::widgets::ListState,
 ```
 
 #### Keyboard Shortcuts

@@ -40,8 +40,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 } else {
                     Style::default().fg(Color::White)
                 };
+                let truncated_id = if d.id.len() > 20 {
+                    format!("{}...", &d.id[..20])
+                } else {
+                    d.id.clone()
+                };
                 ListItem::new(Line::from(vec![Span::styled(
-                    format!("ID: {}...", &d.id[..20]),
+                    format!("ID: {}", truncated_id),
                     style,
                 )]))
             })

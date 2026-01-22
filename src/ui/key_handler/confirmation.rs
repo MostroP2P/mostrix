@@ -91,10 +91,20 @@ pub fn handle_confirm_key(
             let result_tx = order_result_tx.clone();
 
             tokio::spawn(async move {
+                let settings = match SETTINGS.get() {
+                    Some(s) => s,
+                    None => {
+                        let error_msg =
+                            "Settings not initialized. Please restart the application.".to_string();
+                        log::error!("{}", error_msg);
+                        let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
+                        return;
+                    }
+                };
                 match crate::util::send_new_order(
                     &pool_clone,
                     &client_clone,
-                    SETTINGS.get().unwrap(),
+                    settings,
                     mostro_pubkey,
                     &form_clone,
                 )
@@ -188,7 +198,7 @@ pub fn handle_confirm_key(
         UiMode::ConfirmExit(_) => {
             // 'y' key means YES - exit the application
             // Return false to break the main loop
-            return false;
+            false
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) => {
             // Delegate to the same handler used for Enter to keep logic DRY

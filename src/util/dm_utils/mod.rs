@@ -31,7 +31,12 @@ pub async fn send_dm(
     expiration: Option<Timestamp>,
     to_user: bool,
 ) -> Result<()> {
-    let pow: u8 = SETTINGS.get().unwrap().pow;
+    let pow: u8 = SETTINGS
+        .get()
+        .ok_or_else(|| {
+            anyhow::anyhow!("Settings not initialized. Please restart the application.")
+        })?
+        .pow;
     let message_type = determine_message_type(to_user, false);
 
     let event = match message_type {

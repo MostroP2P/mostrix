@@ -109,33 +109,64 @@ pub async fn init_db() -> Result<SqlitePool> {
 /// Run database migrations for existing databases
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
-    let result = sqlx::query(
-        r#"
-        SELECT initiator_info FROM admin_disputes LIMIT 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await;
+    // Check if columns exist by attempting to query them and checking for specific SQLite errors
+    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+        let result = sqlx::query(&format!(
+            "SELECT {} FROM admin_disputes LIMIT 1",
+            column_name
+        ))
+        .fetch_optional(pool)
+        .await;
 
-    // If the query fails, the column doesn't exist, so add it
-    if result.is_err() {
+        match result {
+            Ok(_) => Ok(true), // Column exists (query succeeded)
+            Err(e) => {
+                // Check if error is specifically "no such column"
+                // If it's a different error (table doesn't exist, connection issue, etc.),
+                // we'll propagate it rather than incorrectly assuming the column doesn't exist
+                let error_msg = e.to_string().to_lowercase();
+                if error_msg.contains("no such column") {
+                    Ok(false)
+                } else {
+                    // Re-propagate non-column-related errors
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    // Check if columns exist
+    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
+    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
+
+    // Only run migration if at least one column is missing
+    if !has_initiator_info || !has_counterpart_info {
         log::info!("Running migration: Adding initiator_info and counterpart_info columns to admin_disputes table");
-        sqlx::query(
-            r#"
-            ALTER TABLE admin_disputes ADD COLUMN initiator_info TEXT;
-            "#,
-        )
-        .execute(pool)
-        .await?;
 
-        sqlx::query(
-            r#"
-            ALTER TABLE admin_disputes ADD COLUMN counterpart_info TEXT;
-            "#,
-        )
-        .execute(pool)
-        .await?;
+        // Wrap both ALTER TABLE statements in a transaction for atomicity
+        let mut tx = pool.begin().await?;
 
+        if !has_initiator_info {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN initiator_info TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_counterpart_info {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN counterpart_info TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         log::info!("Migration completed successfully");
     }
 

@@ -139,8 +139,15 @@ Possible error scenarios:
 - Invalid admin credentials
 - Dispute already finalized
 - Network/relay issues
+- Dispute not found (e.g., dispute was removed or ID is invalid)
 
-All errors are displayed in a result popup with appropriate error messages.
+All errors are displayed in a result popup with appropriate error messages. The finalization popup includes robust error handling:
+
+- **Dispute Not Found**: If a dispute ID is invalid or the dispute is no longer available, a clear error popup is displayed with the dispute ID and instructions to close it (Press ESC or ENTER).
+- **User-Friendly Messages**: All error messages are descriptive and help users understand what went wrong.
+- **Safe Display**: Dispute IDs and other data are safely truncated to prevent display issues with unexpected data lengths.
+
+**Source**: `src/ui/dispute_finalization_popup.rs:22`
 
 ## Chat System
 

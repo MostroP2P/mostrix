@@ -20,7 +20,7 @@ pub fn render_finalization_popup(
         .find(|d| d.id == dispute_id.to_string());
 
     let Some(selected_dispute) = dispute else {
-        // If dispute not found, show error
+        // If dispute not found, show error with message
         let area = f.area();
         let popup_width = area.width.saturating_sub(area.width / 4);
         let popup_height = 10;
@@ -28,10 +28,38 @@ pub fn render_finalization_popup(
         f.render_widget(Clear, popup);
 
         let block = Block::default()
-            .title("Error")
+            .title("❌ Error")
             .borders(Borders::ALL)
             .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Red));
+
+        // Calculate inner area (excluding borders)
+        let inner = block.inner(popup);
         f.render_widget(block, popup);
+
+        // Create error message with dispute ID
+        let error_msg = format!("Dispute not found: {}", dispute_id);
+
+        // Wrap error message if too long (accounting for borders)
+        let error_lines: Vec<Line> = error_msg
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(inner.width.saturating_sub(2) as usize)
+            .map(|chunk| Line::from(chunk.iter().collect::<String>()))
+            .collect();
+
+        let mut lines = vec![];
+        lines.push(Line::from(""));
+        for line in error_lines {
+            lines.push(line);
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Press ESC or ENTER to close",
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(paragraph, inner);
         return;
     };
 
@@ -90,18 +118,10 @@ fn render_dispute_details(
         }
     };
 
-    let buyer_pubkey = dispute
-        .buyer_pubkey
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or("Unknown");
-    let seller_pubkey = dispute
-        .seller_pubkey
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or("Unknown");
+    let buyer_pubkey = dispute.buyer_pubkey.as_deref().unwrap_or("Unknown");
+    let seller_pubkey = dispute.seller_pubkey.as_deref().unwrap_or("Unknown");
 
-    let is_initiator_buyer = &dispute.initiator_pubkey == buyer_pubkey;
+    let is_initiator_buyer = dispute.initiator_pubkey == buyer_pubkey;
     let buyer_pubkey_display = truncate_pubkey(buyer_pubkey);
     let seller_pubkey_display = truncate_pubkey(seller_pubkey);
 

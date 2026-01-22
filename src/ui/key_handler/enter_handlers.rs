@@ -150,10 +150,20 @@ pub(crate) fn execute_take_order_action(
     let result_tx = order_result_tx.clone();
 
     tokio::spawn(async move {
+        let settings = match SETTINGS.get() {
+            Some(s) => s,
+            None => {
+                let error_msg =
+                    "Settings not initialized. Please restart the application.".to_string();
+                log::error!("{}", error_msg);
+                let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
+                return;
+            }
+        };
         match crate::util::take_order(
             &pool_clone,
             &client_clone,
-            SETTINGS.get().unwrap(),
+            settings,
             mostro_pubkey,
             &take_state_clone.order,
             amount,

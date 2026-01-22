@@ -52,6 +52,8 @@ pub fn init_settings() -> &'static Settings {
 - Copies the default `settings.toml` from the project root if missing.
 - Loads configuration using the `config` crate.
 
+**Error Handling**: If settings initialization fails at runtime (e.g., settings accessed before initialization), the application will display user-friendly error messages via `OrderResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users.
+
 ### 2. Database Initialization
 The database is initialized at startup to ensure the schema is ready.
 
@@ -96,6 +98,9 @@ pub async fn init_db() -> Result<SqlitePool> {
         }
     } else {
         pool = SqlitePool::connect(&db_url).await?;
+
+        // Run migrations for existing databases
+        migrate_db(&pool).await?;
     }
 
     Ok(pool)
@@ -104,6 +109,7 @@ pub async fn init_db() -> Result<SqlitePool> {
 - Creates the SQLite database file at `~/.mostrix/mostrix.db`.
 - Executes `CREATE TABLE` queries if it's a new database.
 - Generates a new BIP-39 mnemonic if no user exists in the `users` table.
+- Runs database migrations automatically for existing databases (adds new columns, updates schema as needed).
 
 ### 3. Logger Setup
 Logging is configured via `setup_logger` in `src/main.rs`.
