@@ -335,11 +335,12 @@ pub fn handle_enter_key(
                         let message_content = app.admin_chat_input.trim().to_string();
                         let timestamp = chrono::Utc::now().timestamp();
 
-                        // Add admin's message
+                        // Add admin's message (track which party it was sent to)
                         let admin_message = crate::ui::DisputeChatMessage {
                             sender: crate::ui::ChatSender::Admin,
                             content: message_content.clone(),
                             timestamp,
+                            target_party: Some(app.active_chat_party),
                         };
 
                         app.admin_dispute_chats
@@ -379,6 +380,7 @@ pub fn handle_enter_key(
                             sender: party_sender,
                             content: mockup_response.to_string(),
                             timestamp: timestamp + 2, // 2 seconds later
+                            target_party: None, // Buyer/Seller messages don't have a target party
                         };
 
                         app.admin_dispute_chats
@@ -397,18 +399,21 @@ pub fn handle_enter_key(
                             .map(|msgs| {
                                 msgs.iter()
                                     .filter(|msg| {
-                                        matches!(
-                                            (msg.sender, app.active_chat_party),
-                                            (crate::ui::ChatSender::Admin, _)
-                                                | (
-                                                    crate::ui::ChatSender::Buyer,
-                                                    crate::ui::ChatParty::Buyer
-                                                )
-                                                | (
-                                                    crate::ui::ChatSender::Seller,
-                                                    crate::ui::ChatParty::Seller
-                                                )
-                                        )
+                                        match msg.sender {
+                                            crate::ui::ChatSender::Admin => {
+                                                // Admin messages should only show in the chat party they were sent to
+                                                msg.target_party.map_or(false, |target| {
+                                                    target == app.active_chat_party
+                                                })
+                                            }
+                                            crate::ui::ChatSender::Buyer => {
+                                                app.active_chat_party == crate::ui::ChatParty::Buyer
+                                            }
+                                            crate::ui::ChatSender::Seller => {
+                                                app.active_chat_party
+                                                    == crate::ui::ChatParty::Seller
+                                            }
+                                        }
                                     })
                                     .count()
                             })

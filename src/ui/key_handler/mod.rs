@@ -220,18 +220,20 @@ pub fn handle_key_event(
                                 let visible_count = messages
                                     .iter()
                                     .filter(|msg| {
-                                        matches!(
-                                            (msg.sender, app.active_chat_party),
-                                            (super::ChatSender::Admin, _)
-                                                | (
-                                                    super::ChatSender::Buyer,
-                                                    super::ChatParty::Buyer
-                                                )
-                                                | (
-                                                    super::ChatSender::Seller,
-                                                    super::ChatParty::Seller
-                                                )
-                                        )
+                                        match msg.sender {
+                                            super::ChatSender::Admin => {
+                                                // Admin messages should only show in the chat party they were sent to
+                                                msg.target_party.map_or(false, |target| {
+                                                    target == app.active_chat_party
+                                                })
+                                            }
+                                            super::ChatSender::Buyer => {
+                                                app.active_chat_party == super::ChatParty::Buyer
+                                            }
+                                            super::ChatSender::Seller => {
+                                                app.active_chat_party == super::ChatParty::Seller
+                                            }
+                                        }
                                     })
                                     .count();
 
@@ -278,12 +280,20 @@ pub fn handle_key_event(
                             let visible_count = messages
                                 .iter()
                                 .filter(|msg| {
-                                    matches!(
-                                        (msg.sender, app.active_chat_party),
-                                        (super::ChatSender::Admin, _)
-                                            | (super::ChatSender::Buyer, super::ChatParty::Buyer)
-                                            | (super::ChatSender::Seller, super::ChatParty::Seller)
-                                    )
+                                    match msg.sender {
+                                        super::ChatSender::Admin => {
+                                            // Admin messages should only show in the chat party they were sent to
+                                            msg.target_party.map_or(false, |target| {
+                                                target == app.active_chat_party
+                                            })
+                                        }
+                                        super::ChatSender::Buyer => {
+                                            app.active_chat_party == super::ChatParty::Buyer
+                                        }
+                                        super::ChatSender::Seller => {
+                                            app.active_chat_party == super::ChatParty::Seller
+                                        }
+                                    }
                                 })
                                 .count();
 
@@ -347,12 +357,20 @@ pub fn handle_key_event(
                             let visible_count = messages
                                 .iter()
                                 .filter(|msg| {
-                                    matches!(
-                                        (msg.sender, app.active_chat_party),
-                                        (super::ChatSender::Admin, _)
-                                            | (super::ChatSender::Buyer, super::ChatParty::Buyer)
-                                            | (super::ChatSender::Seller, super::ChatParty::Seller)
-                                    )
+                                    match msg.sender {
+                                        super::ChatSender::Admin => {
+                                            // Admin messages should only show in the chat party they were sent to
+                                            msg.target_party.map_or(false, |target| {
+                                                target == app.active_chat_party
+                                            })
+                                        }
+                                        super::ChatSender::Buyer => {
+                                            app.active_chat_party == super::ChatParty::Buyer
+                                        }
+                                        super::ChatSender::Seller => {
+                                            app.active_chat_party == super::ChatParty::Seller
+                                        }
+                                    }
                                 })
                                 .count();
 

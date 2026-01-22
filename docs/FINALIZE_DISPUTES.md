@@ -168,7 +168,10 @@ The chat interface provides real-time communication with dispute parties:
 **Message Management**:
 
 - **Per-dispute storage**: Each dispute has its own chat history (stored in `admin_dispute_chats`)
-- **Party filtering**: Only shows messages from the active chat party (Buyer or Seller)
+- **Party filtering**: Messages are filtered by the active chat party:
+  - **Admin messages**: Only shown in the chat view of the party they were sent to (tracked via `target_party` field)
+  - **Buyer messages**: Only shown when viewing the Buyer chat
+  - **Seller messages**: Only shown when viewing the Seller chat
 - **Scroll control**: 
   - PageUp/PageDown to navigate history
   - End key to jump to bottom (latest messages)

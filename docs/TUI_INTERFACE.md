@@ -217,6 +217,7 @@ pub struct DisputeChatMessage {
     pub sender: ChatSender,
     pub content: String,
     pub timestamp: i64,
+    pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 ```
 
@@ -232,7 +233,9 @@ pub struct DisputeChatMessage {
   - **PageUp/PageDown**: Navigate through message history
   - **End**: Jump to bottom of chat (latest messages)
   - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols)
-- **Party filtering**: Only shows messages from active party (Buyer or Seller)
+- **Party filtering**: Messages are filtered by active party:
+  - Admin messages only shown in the chat view of the party they were sent to
+  - Buyer/Seller messages only shown in their respective chat views
 - **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators
 
 #### Input Handling Priority

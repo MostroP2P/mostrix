@@ -359,7 +359,8 @@ pub enum ChatSender {
 pub struct DisputeChatMessage {
     pub sender: ChatSender,
     pub content: String,
-    pub timestamp: i64, // Unix timestamp
+    pub timestamp: i64,                  // Unix timestamp
+    pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
 #[derive(Clone, Debug)]

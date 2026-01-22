@@ -481,7 +481,10 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 **Message Management**:
 
 - **Per-dispute storage**: Each dispute maintains its own chat history
-- **Party filtering**: Only shows messages from the active party (Buyer or Seller)
+- **Party filtering**: Messages are filtered by the active chat party:
+  - **Admin messages**: Only shown in the chat view of the party they were sent to
+  - **Buyer messages**: Only shown when viewing the Buyer chat
+  - **Seller messages**: Only shown when viewing the Seller chat
 - **Scroll support**: 
   - **PageUp/PageDown**: Navigate through message history
   - **End**: Jump to bottom of chat (latest messages)
@@ -580,6 +583,7 @@ pub struct DisputeChatMessage {
     pub sender: ChatSender,
     pub content: String,
     pub timestamp: i64, // Unix timestamp
+    pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
 // Stored in AppState

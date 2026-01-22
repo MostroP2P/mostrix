@@ -130,7 +130,11 @@ pub fn build_chat_list_items(
         .filter_map(|msg| {
             // Filter by active chat party
             let should_show = match msg.sender {
-                ChatSender::Admin => true,
+                ChatSender::Admin => {
+                    // Admin messages should only show in the chat party they were sent to
+                    msg.target_party
+                        .map_or(false, |target| target == active_chat_party)
+                }
                 ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
                 ChatSender::Seller => active_chat_party == ChatParty::Seller,
             };
