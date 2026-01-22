@@ -157,10 +157,10 @@ The chat interface provides real-time communication with dispute parties:
 
 **Visual Design**:
 
-- **Color-coded senders**:
-  - Cyan with `▶` prefix: Admin messages
-  - Green with `◀` prefix: Buyer messages
-  - Red with `◀` prefix: Seller messages
+- **Color-coded senders**: Each message displays a header in the format "Sender - date - time" where the sender name is color-coded:
+  - Cyan: Admin messages
+  - Green: Buyer messages
+  - Red: Seller messages
 - **Dynamic input box**: Automatically grows from 1 to 10 lines based on message length
 - **Focus indicators**: Bold yellow border when typing, gray when inactive
 - **Chat history**: Scrollable message history per dispute

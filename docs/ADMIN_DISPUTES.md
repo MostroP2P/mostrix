@@ -607,7 +607,7 @@ pub admin_chat_list_state: ratatui::widgets::ListState,
 **Visual Safety Features**:
 
 - **Color differentiation**: Buyer (Green) and Seller (Red) messages clearly distinguished
-- **Party indicators**: `▶` for admin, `◀` for parties
+- **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Red for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
 - **Dynamic footer**: Shows different shortcuts based on input focus and enabled state
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party

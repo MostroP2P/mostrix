@@ -53,6 +53,16 @@ pub fn format_order_id(order_id: Option<uuid::Uuid>) -> String {
 /// Saves a chat message to a text file in ~/.mostrix/dispute_id.txt
 /// Creates the directory and file if they don't exist, appends if they do
 pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
+    // Validate dispute_id to prevent path traversal attacks
+    // Only allow valid UUID format (alphanumeric, hyphens)
+    if uuid::Uuid::parse_str(dispute_id).is_err() {
+        log::warn!(
+            "Invalid dispute_id format, skipping chat save: {}",
+            dispute_id
+        );
+        return;
+    }
+
     // Get ~/.mostrix directory path
     let home_dir = match dirs::home_dir() {
         Some(dir) => dir,

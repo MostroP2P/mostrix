@@ -228,25 +228,17 @@ pub fn handle_confirm_key(
             );
             true
         }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
-            let default_mode = match app.user_role {
-                UserRole::User => UiMode::UserMode(UserMode::Normal),
-                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-            };
-            if selected_button {
-                // YES selected - take the dispute (same as Enter key)
-                crate::ui::key_handler::enter_handlers::execute_take_dispute_action(
-                    app,
-                    dispute_id,
-                    client,
-                    mostro_pubkey,
-                    pool,
-                    order_result_tx,
-                );
-            } else {
-                // NO selected - go back to normal mode
-                app.mode = default_mode;
-            }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
+            // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
+            // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
+            crate::ui::key_handler::enter_handlers::execute_take_dispute_action(
+                app,
+                dispute_id,
+                client,
+                mostro_pubkey,
+                pool,
+                order_result_tx,
+            );
             true
         }
         mode => {
