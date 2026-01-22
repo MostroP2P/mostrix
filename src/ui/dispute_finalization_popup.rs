@@ -93,11 +93,13 @@ fn render_dispute_details(
     let buyer_pubkey = dispute
         .buyer_pubkey
         .as_ref()
-        .unwrap_or(&dispute.initiator_pubkey);
+        .map(|s| s.as_str())
+        .unwrap_or("Unknown");
     let seller_pubkey = dispute
         .seller_pubkey
         .as_ref()
-        .unwrap_or(&dispute.initiator_pubkey);
+        .map(|s| s.as_str())
+        .unwrap_or("Unknown");
 
     let is_initiator_buyer = &dispute.initiator_pubkey == buyer_pubkey;
     let buyer_pubkey_display = truncate_pubkey(buyer_pubkey);
