@@ -159,7 +159,10 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
   - Supports direct character input and backspace
   - Dynamic input box that grows from 1 to 10 lines
   - Text wrapping with word boundary detection
+  - **Input toggle**: Press **Shift+I** to enable/disable chat input (prevents accidental typing)
+  - **Visual feedback**: Input title shows enabled/disabled state
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` notification uses the `arboard` crate to copy the invoice. On Linux, it uses the `SetExtLinux::wait()` method to properly wait until the clipboard is overwritten, ensuring reliable clipboard handling without arbitrary delays.
+- **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 
 ## UI Components
 
@@ -221,12 +224,16 @@ pub struct DisputeChatMessage {
 
 #### Features
 
-- **Direct input**: Type immediately without mode switching
+- **Direct input**: Type immediately without mode switching (when input enabled)
+- **Input toggle**: Press **Shift+I** to enable/disable chat input
 - **Dynamic sizing**: Input box grows from 1 to 10 lines based on content
 - **Text wrapping**: Intelligent word-boundary wrapping with trim behavior
-- **Scrolling**: PageUp/PageDown to navigate message history
+- **Scrolling**: 
+  - **PageUp/PageDown**: Navigate through message history
+  - **End**: Jump to bottom of chat (latest messages)
+  - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols)
 - **Party filtering**: Only shows messages from active party (Buyer or Seller)
-- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes
+- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators
 
 #### Input Handling Priority
 
@@ -234,7 +241,20 @@ The key handler processes input in this order:
 
 1. Invoice input (highest priority, when in invoice mode)
 2. Key input (for settings popups)
-3. **Admin chat input** (takes priority in Disputes in Progress tab)
-4. Other character/form input
+3. **Shift+I toggle** (for enabling/disabling admin chat input)
+4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled)
+5. Other character/form input
 
-**Source**: `src/ui/key_handler/mod.rs:153-156` (`handle_admin_chat_input`)
+**Source**: `src/ui/key_handler/mod.rs:155-172` (Shift+I toggle), `src/ui/key_handler/mod.rs:168-172` (`handle_admin_chat_input`)
+
+#### Exit Confirmation
+
+Mostrix includes a safety feature to prevent accidental exits:
+
+- **Trigger**: Press `Q` key or navigate to Exit tab
+- **Popup**: Shows confirmation dialog with "Are you sure you want to exit Mostrix?"
+- **Navigation**: Use Left/Right arrows to select Yes/No buttons
+- **Confirmation**: Press Enter to confirm exit, or Esc to cancel
+- **Visual**: Green "✓ YES" button and red "✗ NO" button with clear styling
+
+**Source**: `src/ui/exit_confirm.rs`, `src/ui/key_handler/enter_handlers.rs:645-655`

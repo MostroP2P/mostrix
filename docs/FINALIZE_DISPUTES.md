@@ -11,9 +11,12 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 3. **Review Details**: View dispute information in the header (parties, amounts, ratings, privacy)
 4. **Chat with Parties**:
    - Use Tab to switch between buyer and seller chat views
-   - Type messages directly in the input box
+   - Press Shift+I to enable/disable chat input (prevents accidental typing)
+   - Type messages directly in the input box (when input enabled)
    - Press Enter to send messages
    - Use PageUp/PageDown to scroll through chat history
+   - Press End to jump to bottom of chat (latest messages)
+   - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Enter when input is empty to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
 7. **Choose Action**: Use Left/Right arrows to select action button
@@ -77,10 +80,12 @@ The popup displays comprehensive dispute information:
 
 - Up/Down: Select dispute in sidebar
 - Tab: Switch between buyer/seller chat party
-- Type: Start typing message in input box
+- Shift+I: Toggle chat input enabled/disabled
+- Type: Start typing message in input box (when input enabled)
 - Enter: Send message (if input has text) or Open finalization popup (if input is empty)
 - PageUp/PageDown: Scroll through chat history
-- Backspace: Delete characters from input
+- End: Jump to bottom of chat (latest messages)
+- Backspace: Delete characters from input (when input enabled)
 
 **In Finalization Popup**:
 
@@ -157,11 +162,19 @@ The chat interface provides real-time communication with dispute parties:
 
 - **Per-dispute storage**: Each dispute has its own chat history (stored in `admin_dispute_chats`)
 - **Party filtering**: Only shows messages from the active chat party (Buyer or Seller)
-- **Scroll control**: PageUp/PageDown to navigate history, auto-scrolls to newest after sending
+- **Scroll control**: 
+  - PageUp/PageDown to navigate history
+  - End key to jump to bottom (latest messages)
+  - Visual scrollbar on the right shows position (↑/↓/│/█ symbols)
+  - Auto-scrolls to newest after sending
 - **Empty state**: Shows "No messages yet" when starting a new conversation
 
 **Input Handling**:
 
+- **Input toggle**: Press Shift+I to enable/disable chat input
+  - When disabled, prevents accidental typing while navigating
+  - Visual indicator in input title shows enabled/disabled state
+  - Input is enabled by default when entering dispute management
 - **Text wrapping**: Input wraps at word boundaries, respects available width
 - **Character limit**: Grows up to 10 lines, with visual feedback
 - **Send behavior**: Enter sends message (or opens finalization if input is empty)
@@ -171,16 +184,22 @@ The chat interface provides real-time communication with dispute parties:
 
 The footer shows context-sensitive shortcuts:
 
-**When typing**:
+**When typing (input enabled)**:
 
 ```text
-Tab: Switch Party | Enter: Send Message (or Finalize if empty) | PgUp/PgDn: Scroll Chat | ↑↓: Select Dispute
+Tab: Switch Party | Enter: Send | Shift+I: Disable | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute
+```
+
+**When typing (input disabled)**:
+
+```text
+Tab: Switch Party | Shift+I: Enable | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute
 ```
 
 **When not typing**:
 
 ```text
-Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat
+Tab: Switch Party | Enter: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom
 ```
 
 ## Best Practices
@@ -192,7 +211,9 @@ Tab: Switch Party | Enter: Finalize Dispute | ↑↓: Select Dispute | PgUp/PgDn
 5. **Be impartial**: Base decisions on facts, not party behavior alone
 6. **Check privacy**: Privacy icons (🟢 info available / 🔴 private) indicate data availability
 7. **Switch parties**: Use Tab to alternate between buyer and seller chats
-8. **Scroll history**: Use PageUp/PageDown to review full conversation history
+8. **Scroll history**: Use PageUp/PageDown to review full conversation history, or End to jump to latest
+9. **Toggle input**: Use Shift+I to disable input when navigating to prevent accidental typing
+10. **Monitor scrollbar**: Visual scrollbar on the right shows your position in the chat history
 
 ## Related Files
 

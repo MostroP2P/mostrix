@@ -96,6 +96,11 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::ConfirmExit(_) => {
+            // Cancel exit - return to normal mode
+            app.mode = default_mode.clone();
+            true
+        }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _)) => {
             // Cancel finalization, return to managing disputes
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -105,6 +110,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
-        _ => false, // Break the loop
+        _ => {
+            // ESC in normal mode or other unhandled modes - do nothing, just continue
+            // ESC should never exit the application (use Exit tab instead)
+            true
+        }
     }
 }

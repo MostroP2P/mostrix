@@ -339,7 +339,7 @@ async fn main() -> Result<(), anyhow::Error> {
             format!("🔗 Relays: {}", relays_str),
             format!("💱 Currencies: {}", currencies_str),
         ];
-        terminal.draw(|f| ui_draw(f, &app, &orders, &disputes, Some(&status_lines)))?;
+        terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
     }
 
     // Restore terminal to its original state.

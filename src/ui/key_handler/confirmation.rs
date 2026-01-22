@@ -185,6 +185,11 @@ pub fn handle_confirm_key(
             app.mode = default_mode;
             true
         }
+        UiMode::ConfirmExit(_) => {
+            // 'y' key means YES - exit the application
+            // Return false to break the main loop
+            return false;
+        }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) => {
             // Delegate to the same handler used for Enter to keep logic DRY
             // (synthesize a mode with YES selected)

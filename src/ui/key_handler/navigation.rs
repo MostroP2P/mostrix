@@ -54,7 +54,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
-        | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
+        | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
         }
@@ -111,7 +112,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
-        | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
+        | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
         }
@@ -202,7 +204,8 @@ fn handle_up_key(
         | UiMode::ConfirmRelay(_, _)
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
-        | UiMode::ConfirmClearCurrencies(_) => {
+        | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
     }
@@ -301,7 +304,8 @@ fn handle_down_key(
         | UiMode::ConfirmRelay(_, _)
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
-        | UiMode::ConfirmClearCurrencies(_) => {
+        | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
     }
@@ -346,6 +350,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
+                // Reset scroll to bottom when switching parties (will be set in render)
+                app.admin_chat_list_state.select(None);
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = (form.focused + 1) % 9;
                 // Skip field 4 if not using range
@@ -360,6 +366,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
+                // Reset scroll to bottom when switching parties (will be set in render)
+                app.admin_chat_list_state.select(None);
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = if form.focused == 0 {
                     8

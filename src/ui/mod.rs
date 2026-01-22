@@ -16,6 +16,7 @@ pub mod admin_key_confirm;
 pub mod dispute_finalization_popup;
 pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
+pub mod exit_confirm;
 pub mod helpers;
 pub mod key_handler;
 pub mod key_input_popup;
@@ -38,6 +39,7 @@ pub enum UserTab {
     Messages,
     Settings,
     CreateNewOrder,
+    Exit,
 }
 
 impl Display for UserTab {
@@ -51,6 +53,7 @@ impl Display for UserTab {
                 UserTab::Messages => "Messages",
                 UserTab::Settings => "Settings",
                 UserTab::CreateNewOrder => "Create New Order",
+                UserTab::Exit => "Exit",
             }
         )
     }
@@ -64,6 +67,7 @@ impl UserTab {
             2 => UserTab::Messages,
             3 => UserTab::CreateNewOrder,
             4 => UserTab::Settings,
+            5 => UserTab::Exit,
             _ => panic!("Invalid user tab index: {}", index),
         }
     }
@@ -75,11 +79,12 @@ impl UserTab {
             UserTab::Messages => 2,
             UserTab::CreateNewOrder => 3,
             UserTab::Settings => 4,
+            UserTab::Exit => 5,
         }
     }
 
     pub fn count() -> usize {
-        5
+        6
     }
 
     pub fn first() -> Self {
@@ -87,7 +92,7 @@ impl UserTab {
     }
 
     pub fn last() -> Self {
-        UserTab::Settings
+        UserTab::Exit
     }
 
     pub fn prev(self) -> Self {
@@ -97,6 +102,7 @@ impl UserTab {
             UserTab::Messages => UserTab::MyTrades,
             UserTab::CreateNewOrder => UserTab::Messages,
             UserTab::Settings => UserTab::CreateNewOrder,
+            UserTab::Exit => UserTab::Settings,
         }
     }
 
@@ -106,7 +112,8 @@ impl UserTab {
             UserTab::MyTrades => UserTab::Messages,
             UserTab::Messages => UserTab::CreateNewOrder,
             UserTab::CreateNewOrder => UserTab::Settings,
-            UserTab::Settings => UserTab::Settings,
+            UserTab::Settings => UserTab::Exit,
+            UserTab::Exit => UserTab::Exit,
         }
     }
 }
@@ -116,6 +123,7 @@ pub enum AdminTab {
     DisputesPending,
     DisputesInProgress,
     Settings,
+    Exit,
 }
 
 impl Display for AdminTab {
@@ -127,6 +135,7 @@ impl Display for AdminTab {
                 AdminTab::DisputesPending => "Disputes Pending",
                 AdminTab::DisputesInProgress => "Disputes in Progress",
                 AdminTab::Settings => "Settings",
+                AdminTab::Exit => "Exit",
             }
         )
     }
@@ -138,6 +147,7 @@ impl AdminTab {
             0 => AdminTab::DisputesPending,
             1 => AdminTab::DisputesInProgress,
             2 => AdminTab::Settings,
+            3 => AdminTab::Exit,
             _ => panic!("Invalid admin tab index: {}", index),
         }
     }
@@ -147,11 +157,12 @@ impl AdminTab {
             AdminTab::DisputesPending => 0,
             AdminTab::DisputesInProgress => 1,
             AdminTab::Settings => 2,
+            AdminTab::Exit => 3,
         }
     }
 
     pub fn count() -> usize {
-        3
+        4
     }
 
     pub fn first() -> Self {
@@ -159,7 +170,7 @@ impl AdminTab {
     }
 
     pub fn last() -> Self {
-        AdminTab::Settings
+        AdminTab::Exit
     }
 
     pub fn prev(self) -> Self {
@@ -167,6 +178,7 @@ impl AdminTab {
             AdminTab::DisputesPending => AdminTab::DisputesPending,
             AdminTab::DisputesInProgress => AdminTab::DisputesPending,
             AdminTab::Settings => AdminTab::DisputesInProgress,
+            AdminTab::Exit => AdminTab::Settings,
         }
     }
 
@@ -174,7 +186,8 @@ impl AdminTab {
         match self {
             AdminTab::DisputesPending => AdminTab::DisputesInProgress,
             AdminTab::DisputesInProgress => AdminTab::Settings,
-            AdminTab::Settings => AdminTab::Settings,
+            AdminTab::Settings => AdminTab::Exit,
+            AdminTab::Exit => AdminTab::Exit,
         }
     }
 }
@@ -334,7 +347,7 @@ impl Display for ChatParty {
 }
 
 /// Represents the sender of a chat message in dispute resolution
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatSender {
     Admin,
     Buyer,
@@ -363,6 +376,7 @@ pub enum UiMode {
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
+    ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
     // User-specific modes
     UserMode(UserMode),
@@ -482,8 +496,9 @@ pub struct AppState {
     pub selected_in_progress_idx: usize, // Selected dispute in Disputes in Progress tab
     pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
     pub admin_chat_input: String,    // Current message being typed by admin
+    pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
-    pub admin_chat_scroll_offset: usize, // Scroll position in chat (0 = bottom/newest)
+    pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -537,8 +552,9 @@ impl AppState {
             selected_in_progress_idx: 0,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
+            admin_chat_input_enabled: true, // Chat input enabled by default
             admin_dispute_chats: HashMap::new(),
-            admin_chat_scroll_offset: 0,
+            admin_chat_list_state: ratatui::widgets::ListState::default(),
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
@@ -599,7 +615,7 @@ pub(crate) fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
 
 pub fn ui_draw(
     f: &mut ratatui::Frame,
-    app: &AppState,
+    app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     status_line: Option<&[String]>,
@@ -656,6 +672,10 @@ pub fn ui_draw(
             app.user_role,
             app.selected_settings_option,
         ),
+        (Tab::User(UserTab::Exit), UserRole::User)
+        | (Tab::Admin(AdminTab::Exit), UserRole::Admin) => {
+            tab_content::render_exit_tab(f, content_area)
+        }
         _ => {
             // Fallback for invalid combinations
             tab_content::render_coming_soon(f, content_area, "Unknown")
@@ -818,6 +838,11 @@ pub fn ui_draw(
             key_string,
             *selected_button,
         );
+    }
+
+    // Exit confirmation popup
+    if let UiMode::ConfirmExit(selected_button) = &app.mode {
+        exit_confirm::render_exit_confirm(f, *selected_button);
     }
 
     // Dispute finalization popup

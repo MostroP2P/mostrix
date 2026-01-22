@@ -80,10 +80,12 @@ The interface is divided into three main sections:
 
 - **Up/Down**: Select dispute in sidebar
 - **Tab**: Switch between buyer and seller chat
-- **Type**: Start composing message
+- **Type**: Start composing message (when input enabled)
 - **Enter**: Send message or open finalization popup
 - **PageUp/PageDown**: Scroll chat history
-- **Backspace**: Delete characters
+- **End**: Jump to bottom of chat (latest messages)
+- **Shift+I**: Toggle chat input enabled/disabled
+- **Backspace**: Delete characters (when input enabled)
 
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 
@@ -484,13 +486,20 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 
 - **Per-dispute storage**: Each dispute maintains its own chat history
 - **Party filtering**: Only shows messages from the active party (Buyer or Seller)
-- **Scroll support**: PageUp/PageDown to navigate through message history
+- **Scroll support**: 
+  - **PageUp/PageDown**: Navigate through message history
+  - **End**: Jump to bottom of chat (latest messages)
+  - **Visual scrollbar**: Right-side scrollbar shows position in chat history (↑/↓/│/█ symbols)
 - **Auto-scroll**: Automatically scrolls to newest messages after sending
 - **Persistent history**: All messages stored in `admin_dispute_chats` HashMap
 
 **Input Handling**:
 
-- **Direct typing**: Start typing to add text to input (no special mode needed)
+- **Direct typing**: Start typing to add text to input (when input is enabled)
+- **Input toggle**: Press **Shift+I** to enable/disable chat input
+  - When disabled, prevents accidental typing while navigating
+  - Visual indicator shows "disabled - Shift+I to enable" in input title
+  - Input is enabled by default when entering dispute management
 - **Text wrapping**: Input wraps at word boundaries with trim behavior
 - **Multi-line support**: Supports up to 10 lines with visual growth
 - **Send on Enter**: Press Enter to send message (or finalize if input is empty)
@@ -586,11 +595,13 @@ pub admin_chat_scroll_offset: usize, // 0 = bottom/newest
 
 **In Chat Interface**:
 
-- **Type**: Start typing message directly (no mode switch needed)
+- **Type**: Start typing message directly (when input enabled)
 - **Enter**: Send message (if input has text) or open finalization popup (if empty)
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
-- **Backspace**: Delete characters from input
+- **End**: Jump to bottom of chat (latest messages)
+- **Shift+I**: Toggle chat input enabled/disabled
+- **Backspace**: Delete characters from input (when input enabled)
 - **Up/Down**: Select different dispute in sidebar
 
 **Visual Safety Features**:
@@ -598,9 +609,11 @@ pub admin_chat_scroll_offset: usize, // 0 = bottom/newest
 - **Color differentiation**: Buyer (Green) and Seller (Red) messages clearly distinguished
 - **Party indicators**: `▶` for admin, `◀` for parties
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
-- **Dynamic footer**: Shows different shortcuts based on input focus state
+- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
 - **Context preservation**: Each dispute maintains its own complete message history
+- **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
+- **Input state indicators**: Clear visual feedback when input is enabled/disabled
 
 #### Implementation Details
 
@@ -626,9 +639,10 @@ pub admin_chat_scroll_offset: usize, // 0 = bottom/newest
 
 **Source Files**:
 
-- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering and dynamic input sizing
+- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, and scrollbar
 - `src/ui/key_handler/enter_handlers.rs` - Message sending logic with mockup responses
-- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs)
+- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key
+- `src/ui/helpers.rs` - Scrollbar rendering (`render_chat_scrollbar`)
 
 ## Dispute Resolution Actions
 

@@ -1,11 +1,12 @@
 use crate::ui::{
-    AdminMode, AdminTab, AppState, FormState, MessageViewState, Tab, TakeOrderState, UiMode,
-    UserMode, UserRole, UserTab,
+    helpers::save_chat_message, AdminMode, AdminTab, AppState, FormState, MessageViewState, Tab,
+    TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 use crate::util::order_utils::{
     execute_add_invoice, execute_admin_add_solver, execute_admin_cancel, execute_admin_settle,
     execute_send_msg,
 };
+
 use crate::SETTINGS;
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
@@ -182,7 +183,7 @@ pub fn handle_enter_key(
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
+) -> bool {
     let default_mode = match app.user_role {
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
@@ -193,13 +194,16 @@ pub fn handle_enter_key(
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
             handle_enter_normal_mode(app, orders, disputes);
+            true
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             handle_enter_creating_order(app, &form);
+            true
         }
         UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
             // Enter acts as Yes in confirmation - handled by 'y' key
             app.mode = default_mode;
+            true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             handle_enter_taking_order(
@@ -210,12 +214,14 @@ pub fn handle_enter_key(
                 mostro_pubkey,
                 order_result_tx,
             );
+            true
         }
         UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
         | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             // No action while waiting
             app.mode = default_mode;
+            true
         }
         UiMode::OrderResult(_) => {
             // Close result popup
@@ -226,6 +232,7 @@ pub fn handle_enter_key(
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
+            true
         }
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
             handle_enter_message_notification(
@@ -239,6 +246,7 @@ pub fn handle_enter_key(
                 order_result_tx,
             );
             // Mode is updated inside handle_enter_message_notification
+            true
         }
         UiMode::ViewingMessage(view_state) => {
             // Enter confirms the selected button (YES or NO)
@@ -251,6 +259,7 @@ pub fn handle_enter_key(
                 order_result_tx,
             );
             // Mode is updated inside handle_enter_viewing_message
+            true
         }
         UiMode::AdminMode(AdminMode::AddSolver(_))
         | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
@@ -264,6 +273,7 @@ pub fn handle_enter_key(
                 mostro_pubkey,
                 order_result_tx,
             );
+            true
         }
         UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
@@ -271,8 +281,14 @@ pub fn handle_enter_key(
         | UiMode::ConfirmRelay(_, _)
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
-        | UiMode::ConfirmClearCurrencies(_) => {
-            handle_enter_settings_mode(app, current_mode, default_mode, client);
+        | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmExit(_) => {
+            let should_continue =
+                handle_enter_settings_mode(app, current_mode, default_mode, client);
+            if !should_continue {
+                return false; // Exit application
+            }
+            true
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
             if selected_button {
@@ -289,16 +305,18 @@ pub fn handle_enter_key(
                 // NO selected - go back to normal mode
                 app.mode = default_mode;
             }
+            true
         }
         UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
             // No action while waiting
             app.mode = default_mode;
+            true
         }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Handle Enter in Disputes in Progress tab
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                // Check if chat input is focused (not empty) - send message
-                if !app.admin_chat_input.trim().is_empty() {
+                // Check if chat input is focused (not empty) and enabled - send message
+                if !app.admin_chat_input.trim().is_empty() && app.admin_chat_input_enabled {
                     if let Some(selected_dispute) = app
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
@@ -306,22 +324,25 @@ pub fn handle_enter_key(
                         let dispute_id = selected_dispute.id.clone();
                         let message_content = app.admin_chat_input.trim().to_string();
                         let timestamp = chrono::Utc::now().timestamp();
-                        
+
                         // Add admin's message
                         let admin_message = crate::ui::DisputeChatMessage {
                             sender: crate::ui::ChatSender::Admin,
                             content: message_content.clone(),
                             timestamp,
                         };
-                        
+
                         app.admin_dispute_chats
                             .entry(dispute_id.clone())
                             .or_insert_with(Vec::new)
-                            .push(admin_message);
-                        
+                            .push(admin_message.clone());
+
+                        // Save admin message to file
+                        save_chat_message(&dispute_id, &admin_message);
+
                         // TODO: Send message to active chat party via Nostr DM
                         // This will be implemented when we add the DM sending logic
-                        
+
                         // Generate mockup response from buyer or seller
                         let mockup_responses = [
                             "I understand, let me check the payment details.",
@@ -333,32 +354,62 @@ pub fn handle_enter_key(
                             "No, I did not receive the payment yet.",
                             "Can we extend the deadline by 24 hours?",
                         ];
-                        
+
                         // Use message length to pseudo-randomly select a response
                         let response_idx = message_content.len() % mockup_responses.len();
                         let mockup_response = mockup_responses[response_idx];
-                        
+
                         // Add mockup response from the active chat party
                         let party_sender = match app.active_chat_party {
                             crate::ui::ChatParty::Buyer => crate::ui::ChatSender::Buyer,
                             crate::ui::ChatParty::Seller => crate::ui::ChatSender::Seller,
                         };
-                        
+
                         let party_message = crate::ui::DisputeChatMessage {
                             sender: party_sender,
                             content: mockup_response.to_string(),
                             timestamp: timestamp + 2, // 2 seconds later
                         };
-                        
+
                         app.admin_dispute_chats
-                            .entry(dispute_id)
+                            .entry(dispute_id.clone())
                             .or_insert_with(Vec::new)
-                            .push(party_message);
-                        
-                        // Reset scroll to bottom to show new messages
-                        app.admin_chat_scroll_offset = 0;
+                            .push(party_message.clone());
+
+                        // Save party message to file
+                        save_chat_message(&dispute_id, &party_message);
+
+                        // Auto-scroll to bottom to show new messages
+                        // Count visible messages (filtered by active party)
+                        let visible_count = app
+                            .admin_dispute_chats
+                            .get(&dispute_id)
+                            .map(|msgs| {
+                                msgs.iter()
+                                    .filter(|msg| {
+                                        matches!(
+                                            (msg.sender, app.active_chat_party),
+                                            (crate::ui::ChatSender::Admin, _)
+                                                | (
+                                                    crate::ui::ChatSender::Buyer,
+                                                    crate::ui::ChatParty::Buyer
+                                                )
+                                                | (
+                                                    crate::ui::ChatSender::Seller,
+                                                    crate::ui::ChatParty::Seller
+                                                )
+                                        )
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0);
+
+                        if visible_count > 0 {
+                            app.admin_chat_list_state
+                                .select(Some(visible_count.saturating_sub(1)));
+                        }
                     }
-                    
+
                     // Clear the input and keep focus
                     app.admin_chat_input.clear();
                     // IMPORTANT: Stay in ManagingDispute mode to keep input focus
@@ -375,13 +426,14 @@ pub fn handle_enter_key(
                     }
                 }
             }
+            true
         }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
             dispute_id,
             selected_button,
         )) => {
             // Handle Enter in finalization popup
-            match selected_button {
+            let result = match selected_button {
                 0 => {
                     // Pay Buyer - execute AdminSettle
                     execute_finalize_dispute_action(
@@ -392,6 +444,7 @@ pub fn handle_enter_key(
                         order_result_tx,
                         true, // is_settle
                     );
+                    true
                 }
                 1 => {
                     // Refund Seller - execute AdminCancel
@@ -403,20 +456,25 @@ pub fn handle_enter_key(
                         order_result_tx,
                         false, // is_settle
                     );
+                    true
                 }
                 2 => {
                     // Exit - return to normal mode
                     app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    true
                 }
                 _ => {
                     // Invalid button, return to normal mode
                     app.mode = default_mode;
+                    true
                 }
-            }
+            };
+            result
         }
         UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
             // No action while waiting
             app.mode = default_mode;
+            true
         }
     }
 }
@@ -500,7 +558,7 @@ fn handle_enter_settings_mode(
     mode: UiMode,
     default_mode: UiMode,
     client: &Client,
-) {
+) -> bool {
     match mode {
         UiMode::AddMostroPubkey(key_state) => {
             // Validate Mostro pubkey (hex format) before proceeding to confirmation
@@ -593,11 +651,23 @@ fn handle_enter_settings_mode(
             }
             app.mode = default_mode;
         }
+        UiMode::ConfirmExit(selected_button) => {
+            if selected_button {
+                // YES selected - exit the application
+                // Return false to break the main loop
+                return false;
+            } else {
+                // NO selected - cancel and return to normal mode
+                app.mode = default_mode;
+                return true;
+            }
+        }
         _ => {
             // This should not happen, but handle gracefully
             app.mode = default_mode;
         }
     }
+    true // Continue the loop by default
 }
 
 fn handle_enter_normal_mode(
@@ -655,6 +725,12 @@ fn handle_enter_normal_mode(
                 app.mode = UiMode::ViewingMessage(view_state);
             }
         }
+    } else if matches!(
+        app.active_tab,
+        Tab::Admin(AdminTab::Exit) | Tab::User(UserTab::Exit)
+    ) {
+        // Show exit confirmation popup
+        app.mode = UiMode::ConfirmExit(true); // true = Yes button selected by default
     } else if matches!(
         app.active_tab,
         Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)

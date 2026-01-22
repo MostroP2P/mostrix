@@ -30,16 +30,19 @@ pub use validation::{validate_currency, validate_mostro_pubkey, validate_npub, v
 fn handle_admin_chat_input(app: &mut AppState, code: KeyCode) -> Option<bool> {
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
         if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-            match code {
-                KeyCode::Char(c) => {
-                    app.admin_chat_input.push(c);
-                    return Some(true);
+            // Only allow input if chat input is enabled
+            if app.admin_chat_input_enabled {
+                match code {
+                    KeyCode::Char(c) => {
+                        app.admin_chat_input.push(c);
+                        return Some(true);
+                    }
+                    KeyCode::Backspace => {
+                        app.admin_chat_input.pop();
+                        return Some(true);
+                    }
+                    _ => {} // For other keys, continue to normal handling
                 }
-                KeyCode::Backspace => {
-                    app.admin_chat_input.pop();
-                    return Some(true);
-                }
-                _ => {} // For other keys, continue to normal handling
             }
         }
     }
@@ -149,6 +152,22 @@ pub fn handle_key_event(
         }
     }
 
+    // Handle Shift+I to toggle chat input enabled/disabled
+    if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+            if code == KeyCode::Char('i') || code == KeyCode::Char('I') {
+                // Check if Shift is pressed
+                if key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
+                    return Some(true);
+                }
+            }
+        }
+    }
+
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
     if let Some(result) = handle_admin_chat_input(app, code) {
@@ -165,7 +184,8 @@ pub fn handle_key_event(
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
-                | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
+                | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
@@ -186,22 +206,109 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
+            // Handle chat message navigation when input is disabled
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    if !app.admin_chat_input_enabled {
+                        if let Some(selected_dispute) = app
+                            .admin_disputes_in_progress
+                            .get(app.selected_in_progress_idx)
+                        {
+                            let dispute_id = &selected_dispute.id;
+                            if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                                // Filter messages by active party to get actual count
+                                let visible_count = messages
+                                    .iter()
+                                    .filter(|msg| {
+                                        matches!(
+                                            (msg.sender, app.active_chat_party),
+                                            (super::ChatSender::Admin, _)
+                                                | (
+                                                    super::ChatSender::Buyer,
+                                                    super::ChatParty::Buyer
+                                                )
+                                                | (
+                                                    super::ChatSender::Seller,
+                                                    super::ChatParty::Seller
+                                                )
+                                        )
+                                    })
+                                    .count();
+
+                                if visible_count > 0 {
+                                    let current = app
+                                        .admin_chat_list_state
+                                        .selected()
+                                        .unwrap_or(visible_count.saturating_sub(1));
+
+                                    let new_selection = if code == KeyCode::Up {
+                                        // Move up (older messages)
+                                        if current > 0 {
+                                            current - 1
+                                        } else {
+                                            0
+                                        }
+                                    } else {
+                                        // Move down (newer messages)
+                                        (current + 1).min(visible_count.saturating_sub(1))
+                                    };
+
+                                    app.admin_chat_list_state.select(Some(new_selection));
+                                    return Some(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             handle_navigation(code, app, orders, disputes);
             Some(true)
         }
         KeyCode::PageUp | KeyCode::PageDown => {
-            // Handle chat scrolling in ManagingDispute mode
+            // Handle chat scrolling in ManagingDispute mode using ListState
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    // Scroll chat messages
-                    if code == KeyCode::PageUp {
-                        // Scroll up (show older messages)
-                        app.admin_chat_scroll_offset = app.admin_chat_scroll_offset.saturating_add(5);
-                    } else {
-                        // Scroll down (show newer messages)
-                        app.admin_chat_scroll_offset = app.admin_chat_scroll_offset.saturating_sub(5);
+                    if let Some(selected_dispute) = app
+                        .admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx)
+                    {
+                        let dispute_id = &selected_dispute.id;
+                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                            // Filter messages by active party to get actual count
+                            let visible_count = messages
+                                .iter()
+                                .filter(|msg| {
+                                    matches!(
+                                        (msg.sender, app.active_chat_party),
+                                        (super::ChatSender::Admin, _)
+                                            | (super::ChatSender::Buyer, super::ChatParty::Buyer)
+                                            | (super::ChatSender::Seller, super::ChatParty::Seller)
+                                    )
+                                })
+                                .count();
+
+                            if visible_count > 0 {
+                                let current = app
+                                    .admin_chat_list_state
+                                    .selected()
+                                    .unwrap_or(visible_count.saturating_sub(1));
+
+                                if code == KeyCode::PageUp {
+                                    // Scroll up (show older messages) - move selection up by ~10 items
+                                    let new_selection = current
+                                        .saturating_sub(10)
+                                        .min(visible_count.saturating_sub(1));
+                                    app.admin_chat_list_state.select(Some(new_selection));
+                                } else {
+                                    // Scroll down (show newer messages) - move selection down by ~10 items
+                                    let new_selection =
+                                        (current + 10).min(visible_count.saturating_sub(1));
+                                    app.admin_chat_list_state.select(Some(new_selection));
+                                }
+                                return Some(true);
+                            }
+                        }
                     }
-                    return Some(true);
                 }
             }
             Some(true)
@@ -211,7 +318,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            handle_enter_key(
+            let should_continue = handle_enter_key(
                 app,
                 orders,
                 disputes,
@@ -220,13 +327,48 @@ pub fn handle_key_event(
                 mostro_pubkey,
                 order_result_tx,
             );
-            Some(true)
+            Some(should_continue)
         }
         KeyCode::Esc => {
             let should_continue = handle_esc_key(app);
             Some(should_continue)
         }
-        KeyCode::Char('q') => Some(false), // Break the loop
+        KeyCode::End => {
+            // Jump to bottom of chat (latest messages)
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    if let Some(selected_dispute) = app
+                        .admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx)
+                    {
+                        let dispute_id = &selected_dispute.id;
+                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                            // Filter messages by active party to get actual count
+                            let visible_count = messages
+                                .iter()
+                                .filter(|msg| {
+                                    matches!(
+                                        (msg.sender, app.active_chat_party),
+                                        (super::ChatSender::Admin, _)
+                                            | (super::ChatSender::Buyer, super::ChatParty::Buyer)
+                                            | (super::ChatSender::Seller, super::ChatParty::Seller)
+                                    )
+                                })
+                                .count();
+
+                            if visible_count > 0 {
+                                // Jump to last message (bottom)
+                                app.admin_chat_list_state
+                                    .select(Some(visible_count.saturating_sub(1)));
+                                return Some(true);
+                            }
+                        }
+                    }
+                }
+            }
+            Some(true)
+        }
+        // 'q' key removed - use Exit tab instead
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let should_continue =
                 handle_confirm_key(app, pool, client, mostro_pubkey, order_result_tx);
