@@ -258,7 +258,8 @@ impl Order {
 /// Admin dispute model for storing SolverDisputeInfo
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct AdminDispute {
-    pub id: String,
+    pub id: String,         // Order ID (from dispute_info.id)
+    pub dispute_id: String, // Actual dispute ID (from AdminTakeDispute)
     pub kind: Option<String>,
     pub status: Option<String>,
     pub hash: Option<String>,
@@ -279,6 +280,7 @@ pub struct AdminDispute {
     pub payment_method: String,
     pub amount: i64,
     pub fiat_amount: i64,
+    pub fiat_code: String,
     pub fee: i64,
     pub routing_fee: i64,
     pub buyer_invoice: Option<String>,
@@ -291,7 +293,8 @@ impl AdminDispute {
     /// Create a new admin dispute from SolverDisputeInfo and save it to the database
     pub async fn new(
         pool: &SqlitePool,
-        dispute_info: mostro_core::dispute::SolverDisputeInfo,
+        dispute_info: SolverDisputeInfo,
+        dispute_id: String,
     ) -> Result<Self> {
         // Serialize UserInfo to JSON
         let initiator_info_json = dispute_info
@@ -303,8 +306,23 @@ impl AdminDispute {
             .as_ref()
             .and_then(|info| serde_json::to_string(info).ok());
 
+        // Try to get fiat_code from the related order using dispute ID
+        // In Mostro, the dispute ID typically matches the order ID
+        let fiat_code = match Order::get_by_id(pool, &dispute_info.id.to_string()).await {
+            Ok(order) => order.fiat_code,
+            Err(_) => {
+                // Order not found, use default
+                log::debug!(
+                    "Order not found for dispute {}, using default fiat_code",
+                    dispute_info.id
+                );
+                "USD".to_string()
+            }
+        };
+
         let dispute = AdminDispute {
-            id: dispute_info.id.to_string(),
+            id: dispute_info.id.to_string(), // Order ID
+            dispute_id,                      // Actual dispute ID (from AdminTakeDispute)
             kind: Some(dispute_info.kind),
             status: Some(dispute_info.status),
             hash: dispute_info.hash,
@@ -323,6 +341,7 @@ impl AdminDispute {
             payment_method: dispute_info.payment_method,
             amount: dispute_info.amount,
             fiat_amount: dispute_info.fiat_amount,
+            fiat_code,
             fee: dispute_info.fee,
             routing_fee: dispute_info.routing_fee,
             buyer_invoice: dispute_info.buyer_invoice,
@@ -358,17 +377,18 @@ impl AdminDispute {
         sqlx::query(
             r#"
             INSERT INTO admin_disputes (
-                id, kind, status, hash, preimage, order_previous_status,
+                id, dispute_id, kind, status, hash, preimage, order_previous_status,
                 initiator_pubkey, buyer_pubkey, seller_pubkey,
                 initiator_full_privacy, counterpart_full_privacy,
                 initiator_info, counterpart_info,
-                premium, payment_method, amount, fiat_amount, fee, routing_fee,
+                premium, payment_method, amount, fiat_amount, fiat_code, fee, routing_fee,
                 buyer_invoice, invoice_held_at, taken_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
+        .bind(&self.dispute_id)
         .bind(&self.kind)
         .bind(&self.status)
         .bind(&self.hash)
@@ -385,6 +405,7 @@ impl AdminDispute {
         .bind(&self.payment_method)
         .bind(self.amount)
         .bind(self.fiat_amount)
+        .bind(&self.fiat_code)
         .bind(self.fee)
         .bind(self.routing_fee)
         .bind(&self.buyer_invoice)
@@ -400,16 +421,17 @@ impl AdminDispute {
         sqlx::query(
             r#"
             UPDATE admin_disputes 
-            SET kind = ?, status = ?, hash = ?, preimage = ?, order_previous_status = ?,
+            SET dispute_id = ?, kind = ?, status = ?, hash = ?, preimage = ?, order_previous_status = ?,
                 initiator_pubkey = ?, buyer_pubkey = ?, seller_pubkey = ?,
                 initiator_full_privacy = ?, counterpart_full_privacy = ?,
                 initiator_info = ?, counterpart_info = ?,
-                premium = ?, payment_method = ?, amount = ?, fiat_amount = ?,
+                premium = ?, payment_method = ?, amount = ?, fiat_amount = ?, fiat_code = ?,
                 fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
                 taken_at = ?, created_at = ?
             WHERE id = ?
             "#,
         )
+        .bind(&self.dispute_id)
         .bind(&self.kind)
         .bind(&self.status)
         .bind(&self.hash)
@@ -426,6 +448,7 @@ impl AdminDispute {
         .bind(&self.payment_method)
         .bind(self.amount)
         .bind(self.fiat_amount)
+        .bind(&self.fiat_code)
         .bind(self.fee)
         .bind(self.routing_fee)
         .bind(&self.buyer_invoice)
@@ -498,6 +521,30 @@ impl AdminDispute {
     pub async fn set_status_in_progress(pool: &SqlitePool, dispute_id: &str) -> Result<()> {
         sqlx::query(r#"UPDATE admin_disputes SET status = 'InProgress' WHERE id = ?"#)
             .bind(dispute_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Update the status of a dispute to Settled
+    ///
+    /// This is called when an admin settles a dispute in favor of the buyer.
+    /// Updates by id (the order ID, which is the primary key).
+    pub async fn set_status_settled(pool: &SqlitePool, order_id: &str) -> Result<()> {
+        sqlx::query(r#"UPDATE admin_disputes SET status = 'Settled' WHERE id = ?"#)
+            .bind(order_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Update the status of a dispute to SellerRefunded
+    ///
+    /// This is called when an admin cancels a dispute and refunds the seller.
+    /// Updates by id (the order ID, which is the primary key).
+    pub async fn set_status_seller_refunded(pool: &SqlitePool, order_id: &str) -> Result<()> {
+        sqlx::query(r#"UPDATE admin_disputes SET status = 'SellerRefunded' WHERE id = ?"#)
+            .bind(order_id)
             .execute(pool)
             .await?;
         Ok(())

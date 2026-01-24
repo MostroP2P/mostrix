@@ -13,6 +13,7 @@ pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
 pub mod admin_key_confirm;
+pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;
 pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
@@ -328,13 +329,21 @@ pub enum AdminMode {
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
     ManagingDispute,               // Mode for "Disputes in Progress" tab
     ReviewingDisputeForFinalization(uuid::Uuid, usize), // (dispute_id, selected_button: 0=Pay Buyer, 1=Refund Seller, 2=Exit)
-    WaitingDisputeFinalization(uuid::Uuid),             // (dispute_id)
+    ConfirmFinalizeDispute(uuid::Uuid, bool, bool), // (dispute_id, is_settle: true=Pay Buyer, false=Refund Seller, selected_button: true=Yes, false=No)
+    WaitingDisputeFinalization(uuid::Uuid),         // (dispute_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatParty {
     Buyer,
     Seller,
+}
+
+/// Filter for viewing disputes in the Disputes in Progress tab
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisputeFilter {
+    InProgress, // Show only InProgress disputes
+    Finalized,  // Show only finalized disputes (Settled, SellerRefunded, Released)
 }
 
 impl Display for ChatParty {
@@ -507,6 +516,7 @@ pub struct AppState {
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<crate::models::AdminDispute>, // Taken disputes
+    pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
 }
 
 /// Build a `MessageNotification` from an `OrderMessage` for use in popups.
@@ -563,6 +573,7 @@ impl AppState {
             selected_message_idx: 0,
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
+            dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
         }
     }
 
@@ -853,6 +864,22 @@ pub fn ui_draw(
     )) = &app.mode
     {
         dispute_finalization_popup::render_finalization_popup(f, app, dispute_id, *selected_button);
+    }
+
+    // Dispute finalization confirmation popup
+    if let UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+        dispute_id,
+        is_settle,
+        selected_button,
+    )) = &app.mode
+    {
+        dispute_finalization_confirm::render_finalization_confirm(
+            f,
+            app,
+            dispute_id,
+            *is_settle,
+            *selected_button,
+        );
     }
 
     // Waiting for dispute finalization

@@ -106,7 +106,10 @@ pub async fn execute_take_dispute(
                 dispute_info_clone.status = "InProgress".to_string();
 
                 // Save dispute info to database with InProgress status
-                if let Err(e) = AdminDispute::new(pool, dispute_info_clone).await {
+                // Pass the dispute_id (from the function parameter) to distinguish it from order_id
+                if let Err(e) =
+                    AdminDispute::new(pool, dispute_info_clone, dispute_id.to_string()).await
+                {
                     log::error!("Failed to save dispute to database: {}", e);
                     return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));
                 }

@@ -325,13 +325,18 @@ pub fn handle_enter_key(
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Handle Enter in Disputes in Progress tab
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                // Check if chat input is focused (not empty) and enabled - send message
+                // IMPORTANT: Restore mode immediately to prevent any state issues
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+
+                // Check if chat input has content and is enabled - send message
+                // If input is empty, do nothing (don't disable input, don't trigger any action)
                 if !app.admin_chat_input.trim().is_empty() && app.admin_chat_input_enabled {
                     if let Some(selected_dispute) = app
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
                     {
-                        let dispute_id = selected_dispute.id.clone();
+                        // Use dispute_id as the key for chat messages
+                        let dispute_id_key = selected_dispute.dispute_id.clone();
                         let message_content = app.admin_chat_input.trim().to_string();
                         let timestamp = chrono::Utc::now().timestamp();
 
@@ -344,12 +349,12 @@ pub fn handle_enter_key(
                         };
 
                         app.admin_dispute_chats
-                            .entry(dispute_id.clone())
-                            .or_insert_with(Vec::new)
+                            .entry(dispute_id_key.clone())
+                            .or_default()
                             .push(admin_message.clone());
 
-                        // Save admin message to file
-                        save_chat_message(&dispute_id, &admin_message);
+                        // Save admin message to file (use dispute_id_key for consistency)
+                        save_chat_message(&dispute_id_key, &admin_message);
 
                         // TODO: Send message to active chat party via Nostr DM
                         // This will be implemented when we add the DM sending logic
@@ -384,27 +389,25 @@ pub fn handle_enter_key(
                         };
 
                         app.admin_dispute_chats
-                            .entry(dispute_id.clone())
-                            .or_insert_with(Vec::new)
+                            .entry(dispute_id_key.clone())
+                            .or_default()
                             .push(party_message.clone());
 
                         // Save party message to file
-                        save_chat_message(&dispute_id, &party_message);
+                        save_chat_message(&dispute_id_key, &party_message);
 
                         // Auto-scroll to bottom to show new messages
                         // Count visible messages (filtered by active party)
                         let visible_count = app
                             .admin_dispute_chats
-                            .get(&dispute_id)
+                            .get(&dispute_id_key)
                             .map(|msgs| {
                                 msgs.iter()
                                     .filter(|msg| {
                                         match msg.sender {
                                             crate::ui::ChatSender::Admin => {
                                                 // Admin messages should only show in the chat party they were sent to
-                                                msg.target_party.map_or(false, |target| {
-                                                    target == app.active_chat_party
-                                                })
+                                                msg.target_party == Some(app.active_chat_party)
                                             }
                                             crate::ui::ChatSender::Buyer => {
                                                 app.active_chat_party == crate::ui::ChatParty::Buyer
@@ -427,19 +430,19 @@ pub fn handle_enter_key(
 
                     // Clear the input and keep focus
                     app.admin_chat_input.clear();
-                    // IMPORTANT: Stay in ManagingDispute mode to keep input focus
+                    // IMPORTANT: Stay in ManagingDispute mode to keep input focus and enabled
                     app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                } else if let Some(selected_dispute) = app
-                    .admin_disputes_in_progress
-                    .get(app.selected_in_progress_idx)
-                {
-                    // If no chat input, and a dispute is selected, open finalization popup
-                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.id) {
-                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
-                            dispute_id, 0, // Default to first button (Pay Buyer)
-                        ));
-                    }
+                    // Ensure input remains enabled after sending message
+                    app.admin_chat_input_enabled = true;
+                } else {
+                    // If input is empty, ensure input stays enabled and mode is correct
+                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    app.admin_chat_input_enabled = true;
                 }
+                // (finalization is now triggered by Shift+F, not Enter)
+            } else {
+                // Not in Disputes in Progress tab, restore mode anyway
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             }
             true
         }
@@ -447,30 +450,53 @@ pub fn handle_enter_key(
             dispute_id,
             selected_button,
         )) => {
+            // Check if dispute is finalized
+            let is_finalized = app
+                .admin_disputes_in_progress
+                .iter()
+                .find(|d| d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string())
+                .map(|d| {
+                    matches!(
+                        d.status.as_deref(),
+                        Some("Settled") | Some("SellerRefunded") | Some("Released")
+                    )
+                })
+                .unwrap_or(false);
+
             // Handle Enter in finalization popup
-            let result = match selected_button {
+            match selected_button {
                 0 => {
-                    // Pay Buyer - execute AdminSettle
-                    execute_finalize_dispute_action(
-                        app,
-                        dispute_id,
-                        client,
-                        mostro_pubkey,
-                        order_result_tx,
-                        true, // is_settle
-                    );
+                    // Pay Buyer - show confirmation popup
+                    if is_finalized {
+                        // Dispute already finalized, show error
+                        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+                            "Cannot finalize: dispute is already finalized".to_string(),
+                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    } else {
+                        // Show confirmation popup
+                        app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+                            dispute_id, true, // is_settle
+                            true, // selected_button: true=Yes
+                        ));
+                    }
                     true
                 }
                 1 => {
-                    // Refund Seller - execute AdminCancel
-                    execute_finalize_dispute_action(
-                        app,
-                        dispute_id,
-                        client,
-                        mostro_pubkey,
-                        order_result_tx,
-                        false, // is_settle
-                    );
+                    // Refund Seller - show confirmation popup
+                    if is_finalized {
+                        // Dispute already finalized, show error
+                        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+                            "Cannot finalize: dispute is already finalized".to_string(),
+                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    } else {
+                        // Show confirmation popup
+                        app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+                            dispute_id, false, // is_settle
+                            true,  // selected_button: true=Yes
+                        ));
+                    }
                     true
                 }
                 2 => {
@@ -483,8 +509,32 @@ pub fn handle_enter_key(
                     app.mode = default_mode;
                     true
                 }
-            };
-            result
+            }
+        }
+        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+            dispute_id,
+            is_settle,
+            selected_button,
+        )) => {
+            if selected_button {
+                // YES selected - execute the finalization action
+                execute_finalize_dispute_action(
+                    app,
+                    dispute_id,
+                    client,
+                    mostro_pubkey,
+                    pool,
+                    order_result_tx,
+                    is_settle,
+                );
+            } else {
+                // NO selected - go back to finalization popup
+                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                    dispute_id,
+                    if is_settle { 0 } else { 1 }, // Restore the button that was selected
+                ));
+            }
+            true
         }
         UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
             // No action while waiting
@@ -707,7 +757,16 @@ fn handle_enter_normal_mode(
     } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
         let disputes_lock = disputes.lock().unwrap();
-        if let Some(dispute) = disputes_lock.get(app.selected_dispute_idx) {
+        // Filter to only get "initiated" disputes
+        let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
+            .iter()
+            .enumerate()
+            .filter(|(_, dispute)| dispute.status == "initiated")
+            .collect();
+
+        if let Some((_original_idx, dispute)) = initiated_disputes.get(app.selected_dispute_idx) {
+            // Only allow taking disputes with "Initiated" status
+            // (We already filtered, so this should always be true)
             app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
             // Default to YES
         }
@@ -962,6 +1021,7 @@ pub(crate) fn execute_finalize_dispute_action(
     dispute_id: uuid::Uuid,
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
+    pool: &SqlitePool,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
 ) {
@@ -970,6 +1030,8 @@ pub(crate) fn execute_finalize_dispute_action(
     // Spawn async task to finalize dispute
     let client_clone = client.clone();
     let result_tx = order_result_tx.clone();
+    let pool_clone = pool.clone();
+    let dispute_id_str = dispute_id.to_string();
     tokio::spawn(async move {
         let result = if is_settle {
             execute_admin_settle(&dispute_id, &client_clone, mostro_pubkey).await
@@ -979,6 +1041,23 @@ pub(crate) fn execute_finalize_dispute_action(
 
         match result {
             Ok(_) => {
+                // Update dispute status in database
+                let db_update_result = if is_settle {
+                    crate::models::AdminDispute::set_status_settled(&pool_clone, &dispute_id_str)
+                        .await
+                } else {
+                    crate::models::AdminDispute::set_status_seller_refunded(
+                        &pool_clone,
+                        &dispute_id_str,
+                    )
+                    .await
+                };
+
+                if let Err(e) = db_update_result {
+                    log::error!("Failed to update dispute status in database: {}", e);
+                    // Still show success message since the action was sent successfully
+                }
+
                 let action_name = if is_settle {
                     "settled (buyer paid)"
                 } else {

@@ -19,7 +19,21 @@ pub fn render_disputes_tab(
 ) {
     let disputes_lock = disputes.lock().unwrap();
 
-    if disputes_lock.is_empty() {
+    // Filter to only show disputes with "initiated" status
+    let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
+        .iter()
+        .enumerate()
+        .filter(|(_, dispute)| dispute.status == "initiated")
+        .collect();
+
+    // Ensure selected index is within bounds of filtered list
+    let valid_selected_idx = if initiated_disputes.is_empty() {
+        0
+    } else {
+        selected_dispute_idx.min(initiated_disputes.len().saturating_sub(1))
+    };
+
+    if initiated_disputes.is_empty() {
         let paragraph = Paragraph::new(Span::styled(
             "📭 No disputes found",
             Style::default().fg(Color::Yellow),
@@ -39,10 +53,10 @@ pub fn render_disputes_tab(
         ];
         let header = Row::new(header_cells);
 
-        let rows: Vec<Row> = disputes_lock
+        let rows: Vec<Row> = initiated_disputes
             .iter()
             .enumerate()
-            .map(|(i, dispute)| {
+            .map(|(display_idx, (_original_idx, dispute))| {
                 let id_cell = Cell::from(dispute.id.to_string());
 
                 let status_str = dispute.status.clone();
@@ -57,7 +71,7 @@ pub fn render_disputes_tab(
 
                 let row = Row::new(vec![id_cell, status_cell, date_cell]);
 
-                if i == selected_dispute_idx {
+                if display_idx == valid_selected_idx {
                     // Highlight the selected row
                     row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
                 } else {

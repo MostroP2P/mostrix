@@ -27,11 +27,32 @@ pub use validation::{validate_currency, validate_mostro_pubkey, validate_npub, v
 
 /// Check if we're in admin chat input mode and handle character input
 /// Returns Some(true) if handled, None if should continue to normal processing
-fn handle_admin_chat_input(app: &mut AppState, code: KeyCode) -> Option<bool> {
+/// key_event is needed to check for modifiers (e.g., Shift+F should not be treated as input)
+fn handle_admin_chat_input(
+    app: &mut AppState,
+    code: KeyCode,
+    key_event: &crossterm::event::KeyEvent,
+) -> Option<bool> {
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
         if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
             // Only allow input if chat input is enabled
             if app.admin_chat_input_enabled {
+                // Don't treat Shift+F as input (it's used for finalization)
+                if (code == KeyCode::Char('f') || code == KeyCode::Char('F'))
+                    && key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    return None; // Let Shift+F handler process it
+                }
+                // Don't treat Shift+I as input (it's used for toggling input)
+                if (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+                    && key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    return None; // Let Shift+I handler process it
+                }
                 match code {
                     KeyCode::Char(c) => {
                         app.admin_chat_input.push(c);
@@ -81,7 +102,14 @@ fn handle_clipboard_copy(invoice: String) -> bool {
 }
 
 /// Cycle through 3 buttons (Pay Buyer, Refund Seller, Exit) for dispute finalization
-fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode) {
+fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode, is_finalized: bool) {
+    if is_finalized {
+        // If finalized, only allow Exit button (button 2)
+        *selected_button = 2;
+        return;
+    }
+
+    // Normal navigation when not finalized
     if direction == KeyCode::Left {
         *selected_button = if *selected_button == 0 {
             2
@@ -152,25 +180,58 @@ pub fn handle_key_event(
         }
     }
 
-    // Handle Shift+I to toggle chat input enabled/disabled
+    // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
+    // Check these BEFORE handle_admin_chat_input to prevent interception
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-            if code == KeyCode::Char('i') || code == KeyCode::Char('I') {
-                // Check if Shift is pressed
-                if key_event
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::SHIFT)
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+
+        // Handle Shift+F to open dispute finalization popup (check this first)
+        if has_shift && (code == KeyCode::Char('f') || code == KeyCode::Char('F')) {
+            // Only handle if we're in ManagingDispute mode
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                // Open finalization popup if a dispute is selected
+                if let Some(selected_dispute) = app
+                    .admin_disputes_in_progress
+                    .get(app.selected_in_progress_idx)
                 {
-                    app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
-                    return Some(true);
+                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.id) {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                            dispute_id, 0, // Default to first button (Pay Buyer)
+                        ));
+                        return Some(true);
+                    }
                 }
             }
+        }
+
+        // Handle F (without Shift) to toggle between InProgress and Finalized filters
+        if !has_shift && (code == KeyCode::Char('f') || code == KeyCode::Char('F')) {
+            // Toggle filter between InProgress and Finalized
+            app.dispute_filter = match app.dispute_filter {
+                crate::ui::DisputeFilter::InProgress => crate::ui::DisputeFilter::Finalized,
+                crate::ui::DisputeFilter::Finalized => crate::ui::DisputeFilter::InProgress,
+            };
+            // Reset selection index when switching filters
+            app.selected_in_progress_idx = 0;
+            return Some(true);
+        }
+
+        // Handle Shift+I to toggle chat input enabled/disabled
+        if has_shift
+            && (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+            && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
+        {
+            app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
+            return Some(true);
         }
     }
 
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
-    if let Some(result) = handle_admin_chat_input(app, code) {
+    // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
+    if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
         return Some(result);
     }
 
@@ -194,10 +255,25 @@ pub fn handle_key_event(
                     return Some(true);
                 }
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
-                    _dispute_id,
+                    dispute_id,
                     ref mut selected_button,
                 )) => {
-                    cycle_finalization_button(selected_button, code);
+                    // Check if dispute is finalized to skip disabled buttons
+                    let is_finalized = app
+                        .admin_disputes_in_progress
+                        .iter()
+                        .find(|d| {
+                            d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string()
+                        })
+                        .map(|d| {
+                            matches!(
+                                d.status.as_deref(),
+                                Some("Settled") | Some("SellerRefunded") | Some("Released")
+                            )
+                        })
+                        .unwrap_or(false);
+
+                    cycle_finalization_button(selected_button, code, is_finalized);
                     return Some(true);
                 }
                 _ => {}
@@ -214,8 +290,9 @@ pub fn handle_key_event(
                             .admin_disputes_in_progress
                             .get(app.selected_in_progress_idx)
                         {
-                            let dispute_id = &selected_dispute.id;
-                            if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                            // Use dispute_id as the key for chat messages
+                            let dispute_id_key = &selected_dispute.dispute_id;
+                            if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
                                 // Filter messages by active party to get actual count
                                 let visible_count = messages
                                     .iter()
@@ -223,9 +300,7 @@ pub fn handle_key_event(
                                         match msg.sender {
                                             super::ChatSender::Admin => {
                                                 // Admin messages should only show in the chat party they were sent to
-                                                msg.target_party.map_or(false, |target| {
-                                                    target == app.active_chat_party
-                                                })
+                                                msg.target_party == Some(app.active_chat_party)
                                             }
                                             super::ChatSender::Buyer => {
                                                 app.active_chat_party == super::ChatParty::Buyer
@@ -274,8 +349,9 @@ pub fn handle_key_event(
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
                     {
-                        let dispute_id = &selected_dispute.id;
-                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                        // Use dispute_id as the key for chat messages
+                        let dispute_id_key = &selected_dispute.dispute_id;
+                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
                             // Filter messages by active party to get actual count
                             let visible_count = messages
                                 .iter()
@@ -283,9 +359,7 @@ pub fn handle_key_event(
                                     match msg.sender {
                                         super::ChatSender::Admin => {
                                             // Admin messages should only show in the chat party they were sent to
-                                            msg.target_party.map_or(false, |target| {
-                                                target == app.active_chat_party
-                                            })
+                                            msg.target_party == Some(app.active_chat_party)
                                         }
                                         super::ChatSender::Buyer => {
                                             app.active_chat_party == super::ChatParty::Buyer
@@ -351,8 +425,9 @@ pub fn handle_key_event(
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
                     {
-                        let dispute_id = &selected_dispute.id;
-                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id) {
+                        // Use dispute_id as the key for chat messages
+                        let dispute_id_key = &selected_dispute.dispute_id;
+                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
                             // Filter messages by active party to get actual count
                             let visible_count = messages
                                 .iter()
@@ -360,9 +435,7 @@ pub fn handle_key_event(
                                     match msg.sender {
                                         super::ChatSender::Admin => {
                                             // Admin messages should only show in the chat party they were sent to
-                                            msg.target_party.map_or(false, |target| {
-                                                target == app.active_chat_party
-                                            })
+                                            msg.target_party == Some(app.active_chat_party)
                                         }
                                         super::ChatSender::Buyer => {
                                             app.active_chat_party == super::ChatParty::Buyer

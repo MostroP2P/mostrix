@@ -128,22 +128,15 @@ pub fn build_chat_list_items(
     messages: &[DisputeChatMessage],
     active_chat_party: ChatParty,
 ) -> Vec<ListItem<'_>> {
-    if messages.is_empty() {
-        return vec![ListItem::new(Line::from(Span::styled(
-            "No messages yet. Start the conversation!",
-            Style::default().fg(Color::Gray),
-        )))];
-    }
-
-    messages
+    // First compute the filtered message iterator and collect into Vec
+    let filtered_items: Vec<ListItem<'_>> = messages
         .iter()
         .filter_map(|msg| {
             // Filter by active chat party
             let should_show = match msg.sender {
                 ChatSender::Admin => {
                     // Admin messages should only show in the chat party they were sent to
-                    msg.target_party
-                        .map_or(false, |target| target == active_chat_party)
+                    msg.target_party == Some(active_chat_party)
                 }
                 ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
                 ChatSender::Seller => active_chat_party == ChatParty::Seller,
@@ -199,7 +192,17 @@ pub fn build_chat_list_items(
 
             Some(ListItem::new(message_lines))
         })
-        .collect()
+        .collect();
+
+    // If filtered list is empty, return placeholder
+    if filtered_items.is_empty() {
+        return vec![ListItem::new(Line::from(Span::styled(
+            "No messages yet. Start the conversation!",
+            Style::default().fg(Color::Gray),
+        )))];
+    }
+
+    filtered_items
 }
 
 /// Renders a vertical scrollbar for the chat list on the right side of the given area

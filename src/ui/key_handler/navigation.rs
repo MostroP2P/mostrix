@@ -51,6 +51,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, ref mut selected_button))
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
@@ -109,6 +110,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, ref mut selected_button))
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
@@ -139,9 +141,23 @@ fn handle_up_key(
                     app.selected_order_idx -= 1;
                 }
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                let disputes_len = disputes.lock().unwrap().len();
-                if disputes_len > 0 && app.selected_dispute_idx > 0 {
-                    app.selected_dispute_idx -= 1;
+                // Only count disputes with "initiated" status
+                let disputes_lock = disputes.lock().unwrap();
+                let initiated_count = disputes_lock
+                    .iter()
+                    .filter(|d| d.status == "initiated")
+                    .count();
+                if initiated_count > 0 {
+                    // Ensure index doesn't go below 0
+                    if app.selected_dispute_idx > 0 {
+                        app.selected_dispute_idx -= 1;
+                    } else {
+                        app.selected_dispute_idx = 0;
+                    }
+                    // Clamp to valid range
+                    app.selected_dispute_idx = app
+                        .selected_dispute_idx
+                        .min(initiated_count.saturating_sub(1));
                 }
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 if !app.admin_disputes_in_progress.is_empty() && app.selected_in_progress_idx > 0 {
@@ -197,6 +213,7 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, _))
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
@@ -226,9 +243,23 @@ fn handle_down_key(
                     app.selected_order_idx += 1;
                 }
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                let disputes_len = disputes.lock().unwrap().len();
-                if disputes_len > 0 && app.selected_dispute_idx < disputes_len.saturating_sub(1) {
-                    app.selected_dispute_idx += 1;
+                // Only count disputes with "initiated" status
+                let disputes_lock = disputes.lock().unwrap();
+                let initiated_count = disputes_lock
+                    .iter()
+                    .filter(|d| d.status == "initiated")
+                    .count();
+                if initiated_count > 0 {
+                    // Ensure index doesn't exceed bounds
+                    if app.selected_dispute_idx < initiated_count.saturating_sub(1) {
+                        app.selected_dispute_idx += 1;
+                    } else {
+                        app.selected_dispute_idx = initiated_count.saturating_sub(1);
+                    }
+                    // Clamp to valid range
+                    app.selected_dispute_idx = app
+                        .selected_dispute_idx
+                        .min(initiated_count.saturating_sub(1));
                 }
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 if !app.admin_disputes_in_progress.is_empty()
@@ -297,6 +328,7 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, _))
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)

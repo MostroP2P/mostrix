@@ -317,10 +317,17 @@ async fn main() -> Result<(), anyhow::Error> {
         }
 
         // Ensure the selected dispute index is valid when disputes list changes.
+        // Only count "initiated" disputes since that's what we display
         {
-            let disputes_len = disputes.lock().unwrap().len();
-            if disputes_len > 0 && app.selected_dispute_idx >= disputes_len {
-                app.selected_dispute_idx = disputes_len - 1;
+            let disputes_lock = disputes.lock().unwrap();
+            let initiated_count = disputes_lock
+                .iter()
+                .filter(|d| d.status == "initiated")
+                .count();
+            if initiated_count > 0 && app.selected_dispute_idx >= initiated_count {
+                app.selected_dispute_idx = initiated_count.saturating_sub(1);
+            } else if initiated_count == 0 {
+                app.selected_dispute_idx = 0;
             }
         }
 

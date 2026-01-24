@@ -4,10 +4,30 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{apply_status_color, AdminMode, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{
+    apply_status_color, AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR,
+};
+
+/// Filter disputes based on the current filter state
+fn get_filtered_disputes(app: &AppState) -> Vec<(usize, &crate::models::AdminDispute)> {
+    app.admin_disputes_in_progress
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| {
+            let status = d.status.as_deref().unwrap_or("");
+            match app.dispute_filter {
+                DisputeFilter::InProgress => status == "InProgress",
+                DisputeFilter::Finalized => {
+                    matches!(status, "Settled" | "SellerRefunded" | "Released")
+                }
+            }
+        })
+        .collect()
+}
 
 /// Render the "Disputes in Progress" tab for admin mode
 /// This shows a sidebar with active disputes and a detailed view with chat interface
+/// Can filter between InProgress and Finalized disputes
 pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let chunks = Layout::new(
         Direction::Horizontal,
@@ -18,35 +38,56 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     let sidebar_area = chunks[0];
     let main_area = chunks[1];
 
+    // Filter disputes based on current filter
+    let filtered_disputes = get_filtered_disputes(app);
+
+    // Ensure selected index is within bounds of filtered list
+    // Use a local variable to avoid borrow checker issues
+    let valid_selected_idx = if filtered_disputes.is_empty() {
+        0
+    } else {
+        app.selected_in_progress_idx
+            .min(filtered_disputes.len().saturating_sub(1))
+    };
+
     // 1. Sidebar - Dispute List
+    let sidebar_title = match app.dispute_filter {
+        DisputeFilter::InProgress => "Disputes In Progress",
+        DisputeFilter::Finalized => "Disputes Finalized",
+    };
     let disputes_block = Block::default()
-        .title("Disputes in Progress")
+        .title(sidebar_title)
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR));
 
-    if app.admin_disputes_in_progress.is_empty() {
-        let empty_msg = Paragraph::new("No disputes in progress")
+    if filtered_disputes.is_empty() {
+        let empty_msg = match app.dispute_filter {
+            DisputeFilter::InProgress => "No disputes in progress",
+            DisputeFilter::Finalized => "No finalized disputes",
+        };
+        let empty_paragraph = Paragraph::new(empty_msg)
             .block(disputes_block)
             .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(empty_msg, sidebar_area);
+        f.render_widget(empty_paragraph, sidebar_area);
     } else {
-        let items: Vec<ListItem> = app
-            .admin_disputes_in_progress
+        let items: Vec<ListItem> = filtered_disputes
             .iter()
             .enumerate()
-            .map(|(i, d)| {
-                let style = if i == app.selected_in_progress_idx {
+            .map(|(display_idx, (_original_idx, d))| {
+                let style = if display_idx == valid_selected_idx {
                     Style::default().bg(PRIMARY_COLOR).fg(Color::Black)
                 } else {
                     Style::default().fg(Color::White)
                 };
-                let truncated_id = if d.id.len() > 20 {
-                    format!("{}...", &d.id[..20])
+                // Show dispute_id
+                let display_id = &d.dispute_id;
+                let truncated_id = if display_id.len() > 20 {
+                    format!("{}...", &display_id[..20])
                 } else {
-                    d.id.clone()
+                    display_id.to_string()
                 };
                 ListItem::new(Line::from(vec![Span::styled(
-                    format!("ID: {}", truncated_id),
+                    format!("Dispute ID: {}", truncated_id),
                     style,
                 )]))
             })
@@ -57,10 +98,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     }
 
     // 2. Main Area
-    if let Some(selected_dispute) = app
-        .admin_disputes_in_progress
-        .get(app.selected_in_progress_idx)
-    {
+    if let Some((_original_idx, selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
         // Calculate dynamic input box height based on text content with proper wrapping
         // Account for borders (2 chars on each side) and some padding
         let available_width = main_area.width.saturating_sub(4).max(1) as usize;
@@ -119,18 +157,12 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // Determine who is buyer and who is seller by comparing pubkeys
-        let buyer_pubkey = selected_dispute
-            .buyer_pubkey
-            .as_ref()
-            .unwrap_or(&selected_dispute.initiator_pubkey);
-        let seller_pubkey = selected_dispute
-            .seller_pubkey
-            .as_ref()
-            .unwrap_or(&selected_dispute.initiator_pubkey);
+        // Get buyer and seller pubkeys (do not default to initiator_pubkey)
+        let buyer_pubkey = selected_dispute.buyer_pubkey.as_deref();
+        let seller_pubkey = selected_dispute.seller_pubkey.as_deref();
 
-        // Check who initiated the dispute
-        let is_initiator_buyer = &selected_dispute.initiator_pubkey == buyer_pubkey;
+        // Check who initiated the dispute - only compute when both initiator_pubkey and buyer_pubkey are present
+        let is_initiator_buyer = buyer_pubkey.map(|bp| selected_dispute.initiator_pubkey == *bp);
 
         // Truncate pubkeys for display
         let truncate_pubkey = |pubkey: &str| -> String {
@@ -141,106 +173,151 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             }
         };
 
-        let buyer_pubkey_display = truncate_pubkey(buyer_pubkey);
-        let seller_pubkey_display = truncate_pubkey(seller_pubkey);
+        let buyer_pubkey_display = buyer_pubkey
+            .map(truncate_pubkey)
+            .unwrap_or_else(|| "Unknown".to_string());
+        let seller_pubkey_display = seller_pubkey
+            .map(truncate_pubkey)
+            .unwrap_or_else(|| "Unknown".to_string());
 
         // Determine which party to show in header (the one who initiated the dispute)
-        let (initiator_role, initiator_pubkey_display) = if is_initiator_buyer {
-            ("Buyer", buyer_pubkey_display.clone())
-        } else {
-            ("Seller", seller_pubkey_display.clone())
+        let (initiator_role, initiator_pubkey_display) = match is_initiator_buyer {
+            Some(true) => ("Buyer", buyer_pubkey_display.clone()),
+            Some(false) => ("Seller", seller_pubkey_display.clone()),
+            None => {
+                // If we can't determine, show initiator directly
+                let initiator_display = truncate_pubkey(&selected_dispute.initiator_pubkey);
+                ("Initiator", initiator_display)
+            }
         };
 
-        // Privacy indicators (🟢 = info available, 🔴 = no info/private)
-        let buyer_privacy_icon = if selected_dispute.initiator_full_privacy && is_initiator_buyer
-            || selected_dispute.counterpart_full_privacy && !is_initiator_buyer
-        {
-            "🔴"
-        } else {
-            "🟢"
+        // Privacy indicators (Yes = private mode enabled, No = public mode)
+        // Show "Unknown" when is_initiator_buyer is None
+        let buyer_privacy_text = match is_initiator_buyer {
+            Some(true) => {
+                if selected_dispute.initiator_full_privacy {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            }
+            Some(false) => {
+                if selected_dispute.counterpart_full_privacy {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            }
+            None => "Unknown",
         };
-        let seller_privacy_icon = if selected_dispute.initiator_full_privacy && !is_initiator_buyer
-            || selected_dispute.counterpart_full_privacy && is_initiator_buyer
-        {
-            "🔴"
-        } else {
-            "🟢"
+        let seller_privacy_text = match is_initiator_buyer {
+            Some(false) => {
+                if selected_dispute.initiator_full_privacy {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            }
+            Some(true) => {
+                if selected_dispute.counterpart_full_privacy {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            }
+            None => "Unknown",
         };
 
-        // Labels for privacy line
+        // Labels for privacy line (will be displayed with "Privacy: " prefix)
         let (buyer_label, seller_label) = (
-            format!("{} Buyer", buyer_privacy_icon),
-            format!("{} Seller", seller_privacy_icon),
+            format!("Buyer - {}", buyer_privacy_text),
+            format!("Seller - {}", seller_privacy_text),
         );
 
         // Format rating information (map to buyer/seller based on who initiated)
-        let (buyer_rating, seller_rating) = if is_initiator_buyer {
-            // Initiator is buyer, counterpart is seller
-            let buyer_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
-                let stars = "⭐"
-                    .repeat((info.rating / 2.0).round() as usize)
-                    .chars()
-                    .take(5)
-                    .collect::<String>();
-                format!(
-                    "{} {:.1}/10 ({} trades completed, {} days)",
-                    stars, info.rating, info.reviews, info.operating_days
-                )
-            } else {
-                "No rating available".to_string()
-            };
-            let seller_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
-                let stars = "⭐"
-                    .repeat((info.rating / 2.0).round() as usize)
-                    .chars()
-                    .take(5)
-                    .collect::<String>();
-                format!(
-                    "{} {:.1}/10 ({} trades completed, {} days)",
-                    stars, info.rating, info.reviews, info.operating_days
-                )
-            } else {
-                "No rating available".to_string()
-            };
-            (buyer_rating, seller_rating)
-        } else {
-            // Initiator is seller, counterpart is buyer
-            let seller_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
-                let stars = "⭐"
-                    .repeat((info.rating / 2.0).round() as usize)
-                    .chars()
-                    .take(5)
-                    .collect::<String>();
-                format!(
-                    "{} {:.1}/10 ({} trades completed, {} days)",
-                    stars, info.rating, info.reviews, info.operating_days
-                )
-            } else {
-                "No rating available".to_string()
-            };
-            let buyer_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
-                let stars = "⭐"
-                    .repeat((info.rating / 2.0).round() as usize)
-                    .chars()
-                    .take(5)
-                    .collect::<String>();
-                format!(
-                    "{} {:.1}/10 ({} trades completed, {} days)",
-                    stars, info.rating, info.reviews, info.operating_days
-                )
-            } else {
-                "No rating available".to_string()
-            };
-            (buyer_rating, seller_rating)
+        // Show "Unknown" when is_initiator_buyer is None
+        let (buyer_rating, seller_rating) = match is_initiator_buyer {
+            Some(true) => {
+                // Initiator is buyer, counterpart is seller
+                let buyer_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
+                    let stars = "⭐"
+                        .repeat((info.rating / 2.0).round() as usize)
+                        .chars()
+                        .take(5)
+                        .collect::<String>();
+                    format!(
+                        "{} {:.1}/10 ({} trades completed, {} days)",
+                        stars, info.rating, info.reviews, info.operating_days
+                    )
+                } else {
+                    "No rating available".to_string()
+                };
+                let seller_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
+                    let stars = "⭐"
+                        .repeat((info.rating / 2.0).round() as usize)
+                        .chars()
+                        .take(5)
+                        .collect::<String>();
+                    format!(
+                        "{} {:.1}/10 ({} trades completed, {} days)",
+                        stars, info.rating, info.reviews, info.operating_days
+                    )
+                } else {
+                    "No rating available".to_string()
+                };
+                (buyer_rating, seller_rating)
+            }
+            Some(false) => {
+                // Initiator is seller, counterpart is buyer
+                let seller_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
+                    let stars = "⭐"
+                        .repeat((info.rating / 2.0).round() as usize)
+                        .chars()
+                        .take(5)
+                        .collect::<String>();
+                    format!(
+                        "{} {:.1}/10 ({} trades completed, {} days)",
+                        stars, info.rating, info.reviews, info.operating_days
+                    )
+                } else {
+                    "No rating available".to_string()
+                };
+                let buyer_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
+                    let stars = "⭐"
+                        .repeat((info.rating / 2.0).round() as usize)
+                        .chars()
+                        .take(5)
+                        .collect::<String>();
+                    format!(
+                        "{} {:.1}/10 ({} trades completed, {} days)",
+                        stars, info.rating, info.reviews, info.operating_days
+                    )
+                } else {
+                    "No rating available".to_string()
+                };
+                (buyer_rating, seller_rating)
+            }
+            None => {
+                // Cannot determine roles, show Unknown
+                ("Unknown".to_string(), "Unknown".to_string())
+            }
         };
 
         let header_lines = vec![
             Line::from(vec![
-                Span::styled("ID: ", Style::default().fg(Color::Gray)),
+                Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     &selected_dispute.id,
                     Style::default()
                         .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled("Dispute ID: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    &selected_dispute.dispute_id,
+                    Style::default()
+                        .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
@@ -282,12 +359,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 Span::styled(
                     format!(
                         "{} {}",
-                        selected_dispute.fiat_amount,
-                        selected_dispute
-                            .payment_method
-                            .split(',')
-                            .next()
-                            .unwrap_or("USD")
+                        selected_dispute.fiat_amount, selected_dispute.fiat_code
                     ),
                     Style::default().fg(Color::Yellow),
                 ),
@@ -378,8 +450,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         );
 
         // Chat History - Display chat messages for this dispute using List widget
-        let dispute_id = &selected_dispute.id;
-        let chat_messages = app.admin_dispute_chats.get(dispute_id);
+        let dispute_id_key = &selected_dispute.dispute_id;
+        let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
 
         let items = if let Some(messages) = chat_messages {
             super::helpers::build_chat_list_items(messages, app.active_chat_party)
@@ -471,21 +543,30 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         f.render_widget(input, main_chunks[3]);
 
         // Footer
+        let filter_hint = match app.dispute_filter {
+            DisputeFilter::InProgress => "F: View Finalized",
+            DisputeFilter::Finalized => "F: View In Progress",
+        };
         let footer_text = if is_input_focused {
             if is_input_enabled {
-                "Tab: Switch Party | Enter: Send | Shift+I: Disable | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute"
+                format!("Tab: Switch Party | Enter: Send | Shift+I: Disable | Shift+F: Resolve | {} | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute", filter_hint)
             } else {
-                "Tab: Switch Party | Shift+I: Enable | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute"
+                format!("Tab: Switch Party | Shift+I: Enable | Shift+F: Resolve | {} | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute", filter_hint)
             }
         } else {
-            "Tab: Switch Party | Enter: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom"
+            format!("Tab: Switch Party | Shift+F: Resolve | {} | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom", filter_hint)
         };
         let footer = Paragraph::new(footer_text);
         f.render_widget(footer, main_chunks[4]);
+
+        // Update the selected index after rendering is complete (to avoid borrow checker issues)
+        app.selected_in_progress_idx = valid_selected_idx;
     } else {
         let no_selection = Paragraph::new("Select a dispute from the sidebar")
             .block(Block::default().borders(Borders::ALL))
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(no_selection, main_area);
+        // Reset index when no disputes are available
+        app.selected_in_progress_idx = 0;
     }
 }

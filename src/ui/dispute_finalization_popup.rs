@@ -13,11 +13,11 @@ pub fn render_finalization_popup(
     dispute_id: &uuid::Uuid,
     selected_button: usize,
 ) {
-    // Find the dispute by ID
+    // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
     let dispute = app
         .admin_disputes_in_progress
         .iter()
-        .find(|d| d.id == dispute_id.to_string());
+        .find(|d| d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string());
 
     let Some(selected_dispute) = dispute else {
         // If dispute not found, show error with message
@@ -40,10 +40,12 @@ pub fn render_finalization_popup(
         let error_msg = format!("Dispute not found: {}", dispute_id);
 
         // Wrap error message if too long (accounting for borders)
+        // Ensure wrap_width is at least 1 to avoid panic from chunks(0)
+        let wrap_width = inner.width.saturating_sub(2).max(1) as usize;
         let error_lines: Vec<Line> = error_msg
             .chars()
             .collect::<Vec<_>>()
-            .chunks(inner.width.saturating_sub(2) as usize)
+            .chunks(wrap_width)
             .map(|chunk| Line::from(chunk.iter().collect::<String>()))
             .collect();
 
@@ -99,8 +101,12 @@ pub fn render_finalization_popup(
     // Content area - scrollable details
     render_dispute_details(f, chunks[0], selected_dispute);
 
-    // Buttons area
-    render_action_buttons(f, chunks[1], selected_button);
+    // Buttons area - pass dispute status to check if finalized
+    let is_finalized = matches!(
+        selected_dispute.status.as_deref(),
+        Some("Settled") | Some("SellerRefunded") | Some("Released")
+    );
+    render_action_buttons(f, chunks[1], selected_button, is_finalized);
 }
 
 /// Render detailed dispute information
@@ -136,20 +142,20 @@ fn render_dispute_details(
         .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    // Privacy indicators
+    // Privacy indicators (Yes = private mode enabled, No = public mode)
     let buyer_privacy = if dispute.initiator_full_privacy && is_initiator_buyer
         || dispute.counterpart_full_privacy && !is_initiator_buyer
     {
-        "🕶️ Private"
+        "Yes"
     } else {
-        "👁️ Public"
+        "No"
     };
     let seller_privacy = if dispute.initiator_full_privacy && !is_initiator_buyer
         || dispute.counterpart_full_privacy && is_initiator_buyer
     {
-        "🕶️ Private"
+        "Yes"
     } else {
-        "👁️ Public"
+        "No"
     };
 
     // Rating information
@@ -194,11 +200,15 @@ fn render_dispute_details(
     // Build the content lines
     let mut lines = vec![
         Line::from(vec![
+            Span::styled("Order ID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(&dispute.id, Style::default().fg(PRIMARY_COLOR)),
+        ]),
+        Line::from(vec![
             Span::styled(
                 "Dispute ID: ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&dispute.id, Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(&dispute.dispute_id, Style::default().fg(Color::Cyan)),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -310,7 +320,12 @@ fn render_dispute_details(
 }
 
 /// Render the three action buttons at the bottom
-fn render_action_buttons(f: &mut ratatui::Frame, area: Rect, selected_button: usize) {
+fn render_action_buttons(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    selected_button: usize,
+    is_finalized: bool,
+) {
     // Create three equal-width buttons side by side
     let button_chunks = Layout::new(
         Direction::Horizontal,
@@ -322,8 +337,13 @@ fn render_action_buttons(f: &mut ratatui::Frame, area: Rect, selected_button: us
     )
     .split(area);
 
-    // Button 0: Pay Buyer (Full)
-    let pay_buyer_style = if selected_button == 0 {
+    // Button 0: Pay Buyer (Full) - disabled if finalized
+    let pay_buyer_style = if is_finalized {
+        // Disabled style
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else if selected_button == 0 {
         Style::default()
             .bg(Color::Green)
             .fg(Color::Black)
@@ -332,10 +352,14 @@ fn render_action_buttons(f: &mut ratatui::Frame, area: Rect, selected_button: us
         Style::default().fg(Color::Green)
     };
     let pay_buyer_block = Block::default()
-        .title("Pay Buyer (Full)")
+        .title(if is_finalized {
+            "Pay Buyer (Disabled)"
+        } else {
+            "Pay Buyer (Full)"
+        })
         .borders(Borders::ALL)
         .style(pay_buyer_style);
-    let pay_buyer_text = Paragraph::new("AdminSettle")
+    let pay_buyer_text = Paragraph::new(if is_finalized { "N/A" } else { "AdminSettle" })
         .alignment(ratatui::layout::Alignment::Center)
         .style(pay_buyer_style);
     f.render_widget(pay_buyer_block, button_chunks[0]);
@@ -345,8 +369,13 @@ fn render_action_buttons(f: &mut ratatui::Frame, area: Rect, selected_button: us
     });
     f.render_widget(pay_buyer_text, inner);
 
-    // Button 1: Refund Seller (Full)
-    let refund_seller_style = if selected_button == 1 {
+    // Button 1: Refund Seller (Full) - disabled if finalized
+    let refund_seller_style = if is_finalized {
+        // Disabled style
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else if selected_button == 1 {
         Style::default()
             .bg(Color::Red)
             .fg(Color::Black)
@@ -355,10 +384,14 @@ fn render_action_buttons(f: &mut ratatui::Frame, area: Rect, selected_button: us
         Style::default().fg(Color::Red)
     };
     let refund_seller_block = Block::default()
-        .title("Refund Seller (Full)")
+        .title(if is_finalized {
+            "Refund Seller (Disabled)"
+        } else {
+            "Refund Seller (Full)"
+        })
         .borders(Borders::ALL)
         .style(refund_seller_style);
-    let refund_seller_text = Paragraph::new("AdminCancel")
+    let refund_seller_text = Paragraph::new(if is_finalized { "N/A" } else { "AdminCancel" })
         .alignment(ratatui::layout::Alignment::Center)
         .style(refund_seller_style);
     f.render_widget(refund_seller_block, button_chunks[1]);

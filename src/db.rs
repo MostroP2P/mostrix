@@ -60,6 +60,7 @@ pub async fn init_db() -> Result<SqlitePool> {
             );
             CREATE TABLE IF NOT EXISTS admin_disputes (
                 id TEXT PRIMARY KEY,
+                dispute_id TEXT NOT NULL,
                 kind TEXT,
                 status TEXT,
                 hash TEXT,
@@ -76,6 +77,7 @@ pub async fn init_db() -> Result<SqlitePool> {
                 payment_method TEXT NOT NULL,
                 amount INTEGER NOT NULL,
                 fiat_amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL,
                 fee INTEGER NOT NULL,
                 routing_fee INTEGER NOT NULL,
                 buyer_invoice TEXT,
@@ -138,12 +140,14 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Check if columns exist
     let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
     let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
+    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
+    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
 
     // Only run migration if at least one column is missing
-    if !has_initiator_info || !has_counterpart_info {
-        log::info!("Running migration: Adding initiator_info and counterpart_info columns to admin_disputes table");
+    if !has_initiator_info || !has_counterpart_info || !has_fiat_code || !has_dispute_id {
+        log::info!("Running migration: Adding missing columns to admin_disputes table");
 
-        // Wrap both ALTER TABLE statements in a transaction for atomicity
+        // Wrap all ALTER TABLE statements in a transaction for atomicity
         let mut tx = pool.begin().await?;
 
         if !has_initiator_info {
@@ -160,6 +164,36 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             sqlx::query(
                 r#"
                 ALTER TABLE admin_disputes ADD COLUMN counterpart_info TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_fiat_code {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN fiat_code TEXT DEFAULT 'USD';
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_dispute_id {
+            // For existing records, use the order_id (id field) as the dispute_id
+            // This ensures backwards compatibility
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN dispute_id TEXT NOT NULL DEFAULT '';
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            // Update existing records to use order_id as dispute_id
+            sqlx::query(
+                r#"
+                UPDATE admin_disputes SET dispute_id = id WHERE dispute_id = '';
                 "#,
             )
             .execute(&mut *tx)

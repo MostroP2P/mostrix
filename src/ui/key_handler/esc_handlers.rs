@@ -106,6 +106,14 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(dispute_id, is_settle, _)) => {
+            // Cancel confirmation, return to finalization popup
+            app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                *dispute_id,
+                if *is_settle { 0 } else { 1 }, // Restore the button that was selected
+            ));
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
             // Can't cancel while waiting
             true
