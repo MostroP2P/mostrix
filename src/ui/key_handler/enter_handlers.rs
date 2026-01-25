@@ -1,188 +1,27 @@
 use crate::ui::{
-    helpers::save_chat_message, AdminMode, AdminTab, AppState, FormState, MessageViewState, Tab,
-    TakeOrderState, UiMode, UserMode, UserRole, UserTab,
+    helpers::save_chat_message, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
+    UserMode, UserRole, UserTab,
 };
-use crate::util::order_utils::{
-    execute_add_invoice, execute_admin_add_solver, execute_admin_cancel, execute_admin_settle,
-    execute_send_msg,
-};
-
-use crate::SETTINGS;
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
-use uuid::Uuid;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
-    save_relay_to_settings,
+    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
 use crate::ui::key_handler::validation::{
-    validate_currency, validate_mostro_pubkey, validate_npub, validate_nsec, validate_relay,
+    validate_currency, validate_mostro_pubkey, validate_relay,
 };
 
-/// Helper function to execute taking a dispute.
-///
-/// This avoids code duplication between Enter key and 'y' key handlers.
-/// Sets the UI mode to waiting and spawns an async task to take the dispute.
-pub(crate) fn execute_take_dispute_action(
-    app: &mut AppState,
-    dispute_id: uuid::Uuid,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    app.mode = UiMode::AdminMode(AdminMode::WaitingTakeDispute(dispute_id));
-
-    // Spawn async task to take dispute
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-    let pool_clone = pool.clone();
-    tokio::spawn(async move {
-        match crate::util::order_utils::execute_take_dispute(
-            &dispute_id,
-            &client_clone,
-            mostro_pubkey,
-            &pool_clone,
-        )
-        .await
-        {
-            Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
-                    "✅ Dispute {} taken successfully!",
-                    dispute_id
-                )));
-            }
-            Err(e) => {
-                log::error!("Failed to take dispute: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-            }
-        }
-    });
-}
-
-/// Helper function to execute adding a solver.
-///
-/// This avoids code duplication between Enter key and 'y' key handlers.
-/// Sets the UI mode to normal and spawns an async task to add the solver.
-pub(crate) fn execute_add_solver_action(
-    app: &mut AppState,
-    solver_pubkey: String,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    // Stay on Settings tab after confirmation
-    app.mode = UiMode::AdminMode(AdminMode::Normal);
-
-    let solver_pubkey_clone = solver_pubkey.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-    let mostro_pubkey_clone = mostro_pubkey;
-
-    tokio::spawn(async move {
-        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey_clone)
-            .await
-        {
-            Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(
-                    "Solver added successfully".to_string(),
-                ));
-            }
-            Err(e) => {
-                log::error!("Failed to add solver: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-            }
-        }
-    });
-}
-
-/// Helper function to execute taking an order.
-///
-/// This avoids code duplication between Enter key and 'y' key handlers.
-/// Validates the take_state, sets the UI mode to waiting, and spawns an async task to take the order.
-pub(crate) fn execute_take_order_action(
-    app: &mut AppState,
-    take_state: TakeOrderState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) -> bool {
-    // Validate range order if needed
-    if take_state.is_range_order {
-        if take_state.amount_input.is_empty() {
-            // Can't proceed without amount
-            app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-            return false;
-        }
-        if take_state.validation_error.is_some() {
-            // Can't proceed with invalid amount
-            app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-            return false;
-        }
-    }
-
-    // Proceed with taking the order
-    let take_state_clone = take_state.clone();
-    app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
-
-    // Parse amount if it's a range order
-    let amount = if take_state_clone.is_range_order {
-        take_state_clone.amount_input.trim().parse::<i64>().ok()
-    } else {
-        None
-    };
-
-    // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-    // TODO: Add invoice input for buy orders
-    let invoice = None;
-
-    // Spawn async task to take order
-    let pool_clone = pool.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-
-    tokio::spawn(async move {
-        let settings = match SETTINGS.get() {
-            Some(s) => s,
-            None => {
-                let error_msg =
-                    "Settings not initialized. Please restart the application.".to_string();
-                log::error!("{}", error_msg);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
-                return;
-            }
-        };
-        match crate::util::take_order(
-            &pool_clone,
-            &client_clone,
-            settings,
-            mostro_pubkey,
-            &take_state_clone.order,
-            amount,
-            invoice,
-        )
-        .await
-        {
-            Ok(result) => {
-                let _ = result_tx.send(result);
-            }
-            Err(e) => {
-                log::error!("Failed to take order: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-            }
-        }
-    });
-
-    true
-}
+// Admin handlers moved to admin_handlers.rs
+use crate::ui::key_handler::admin_handlers::{
+    execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+};
 
 /// Handle Enter key - dispatches to mode-specific handlers
 pub fn handle_enter_key(
@@ -206,8 +45,8 @@ pub fn handle_enter_key(
             handle_enter_normal_mode(app, orders, disputes);
             true
         }
-        UiMode::UserMode(UserMode::CreatingOrder(form)) => {
-            handle_enter_creating_order(app, &form);
+        UiMode::UserMode(UserMode::CreatingOrder(ref form)) => {
+            handle_enter_creating_order(app, form);
             true
         }
         UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
@@ -451,14 +290,19 @@ pub fn handle_enter_key(
             selected_button,
         )) => {
             // Check if dispute is finalized
-            let is_finalized = app
+            use std::str::FromStr;
+            let dispute_is_finalized = app
                 .admin_disputes_in_progress
                 .iter()
                 .find(|d| d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string())
-                .map(|d| {
+                .and_then(|d| d.status.as_deref())
+                .and_then(|s| DisputeStatus::from_str(s).ok())
+                .map(|s| {
                     matches!(
-                        d.status.as_deref(),
-                        Some("Settled") | Some("SellerRefunded") | Some("Released")
+                        s,
+                        DisputeStatus::Settled
+                            | DisputeStatus::SellerRefunded
+                            | DisputeStatus::Released
                     )
                 })
                 .unwrap_or(false);
@@ -467,7 +311,7 @@ pub fn handle_enter_key(
             match selected_button {
                 0 => {
                     // Pay Buyer - show confirmation popup
-                    if is_finalized {
+                    if dispute_is_finalized {
                         // Dispute already finalized, show error
                         let _ = order_result_tx.send(crate::ui::OrderResult::Error(
                             "Cannot finalize: dispute is already finalized".to_string(),
@@ -484,7 +328,7 @@ pub fn handle_enter_key(
                 }
                 1 => {
                     // Refund Seller - show confirmation popup
-                    if is_finalized {
+                    if dispute_is_finalized {
                         // Dispute already finalized, show error
                         let _ = order_result_tx.send(crate::ui::OrderResult::Error(
                             "Cannot finalize: dispute is already finalized".to_string(),
@@ -540,79 +384,6 @@ pub fn handle_enter_key(
             // No action while waiting
             app.mode = default_mode;
             true
-        }
-    }
-}
-
-/// Handle Enter key for admin-specific modes (AddSolver, SetupAdminKey, etc.)
-/// Kept `pub(crate)` so it can be reused by the 'y' confirmation handler
-/// to avoid duplicating the AddSolver execution logic (DRY).
-pub(crate) fn handle_enter_admin_mode(
-    app: &mut AppState,
-    mode: UiMode,
-    default_mode: UiMode,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    match mode {
-        UiMode::AdminMode(AdminMode::AddSolver(key_state)) => {
-            // Validate npub before proceeding to confirmation
-            match validate_npub(&key_state.key_input) {
-                Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::AdminMode(AdminMode::ConfirmAddSolver(input, true))
-                        });
-                }
-                Err(e) => {
-                    // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
-                }
-            }
-        }
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
-            if selected_button {
-                // YES selected - send AddSolver message
-                execute_add_solver_action(
-                    app,
-                    solver_pubkey,
-                    client,
-                    mostro_pubkey,
-                    order_result_tx,
-                );
-            } else {
-                // NO selected - go back to input
-                app.mode =
-                    UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(&solver_pubkey)));
-            }
-        }
-        UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {
-            match validate_nsec(&key_state.key_input) {
-                Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::AdminMode(AdminMode::ConfirmAdminKey(input, true))
-                        });
-                }
-                Err(e) => {
-                    // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
-                }
-            }
-        }
-        UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) => {
-            app.mode = handle_confirmation_enter(
-                selected_button,
-                &key_string,
-                default_mode,
-                save_admin_key_to_settings,
-                |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
-            );
-        }
-        _ => {
-            // This should not happen, but handle gracefully
-            app.mode = default_mode;
         }
     }
 }
@@ -758,10 +529,15 @@ fn handle_enter_normal_mode(
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
         let disputes_lock = disputes.lock().unwrap();
         // Filter to only get "initiated" disputes
+        use std::str::FromStr;
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
             .iter()
             .enumerate()
-            .filter(|(_, dispute)| dispute.status == "initiated")
+            .filter(|(_, dispute)| {
+                DisputeStatus::from_str(dispute.status.as_str())
+                    .map(|s| s == DisputeStatus::Initiated)
+                    .unwrap_or(false)
+            })
             .collect();
 
         if let Some((_original_idx, dispute)) = initiated_disputes.get(app.selected_dispute_idx) {
@@ -842,236 +618,12 @@ fn handle_enter_normal_mode(
     }
 }
 
-fn handle_enter_creating_order(app: &mut AppState, form: &FormState) {
-    // Show confirmation popup when Enter is pressed
-    if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder(form.clone()));
-    } else {
-        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
-    }
-}
+// User handlers moved to user_handlers.rs
+use crate::ui::key_handler::user_handlers::{
+    handle_enter_creating_order, handle_enter_taking_order,
+};
 
-fn handle_enter_taking_order(
-    app: &mut AppState,
-    take_state: TakeOrderState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    // Enter confirms the selected button
-    if take_state.selected_button {
-        // YES selected - execute take order action
-        execute_take_order_action(
-            app,
-            take_state,
-            pool,
-            client,
-            mostro_pubkey,
-            order_result_tx,
-        );
-    } else {
-        // NO selected - cancel and return to the appropriate normal mode
-        let default_mode = match app.user_role {
-            UserRole::User => UiMode::UserMode(UserMode::Normal),
-            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-        };
-        app.mode = default_mode;
-    }
-}
-
-fn handle_enter_viewing_message(
-    app: &mut AppState,
-    view_state: &MessageViewState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    // Only proceed if YES is selected
-    if !view_state.selected_button {
-        app.mode = UiMode::Normal;
-        return;
-    }
-
-    // Map the action from the message to the action we need to send
-    let action_to_send = match view_state.action {
-        Action::HoldInvoicePaymentAccepted => Action::FiatSent,
-        Action::FiatSentOk => Action::Release,
-        _ => {
-            let _ = order_result_tx.send(crate::ui::OrderResult::Error(
-                "Invalid action for send message".to_string(),
-            ));
-            let default_mode = match app.user_role {
-                UserRole::User => UiMode::UserMode(UserMode::Normal),
-                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-            };
-            app.mode = default_mode;
-            return;
-        }
-    };
-
-    // Get order_id from view_state
-    let Some(order_id) = view_state.order_id else {
-        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
-            "No order ID in message".to_string(),
-        ));
-        let default_mode = match app.user_role {
-            UserRole::User => UiMode::UserMode(UserMode::Normal),
-            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-        };
-        app.mode = default_mode;
-        return;
-    };
-
-    // Set waiting mode (user mode only)
-    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
-
-    // Spawn async task to send message
-    let pool_clone = pool.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-
-    tokio::spawn(async move {
-        match execute_send_msg(
-            &order_id,
-            action_to_send,
-            &pool_clone,
-            &client_clone,
-            mostro_pubkey,
-        )
-        .await
-        {
-            Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(
-                    "Message sent successfully".to_string(),
-                ));
-            }
-            Err(e) => {
-                log::error!("Failed to send message: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-            }
-        }
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_enter_message_notification(
-    app: &mut AppState,
-    client: &Client,
-    pool: &SqlitePool,
-    action: &mostro_core::prelude::Action,
-    invoice_state: &mut crate::ui::InvoiceInputState,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_id: Option<Uuid>,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) {
-    match action {
-        Action::AddInvoice => {
-            // For AddInvoice, Enter submits the invoice
-            let order_result_tx_clone = order_result_tx.clone();
-            if !invoice_state.invoice_input.trim().is_empty() {
-                if let Some(order_id) = order_id {
-                    // Set waiting mode before sending invoice
-                    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
-
-                    // Send invoice to Mostro
-                    let invoice_state_clone = invoice_state.clone();
-                    let pool_clone = pool.clone();
-                    let client_clone = client.clone();
-                    tokio::spawn(async move {
-                        match execute_add_invoice(
-                            &order_id,
-                            &invoice_state_clone.invoice_input,
-                            &pool_clone,
-                            &client_clone,
-                            mostro_pubkey,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Info(
-                                    "Invoice sent successfully".to_string(),
-                                ));
-                            }
-                            Err(e) => {
-                                log::error!("Failed to add invoice: {}", e);
-                                let _ = order_result_tx_clone
-                                    .send(crate::ui::OrderResult::Error(e.to_string()));
-                            }
-                        }
-                    });
-                }
-            }
-        }
-        Action::PayInvoice => {}
-        _ => {
-            let _ =
-                order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
-        }
-    }
-}
-
-/// Helper function to execute dispute finalization (settle or cancel).
-///
-/// This avoids code duplication between Pay Buyer and Refund Seller actions.
-/// Sets the UI mode to waiting and spawns an async task to finalize the dispute.
-pub(crate) fn execute_finalize_dispute_action(
-    app: &mut AppState,
-    dispute_id: uuid::Uuid,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-    is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
-) {
-    app.mode = UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(dispute_id));
-
-    // Spawn async task to finalize dispute
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-    let pool_clone = pool.clone();
-    let dispute_id_str = dispute_id.to_string();
-    tokio::spawn(async move {
-        let result = if is_settle {
-            execute_admin_settle(&dispute_id, &client_clone, mostro_pubkey).await
-        } else {
-            execute_admin_cancel(&dispute_id, &client_clone, mostro_pubkey).await
-        };
-
-        match result {
-            Ok(_) => {
-                // Update dispute status in database
-                let db_update_result = if is_settle {
-                    crate::models::AdminDispute::set_status_settled(&pool_clone, &dispute_id_str)
-                        .await
-                } else {
-                    crate::models::AdminDispute::set_status_seller_refunded(
-                        &pool_clone,
-                        &dispute_id_str,
-                    )
-                    .await
-                };
-
-                if let Err(e) = db_update_result {
-                    log::error!("Failed to update dispute status in database: {}", e);
-                    // Still show success message since the action was sent successfully
-                }
-
-                let action_name = if is_settle {
-                    "settled (buyer paid)"
-                } else {
-                    "canceled (seller refunded)"
-                };
-                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
-                    "✅ Dispute {} {}!",
-                    dispute_id, action_name
-                )));
-            }
-            Err(e) => {
-                log::error!("Failed to finalize dispute: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-            }
-        }
-    });
-}
+// Message handlers moved to message_handlers.rs
+use crate::ui::key_handler::message_handlers::{
+    handle_enter_message_notification, handle_enter_viewing_message,
+};

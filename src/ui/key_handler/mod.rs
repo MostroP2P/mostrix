@@ -1,10 +1,14 @@
+mod admin_handlers;
+mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
 mod esc_handlers;
 mod form_input;
 mod input_helpers;
+mod message_handlers;
 mod navigation;
 mod settings;
+mod user_handlers;
 mod validation;
 
 use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab};
@@ -206,8 +210,8 @@ pub fn handle_key_event(
             }
         }
 
-        // Handle F (without Shift) to toggle between InProgress and Finalized filters
-        if !has_shift && (code == KeyCode::Char('f') || code == KeyCode::Char('F')) {
+        // Handle Shift+C to toggle between InProgress and Finalized filters
+        if has_shift && (code == KeyCode::Char('c') || code == KeyCode::Char('C')) {
             // Toggle filter between InProgress and Finalized
             app.dispute_filter = match app.dispute_filter {
                 crate::ui::DisputeFilter::InProgress => crate::ui::DisputeFilter::Finalized,
@@ -259,21 +263,26 @@ pub fn handle_key_event(
                     ref mut selected_button,
                 )) => {
                     // Check if dispute is finalized to skip disabled buttons
-                    let is_finalized = app
+                    use std::str::FromStr;
+                    let dispute_is_finalized = app
                         .admin_disputes_in_progress
                         .iter()
                         .find(|d| {
                             d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string()
                         })
-                        .map(|d| {
+                        .and_then(|d| d.status.as_deref())
+                        .and_then(|s| DisputeStatus::from_str(s).ok())
+                        .map(|s| {
                             matches!(
-                                d.status.as_deref(),
-                                Some("Settled") | Some("SellerRefunded") | Some("Released")
+                                s,
+                                DisputeStatus::Settled
+                                    | DisputeStatus::SellerRefunded
+                                    | DisputeStatus::Released
                             )
                         })
                         .unwrap_or(false);
 
-                    cycle_finalization_button(selected_button, code, is_finalized);
+                    cycle_finalization_button(selected_button, code, dispute_is_finalized);
                     return Some(true);
                 }
                 _ => {}
@@ -286,53 +295,13 @@ pub fn handle_key_event(
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                     if !app.admin_chat_input_enabled {
-                        if let Some(selected_dispute) = app
+                        let dispute_id_key = app
                             .admin_disputes_in_progress
                             .get(app.selected_in_progress_idx)
-                        {
-                            // Use dispute_id as the key for chat messages
-                            let dispute_id_key = &selected_dispute.dispute_id;
-                            if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
-                                // Filter messages by active party to get actual count
-                                let visible_count = messages
-                                    .iter()
-                                    .filter(|msg| {
-                                        match msg.sender {
-                                            super::ChatSender::Admin => {
-                                                // Admin messages should only show in the chat party they were sent to
-                                                msg.target_party == Some(app.active_chat_party)
-                                            }
-                                            super::ChatSender::Buyer => {
-                                                app.active_chat_party == super::ChatParty::Buyer
-                                            }
-                                            super::ChatSender::Seller => {
-                                                app.active_chat_party == super::ChatParty::Seller
-                                            }
-                                        }
-                                    })
-                                    .count();
-
-                                if visible_count > 0 {
-                                    let current = app
-                                        .admin_chat_list_state
-                                        .selected()
-                                        .unwrap_or(visible_count.saturating_sub(1));
-
-                                    let new_selection = if code == KeyCode::Up {
-                                        // Move up (older messages)
-                                        if current > 0 {
-                                            current - 1
-                                        } else {
-                                            0
-                                        }
-                                    } else {
-                                        // Move down (newer messages)
-                                        (current + 1).min(visible_count.saturating_sub(1))
-                                    };
-
-                                    app.admin_chat_list_state.select(Some(new_selection));
-                                    return Some(true);
-                                }
+                            .map(|d| d.dispute_id.clone());
+                        if let Some(dispute_id_key) = dispute_id_key {
+                            if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
+                                return Some(true);
                             }
                         }
                     }
@@ -345,52 +314,13 @@ pub fn handle_key_event(
             // Handle chat scrolling in ManagingDispute mode using ListState
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    if let Some(selected_dispute) = app
+                    let dispute_id_key = app
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
-                    {
-                        // Use dispute_id as the key for chat messages
-                        let dispute_id_key = &selected_dispute.dispute_id;
-                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
-                            // Filter messages by active party to get actual count
-                            let visible_count = messages
-                                .iter()
-                                .filter(|msg| {
-                                    match msg.sender {
-                                        super::ChatSender::Admin => {
-                                            // Admin messages should only show in the chat party they were sent to
-                                            msg.target_party == Some(app.active_chat_party)
-                                        }
-                                        super::ChatSender::Buyer => {
-                                            app.active_chat_party == super::ChatParty::Buyer
-                                        }
-                                        super::ChatSender::Seller => {
-                                            app.active_chat_party == super::ChatParty::Seller
-                                        }
-                                    }
-                                })
-                                .count();
-
-                            if visible_count > 0 {
-                                let current = app
-                                    .admin_chat_list_state
-                                    .selected()
-                                    .unwrap_or(visible_count.saturating_sub(1));
-
-                                if code == KeyCode::PageUp {
-                                    // Scroll up (show older messages) - move selection up by ~10 items
-                                    let new_selection = current
-                                        .saturating_sub(10)
-                                        .min(visible_count.saturating_sub(1));
-                                    app.admin_chat_list_state.select(Some(new_selection));
-                                } else {
-                                    // Scroll down (show newer messages) - move selection down by ~10 items
-                                    let new_selection =
-                                        (current + 10).min(visible_count.saturating_sub(1));
-                                    app.admin_chat_list_state.select(Some(new_selection));
-                                }
-                                return Some(true);
-                            }
+                        .map(|d| d.dispute_id.clone());
+                    if let Some(dispute_id_key) = dispute_id_key {
+                        if chat_helpers::scroll_chat_messages(app, &dispute_id_key, code) {
+                            return Some(true);
                         }
                     }
                 }
@@ -421,38 +351,13 @@ pub fn handle_key_event(
             // Jump to bottom of chat (latest messages)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    if let Some(selected_dispute) = app
+                    let dispute_id_key = app
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
-                    {
-                        // Use dispute_id as the key for chat messages
-                        let dispute_id_key = &selected_dispute.dispute_id;
-                        if let Some(messages) = app.admin_dispute_chats.get(dispute_id_key) {
-                            // Filter messages by active party to get actual count
-                            let visible_count = messages
-                                .iter()
-                                .filter(|msg| {
-                                    match msg.sender {
-                                        super::ChatSender::Admin => {
-                                            // Admin messages should only show in the chat party they were sent to
-                                            msg.target_party == Some(app.active_chat_party)
-                                        }
-                                        super::ChatSender::Buyer => {
-                                            app.active_chat_party == super::ChatParty::Buyer
-                                        }
-                                        super::ChatSender::Seller => {
-                                            app.active_chat_party == super::ChatParty::Seller
-                                        }
-                                    }
-                                })
-                                .count();
-
-                            if visible_count > 0 {
-                                // Jump to last message (bottom)
-                                app.admin_chat_list_state
-                                    .select(Some(visible_count.saturating_sub(1)));
-                                return Some(true);
-                            }
+                        .map(|d| d.dispute_id.clone());
+                    if let Some(dispute_id_key) = dispute_id_key {
+                        if chat_helpers::jump_to_chat_bottom(app, &dispute_id_key) {
+                            return Some(true);
                         }
                     }
                 }

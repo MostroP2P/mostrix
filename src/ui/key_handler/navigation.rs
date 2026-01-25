@@ -142,10 +142,16 @@ fn handle_up_key(
                 }
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
                 // Only count disputes with "initiated" status
+                use mostro_core::prelude::*;
+                use std::str::FromStr;
                 let disputes_lock = disputes.lock().unwrap();
                 let initiated_count = disputes_lock
                     .iter()
-                    .filter(|d| d.status == "initiated")
+                    .filter(|d| {
+                        DisputeStatus::from_str(d.status.as_str())
+                            .map(|s| s == DisputeStatus::Initiated)
+                            .unwrap_or(false)
+                    })
                     .count();
                 if initiated_count > 0 {
                     // Ensure index doesn't go below 0
@@ -244,10 +250,16 @@ fn handle_down_key(
                 }
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
                 // Only count disputes with "initiated" status
+                use mostro_core::prelude::*;
+                use std::str::FromStr;
                 let disputes_lock = disputes.lock().unwrap();
                 let initiated_count = disputes_lock
                     .iter()
-                    .filter(|d| d.status == "initiated")
+                    .filter(|d| {
+                        DisputeStatus::from_str(d.status.as_str())
+                            .map(|s| s == DisputeStatus::Initiated)
+                            .unwrap_or(false)
+                    })
                     .count();
                 if initiated_count > 0 {
                     // Ensure index doesn't exceed bounds

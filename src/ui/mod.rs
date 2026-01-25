@@ -134,7 +134,7 @@ impl Display for AdminTab {
             "{}",
             match self {
                 AdminTab::DisputesPending => "Disputes Pending",
-                AdminTab::DisputesInProgress => "Disputes in Progress",
+                AdminTab::DisputesInProgress => "Disputes Management",
                 AdminTab::Settings => "Settings",
                 AdminTab::Exit => "Exit",
             }

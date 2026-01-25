@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use mostro_core::prelude::*;
 
 /// Render the dispute finalization popup with full dispute details and action buttons
 pub fn render_finalization_popup(
@@ -102,11 +103,19 @@ pub fn render_finalization_popup(
     render_dispute_details(f, chunks[0], selected_dispute);
 
     // Buttons area - pass dispute status to check if finalized
-    let is_finalized = matches!(
-        selected_dispute.status.as_deref(),
-        Some("Settled") | Some("SellerRefunded") | Some("Released")
-    );
-    render_action_buttons(f, chunks[1], selected_button, is_finalized);
+    use std::str::FromStr;
+    let dispute_is_finalized = selected_dispute
+        .status
+        .as_deref()
+        .and_then(|s| DisputeStatus::from_str(s).ok())
+        .map(|s| {
+            matches!(
+                s,
+                DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
+            )
+        })
+        .unwrap_or(false);
+    render_action_buttons(f, chunks[1], selected_button, dispute_is_finalized);
 }
 
 /// Render detailed dispute information
@@ -216,7 +225,17 @@ fn render_dispute_details(
             Span::raw(dispute.kind.as_deref().unwrap_or("Unknown")),
             Span::raw("  |  "),
             Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(dispute.status.as_deref().unwrap_or("Unknown")),
+            Span::raw(
+                dispute
+                    .status
+                    .as_deref()
+                    .and_then(|s| {
+                        use std::str::FromStr;
+                        mostro_core::prelude::DisputeStatus::from_str(s).ok()
+                    })
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Unknown".to_string()),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Created: ", Style::default().add_modifier(Modifier::BOLD)),

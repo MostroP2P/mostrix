@@ -103,7 +103,7 @@ pub async fn execute_take_dispute(
 
                 // Clone and override status to InProgress before saving - this admin is now resolving it
                 let mut dispute_info_clone = dispute_info.clone();
-                dispute_info_clone.status = "InProgress".to_string();
+                dispute_info_clone.status = DisputeStatus::InProgress.to_string();
 
                 // Save dispute info to database with InProgress status
                 // Pass the dispute_id (from the function parameter) to distinguish it from order_id

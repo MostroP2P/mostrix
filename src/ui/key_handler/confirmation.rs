@@ -4,7 +4,7 @@ use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::ui::key_handler::enter_handlers::execute_take_order_action;
+use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
     save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
@@ -204,7 +204,7 @@ pub fn handle_confirm_key(
             // Delegate to the same handler used for Enter to keep logic DRY
             // (synthesize a mode with YES selected)
             let mode = UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, true));
-            crate::ui::key_handler::enter_handlers::handle_enter_admin_mode(
+            crate::ui::key_handler::admin_handlers::handle_enter_admin_mode(
                 app,
                 mode,
                 default_mode,
@@ -231,7 +231,7 @@ pub fn handle_confirm_key(
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
             // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
             // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
-            crate::ui::key_handler::enter_handlers::execute_take_dispute_action(
+            crate::ui::key_handler::admin_handlers::execute_take_dispute_action(
                 app,
                 dispute_id,
                 client,

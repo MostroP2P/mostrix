@@ -156,10 +156,10 @@ pub fn render_finalization_confirm(
     )
     .split(centered_button_area);
 
-    // YES button
+    // YES button - always use green when highlighted
     let yes_style = if selected_button {
         Style::default()
-            .bg(action_color)
+            .bg(Color::Green)
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD)
     } else {
@@ -182,7 +182,7 @@ pub fn render_finalization_confirm(
                 .fg(if selected_button {
                     Color::Black
                 } else {
-                    action_color
+                    Color::Green
                 })
                 .add_modifier(Modifier::BOLD),
         )]))

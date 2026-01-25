@@ -138,19 +138,12 @@ async fn main() -> Result<(), anyhow::Error> {
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
-    // Load admin disputes in progress from database if admin mode
+    // Load all admin disputes from database if admin mode
+    // (The filter toggle will show InProgress or Finalized based on user selection)
     if app.user_role == UserRole::Admin {
         match crate::models::AdminDispute::get_all(&pool).await {
             Ok(all_disputes) => {
-                app.admin_disputes_in_progress = all_disputes
-                    .into_iter()
-                    .filter(|d| {
-                        d.status
-                            .as_ref()
-                            .map(|s| s == "InProgress")
-                            .unwrap_or(false)
-                    })
-                    .collect();
+                app.admin_disputes_in_progress = all_disputes;
             }
             Err(e) => {
                 log::warn!("Failed to load admin disputes: {}", e);
@@ -189,27 +182,22 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
-                    // Check if this is a dispute taken result before handling
-                    let is_dispute_taken = matches!(&result, crate::ui::OrderResult::Info(msg)
-                        if msg.contains("Dispute") && msg.contains("taken successfully"));
+                    // Check if this is a dispute-related result before handling
+                    let is_dispute_related = matches!(&result, crate::ui::OrderResult::Info(msg)
+                        if (msg.contains("Dispute") && msg.contains("taken successfully"))
+                        || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
                     handle_order_result(result, &mut app);
 
-                    // If this is an Info result about taking a dispute, refresh the disputes list
-                    if is_dispute_taken && app.user_role == UserRole::Admin {
+                    // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
+                    if is_dispute_related && app.user_role == UserRole::Admin {
                         match crate::models::AdminDispute::get_all(&pool).await {
                             Ok(all_disputes) => {
-                                app.admin_disputes_in_progress = all_disputes
-                                    .into_iter()
-                                    .filter(|d| {
-                                        d.status
-                                            .as_ref()
-                                            .map(|s| s == "InProgress")
-                                            .unwrap_or(false)
-                                    })
-                                    .collect();
+                                app.admin_disputes_in_progress = all_disputes;
+                                // Reset selected index to ensure it's within bounds after refresh
+                                app.selected_in_progress_idx = 0;
                                 log::info!(
-                                    "Refreshed admin disputes list: {} in progress",
+                                    "Refreshed admin disputes list: {} total disputes",
                                     app.admin_disputes_in_progress.len()
                                 );
                             }
@@ -319,10 +307,16 @@ async fn main() -> Result<(), anyhow::Error> {
         // Ensure the selected dispute index is valid when disputes list changes.
         // Only count "initiated" disputes since that's what we display
         {
+            use mostro_core::prelude::*;
+            use std::str::FromStr;
             let disputes_lock = disputes.lock().unwrap();
             let initiated_count = disputes_lock
                 .iter()
-                .filter(|d| d.status == "initiated")
+                .filter(|d| {
+                    DisputeStatus::from_str(d.status.as_str())
+                        .map(|s| s == DisputeStatus::Initiated)
+                        .unwrap_or(false)
+                })
                 .count();
             if initiated_count > 0 && app.selected_dispute_idx >= initiated_count {
                 app.selected_dispute_idx = initiated_count.saturating_sub(1);
