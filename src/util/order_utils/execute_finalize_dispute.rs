@@ -53,11 +53,20 @@ pub async fn execute_finalize_dispute(
     result?; // Propagate error if action failed
 
     // Update dispute status in database
+    // First, get the order_id (id field) from the dispute_id
     let dispute_id_str = dispute_id.to_string();
+    let order_id: String = sqlx::query_scalar::<_, String>(
+        r#"SELECT id FROM admin_disputes WHERE dispute_id = ? LIMIT 1"#,
+    )
+    .bind(&dispute_id_str)
+    .fetch_one(pool)
+    .await?;
+
+    // Now update using the order_id (primary key)
     if is_settle {
-        AdminDispute::set_status_settled(pool, &dispute_id_str).await?;
+        AdminDispute::set_status_settled(pool, &order_id).await?;
     } else {
-        AdminDispute::set_status_seller_refunded(pool, &dispute_id_str).await?;
+        AdminDispute::set_status_seller_refunded(pool, &order_id).await?;
     }
 
     let action_name = if is_settle {

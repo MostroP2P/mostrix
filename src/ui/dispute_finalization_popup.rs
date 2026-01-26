@@ -304,7 +304,7 @@ fn render_dispute_details(
             "Fiat Amount: ",
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{}", dispute.fiat_amount)),
+        Span::raw(format!("{} {}", dispute.fiat_amount, dispute.fiat_code)),
     ]));
 
     lines.push(Line::from(vec![

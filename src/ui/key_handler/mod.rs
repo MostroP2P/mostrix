@@ -203,7 +203,7 @@ pub fn handle_key_event(
                     .admin_disputes_in_progress
                     .get(app.selected_in_progress_idx)
                 {
-                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.id) {
+                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
                         app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
                             dispute_id, 0, // Default to first button (Pay Buyer)
                         ));

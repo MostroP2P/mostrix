@@ -51,8 +51,12 @@ pub fn handle_enter_viewing_message(
         return;
     };
 
-    // Set waiting mode (user mode only)
-    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
+    // Set waiting mode based on user role
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    app.mode = default_mode;
 
     // Spawn async task to send message
     let pool_clone = pool.clone();
@@ -100,8 +104,12 @@ pub fn handle_enter_message_notification(
             let order_result_tx_clone = order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
-                    // Set waiting mode before sending invoice
-                    app.mode = UiMode::UserMode(UserMode::WaitingAddInvoice);
+                    // Set waiting mode based on user role
+                    let default_mode = match app.user_role {
+                        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
+                        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+                    };
+                    app.mode = default_mode;
 
                     // Send invoice to Mostro
                     let invoice_state_clone = invoice_state.clone();

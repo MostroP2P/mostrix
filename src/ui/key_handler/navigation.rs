@@ -154,7 +154,9 @@ fn handle_up_key(
                             .unwrap_or(false)
                     })
                     .count();
-                if initiated_count > 0 {
+                if initiated_count == 0 {
+                    app.selected_dispute_idx = 0;
+                } else {
                     // Ensure index doesn't go below 0
                     if app.selected_dispute_idx > 0 {
                         app.selected_dispute_idx -= 1;
@@ -254,7 +256,9 @@ fn handle_down_key(
                             .unwrap_or(false)
                     })
                     .count();
-                if initiated_count > 0 {
+                if initiated_count == 0 {
+                    app.selected_dispute_idx = 0;
+                } else {
                     // Ensure index doesn't exceed bounds
                     if app.selected_dispute_idx < initiated_count.saturating_sub(1) {
                         app.selected_dispute_idx += 1;
