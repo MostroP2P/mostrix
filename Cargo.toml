@@ -1,8 +1,7 @@
 [package]
 name = "mostrix"
-# name = "mostrix-userA"
-# name = "mostrix-userB"
 version = "0.1.0"
+rust-version = "1.90.0"
 edition = "2021"
 license = "MIT"
 authors = ["Francisco Calderón <negrunch@grunch.dev>"]

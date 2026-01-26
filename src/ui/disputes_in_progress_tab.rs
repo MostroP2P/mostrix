@@ -260,59 +260,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (buyer_rating, seller_rating) = match is_initiator_buyer {
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
-                let buyer_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
-                    let star_count = (info.rating.round() as usize).min(5);
-                    let stars = "⭐".repeat(star_count);
-                    format!(
-                        "{} {:.1}/5 ({} trades completed, {} days)",
-                        stars, info.rating, info.reviews, info.operating_days
-                    )
-                } else {
-                    "No rating available".to_string()
-                };
-                let seller_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
-                    let stars = "⭐"
-                        .repeat((info.rating / 2.0).round() as usize)
-                        .chars()
-                        .take(5)
-                        .collect::<String>();
-                    format!(
-                        "{} {:.1}/10 ({} trades completed, {} days)",
-                        stars, info.rating, info.reviews, info.operating_days
-                    )
-                } else {
-                    "No rating available".to_string()
-                };
+                let buyer_rating =
+                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
+                let seller_rating =
+                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
                 (buyer_rating, seller_rating)
             }
             Some(false) => {
                 // Initiator is seller, counterpart is buyer
-                let seller_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
-                    let stars = "⭐"
-                        .repeat((info.rating / 2.0).round() as usize)
-                        .chars()
-                        .take(5)
-                        .collect::<String>();
-                    format!(
-                        "{} {:.1}/10 ({} trades completed, {} days)",
-                        stars, info.rating, info.reviews, info.operating_days
-                    )
-                } else {
-                    "No rating available".to_string()
-                };
-                let buyer_rating = if let Some(ref info) = selected_dispute.counterpart_info_data {
-                    let stars = "⭐"
-                        .repeat((info.rating / 2.0).round() as usize)
-                        .chars()
-                        .take(5)
-                        .collect::<String>();
-                    format!(
-                        "{} {:.1}/10 ({} trades completed, {} days)",
-                        stars, info.rating, info.reviews, info.operating_days
-                    )
-                } else {
-                    "No rating available".to_string()
-                };
+                let seller_rating =
+                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
+                let buyer_rating =
+                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
                 (buyer_rating, seller_rating)
             }
             None => {

@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::ui::helpers::is_dispute_finalized;
+use crate::ui::helpers::{format_user_rating, is_dispute_finalized};
 
 /// Render the dispute finalization popup with full dispute details and action buttons
 pub fn render_finalization_popup(
@@ -216,40 +216,12 @@ fn render_dispute_details(
 
     // Rating information
     let (buyer_rating, seller_rating) = if is_initiator_buyer {
-        let buyer_rating = if let Some(ref info) = dispute.initiator_info_data {
-            format!(
-                "⭐ {:.1}/10 ({} trades, {} days)",
-                info.rating, info.reviews, info.operating_days
-            )
-        } else {
-            "No rating".to_string()
-        };
-        let seller_rating = if let Some(ref info) = dispute.counterpart_info_data {
-            format!(
-                "⭐ {:.1}/10 ({} trades, {} days)",
-                info.rating, info.reviews, info.operating_days
-            )
-        } else {
-            "No rating".to_string()
-        };
+        let buyer_rating = format_user_rating(dispute.initiator_info_data.as_ref());
+        let seller_rating = format_user_rating(dispute.counterpart_info_data.as_ref());
         (buyer_rating, seller_rating)
     } else {
-        let seller_rating = if let Some(ref info) = dispute.initiator_info_data {
-            format!(
-                "⭐ {:.1}/10 ({} trades, {} days)",
-                info.rating, info.reviews, info.operating_days
-            )
-        } else {
-            "No rating".to_string()
-        };
-        let buyer_rating = if let Some(ref info) = dispute.counterpart_info_data {
-            format!(
-                "⭐ {:.1}/10 ({} trades, {} days)",
-                info.rating, info.reviews, info.operating_days
-            )
-        } else {
-            "No rating".to_string()
-        };
+        let seller_rating = format_user_rating(dispute.initiator_info_data.as_ref());
+        let buyer_rating = format_user_rating(dispute.counterpart_info_data.as_ref());
         (buyer_rating, seller_rating)
     };
 
