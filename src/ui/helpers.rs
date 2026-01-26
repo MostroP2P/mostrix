@@ -1,12 +1,31 @@
+use crate::models::AdminDispute;
 use chrono::DateTime;
+use mostro_core::prelude::DisputeStatus;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::str::FromStr;
 
 use super::{ChatParty, ChatSender, DisputeChatMessage, PRIMARY_COLOR};
+
+// Buttons area - pass dispute status to check if finalized
+pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
+    let dispute_is_finalized = selected_dispute
+        .status
+        .as_deref()
+        .and_then(|s| DisputeStatus::from_str(s).ok())
+        .map(|s| {
+            matches!(
+                s,
+                DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
+            )
+        });
+
+    dispute_is_finalized
+}
 
 /// Creates a centered popup area within the given area
 pub fn create_centered_popup(area: Rect, width: u16, height: u16) -> Rect {

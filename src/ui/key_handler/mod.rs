@@ -11,7 +11,10 @@ mod settings;
 mod user_handlers;
 mod validation;
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab};
+use crate::ui::{
+    helpers::is_dispute_finalized, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
+    UserTab,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
@@ -263,23 +266,11 @@ pub fn handle_key_event(
                     ref mut selected_button,
                 )) => {
                     // Check if dispute is finalized to skip disabled buttons
-                    use std::str::FromStr;
                     let dispute_is_finalized = app
                         .admin_disputes_in_progress
                         .iter()
-                        .find(|d| {
-                            d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string()
-                        })
-                        .and_then(|d| d.status.as_deref())
-                        .and_then(|s| DisputeStatus::from_str(s).ok())
-                        .map(|s| {
-                            matches!(
-                                s,
-                                DisputeStatus::Settled
-                                    | DisputeStatus::SellerRefunded
-                                    | DisputeStatus::Released
-                            )
-                        })
+                        .find(|d| d.dispute_id == dispute_id.to_string())
+                        .and_then(is_dispute_finalized)
                         .unwrap_or(false);
 
                     cycle_finalization_button(selected_button, code, dispute_is_finalized);

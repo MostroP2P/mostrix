@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use mostro_core::prelude::*;
+use crate::ui::helpers::is_dispute_finalized;
 
 /// Render the dispute finalization popup with full dispute details and action buttons
 pub fn render_finalization_popup(
@@ -103,18 +103,7 @@ pub fn render_finalization_popup(
     render_dispute_details(f, chunks[0], selected_dispute);
 
     // Buttons area - pass dispute status to check if finalized
-    use std::str::FromStr;
-    let dispute_is_finalized = selected_dispute
-        .status
-        .as_deref()
-        .and_then(|s| DisputeStatus::from_str(s).ok())
-        .map(|s| {
-            matches!(
-                s,
-                DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
-            )
-        })
-        .unwrap_or(false);
+    let dispute_is_finalized = is_dispute_finalized(selected_dispute).unwrap_or(false);
     render_action_buttons(f, chunks[1], selected_button, dispute_is_finalized);
 }
 

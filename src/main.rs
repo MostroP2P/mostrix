@@ -4,8 +4,10 @@ pub mod settings;
 pub mod ui;
 pub mod util;
 
+use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
 use crate::ui::key_handler::handle_key_event;
+use crate::ui::{MessageNotification, OrderResult};
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{start_fetch_scheduler, FetchSchedulerResult},
@@ -141,7 +143,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Load all admin disputes from database if admin mode
     // (The filter toggle will show InProgress or Finalized based on user selection)
     if app.user_role == UserRole::Admin {
-        match crate::models::AdminDispute::get_all(&pool).await {
+        match AdminDispute::get_all(&pool).await {
             Ok(all_disputes) => {
                 app.admin_disputes_in_progress = all_disputes;
             }
@@ -153,11 +155,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
+        tokio::sync::mpsc::unbounded_channel::<OrderResult>();
 
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::ui::MessageNotification>();
+        tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
 
     // Spawn background task to listen for messages on active orders
     let client_for_messages = client.clone();
@@ -183,7 +185,7 @@ async fn main() -> Result<(), anyhow::Error> {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
                     // Check if this is a dispute-related result before handling
-                    let is_dispute_related = matches!(&result, crate::ui::OrderResult::Info(msg)
+                    let is_dispute_related = matches!(&result, OrderResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
@@ -191,7 +193,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {
-                        match crate::models::AdminDispute::get_all(&pool).await {
+                        match AdminDispute::get_all(&pool).await {
                             Ok(all_disputes) => {
                                 app.admin_disputes_in_progress = all_disputes;
                                 // Reset selected index to ensure it's within bounds after refresh

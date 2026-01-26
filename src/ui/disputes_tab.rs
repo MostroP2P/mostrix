@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use chrono::DateTime;
@@ -20,12 +21,9 @@ pub fn render_disputes_tab(
     let disputes_lock = disputes.lock().unwrap();
 
     // Filter to only show disputes with "initiated" status
-    use mostro_core::prelude::*;
-    use std::str::FromStr;
-    let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
+    let initiated_disputes: Vec<&Dispute> = disputes_lock
         .iter()
-        .enumerate()
-        .filter(|(_, dispute)| {
+        .filter(|dispute| {
             DisputeStatus::from_str(dispute.status.as_str())
                 .map(|s| s == DisputeStatus::Initiated)
                 .unwrap_or(false)
@@ -62,7 +60,7 @@ pub fn render_disputes_tab(
         let rows: Vec<Row> = initiated_disputes
             .iter()
             .enumerate()
-            .map(|(display_idx, (_original_idx, dispute))| {
+            .map(|(display_idx, dispute)| {
                 let id_cell = Cell::from(dispute.id.to_string());
 
                 let status_str = dispute.status.clone();

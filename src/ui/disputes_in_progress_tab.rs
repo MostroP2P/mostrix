@@ -261,13 +261,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
                 let buyer_rating = if let Some(ref info) = selected_dispute.initiator_info_data {
-                    let stars = "⭐"
-                        .repeat((info.rating / 2.0).round() as usize)
-                        .chars()
-                        .take(5)
-                        .collect::<String>();
+                    let star_count = (info.rating.round() as usize).min(5);
+                    let stars = "⭐".repeat(star_count);
                     format!(
-                        "{} {:.1}/10 ({} trades completed, {} days)",
+                        "{} {:.1}/5 ({} trades completed, {} days)",
                         stars, info.rating, info.reviews, info.operating_days
                     )
                 } else {
@@ -561,10 +558,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             if total_items > 0 {
                 let current_selection = app.admin_chat_list_state.selected();
                 // Reset to bottom if: no selection, selection is out of bounds, or selection is at the end
-                if current_selection.is_none()
-                    || current_selection.unwrap_or(0) >= total_items
-                    || current_selection.unwrap_or(0) >= total_items.saturating_sub(1)
-                {
+                if current_selection.is_none_or(|sel| sel >= total_items.saturating_sub(1)) {
                     app.admin_chat_list_state
                         .select(Some(total_items.saturating_sub(1)));
                 }

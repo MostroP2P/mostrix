@@ -62,9 +62,8 @@ pub fn render_finalization_confirm(
     };
 
     let area = f.area();
-    let popup_width = 70;
-    let popup_height = 15;
-
+    let popup_width = 70.min(area.width.saturating_sub(4));
+    let popup_height = 15.min(area.height.saturating_sub(2));
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 

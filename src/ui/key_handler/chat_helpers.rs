@@ -90,9 +90,7 @@ pub fn scroll_chat_messages(
     let new_selection = match direction {
         crossterm::event::KeyCode::PageUp => {
             // Scroll up (show older messages) - move selection up by ~10 items
-            current
-                .saturating_sub(10)
-                .min(visible_count.saturating_sub(1))
+            current.saturating_sub(10)
         }
         crossterm::event::KeyCode::PageDown => {
             // Scroll down (show newer messages) - move selection down by ~10 items

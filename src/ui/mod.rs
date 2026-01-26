@@ -583,7 +583,6 @@ impl AppState {
         self.mode = UiMode::Normal;
         self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
-        self.selected_dispute_idx = 0;
         self.selected_in_progress_idx = 0;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();

@@ -508,8 +508,9 @@ impl AdminDispute {
     /// `Ok(None)` if no InProgress dispute exists, or an error if the query fails.
     pub async fn has_in_progress_dispute(pool: &SqlitePool) -> Result<Option<String>> {
         let result = sqlx::query_as::<_, (String,)>(
-            r#"SELECT id FROM admin_disputes WHERE status = 'in-progress' LIMIT 1"#,
+            r#"SELECT id FROM admin_disputes WHERE status = ? LIMIT 1"#,
         )
+        .bind(DisputeStatus::InProgress.to_string())
         .fetch_optional(pool)
         .await?;
         Ok(result.map(|(id,)| id))
@@ -519,7 +520,8 @@ impl AdminDispute {
     ///
     /// This is called when an admin takes a dispute to mark it as being resolved.
     pub async fn set_status_in_progress(pool: &SqlitePool, dispute_id: &str) -> Result<()> {
-        sqlx::query(r#"UPDATE admin_disputes SET status = 'in-progress' WHERE id = ?"#)
+        sqlx::query(r#"UPDATE admin_disputes SET status = ? WHERE id = ?"#)
+            .bind(DisputeStatus::InProgress.to_string())
             .bind(dispute_id)
             .execute(pool)
             .await?;
@@ -531,7 +533,8 @@ impl AdminDispute {
     /// This is called when an admin settles a dispute in favor of the buyer.
     /// Updates by id (the order ID, which is the primary key).
     pub async fn set_status_settled(pool: &SqlitePool, order_id: &str) -> Result<()> {
-        sqlx::query(r#"UPDATE admin_disputes SET status = 'settled' WHERE id = ?"#)
+        sqlx::query(r#"UPDATE admin_disputes SET status = ? WHERE id = ?"#)
+            .bind(DisputeStatus::Settled.to_string())
             .bind(order_id)
             .execute(pool)
             .await?;
@@ -543,7 +546,8 @@ impl AdminDispute {
     /// This is called when an admin cancels a dispute and refunds the seller.
     /// Updates by id (the order ID, which is the primary key).
     pub async fn set_status_seller_refunded(pool: &SqlitePool, order_id: &str) -> Result<()> {
-        sqlx::query(r#"UPDATE admin_disputes SET status = 'seller-refunded' WHERE id = ?"#)
+        sqlx::query(r#"UPDATE admin_disputes SET status = ? WHERE id = ?"#)
+            .bind(DisputeStatus::SellerRefunded.to_string())
             .bind(order_id)
             .execute(pool)
             .await?;

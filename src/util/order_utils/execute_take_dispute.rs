@@ -97,7 +97,7 @@ pub async fn execute_take_dispute(
                     return Err(anyhow::anyhow!(
                         "Dispute ID mismatch: expected {}, got {}",
                         dispute_id,
-                        dispute_info.id
+                        id
                     ));
                 }
 
@@ -114,17 +114,6 @@ pub async fn execute_take_dispute(
                     return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));
                 }
 
-                // Also explicitly update status to ensure it's set (in case of update path)
-                // Use dispute_info.id to ensure we're updating the correct record
-                if let Err(e) =
-                    AdminDispute::set_status_in_progress(pool, &dispute_info.id.to_string()).await
-                {
-                    log::error!("Failed to update dispute status to InProgress: {}", e);
-                    return Err(anyhow::anyhow!(
-                        "Failed to update dispute status to InProgress: {}",
-                        e
-                    ));
-                }
                 log::info!(
                     "✅ Dispute {} taken successfully and saved to database with InProgress status!",
                     dispute_info.id

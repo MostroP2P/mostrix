@@ -134,7 +134,8 @@ fn handle_up_key(
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
-        | UiMode::AdminMode(AdminMode::Normal) => {
+        | UiMode::AdminMode(AdminMode::Normal)
+        | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             if let Tab::User(UserTab::Orders) = app.active_tab {
                 let orders_len = orders.lock().unwrap().len();
                 if orders_len > 0 && app.selected_order_idx > 0 {
@@ -193,14 +194,6 @@ fn handle_up_key(
                 // Skip field 4 if not using range (go from 5 to 3)
                 if form.focused == 4 && !form.use_range {
                     form.focused = 3;
-                }
-            }
-        }
-        UiMode::AdminMode(AdminMode::ManagingDispute) => {
-            // Navigate within disputes in progress list
-            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if !app.admin_disputes_in_progress.is_empty() && app.selected_in_progress_idx > 0 {
-                    app.selected_in_progress_idx -= 1;
                 }
             }
         }
