@@ -274,9 +274,8 @@ pub fn handle_enter_key(
                     // Ensure input remains enabled after sending message
                     app.admin_chat_input_enabled = true;
                 } else {
-                    // If input is empty, ensure input stays enabled and mode is correct
+                    // If input is empty or disabled, keep the current enabled state
                     app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                    app.admin_chat_input_enabled = true;
                 }
                 // (finalization is now triggered by Shift+F, not Enter)
             } else {
