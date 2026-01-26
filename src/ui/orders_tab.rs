@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use super::{apply_kind_color, apply_status_color, BACKGROUND_COLOR};
+use super::{apply_kind_color, BACKGROUND_COLOR};
 
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
@@ -63,8 +63,7 @@ pub fn render_orders_tab(
                     .status
                     .unwrap_or(mostro_core::order::Status::Active)
                     .to_string();
-                let status_cell =
-                    Cell::from(status_str.clone()).style(apply_status_color(&status_str));
+                let status_cell = Cell::from(status_str);
 
                 let amount_cell = Cell::from(if order.amount == 0 {
                     "market".to_string()

@@ -589,32 +589,6 @@ impl AppState {
     }
 }
 
-/// Apply color coding to status cells based on status type (adapted for ratatui)
-pub(crate) fn apply_status_color(status: &str) -> Style {
-    let status_lower = status.to_lowercase();
-    if status_lower.contains("init")
-        || status_lower.contains("pending")
-        || status_lower.contains("waiting")
-    {
-        Style::default().fg(Color::Yellow)
-    } else if status_lower.contains("active")
-        || status_lower.contains("released")
-        || status_lower.contains("settled")
-        || status_lower.contains("taken")
-        || status_lower.contains("success")
-    {
-        Style::default().fg(Color::Green)
-    } else if status_lower.contains("fiat") {
-        Style::default().fg(Color::Cyan)
-    } else if status_lower.contains("dispute")
-        || status_lower.contains("cancel")
-        || status_lower.contains("canceled")
-    {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default()
-    }
-}
 
 /// Apply color coding to order kind cells (adapted for ratatui)
 pub(crate) fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {

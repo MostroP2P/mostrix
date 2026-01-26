@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use super::{apply_status_color, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Render the disputes tab showing a table of active disputes
 /// This tab is only visible in admin mode
@@ -64,8 +64,7 @@ pub fn render_disputes_tab(
                 let id_cell = Cell::from(dispute.id.to_string());
 
                 let status_str = dispute.status.clone();
-                let status_cell =
-                    Cell::from(status_str.clone()).style(apply_status_color(&status_str));
+                let status_cell = Cell::from(status_str);
 
                 let date = DateTime::from_timestamp(dispute.created_at, 0);
                 let date_cell = Cell::from(

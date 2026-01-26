@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use super::{
-    apply_status_color, AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR,
+    AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR,
 };
 use mostro_core::prelude::*;
 use std::str::FromStr;
@@ -316,8 +316,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 Span::styled("Status: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     selected_dispute.status.as_deref().unwrap_or("Unknown"),
-                    apply_status_color(selected_dispute.status.as_deref().unwrap_or("Unknown"))
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
