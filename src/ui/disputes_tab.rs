@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use chrono::DateTime;
@@ -19,14 +20,31 @@ pub fn render_disputes_tab(
 ) {
     let disputes_lock = disputes.lock().unwrap();
 
-    if disputes_lock.is_empty() {
+    // Filter to only show disputes with "initiated" status
+    let initiated_disputes: Vec<&Dispute> = disputes_lock
+        .iter()
+        .filter(|dispute| {
+            DisputeStatus::from_str(dispute.status.as_str())
+                .map(|s| s == DisputeStatus::Initiated)
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Ensure selected index is within bounds of filtered list
+    let valid_selected_idx = if initiated_disputes.is_empty() {
+        0
+    } else {
+        selected_dispute_idx.min(initiated_disputes.len().saturating_sub(1))
+    };
+
+    if initiated_disputes.is_empty() {
         let paragraph = Paragraph::new(Span::styled(
             "📭 No disputes found",
             Style::default().fg(Color::Yellow),
         ))
         .block(
             Block::default()
-                .title("Disputes")
+                .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
@@ -39,10 +57,10 @@ pub fn render_disputes_tab(
         ];
         let header = Row::new(header_cells);
 
-        let rows: Vec<Row> = disputes_lock
+        let rows: Vec<Row> = initiated_disputes
             .iter()
             .enumerate()
-            .map(|(i, dispute)| {
+            .map(|(display_idx, dispute)| {
                 let id_cell = Cell::from(dispute.id.to_string());
 
                 let status_str = dispute.status.clone();
@@ -57,7 +75,7 @@ pub fn render_disputes_tab(
 
                 let row = Row::new(vec![id_cell, status_cell, date_cell]);
 
-                if i == selected_dispute_idx {
+                if display_idx == valid_selected_idx {
                     // Highlight the selected row
                     row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
                 } else {
@@ -77,7 +95,7 @@ pub fn render_disputes_tab(
         .header(header)
         .block(
             Block::default()
-                .title("Disputes")
+                .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );

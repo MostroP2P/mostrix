@@ -1,16 +1,23 @@
+mod admin_handlers;
+mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
 mod esc_handlers;
 mod form_input;
 mod input_helpers;
+mod message_handlers;
 mod navigation;
 mod settings;
+mod user_handlers;
 mod validation;
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab};
+use crate::ui::{
+    helpers::is_dispute_finalized, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
+    UserTab,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use mostro_core::prelude::*;
-use nostr_sdk::Client;
+use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
@@ -25,6 +32,106 @@ pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
 pub use validation::{validate_currency, validate_mostro_pubkey, validate_npub, validate_relay};
 
+/// Check if we're in admin chat input mode and handle character input
+/// Returns Some(true) if handled, None if should continue to normal processing
+/// key_event is needed to check for modifiers (e.g., Shift+F should not be treated as input)
+fn handle_admin_chat_input(
+    app: &mut AppState,
+    code: KeyCode,
+    key_event: &crossterm::event::KeyEvent,
+) -> Option<bool> {
+    if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+            // Only allow input if chat input is enabled
+            if app.admin_chat_input_enabled {
+                // Don't treat Shift+F as input (it's used for finalization)
+                if (code == KeyCode::Char('f') || code == KeyCode::Char('F'))
+                    && key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    return None; // Let Shift+F handler process it
+                }
+                // Don't treat Shift+I as input (it's used for toggling input)
+                if (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+                    && key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    return None; // Let Shift+I handler process it
+                }
+                match code {
+                    KeyCode::Char(c) => {
+                        app.admin_chat_input.push(c);
+                        return Some(true);
+                    }
+                    KeyCode::Backspace => {
+                        app.admin_chat_input.pop();
+                        return Some(true);
+                    }
+                    _ => {} // For other keys, continue to normal handling
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Handle clipboard copy for invoice
+fn handle_clipboard_copy(invoice: String) -> bool {
+    let copy_result = {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::SetExtLinux;
+                    clipboard.set().wait().text(invoice)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    clipboard.set_text(invoice)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    };
+
+    match copy_result {
+        Ok(_) => {
+            log::info!("Invoice copied to clipboard");
+            true
+        }
+        Err(e) => {
+            log::warn!("Failed to copy invoice to clipboard: {}", e);
+            false
+        }
+    }
+}
+
+/// Cycle through 3 buttons (Pay Buyer, Refund Seller, Exit) for dispute finalization
+fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode, is_finalized: bool) {
+    if is_finalized {
+        // If finalized, only allow Exit button (button 2)
+        *selected_button = 2;
+        return;
+    }
+
+    // Normal navigation when not finalized
+    if direction == KeyCode::Left {
+        *selected_button = if *selected_button == 0 {
+            2
+        } else {
+            *selected_button - 1
+        };
+    } else {
+        *selected_button = if *selected_button == 2 {
+            0
+        } else {
+            *selected_button + 1
+        };
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -34,7 +141,7 @@ pub fn handle_key_event(
     disputes: &Arc<Mutex<Vec<Dispute>>>,
     pool: &SqlitePool,
     client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
+    mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
 ) -> Option<bool> {
@@ -42,12 +149,7 @@ pub fn handle_key_event(
     let code = key_event.code;
 
     // Handle invoice input first (before other key handling)
-    if let UiMode::NewMessageNotification(
-        _,
-        mostro_core::prelude::Action::AddInvoice,
-        ref mut invoice_state,
-    ) = app.mode
-    {
+    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
         if invoice_state.focused && handle_invoice_input(code, invoice_state) {
             return Some(true); // Skip further processing
         }
@@ -85,21 +187,93 @@ pub fn handle_key_event(
         }
     }
 
+    // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
+    // Check these BEFORE handle_admin_chat_input to prevent interception
+    if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+
+        // Handle Shift+F to open dispute finalization popup (check this first)
+        if has_shift && (code == KeyCode::Char('f') || code == KeyCode::Char('F')) {
+            // Only handle if we're in ManagingDispute mode
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                // Open finalization popup if a dispute is selected
+                if let Some(selected_dispute) = app
+                    .admin_disputes_in_progress
+                    .get(app.selected_in_progress_idx)
+                {
+                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                            dispute_id, 0, // Default to first button (Pay Buyer)
+                        ));
+                        return Some(true);
+                    }
+                }
+            }
+        }
+
+        // Handle Shift+C to toggle between InProgress and Finalized filters
+        if has_shift && (code == KeyCode::Char('c') || code == KeyCode::Char('C')) {
+            // Toggle filter between InProgress and Finalized
+            app.dispute_filter = match app.dispute_filter {
+                crate::ui::DisputeFilter::InProgress => crate::ui::DisputeFilter::Finalized,
+                crate::ui::DisputeFilter::Finalized => crate::ui::DisputeFilter::InProgress,
+            };
+            // Reset selection index when switching filters
+            app.selected_in_progress_idx = 0;
+            return Some(true);
+        }
+
+        // Handle Shift+I to toggle chat input enabled/disabled
+        if has_shift
+            && (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+            && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
+        {
+            app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
+            return Some(true);
+        }
+    }
+
+    // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
+    // (except invoice and key input which are handled earlier)
+    // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
+    if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
+        return Some(result);
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups
             match &mut app.mode {
                 UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+                | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
-                | UiMode::ConfirmClearCurrencies(ref mut selected_button) => {
+                | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
                 UiMode::ViewingMessage(ref mut view_state) => {
                     view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
+                    return Some(true);
+                }
+                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                    dispute_id,
+                    ref mut selected_button,
+                )) => {
+                    // Check if dispute is finalized to skip disabled buttons
+                    let dispute_is_finalized = app
+                        .admin_disputes_in_progress
+                        .iter()
+                        .find(|d| d.dispute_id == dispute_id.to_string())
+                        .and_then(is_dispute_finalized)
+                        .unwrap_or(false);
+
+                    cycle_finalization_button(selected_button, code, dispute_is_finalized);
                     return Some(true);
                 }
                 _ => {}
@@ -108,7 +282,40 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
+            // Handle chat message navigation when input is disabled
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    if !app.admin_chat_input_enabled {
+                        let dispute_id_key = app
+                            .admin_disputes_in_progress
+                            .get(app.selected_in_progress_idx)
+                            .map(|d| d.dispute_id.clone());
+                        if let Some(dispute_id_key) = dispute_id_key {
+                            if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
+                                return Some(true);
+                            }
+                        }
+                    }
+                }
+            }
             handle_navigation(code, app, orders, disputes);
+            Some(true)
+        }
+        KeyCode::PageUp | KeyCode::PageDown => {
+            // Handle chat scrolling in ManagingDispute mode using ListState
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    let dispute_id_key = app
+                        .admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx)
+                        .map(|d| d.dispute_id.clone());
+                    if let Some(dispute_id_key) = dispute_id_key {
+                        if chat_helpers::scroll_chat_messages(app, &dispute_id_key, code) {
+                            return Some(true);
+                        }
+                    }
+                }
+            }
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -116,14 +323,39 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            handle_enter_key(app, orders, pool, client, mostro_pubkey, order_result_tx);
-            Some(true)
+            let should_continue = handle_enter_key(
+                app,
+                orders,
+                disputes,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
+            Some(should_continue)
         }
         KeyCode::Esc => {
             let should_continue = handle_esc_key(app);
             Some(should_continue)
         }
-        KeyCode::Char('q') => Some(false), // Break the loop
+        KeyCode::End => {
+            // Jump to bottom of chat (latest messages)
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    let dispute_id_key = app
+                        .admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx)
+                        .map(|d| d.dispute_id.clone());
+                    if let Some(dispute_id_key) = dispute_id_key {
+                        if chat_helpers::jump_to_chat_bottom(app, &dispute_id_key) {
+                            return Some(true);
+                        }
+                    }
+                }
+            }
+            Some(true)
+        }
+        // 'q' key removed - use Exit tab instead
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let should_continue =
                 handle_confirm_key(app, pool, client, mostro_pubkey, order_result_tx);
@@ -152,39 +384,14 @@ pub fn handle_key_event(
             ) = app.mode
             {
                 if let Some(invoice) = &notification.invoice {
-                    // Copy to clipboard using proper arboard methods
-                    let copy_result = {
-                        match arboard::Clipboard::new() {
-                            Ok(mut clipboard) => {
-                                // Use builder pattern with wait() on Linux for proper clipboard handling
-                                #[cfg(target_os = "linux")]
-                                {
-                                    use arboard::SetExtLinux;
-                                    clipboard.set().wait().text(invoice.clone())
-                                }
-                                #[cfg(not(target_os = "linux"))]
-                                {
-                                    clipboard.set_text(invoice.clone())
-                                }
-                            }
-                            Err(e) => Err(e),
-                        }
-                    };
-
-                    match copy_result {
-                        Ok(_) => {
-                            log::info!("Invoice copied to clipboard");
-                            invoice_state.copied_to_clipboard = true;
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to copy invoice to clipboard: {}", e);
-                        }
-                    }
+                    invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
                 }
             }
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
+            // Chat input is handled at the top of this function (takes priority)
+            // This handles form inputs and other character entry
             handle_char_input(code, app, validate_range_amount);
             if code == KeyCode::Backspace {
                 handle_backspace(app, validate_range_amount);

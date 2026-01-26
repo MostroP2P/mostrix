@@ -21,15 +21,77 @@ Only the admin private key can be used to sign dispute resolution actions.
 
 The admin interface provides dedicated tabs for dispute management:
 
-### 1. Disputes Tab
+### 1. Disputes Pending Tab
 
-Lists all active disputes on the Mostro network. Admins can:
+Lists all pending disputes on the Mostro network (state: `Initiated`). Admins can:
 
 - **View dispute details**: Order ID, parties involved, status
-- **Take a dispute**: Select a dispute and take ownership to resolve it
+- **Take a dispute**: Select a dispute and press Enter to take ownership
 - **Navigate**: Use arrow keys to browse the dispute list
+- **Color coding**: Disputes are color-coded by status (Yellow for pending)
 
-### 2. Settings Tab
+### 2. Disputes in Progress Tab
+
+**Status**: ✅ **Fully Implemented with Complete Chat System**
+
+Shows disputes that have been taken by this admin (state: `InProgress`). This is the primary workspace for resolving disputes.
+
+#### Layout
+
+The interface is divided into three main sections:
+
+1. **Left Sidebar (20%)**: List of disputes in progress
+   - Shows truncated dispute IDs (safely handles short IDs without panicking)
+   - Highlighted selection with Up/Down arrow keys
+   - Updates main area when selection changes
+   - Shows "No disputes in progress" when empty
+
+2. **Main Area (80%)**:
+   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (`Shift+C: View Finalized | ↑↓: Select Dispute`). The footer is always visible to provide navigation guidance.
+   - **Header (8 lines)**: Comprehensive dispute information
+     - Dispute ID, Type, Status
+     - Creation date and timestamps
+     - Initiator role (Buyer or Seller with pubkey)
+     - Privacy indicators (🟢 info available / 🔴 private)
+     - Amount in sats and fiat
+     - User ratings with operating days
+   - **Party Tabs (3 lines)**: Buyer/Seller chat selection buttons
+     - Green "BUYER" button with truncated pubkey
+     - Red "SELLER" button with truncated pubkey
+     - Tab key switches between parties
+   - **Chat Area (flexible)**: Scrollable message history
+     - Color-coded messages (Cyan=Admin, Green=Buyer, Red=Seller)
+     - PageUp/PageDown scrolling
+     - Shows "No messages yet" when empty
+   - **Input Box (dynamic 1-10 lines)**: Message composition
+     - Grows automatically based on content
+     - Yellow bold border when focused
+     - Text wrapping with word boundaries
+   - **Footer (1 line)**: Context-sensitive keyboard shortcuts
+
+#### Features
+
+- **Real-time chat**: Direct typing with instant visual feedback
+- **Party switching**: Tab key toggles between buyer and seller
+- **Message history**: Per-dispute chat storage with scrolling
+- **Dynamic input**: Input box grows from 1 to 10 lines
+- **Finalization**: Press Enter with empty input to open finalization popup
+- **Visual indicators**: Focus states, colors, and icons for clarity
+
+#### Keyboard Navigation
+
+- **Up/Down**: Select dispute in sidebar
+- **Tab**: Switch between buyer and seller chat
+- **Type**: Start composing message (when input enabled)
+- **Enter**: Send message or open finalization popup
+- **PageUp/PageDown**: Scroll chat history
+- **End**: Jump to bottom of chat (latest messages)
+- **Shift+I**: Toggle chat input enabled/disabled
+- **Backspace**: Delete characters (when input enabled)
+
+See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
+
+### 3. Settings Tab
 
 **Status**: ✅ **Fully Implemented and Working**
 
@@ -64,7 +126,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 - **Keyboard Input**: All inputs support both paste and keyboard entry
 - **Settings Persistence**: All changes are saved to `settings.toml` file
 - **Error Handling**: Invalid inputs display error popups with clear messages
-- **Dynamic Updates**: 
+- **Dynamic Updates**:
   - Relays are added to the running Nostr client immediately
   - Currency filters are applied in real-time to order fetching
   - Status bar displays current settings (Mostro pubkey, relays, currencies)
@@ -289,6 +351,24 @@ This comprehensive information allows admins to:
 - `initiator_info` and `counterpart_info` may be `None` if privacy is enabled
 - Admins should respect privacy settings while gathering necessary information for resolution
 
+**Data Validation**:
+
+- **Required Fields**: `buyer_pubkey` and `seller_pubkey` are validated when taking a dispute. If either field is missing, the dispute cannot be saved to the database and an error is displayed.
+- **Data Integrity**: The finalization popup also validates these fields before displaying dispute details. If data is incomplete, a "Data Integrity Error" popup is shown instead of the finalization options.
+
+**Post-Finalization Action Blocking**:
+
+Once a dispute is finalized (status: `Settled`, `SellerRefunded`, or `Released`), the AdminSettle and AdminCancel actions are blocked at multiple levels:
+
+- **Model Layer**: `AdminDispute::is_finalized()` returns `true` for finalized disputes. The helper methods `can_settle()` and `can_cancel()` return `false` when finalized.
+- **UI Layer**: The finalization popup disables and grays out the "Pay Buyer" and "Refund Seller" buttons, showing "N/A" instead of the action names.
+- **Handler Layer**: `execute_finalize_dispute()` checks the dispute state before executing any action. If the dispute is already finalized, it returns an error: "Cannot execute [action]: dispute is already finalized".
+- **Key Handler Layer**: When pressing Enter on a disabled action button, an error message is displayed: "Cannot finalize: dispute is already finalized".
+
+This multi-layered protection ensures that finalized disputes cannot be accidentally or maliciously modified.
+
+**Source**: `src/models.rs` (AdminDispute::is_finalized, can_settle, can_cancel), `src/util/order_utils/execute_finalize_dispute.rs`
+
 ### Adding a Solver
 
 **Status**: ✅ **Implemented and Working**
@@ -406,7 +486,43 @@ pub fn validate_npub(npub_str: &str) -> Result<(), String> {
 
 ### Chatting with Parties
 
-Admins communicate with buyers and sellers through separate chat interfaces to prevent confusion and ensure clear communication.
+**Status**: ✅ **Fully Implemented with Real-time UI**
+
+Admins communicate with buyers and sellers through an integrated chat interface within the "Disputes in Progress" tab. The chat system provides a rich, interactive experience with real-time visual feedback.
+
+#### Chat Features
+
+**Visual Design**:
+
+- **Dynamic input box**: Grows from 1 to 10 lines based on message length
+- **Focus indicators**: Bold yellow border when typing, gray when inactive
+- **Party switching**: Use Tab key to switch between Buyer and Seller chat views
+
+**Message Management**:
+
+- **Per-dispute storage**: Each dispute maintains its own chat history
+- **Party filtering**: Messages are filtered by the active chat party:
+  - **Admin messages**: Only shown in the chat view of the party they were sent to
+  - **Buyer messages**: Only shown when viewing the Buyer chat
+  - **Seller messages**: Only shown when viewing the Seller chat
+- **Scroll support**: 
+  - **PageUp/PageDown**: Navigate through message history
+  - **End**: Jump to bottom of chat (latest messages)
+  - **Visual scrollbar**: Right-side scrollbar shows position in chat history (↑/↓/│/█ symbols)
+- **Auto-scroll**: Automatically scrolls to newest messages after sending
+- **Persistent history**: All messages stored in `admin_dispute_chats` HashMap
+
+**Input Handling**:
+
+- **Direct typing**: Start typing to add text to input (when input is enabled)
+- **Input toggle**: Press **Shift+I** to enable/disable chat input
+  - When disabled, prevents accidental typing while navigating
+  - Visual indicator shows "disabled - Shift+I to enable" in input title
+  - Input is enabled by default when entering dispute management
+- **Text wrapping**: Input wraps at word boundaries with trim behavior
+- **Multi-line support**: Supports up to 10 lines with visual growth
+- **Send on Enter**: Press Enter to send message (or finalize if input is empty)
+- **Clear after send**: Input automatically clears after sending
 
 #### Chat with Buyer Flow
 
@@ -414,24 +530,29 @@ Admins communicate with buyers and sellers through separate chat interfaces to p
 sequenceDiagram
     participant Admin
     participant TUI
+    participant ChatState
     participant Client
-    participant DB
     participant AdminKey
     participant NostrRelays
     participant Buyer
 
-    Admin->>TUI: Navigate to "Disputes with Buyer" tab
-    TUI->>Client: Load dispute context
-    Client->>DB: Get dispute & buyer info
-    DB-->>Client: dispute_id, buyer_pubkey
-    Admin->>TUI: Type message & send
+    Admin->>TUI: Select dispute in sidebar
+    TUI->>TUI: Show buyer chat (Tab switches to buyer)
+    Admin->>TUI: Type message (direct input)
+    TUI->>ChatState: Update admin_chat_input
+    TUI->>TUI: Dynamic input box grows
+    Admin->>TUI: Press Enter
+    TUI->>ChatState: Create DisputeChatMessage (Admin sender)
+    ChatState->>ChatState: Store in admin_dispute_chats[dispute_id]
     TUI->>Client: send_message_to_buyer(message)
     Client->>AdminKey: Sign with admin key
-    Client->>Client: Construct message (NIP-44 or NIP-59)
-    Client->>NostrRelays: Publish encrypted message
+    Client->>NostrRelays: Publish encrypted DM (NIP-59)
     NostrRelays->>Buyer: Forward message
-    Buyer->>Buyer: Decrypt & read message
-    Note over Admin,Buyer: Admin can request evidence,<br/>clarify situation, coordinate resolution
+    Buyer->>NostrRelays: Send response
+    NostrRelays->>Client: Receive response
+    Client->>ChatState: Create DisputeChatMessage (Buyer sender)
+    ChatState->>TUI: Update UI with new message
+    TUI->>Admin: Display buyer response in green
 ```
 
 #### Chat with Seller Flow
@@ -440,31 +561,108 @@ sequenceDiagram
 sequenceDiagram
     participant Admin
     participant TUI
+    participant ChatState
     participant Client
-    participant DB
     participant AdminKey
     participant NostrRelays
     participant Seller
 
-    Admin->>TUI: Navigate to "Disputes with Seller" tab
-    TUI->>Client: Load dispute context
-    Client->>DB: Get dispute & seller info
-    DB-->>Client: dispute_id, seller_pubkey
-    Admin->>TUI: Type message & send
+    Admin->>TUI: Select dispute in sidebar
+    TUI->>TUI: Show seller chat (Tab switches to seller)
+    Admin->>TUI: Type message (direct input)
+    TUI->>ChatState: Update admin_chat_input
+    TUI->>TUI: Dynamic input box grows
+    Admin->>TUI: Press Enter
+    TUI->>ChatState: Create DisputeChatMessage (Admin sender)
+    ChatState->>ChatState: Store in admin_dispute_chats[dispute_id]
     TUI->>Client: send_message_to_seller(message)
     Client->>AdminKey: Sign with admin key
-    Client->>Client: Construct message (NIP-44 or NIP-59)
-    Client->>NostrRelays: Publish encrypted message
+    Client->>NostrRelays: Publish encrypted DM (NIP-59)
     NostrRelays->>Seller: Forward message
-    Seller->>Seller: Decrypt & read message
-    Note over Admin,Seller: Admin can request evidence,<br/>clarify situation, coordinate resolution
+    Seller->>NostrRelays: Send response
+    NostrRelays->>Client: Receive response
+    Client->>ChatState: Create DisputeChatMessage (Seller sender)
+    ChatState->>TUI: Update UI with new message
+    TUI->>Admin: Display seller response in red
 ```
+
+#### Chat Data Structures
+
+**Source**: `src/ui/mod.rs`
+
+```rust
+/// Represents the sender of a chat message
+pub enum ChatSender {
+    Admin,
+    Buyer,
+    Seller,
+}
+
+/// A chat message in the dispute resolution interface
+pub struct DisputeChatMessage {
+    pub sender: ChatSender,
+    pub content: String,
+    pub timestamp: i64, // Unix timestamp
+    pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
+}
+
+// Stored in AppState
+pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
+pub admin_chat_list_state: ratatui::widgets::ListState,
+```
+
+#### Keyboard Shortcuts
+
+**In Chat Interface**:
+
+- **Type**: Start typing message directly (when input enabled)
+- **Enter**: Send message (if input has text) or open finalization popup (if empty)
+- **Tab**: Switch between Buyer and Seller chat views
+- **PageUp/PageDown**: Scroll through message history
+- **End**: Jump to bottom of chat (latest messages)
+- **Shift+I**: Toggle chat input enabled/disabled
+- **Backspace**: Delete characters from input (when input enabled)
+- **Up/Down**: Select different dispute in sidebar
 
 **Visual Safety Features**:
 
-- **Different colors**: Buyer and Seller chat tabs use distinct color schemes
-- **Clear labeling**: Tab names explicitly indicate which party you're communicating with
-- **Context preservation**: Each tab maintains its own message history and context
+- **Color differentiation**: Buyer (Green) and Seller (Red) messages clearly distinguished
+- **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Red for Seller)
+- **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
+- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state
+- **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
+- **Context preservation**: Each dispute maintains its own complete message history
+- **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
+- **Input state indicators**: Clear visual feedback when input is enabled/disabled
+
+#### Implementation Details
+
+**Message Storage**:
+
+- Messages stored in `HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID
+- Each message includes sender, content, and timestamp
+- History persists for the lifetime of the application session
+
+**Text Wrapping Algorithm**:
+
+- Calculates available width (terminal width - borders - padding)
+- Simulates ratatui's wrap behavior with trim: true
+- Finds word boundaries for natural wrapping
+- Hard breaks at available width when no spaces found
+- Caps at 10 lines maximum with visual indicators
+
+**Future Enhancement**:
+
+- Currently uses mockup responses for testing (pseudo-random selection based on message length)
+- Ready for integration with real Nostr DM sending/receiving
+- TODO markers indicate where real DM logic should be integrated
+
+**Source Files**:
+
+- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, and scrollbar
+- `src/ui/key_handler/enter_handlers.rs` - Message sending logic with mockup responses
+- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key
+- `src/ui/helpers.rs` - Scrollbar rendering (`render_chat_scrollbar`)
 
 ## Dispute Resolution Actions
 
@@ -561,6 +759,7 @@ Enhanced relay management allows admins to dynamically add relays without restar
 **Source**: `src/ui/key_handler/enter_handlers.rs` (relay addition logic)
 
 When a relay is added:
+
 1. Input is validated (must start with `wss://`)
 2. Confirmation popup is shown
 3. Relay is added to `settings.toml`

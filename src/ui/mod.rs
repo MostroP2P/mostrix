@@ -13,7 +13,11 @@ pub const PRIMARY_COLOR: Color = Color::Rgb(177, 204, 51); // #b1cc33
 pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
 pub mod admin_key_confirm;
+pub mod dispute_finalization_confirm;
+pub mod dispute_finalization_popup;
+pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
+pub mod exit_confirm;
 pub mod helpers;
 pub mod key_handler;
 pub mod key_input_popup;
@@ -36,6 +40,7 @@ pub enum UserTab {
     Messages,
     Settings,
     CreateNewOrder,
+    Exit,
 }
 
 impl Display for UserTab {
@@ -49,6 +54,7 @@ impl Display for UserTab {
                 UserTab::Messages => "Messages",
                 UserTab::Settings => "Settings",
                 UserTab::CreateNewOrder => "Create New Order",
+                UserTab::Exit => "Exit",
             }
         )
     }
@@ -62,6 +68,7 @@ impl UserTab {
             2 => UserTab::Messages,
             3 => UserTab::CreateNewOrder,
             4 => UserTab::Settings,
+            5 => UserTab::Exit,
             _ => panic!("Invalid user tab index: {}", index),
         }
     }
@@ -73,11 +80,12 @@ impl UserTab {
             UserTab::Messages => 2,
             UserTab::CreateNewOrder => 3,
             UserTab::Settings => 4,
+            UserTab::Exit => 5,
         }
     }
 
     pub fn count() -> usize {
-        5
+        6
     }
 
     pub fn first() -> Self {
@@ -85,7 +93,7 @@ impl UserTab {
     }
 
     pub fn last() -> Self {
-        UserTab::Settings
+        UserTab::Exit
     }
 
     pub fn prev(self) -> Self {
@@ -95,6 +103,7 @@ impl UserTab {
             UserTab::Messages => UserTab::MyTrades,
             UserTab::CreateNewOrder => UserTab::Messages,
             UserTab::Settings => UserTab::CreateNewOrder,
+            UserTab::Exit => UserTab::Settings,
         }
     }
 
@@ -104,16 +113,18 @@ impl UserTab {
             UserTab::MyTrades => UserTab::Messages,
             UserTab::Messages => UserTab::CreateNewOrder,
             UserTab::CreateNewOrder => UserTab::Settings,
-            UserTab::Settings => UserTab::Settings,
+            UserTab::Settings => UserTab::Exit,
+            UserTab::Exit => UserTab::Exit,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminTab {
-    Disputes,
-    Chat,
+    DisputesPending,
+    DisputesInProgress,
     Settings,
+    Exit,
 }
 
 impl Display for AdminTab {
@@ -122,9 +133,10 @@ impl Display for AdminTab {
             f,
             "{}",
             match self {
-                AdminTab::Disputes => "Disputes",
-                AdminTab::Chat => "Chat",
+                AdminTab::DisputesPending => "Disputes Pending",
+                AdminTab::DisputesInProgress => "Disputes Management",
                 AdminTab::Settings => "Settings",
+                AdminTab::Exit => "Exit",
             }
         )
     }
@@ -133,46 +145,50 @@ impl Display for AdminTab {
 impl AdminTab {
     pub fn from_index(index: usize) -> Self {
         match index {
-            0 => AdminTab::Disputes,
-            1 => AdminTab::Chat,
+            0 => AdminTab::DisputesPending,
+            1 => AdminTab::DisputesInProgress,
             2 => AdminTab::Settings,
+            3 => AdminTab::Exit,
             _ => panic!("Invalid admin tab index: {}", index),
         }
     }
 
     pub fn as_index(self) -> usize {
         match self {
-            AdminTab::Disputes => 0,
-            AdminTab::Chat => 1,
+            AdminTab::DisputesPending => 0,
+            AdminTab::DisputesInProgress => 1,
             AdminTab::Settings => 2,
+            AdminTab::Exit => 3,
         }
     }
 
     pub fn count() -> usize {
-        3
+        4
     }
 
     pub fn first() -> Self {
-        AdminTab::Disputes
+        AdminTab::DisputesPending
     }
 
     pub fn last() -> Self {
-        AdminTab::Settings
+        AdminTab::Exit
     }
 
     pub fn prev(self) -> Self {
         match self {
-            AdminTab::Disputes => AdminTab::Disputes,
-            AdminTab::Chat => AdminTab::Disputes,
-            AdminTab::Settings => AdminTab::Chat,
+            AdminTab::DisputesPending => AdminTab::DisputesPending,
+            AdminTab::DisputesInProgress => AdminTab::DisputesPending,
+            AdminTab::Settings => AdminTab::DisputesInProgress,
+            AdminTab::Exit => AdminTab::Settings,
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            AdminTab::Disputes => AdminTab::Chat,
-            AdminTab::Chat => AdminTab::Settings,
-            AdminTab::Settings => AdminTab::Settings,
+            AdminTab::DisputesPending => AdminTab::DisputesInProgress,
+            AdminTab::DisputesInProgress => AdminTab::Settings,
+            AdminTab::Settings => AdminTab::Exit,
+            AdminTab::Exit => AdminTab::Exit,
         }
     }
 }
@@ -309,6 +325,51 @@ pub enum AdminMode {
     ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
+    WaitingTakeDispute(uuid::Uuid), // (dispute_id)
+    ManagingDispute,               // Mode for "Disputes in Progress" tab
+    ReviewingDisputeForFinalization(uuid::Uuid, usize), // (dispute_id, selected_button: 0=Pay Buyer, 1=Refund Seller, 2=Exit)
+    ConfirmFinalizeDispute(uuid::Uuid, bool, bool), // (dispute_id, is_settle: true=Pay Buyer, false=Refund Seller, selected_button: true=Yes, false=No)
+    WaitingDisputeFinalization(uuid::Uuid),         // (dispute_id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatParty {
+    Buyer,
+    Seller,
+}
+
+/// Filter for viewing disputes in the Disputes in Progress tab
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisputeFilter {
+    InProgress, // Show only InProgress disputes
+    Finalized,  // Show only finalized disputes (Settled, SellerRefunded, Released)
+}
+
+impl Display for ChatParty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChatParty::Buyer => write!(f, "Buyer"),
+            ChatParty::Seller => write!(f, "Seller"),
+        }
+    }
+}
+
+/// Represents the sender of a chat message in dispute resolution
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatSender {
+    Admin,
+    Buyer,
+    Seller,
+}
+
+/// A chat message in the dispute resolution interface
+#[derive(Clone, Debug)]
+pub struct DisputeChatMessage {
+    pub sender: ChatSender,
+    pub content: String,
+    pub timestamp: i64,                  // Unix timestamp
+    pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
 #[derive(Clone, Debug)]
@@ -325,6 +386,7 @@ pub enum UiMode {
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
+    ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
     // User-specific modes
     UserMode(UserMode),
@@ -440,13 +502,21 @@ pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
-    pub selected_dispute_idx: usize, // Selected dispute in Disputes tab
+    pub selected_dispute_idx: usize, // Selected dispute in Disputes Pending tab
+    pub selected_in_progress_idx: usize, // Selected dispute in Disputes in Progress tab
+    pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
+    pub admin_chat_input: String,    // Current message being typed by admin
+    pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
+    pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
+    pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
+    pub admin_disputes_in_progress: Vec<crate::models::AdminDispute>, // Taken disputes
+    pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
 }
 
 /// Build a `MessageNotification` from an `OrderMessage` for use in popups.
@@ -490,12 +560,20 @@ impl AppState {
             active_tab: initial_tab,
             selected_order_idx: 0,
             selected_dispute_idx: 0,
+            selected_in_progress_idx: 0,
+            active_chat_party: ChatParty::Buyer,
+            admin_chat_input: String::new(),
+            admin_chat_input_enabled: true, // Chat input enabled by default
+            admin_dispute_chats: HashMap::new(),
+            admin_chat_list_state: ratatui::widgets::ListState::default(),
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
             selected_message_idx: 0,
             pending_notifications: Arc::new(Mutex::new(0)),
+            admin_disputes_in_progress: Vec::new(),
+            dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
         }
     }
 
@@ -505,6 +583,9 @@ impl AppState {
         self.mode = UiMode::Normal;
         self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
+        self.selected_in_progress_idx = 0;
+        self.active_chat_party = ChatParty::Buyer;
+        self.admin_chat_input.clear();
     }
 }
 
@@ -545,7 +626,7 @@ pub(crate) fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
 
 pub fn ui_draw(
     f: &mut ratatui::Frame,
-    app: &AppState,
+    app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     status_line: Option<&[String]>,
@@ -590,11 +671,11 @@ pub fn ui_draw(
                 order_form::render_form_initializing(f, content_area);
             }
         }
-        (Tab::Admin(AdminTab::Disputes), UserRole::Admin) => {
+        (Tab::Admin(AdminTab::DisputesPending), UserRole::Admin) => {
             disputes_tab::render_disputes_tab(f, content_area, disputes, app.selected_dispute_idx)
         }
-        (Tab::Admin(AdminTab::Chat), UserRole::Admin) => {
-            tab_content::render_coming_soon(f, content_area, "Chat")
+        (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
+            disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
         }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => settings_tab::render_settings_tab(
             f,
@@ -602,6 +683,10 @@ pub fn ui_draw(
             app.user_role,
             app.selected_settings_option,
         ),
+        (Tab::User(UserTab::Exit), UserRole::User)
+        | (Tab::Admin(AdminTab::Exit), UserRole::Admin) => {
+            tab_content::render_exit_tab(f, content_area)
+        }
         _ => {
             // Fallback for invalid combinations
             tab_content::render_coming_soon(f, content_area, "Unknown")
@@ -631,6 +716,11 @@ pub fn ui_draw(
 
     // Waiting for AddInvoice popup overlay (user mode only)
     if let UiMode::UserMode(UserMode::WaitingAddInvoice) = &app.mode {
+        waiting::render_waiting(f);
+    }
+
+    // Waiting for take dispute popup overlay (admin mode only)
+    if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
         waiting::render_waiting(f);
     }
 
@@ -728,6 +818,19 @@ pub fn ui_draw(
     }
 
     // Admin confirmation popups
+    if let UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) = &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "👑 Take Dispute",
+            &dispute_id.to_string(),
+            *selected_button,
+            Some(&format!(
+                "Do you want to take the dispute with id: {}?",
+                dispute_id
+            )),
+        );
+    }
     if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) =
         &app.mode
     {
@@ -746,6 +849,41 @@ pub fn ui_draw(
             key_string,
             *selected_button,
         );
+    }
+
+    // Exit confirmation popup
+    if let UiMode::ConfirmExit(selected_button) = &app.mode {
+        exit_confirm::render_exit_confirm(f, *selected_button);
+    }
+
+    // Dispute finalization popup
+    if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+        dispute_id,
+        selected_button,
+    )) = &app.mode
+    {
+        dispute_finalization_popup::render_finalization_popup(f, app, dispute_id, *selected_button);
+    }
+
+    // Dispute finalization confirmation popup
+    if let UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+        dispute_id,
+        is_settle,
+        selected_button,
+    )) = &app.mode
+    {
+        dispute_finalization_confirm::render_finalization_confirm(
+            f,
+            app,
+            dispute_id,
+            *is_settle,
+            *selected_button,
+        );
+    }
+
+    // Waiting for dispute finalization
+    if let UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) = &app.mode {
+        waiting::render_waiting(f);
     }
 
     // Taking order popup overlay (user mode only)

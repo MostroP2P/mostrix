@@ -1,5 +1,5 @@
+use crate::ui::{InvoiceInputState, KeyInputState};
 use crossterm::event::KeyCode;
-
 /// Trait for input states that can handle text input
 trait TextInputState {
     fn get_input_mut(&mut self) -> &mut String;
@@ -54,15 +54,12 @@ fn handle_text_input<T: TextInputState>(code: KeyCode, state: &mut T) -> bool {
 
 /// Handle invoice input for AddInvoice notifications
 /// Returns true if the key was handled and should skip further processing
-pub fn handle_invoice_input(
-    code: KeyCode,
-    invoice_state: &mut crate::ui::InvoiceInputState,
-) -> bool {
+pub fn handle_invoice_input(code: KeyCode, invoice_state: &mut InvoiceInputState) -> bool {
     handle_text_input(code, invoice_state)
 }
 
 /// Handle key input for admin key input popups (AddSolver, SetupAdminKey)
 /// Returns true if the key was handled and should skip further processing
-pub fn handle_key_input(code: KeyCode, key_state: &mut crate::ui::KeyInputState) -> bool {
+pub fn handle_key_input(code: KeyCode, key_state: &mut KeyInputState) -> bool {
     handle_text_input(code, key_state)
 }

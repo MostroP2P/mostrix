@@ -62,7 +62,7 @@ The derivation logic for trade keys uses the `trade_index` as the child index in
 **Implementation**: `src/models.rs:86`
 ```86:96:src/models.rs
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
-        let account: u32 = NOSTR_REPLACEABLE_EVENT_KIND as u32;
+        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(
             &self.mnemonic,
             None,

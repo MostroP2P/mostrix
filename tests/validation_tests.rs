@@ -68,14 +68,16 @@ fn test_validate_mostro_pubkey_with_whitespace() {
 #[test]
 fn test_validate_relay_valid() {
     assert!(validate_relay("wss://relay.damus.io").is_ok());
+    assert!(validate_relay("ws://relay.example.com").is_ok());
     assert!(validate_relay("  wss://example.com  ").is_ok());
+    assert!(validate_relay("  ws://example.com  ").is_ok());
 }
 
 #[test]
 fn test_validate_relay_invalid() {
     assert!(validate_relay("").is_err());
     assert!(validate_relay("   ").is_err());
-    assert!(validate_relay("ws://example.com").is_err());
     assert!(validate_relay("https://example.com").is_err());
     assert!(validate_relay("relay.damus.io").is_err());
+    assert!(validate_relay("http://example.com").is_err());
 }

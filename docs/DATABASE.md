@@ -27,9 +27,10 @@ On first startup, Mostrix:
 2. Creates the SQLite database file
 3. Creates the necessary tables:
    - **User Mode Tables**: `users` and `orders`
-   - **Admin Mode Tables**: `disputes`
+   - **Admin Mode Tables**: `admin_disputes`
 4. Generates a new 12-word BIP-39 mnemonic if no user exists
 5. Creates the initial user record
+6. Runs database migrations for existing databases (if needed)
 
 **Source**: `src/db.rs:66`
 
@@ -44,12 +45,47 @@ On first startup, Mostrix:
         }
 ```
 
+### Database Migrations
+
+For existing databases, Mostrix automatically runs migrations to add new columns or update the schema as needed. Migrations are:
+
+- **Atomic**: All migration steps are wrapped in transactions to ensure consistency
+- **Safe**: Migrations check for column existence before attempting to add them
+- **Error-aware**: Non-column-related errors (connection issues, table missing, etc.) are properly propagated rather than triggering incorrect migrations
+
+**Source**: `src/db.rs:110`
+
+```110:170:src/db.rs
+async fn migrate_db(pool: &SqlitePool) -> Result<()> {
+    // Check if columns exist by attempting to query them
+    // and checking for specific SQLite errors
+    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+        // ... column existence check ...
+    }
+
+    // Check if columns exist
+    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
+    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
+
+    // Only run migration if at least one column is missing
+    if !has_initiator_info || !has_counterpart_info {
+        // Wrap both ALTER TABLE statements in a transaction for atomicity
+        let mut tx = pool.begin().await?;
+        // ... migration logic ...
+        tx.commit().await?;
+    }
+    Ok(())
+}
+```
+
+Migrations are automatically executed when an existing database is detected during startup.
+
 ## Mode Separation
 
 Mostrix operates in two distinct modes, each using different database tables:
 
 - **User Mode**: Uses `users` and `orders` tables for trading operations
-- **Admin Mode**: Uses `disputes` table for dispute resolution
+- **Admin Mode**: Uses `admin_disputes` table for dispute resolution
 
 The tables are designed to be independent, allowing the same database to support both user and admin functionality.
 
@@ -174,14 +210,14 @@ The `orders` table is essential for:
 
 ### Admin Mode Tables
 
-#### 3. `disputes` Table
+#### 3. `admin_disputes` Table
 
 Stores dispute information received from Mostro when an admin takes a dispute. This table is used exclusively in admin mode to track and manage disputes that the admin has taken responsibility for resolving.
 
 **Schema**:
 
 ```sql
-CREATE TABLE IF NOT EXISTS disputes (
+CREATE TABLE IF NOT EXISTS admin_disputes (
     id TEXT PRIMARY KEY,
     kind TEXT,
     status TEXT,
@@ -240,7 +276,7 @@ CREATE TABLE IF NOT EXISTS disputes (
 
 #### Purpose
 
-The `disputes` table is essential for:
+The `admin_disputes` table is essential for:
 
 - **Dispute Tracking**: Maintains a local record of all disputes the admin has taken
 - **State Persistence**: Allows the admin to see active disputes across application restarts
@@ -254,7 +290,14 @@ The `disputes` table is essential for:
 - **Status Updates**: The dispute status is updated as the resolution process progresses
 - **JSON Fields**: `initiator_info` and `counterpart_info` are stored as JSON-encoded strings for complex nested data
 
-**Note**: The disputes table is populated when an admin takes a dispute from the Mostro network. The admin receives a `SolverDisputeInfo` struct via direct message from Mostro, which is then persisted to this table.
+**Data Validation**:
+
+When saving a dispute to the database, the following fields are validated:
+
+- **Required Fields**: `buyer_pubkey` and `seller_pubkey` must be present. If either is missing, the dispute cannot be saved and an error is returned. This ensures data integrity and prevents incomplete dispute records.
+- **Validation Location**: Validation occurs in `AdminDispute::new()` before any database operations.
+
+**Note**: The `admin_disputes` table is populated when an admin takes a dispute from the Mostro network. The admin receives a `SolverDisputeInfo` struct via direct message from Mostro, which is then persisted to this table.
 
 **Source**: `SolverDisputeInfo` struct definition (see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#dispute-information-structure))
 

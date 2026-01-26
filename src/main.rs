@@ -4,7 +4,10 @@ pub mod settings;
 pub mod ui;
 pub mod util;
 
+use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
+use crate::ui::key_handler::handle_key_event;
+use crate::ui::{MessageNotification, OrderResult};
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{start_fetch_scheduler, FetchSchedulerResult},
@@ -133,17 +136,30 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
-    let mut refresh_interval = interval(Duration::from_millis(500));
+    let mut refresh_interval = interval(Duration::from_millis(150));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
+    // Load all admin disputes from database if admin mode
+    // (The filter toggle will show InProgress or Finalized based on user selection)
+    if app.user_role == UserRole::Admin {
+        match AdminDispute::get_all(&pool).await {
+            Ok(all_disputes) => {
+                app.admin_disputes_in_progress = all_disputes;
+            }
+            Err(e) => {
+                log::warn!("Failed to load admin disputes: {}", e);
+            }
+        }
+    }
+
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::ui::OrderResult>();
+        tokio::sync::mpsc::unbounded_channel::<OrderResult>();
 
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::ui::MessageNotification>();
+        tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
 
     // Spawn background task to listen for messages on active orders
     let client_for_messages = client.clone();
@@ -168,7 +184,30 @@ async fn main() -> Result<(), anyhow::Error> {
         tokio::select! {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
+                    // Check if this is a dispute-related result before handling
+                    let is_dispute_related = matches!(&result, OrderResult::Info(msg)
+                        if (msg.contains("Dispute") && msg.contains("taken successfully"))
+                        || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
+
                     handle_order_result(result, &mut app);
+
+                    // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
+                    if is_dispute_related && app.user_role == UserRole::Admin {
+                        match AdminDispute::get_all(&pool).await {
+                            Ok(all_disputes) => {
+                                app.admin_disputes_in_progress = all_disputes;
+                                // Reset selected index to ensure it's within bounds after refresh
+                                app.selected_in_progress_idx = 0;
+                                log::info!(
+                                    "Refreshed admin disputes list: {} total disputes",
+                                    app.admin_disputes_in_progress.len()
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to refresh admin disputes: {}", e);
+                            }
+                        }
+                    }
                 }
             }
             notification = message_notification_rx.recv() => {
@@ -234,7 +273,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
-                    match crate::ui::key_handler::handle_key_event(
+                    match handle_key_event(
                         key_event,
                         &mut app,
                         &orders,
@@ -268,10 +307,23 @@ async fn main() -> Result<(), anyhow::Error> {
         }
 
         // Ensure the selected dispute index is valid when disputes list changes.
+        // Only count "initiated" disputes since that's what we display
         {
-            let disputes_len = disputes.lock().unwrap().len();
-            if disputes_len > 0 && app.selected_dispute_idx >= disputes_len {
-                app.selected_dispute_idx = disputes_len - 1;
+            use mostro_core::prelude::*;
+            use std::str::FromStr;
+            let disputes_lock = disputes.lock().unwrap();
+            let initiated_count = disputes_lock
+                .iter()
+                .filter(|d| {
+                    DisputeStatus::from_str(d.status.as_str())
+                        .map(|s| s == DisputeStatus::Initiated)
+                        .unwrap_or(false)
+                })
+                .count();
+            if initiated_count > 0 && app.selected_dispute_idx >= initiated_count {
+                app.selected_dispute_idx = initiated_count.saturating_sub(1);
+            } else if initiated_count == 0 {
+                app.selected_dispute_idx = 0;
             }
         }
 
@@ -290,7 +342,7 @@ async fn main() -> Result<(), anyhow::Error> {
             format!("🔗 Relays: {}", relays_str),
             format!("💱 Currencies: {}", currencies_str),
         ];
-        terminal.draw(|f| ui_draw(f, &app, &orders, &disputes, Some(&status_lines)))?;
+        terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
     }
 
     // Restore terminal to its original state.

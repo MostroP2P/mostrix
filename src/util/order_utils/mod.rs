@@ -1,7 +1,11 @@
 // Order utilities module
 mod execute_add_invoice;
 mod execute_admin_add_solver;
+mod execute_admin_cancel;
+mod execute_admin_settle;
+mod execute_finalize_dispute;
 mod execute_send_msg;
+mod execute_take_dispute;
 mod fetch_scheduler;
 mod helper;
 mod send_new_order;
@@ -10,7 +14,11 @@ mod take_order;
 // Re-export public functions
 pub use execute_add_invoice::execute_add_invoice;
 pub use execute_admin_add_solver::execute_admin_add_solver;
+pub use execute_admin_cancel::execute_admin_cancel;
+pub use execute_admin_settle::execute_admin_settle;
+pub use execute_finalize_dispute::execute_finalize_dispute;
 pub use execute_send_msg::execute_send_msg;
+pub use execute_take_dispute::execute_take_dispute;
 pub use fetch_scheduler::{start_fetch_scheduler, FetchSchedulerResult};
 pub use helper::{
     dispute_from_tags, fetch_events_list, get_disputes, get_orders, order_from_tags,
@@ -18,3 +26,6 @@ pub use helper::{
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;
+
+// Re-export AdminDispute model functions
+pub use crate::models::AdminDispute;

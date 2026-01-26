@@ -4,6 +4,8 @@ use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ui::key_handler::user_handlers::execute_take_order_action;
+
 use crate::ui::key_handler::settings::{
     save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
     save_relay_to_settings,
@@ -89,10 +91,20 @@ pub fn handle_confirm_key(
             let result_tx = order_result_tx.clone();
 
             tokio::spawn(async move {
+                let settings = match SETTINGS.get() {
+                    Some(s) => s,
+                    None => {
+                        let error_msg =
+                            "Settings not initialized. Please restart the application.".to_string();
+                        log::error!("{}", error_msg);
+                        let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
+                        return;
+                    }
+                };
                 match crate::util::send_new_order(
                     &pool_clone,
                     &client_clone,
-                    SETTINGS.get().unwrap(),
+                    settings,
                     mostro_pubkey,
                     &form_clone,
                 )
@@ -111,60 +123,14 @@ pub fn handle_confirm_key(
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             // User confirmed taking the order (same as Enter key)
-            // Check validation first
-            if take_state.is_range_order {
-                if take_state.amount_input.is_empty() {
-                    // Can't proceed without amount
-                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                    return true;
-                }
-                if take_state.validation_error.is_some() {
-                    // Can't proceed with invalid amount
-                    app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
-                    return true;
-                }
-            }
-            // Proceed with taking the order
-            let take_state_clone = take_state.clone();
-            app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state_clone.clone()));
-
-            // Parse amount if it's a range order
-            let amount = if take_state_clone.is_range_order {
-                take_state_clone.amount_input.trim().parse::<i64>().ok()
-            } else {
-                None
-            };
-
-            // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
-            // TODO: Add invoice input for buy orders
-            let invoice = None;
-
-            // Spawn async task to take order
-            let pool_clone = pool.clone();
-            let client_clone = client.clone();
-            let result_tx = order_result_tx.clone();
-
-            tokio::spawn(async move {
-                match crate::util::take_order(
-                    &pool_clone,
-                    &client_clone,
-                    SETTINGS.get().unwrap(),
-                    mostro_pubkey,
-                    &take_state_clone.order,
-                    amount,
-                    invoice,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let _ = result_tx.send(result);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to take order: {}", e);
-                        let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
-                    }
-                }
-            });
+            execute_take_order_action(
+                app,
+                take_state,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+            );
             true
         }
         UiMode::ConfirmMostroPubkey(key_string, _) => {
@@ -229,11 +195,16 @@ pub fn handle_confirm_key(
             app.mode = default_mode;
             true
         }
+        UiMode::ConfirmExit(_) => {
+            // 'y' key means YES - exit the application
+            // Return false to break the main loop
+            false
+        }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) => {
             // Delegate to the same handler used for Enter to keep logic DRY
             // (synthesize a mode with YES selected)
             let mode = UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, true));
-            crate::ui::key_handler::enter_handlers::handle_enter_admin_mode(
+            crate::ui::key_handler::admin_handlers::handle_enter_admin_mode(
                 app,
                 mode,
                 default_mode,
@@ -254,6 +225,19 @@ pub fn handle_confirm_key(
                 default_mode,
                 save_admin_key_to_settings,
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
+            );
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
+            // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
+            // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
+            crate::ui::key_handler::admin_handlers::execute_take_dispute_action(
+                app,
+                dispute_id,
+                client,
+                mostro_pubkey,
+                pool,
+                order_result_tx,
             );
             true
         }
@@ -300,5 +284,12 @@ pub fn handle_cancel_key(app: &mut AppState) {
         app.mode = handle_confirmation_esc(key_string, |input| {
             UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input)))
         });
+    } else if let UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _)) = &app.mode {
+        // User cancelled taking the dispute
+        let default_mode = match app.user_role {
+            UserRole::User => UiMode::UserMode(UserMode::Normal),
+            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+        };
+        app.mode = default_mode;
     }
 }

@@ -96,6 +96,32 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        _ => false, // Break the loop
+        UiMode::ConfirmExit(_) => {
+            // Cancel exit - return to normal mode
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _)) => {
+            // Cancel finalization, return to managing disputes
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(dispute_id, is_settle, _)) => {
+            // Cancel confirmation, return to finalization popup
+            app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                *dispute_id,
+                if *is_settle { 0 } else { 1 }, // Restore the button that was selected
+            ));
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {
+            // Can't cancel while waiting
+            true
+        }
+        _ => {
+            // ESC in normal mode or other unhandled modes - do nothing, just continue
+            // ESC should never exit the application (use Exit tab instead)
+            true
+        }
     }
 }
