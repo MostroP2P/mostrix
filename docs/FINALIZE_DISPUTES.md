@@ -140,14 +140,16 @@ Possible error scenarios:
 - Dispute already finalized
 - Network/relay issues
 - Dispute not found (e.g., dispute was removed or ID is invalid)
+- **Data integrity error**: Missing required fields (buyer_pubkey or seller_pubkey)
 
 All errors are displayed in a result popup with appropriate error messages. The finalization popup includes robust error handling:
 
 - **Dispute Not Found**: If a dispute ID is invalid or the dispute is no longer available, a clear error popup is displayed with the dispute ID and instructions to close it (Press ESC or ENTER).
+- **Data Integrity Error**: If a dispute is missing required fields (`buyer_pubkey` or `seller_pubkey`), a dedicated error popup is displayed explaining that the database entry is incomplete and the dispute cannot be finalized. This validation happens both when taking a dispute (prevents saving incomplete data) and when viewing the finalization popup.
 - **User-Friendly Messages**: All error messages are descriptive and help users understand what went wrong.
 - **Safe Display**: Dispute IDs and other data are safely truncated to prevent display issues with unexpected data lengths.
 
-**Source**: `src/ui/dispute_finalization_popup.rs:22`
+**Source**: `src/ui/dispute_finalization_popup.rs:22`, `src/models.rs` (AdminDispute::new validation)
 
 ## Chat System
 

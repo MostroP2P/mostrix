@@ -44,8 +44,10 @@ The interface is divided into three main sections:
    - Shows truncated dispute IDs (safely handles short IDs without panicking)
    - Highlighted selection with Up/Down arrow keys
    - Updates main area when selection changes
+   - Shows "No disputes in progress" when empty
 
 2. **Main Area (80%)**:
+   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (`Shift+C: View Finalized | ↑↓: Select Dispute`). The footer is always visible to provide navigation guidance.
    - **Header (8 lines)**: Comprehensive dispute information
      - Dispute ID, Type, Status
      - Creation date and timestamps
@@ -348,6 +350,13 @@ This comprehensive information allows admins to:
 - If `initiator_full_privacy` or `counterpart_full_privacy` is `true`, some user information may be limited
 - `initiator_info` and `counterpart_info` may be `None` if privacy is enabled
 - Admins should respect privacy settings while gathering necessary information for resolution
+
+**Data Validation**:
+
+- **Required Fields**: `buyer_pubkey` and `seller_pubkey` are validated when taking a dispute. If either field is missing, the dispute cannot be saved to the database and an error is displayed.
+- **Data Integrity**: The finalization popup also validates these fields before displaying dispute details. If data is incomplete, a "Data Integrity Error" popup is shown instead of the finalization options.
+
+**Source**: `src/models.rs` (AdminDispute::new validation)
 
 ### Adding a Solver
 

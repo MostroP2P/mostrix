@@ -77,6 +77,7 @@ Focused on dispute resolution and protocol management.
   - Dynamic message input with text wrapping
   - Chat history with scrolling (PageUp/PageDown)
   - Finalization popup for resolution actions
+  - **Empty state**: When no disputes are available, displays helpful key hints footer (`Shift+C: View Finalized | ↑↓: Select Dispute`)
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key

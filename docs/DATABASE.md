@@ -290,6 +290,13 @@ The `admin_disputes` table is essential for:
 - **Status Updates**: The dispute status is updated as the resolution process progresses
 - **JSON Fields**: `initiator_info` and `counterpart_info` are stored as JSON-encoded strings for complex nested data
 
+**Data Validation**:
+
+When saving a dispute to the database, the following fields are validated:
+
+- **Required Fields**: `buyer_pubkey` and `seller_pubkey` must be present. If either is missing, the dispute cannot be saved and an error is returned. This ensures data integrity and prevents incomplete dispute records.
+- **Validation Location**: Validation occurs in `AdminDispute::new()` before any database operations.
+
 **Note**: The `admin_disputes` table is populated when an admin takes a dispute from the Mostro network. The admin receives a `SolverDisputeInfo` struct via direct message from Mostro, which is then persisted to this table.
 
 **Source**: `SolverDisputeInfo` struct definition (see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#dispute-information-structure))
