@@ -356,7 +356,18 @@ This comprehensive information allows admins to:
 - **Required Fields**: `buyer_pubkey` and `seller_pubkey` are validated when taking a dispute. If either field is missing, the dispute cannot be saved to the database and an error is displayed.
 - **Data Integrity**: The finalization popup also validates these fields before displaying dispute details. If data is incomplete, a "Data Integrity Error" popup is shown instead of the finalization options.
 
-**Source**: `src/models.rs` (AdminDispute::new validation)
+**Post-Finalization Action Blocking**:
+
+Once a dispute is finalized (status: `Settled`, `SellerRefunded`, or `Released`), the AdminSettle and AdminCancel actions are blocked at multiple levels:
+
+- **Model Layer**: `AdminDispute::is_finalized()` returns `true` for finalized disputes. The helper methods `can_settle()` and `can_cancel()` return `false` when finalized.
+- **UI Layer**: The finalization popup disables and grays out the "Pay Buyer" and "Refund Seller" buttons, showing "N/A" instead of the action names.
+- **Handler Layer**: `execute_finalize_dispute()` checks the dispute state before executing any action. If the dispute is already finalized, it returns an error: "Cannot execute [action]: dispute is already finalized".
+- **Key Handler Layer**: When pressing Enter on a disabled action button, an error message is displayed: "Cannot finalize: dispute is already finalized".
+
+This multi-layered protection ensures that finalized disputes cannot be accidentally or maliciously modified.
+
+**Source**: `src/models.rs` (AdminDispute::is_finalized, can_settle, can_cancel), `src/util/order_utils/execute_finalize_dispute.rs`
 
 ### Adding a Solver
 

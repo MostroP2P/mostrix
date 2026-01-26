@@ -10,6 +10,11 @@ use crate::SETTINGS;
 /// Settle a dispute in favor of the buyer (AdminSettle action).
 /// This pays the full escrow amount to the buyer.
 ///
+/// **Important**: This is a low-level function that sends the message to Mostro.
+/// Callers should use `execute_finalize_dispute()` instead, which includes
+/// finalization state checks and database updates. Direct calls to this function
+/// should only be made after verifying `AdminDispute::can_settle()` returns true.
+///
 /// Requires admin privileges (admin_privkey must be configured)
 ///
 /// # Arguments

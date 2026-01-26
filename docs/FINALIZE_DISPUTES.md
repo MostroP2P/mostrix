@@ -17,7 +17,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
    - Use PageUp/PageDown to scroll through chat history
    - Press End to jump to bottom of chat (latest messages)
    - Visual scrollbar on the right shows position in chat history
-5. **Open Finalization**: Press Enter when input is empty to open finalization popup
+5. **Open Finalization**: Press Shift+F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
 7. **Choose Action**: Use Left/Right arrows to select action button
 8. **Execute**: Press Enter to execute the selected action
@@ -51,22 +51,29 @@ The popup displays comprehensive dispute information:
 
 **Header Section**:
 
-- Dispute ID (full UUID)
+- Order ID (full UUID) - the order associated with this dispute
+- Dispute ID (full UUID) - the unique dispute identifier
 - Dispute type and status
-- Creation timestamp
+- Creation and Taken timestamps
+
+> **Note**: The UI displays both Order ID and Dispute ID. Previous documentation only mentioned "Dispute ID (full UUID)" which was incomplete. ✅ **Resolved in this PR**.
 
 **Parties Section**:
 
-- Buyer information: pubkey (truncated), role, privacy status (🟢 info available / 🔴 private), rating with operating days
-- Seller information: pubkey (truncated), role, privacy status (🟢 info available / 🔴 private), rating with operating days
-- Initiator indicator (shows who started the dispute)
+- Buyer information: pubkey (truncated), role indicator (🟢 BUYER), privacy status ("Privacy: Yes/No"), rating with operating days
+- Seller information: pubkey (truncated), role indicator (🔴 SELLER), privacy status ("Privacy: Yes/No"), rating with operating days
+- Initiator indicator (shows "(Initiator)" suffix on the party who started the dispute)
+
+> **Note**: Privacy status is displayed as text labels "Yes" or "No" (not emoji indicators). The emojis (🟢/🔴) are used for role indicators (BUYER/SELLER), not privacy. Previous documentation described "privacy status (🟢 info available / 🔴 private)" which was incorrect. ✅ **Resolved in this PR**.
 
 **Financial Section**:
 
 - Amount in satoshis
-- Fiat amount and currency
+- Fiat amount with currency code (e.g., "1000 USD")
 - Premium percentage
-- Fee amounts
+- Payment method (if available)
+
+> **Note**: The fiat currency code IS displayed alongside the amount. Previous documentation listed "Fiat amount and currency" but did not clarify the format. ✅ **Confirmed working**.
 
 **Action Buttons**:
 
@@ -82,7 +89,8 @@ The popup displays comprehensive dispute information:
 - Tab: Switch between buyer/seller chat party
 - Shift+I: Toggle chat input enabled/disabled
 - Type: Start typing message in input box (when input enabled)
-- Enter: Send message (if input has text) or Open finalization popup (if input is empty)
+- Enter: Send message
+- Shift+F: Open finalization popup
 - PageUp/PageDown: Scroll through chat history
 - End: Jump to bottom of chat (latest messages)
 - Backspace: Delete characters from input (when input enabled)
@@ -189,7 +197,7 @@ The chat interface provides real-time communication with dispute parties:
   - Input is enabled by default when entering dispute management
 - **Text wrapping**: Input wraps at word boundaries, respects available width
 - **Character limit**: Grows up to 10 lines, with visual feedback
-- **Send behavior**: Enter sends message (or opens finalization if input is empty)
+- **Send behavior**: Enter sends message, Shift+F opens finalization popup
 - **Clear on send**: Input automatically clears after sending
 
 ### Chat Footer
@@ -199,19 +207,19 @@ The footer shows context-sensitive shortcuts:
 **When typing (input enabled)**:
 
 ```text
-Tab: Switch Party | Enter: Send | Shift+I: Disable | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute
+Tab: Switch Party | Enter: Send | Shift+I: Disable | Shift+F: Finalize | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute
 ```
 
 **When typing (input disabled)**:
 
 ```text
-Tab: Switch Party | Shift+I: Enable | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute
+Tab: Switch Party | Shift+I: Enable | Shift+F: Finalize | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute
 ```
 
 **When not typing**:
 
 ```text
-Tab: Switch Party | Enter: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom
+Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom
 ```
 
 ## Best Practices
@@ -221,7 +229,7 @@ Tab: Switch Party | Enter: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll
 3. **Consider reputation**: Factor in user ratings and operating days (shown in header)
 4. **Document reasoning**: All chat messages are stored per dispute for review
 5. **Be impartial**: Base decisions on facts, not party behavior alone
-6. **Check privacy**: Privacy icons (🟢 info available / 🔴 private) indicate data availability
+6. **Check privacy**: Privacy labels ("Yes" = private mode / "No" = public mode) indicate whether user info may be limited
 7. **Switch parties**: Use Tab to alternate between buyer and seller chats
 8. **Scroll history**: Use PageUp/PageDown to review full conversation history, or End to jump to latest
 9. **Toggle input**: Use Shift+I to disable input when navigating to prevent accidental typing

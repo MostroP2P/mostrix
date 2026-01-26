@@ -561,4 +561,35 @@ impl AdminDispute {
             .await?;
         Ok(())
     }
+
+    /// Check if the dispute is finalized (Settled, SellerRefunded, or Released)
+    ///
+    /// A finalized dispute cannot have further actions taken on it.
+    pub fn is_finalized(&self) -> bool {
+        use std::str::FromStr;
+        self.status
+            .as_deref()
+            .and_then(|s| DisputeStatus::from_str(s).ok())
+            .map(|s| {
+                matches!(
+                    s,
+                    DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check if AdminSettle action can be performed on this dispute
+    ///
+    /// Returns true if the dispute is not finalized and can be settled.
+    pub fn can_settle(&self) -> bool {
+        !self.is_finalized()
+    }
+
+    /// Check if AdminCancel action can be performed on this dispute
+    ///
+    /// Returns true if the dispute is not finalized and can be canceled.
+    pub fn can_cancel(&self) -> bool {
+        !self.is_finalized()
+    }
 }

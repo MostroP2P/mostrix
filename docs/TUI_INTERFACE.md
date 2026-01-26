@@ -70,7 +70,7 @@ Focused on trading and order management.
 
 Focused on dispute resolution and protocol management.
 
-- **Disputes Pending**: List of disputes waiting to be taken (state: `Initiated`). Admins can select and take ownership.
+- **Disputes Pending**: List of disputes waiting to be taken. Only displays disputes with `Initiated` status (filtering implemented in `disputes_tab.rs`). Admins can select and take ownership of these disputes.
 - **Disputes in Progress**: Complete workspace for managing taken disputes (state: `InProgress`), featuring:
   - Integrated chat system with buyer and seller
   - Comprehensive dispute information header

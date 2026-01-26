@@ -1,13 +1,12 @@
 use crate::models::AdminDispute;
 use chrono::DateTime;
-use mostro_core::prelude::{DisputeStatus, UserInfo};
+use mostro_core::prelude::UserInfo;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::str::FromStr;
 
 use super::{ChatParty, ChatSender, DisputeChatMessage, PRIMARY_COLOR};
 
@@ -26,20 +25,12 @@ pub fn format_user_rating(info: Option<&UserInfo>) -> String {
     }
 }
 
-// Buttons area - pass dispute status to check if finalized
+/// Check if a dispute is finalized (Settled, SellerRefunded, or Released)
+///
+/// This is a convenience wrapper around `AdminDispute::is_finalized()` for UI code.
+/// Returns `Some(true)` if finalized, `Some(false)` if not finalized.
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
-    let dispute_is_finalized = selected_dispute
-        .status
-        .as_deref()
-        .and_then(|s| DisputeStatus::from_str(s).ok())
-        .map(|s| {
-            matches!(
-                s,
-                DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
-            )
-        });
-
-    dispute_is_finalized
+    Some(selected_dispute.is_finalized())
 }
 
 /// Creates a centered popup area within the given area
