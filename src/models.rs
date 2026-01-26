@@ -296,6 +296,14 @@ impl AdminDispute {
         dispute_info: SolverDisputeInfo,
         dispute_id: String,
     ) -> Result<Self> {
+        // Validate required fields
+        if dispute_info.buyer_pubkey.is_none() || dispute_info.seller_pubkey.is_none() {
+            return Err(anyhow::anyhow!(
+                "Invalid dispute data: buyer_pubkey and seller_pubkey are required fields. \
+                 The database entry cannot be saved without these fields."
+            ));
+        }
+
         // Serialize UserInfo to JSON
         let initiator_info_json = dispute_info
             .initiator_info

@@ -665,10 +665,38 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Update the selected index after rendering is complete (to avoid borrow checker issues)
         app.selected_in_progress_idx = valid_selected_idx;
     } else {
+        // No disputes available - show empty message with footer
+        // Render the outer block first, then content inside it
+        let outer_block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().bg(BACKGROUND_COLOR));
+        let inner_area = outer_block.inner(main_area);
+        f.render_widget(outer_block, main_area);
+
+        // Split the inner area for content and footer
+        let inner_chunks = Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Min(0),    // Content area
+                Constraint::Length(1), // Footer
+            ],
+        )
+        .split(inner_area);
+
+        // Render empty message in content area
         let no_selection = Paragraph::new("Select a dispute from the sidebar")
-            .block(Block::default().borders(Borders::ALL))
             .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(no_selection, main_area);
+        f.render_widget(no_selection, inner_chunks[0]);
+
+        // Render footer with key hints
+        let filter_hint = match app.dispute_filter {
+            DisputeFilter::InProgress => "Shift+C: View Finalized",
+            DisputeFilter::Finalized => "Shift+C: View In Progress",
+        };
+        let footer_text = format!("{} | ↑↓: Select Dispute", filter_hint);
+        let footer = Paragraph::new(footer_text);
+        f.render_widget(footer, inner_chunks[1]);
+
         // Reset index when no disputes are available
         app.selected_in_progress_idx = 0;
     }

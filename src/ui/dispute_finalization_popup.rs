@@ -66,6 +66,57 @@ pub fn render_finalization_popup(
         return;
     };
 
+    // Validate required fields
+    if selected_dispute.buyer_pubkey.is_none() || selected_dispute.seller_pubkey.is_none() {
+        // Show error popup
+        let area = f.area();
+        let popup_width = area.width.saturating_sub(area.width / 4);
+        let popup_height = 12;
+        let popup = center_rect(area, popup_width, popup_height);
+        f.render_widget(Clear, popup);
+
+        let block = Block::default()
+            .title("❌ Data Integrity Error")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Red));
+
+        let inner = block.inner(popup);
+        f.render_widget(block, popup);
+
+        let error_msg = format!(
+            "The dispute data in the database is incomplete.\n\n\
+             Missing required fields: buyer_pubkey or seller_pubkey.\n\n\
+             This dispute cannot be finalized. Please contact support or\n\
+             check the database entry for dispute ID: {}",
+            dispute_id
+        );
+
+        // Wrap error message
+        let wrap_width = inner.width.saturating_sub(2).max(1) as usize;
+        let error_lines: Vec<Line> = error_msg
+            .lines()
+            .flat_map(|line| {
+                line.chars()
+                    .collect::<Vec<_>>()
+                    .chunks(wrap_width)
+                    .map(|chunk| Line::from(chunk.iter().collect::<String>()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let mut lines = vec![Line::from("")];
+        lines.extend(error_lines);
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Press ESC or ENTER to close",
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(paragraph, inner);
+        return;
+    }
+
     let area = f.area();
     // Large popup (80% width, 70% height) to show all details
     let popup_width = area.width.saturating_mul(8).saturating_div(10);
@@ -122,8 +173,15 @@ fn render_dispute_details(
         }
     };
 
-    let buyer_pubkey = dispute.buyer_pubkey.as_deref().unwrap_or("Unknown");
-    let seller_pubkey = dispute.seller_pubkey.as_deref().unwrap_or("Unknown");
+    // These should never be None due to validation, but we handle it defensively
+    let buyer_pubkey = dispute
+        .buyer_pubkey
+        .as_deref()
+        .expect("buyer_pubkey should be validated before rendering");
+    let seller_pubkey = dispute
+        .seller_pubkey
+        .as_deref()
+        .expect("seller_pubkey should be validated before rendering");
 
     let is_initiator_buyer = dispute.initiator_pubkey == buyer_pubkey;
     let buyer_pubkey_display = truncate_pubkey(buyer_pubkey);
