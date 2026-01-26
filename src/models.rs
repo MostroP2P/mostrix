@@ -524,18 +524,6 @@ impl AdminDispute {
         Ok(result.map(|(id,)| id))
     }
 
-    /// Update the status of a dispute to InProgress
-    ///
-    /// This is called when an admin takes a dispute to mark it as being resolved.
-    pub async fn set_status_in_progress(pool: &SqlitePool, dispute_id: &str) -> Result<()> {
-        sqlx::query(r#"UPDATE admin_disputes SET status = ? WHERE id = ?"#)
-            .bind(DisputeStatus::InProgress.to_string())
-            .bind(dispute_id)
-            .execute(pool)
-            .await?;
-        Ok(())
-    }
-
     /// Update the status of a dispute to Settled
     ///
     /// This is called when an admin settles a dispute in favor of the buyer.
