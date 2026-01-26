@@ -134,7 +134,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
-    let mut refresh_interval = interval(Duration::from_millis(500));
+    let mut refresh_interval = interval(Duration::from_millis(150));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
