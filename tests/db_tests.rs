@@ -91,14 +91,23 @@ async fn test_order_new() {
     let pool = create_test_db().await.unwrap();
     let trade_keys = Keys::generate();
 
-    let mut small_order = SmallOrder::default();
-    small_order.id = Some(uuid::Uuid::new_v4());
-    small_order.kind = Some(mostro_core::order::Kind::Buy);
-    small_order.fiat_code = "USD".to_string();
-    small_order.amount = 100000;
-    small_order.fiat_amount = 100;
-    small_order.payment_method = "bank_transfer".to_string();
-    small_order.premium = 5;
+    let small_order = SmallOrder::new(
+        None,
+        Some(mostro_core::order::Kind::Buy),
+        Some(mostro_core::order::Status::Pending),
+        100000,
+        "USD".to_string(),
+        None,
+        None,
+        100,
+        "bank_transfer".to_string(),
+        5,
+        None,
+        None,
+        None,
+        Some(0),
+        None,
+    );
 
     let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123))
         .await
