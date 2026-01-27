@@ -333,7 +333,7 @@ pub enum AdminMode {
     WaitingDisputeFinalization(uuid::Uuid),         // (dispute_id)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChatParty {
     Buyer,
     Seller,
@@ -370,6 +370,20 @@ pub struct DisputeChatMessage {
     pub content: String,
     pub timestamp: i64,                  // Unix timestamp
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
+}
+
+/// Cached shared key information for admin chat with a specific party in a dispute
+/// The shared key is derived using ECDH between the admin private key and the
+/// counterparty public key (buyer or seller). The shared key is then treated as
+/// a Nostr key pair and used as the target of NIP-59 gift wrap events, following
+/// the simplified scheme used in the mostro-chat project.
+#[derive(Clone, Debug)]
+pub struct AdminChatSharedKey {
+    /// Shared chat key derived from (admin_sk, party_pk). Used as receiver for chat events.
+    pub shared_keys: crate::util::SharedChatKeys,
+    /// Last seen timestamp (unix seconds) for messages received on this shared key.
+    /// Used by the background listener to perform incremental fetches.
+    pub last_seen_timestamp: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -509,6 +523,8 @@ pub struct AppState {
     pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
+    /// Cached shared keys per (dispute_id, party) for admin chat, plus last-seen timestamps.
+    pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -566,6 +582,7 @@ impl AppState {
             admin_chat_input_enabled: true, // Chat input enabled by default
             admin_dispute_chats: HashMap::new(),
             admin_chat_list_state: ratatui::widgets::ListState::default(),
+            admin_chat_shared_keys: HashMap::new(),
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
@@ -588,7 +605,6 @@ impl AppState {
         self.admin_chat_input.clear();
     }
 }
-
 
 /// Apply color coding to order kind cells (adapted for ratatui)
 pub(crate) fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {

@@ -201,9 +201,9 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 
 ### 5. Admin Chat System
 
-**Status**: ✅ **Fully Implemented**
+**Status**: ✅ **Fully Implemented (NIP‑59 Based)**
 
-The admin chat system in the "Disputes in Progress" tab provides real-time communication:
+The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys.
 
 #### Data Structures
 
@@ -220,36 +220,71 @@ pub struct DisputeChatMessage {
     pub timestamp: i64,
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
+
+pub struct AdminChatSharedKey {
+    pub shared_keys: SharedChatKeys,      // ECDH-derived Nostr keypair (NIP-59 target)
+    pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
+}
 ```
 
-**Storage**: Messages are stored in `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
+**Storage**:
 
-#### Features
+- `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
+- `AppState.admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>` keyed by (dispute_id, party).
 
-- **Direct input**: Type immediately without mode switching (when input enabled)
-- **Input toggle**: Press **Shift+I** to enable/disable chat input
-- **Dynamic sizing**: Input box grows from 1 to 10 lines based on content
-- **Text wrapping**: Intelligent word-boundary wrapping with trim behavior
+#### UI Features
+
+- **Direct input**: Type immediately without mode switching (when input enabled).
+- **Input toggle**: Press **Shift+I** to enable/disable chat input.
+- **Dynamic sizing**: Input box grows from 1 to 10 lines based on content.
+- **Text wrapping**: Intelligent word-boundary wrapping with trim behavior.
 - **Scrolling**:
-  - **PageUp/PageDown**: Navigate through message history
-  - **End**: Jump to bottom of chat (latest messages)
-  - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols)
-- **Party filtering**: Messages are filtered by active party:
-  - Admin messages only shown in the chat view of the party they were sent to
-  - Buyer/Seller messages only shown in their respective chat views
-- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators
+  - **PageUp/PageDown**: Navigate through message history.
+  - **End**: Jump to bottom of chat (latest messages).
+  - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols).
+- **Party filtering**:
+  - Admin messages are only shown in the chat view of the party they were sent to (based on `target_party`).
+  - Buyer/Seller messages are only shown in their respective chat views.
+- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators.
 
 #### Input Handling Priority
 
 The key handler processes input in this order:
 
-1. Invoice input (highest priority, when in invoice mode)
-2. Key input (for settings popups)
-3. **Shift+I toggle** (for enabling/disabling admin chat input)
-4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled)
-5. Other character/form input
+1. Invoice input (highest priority, when in invoice mode).
+2. Key input (for settings popups).
+3. **Shift+I toggle** (for enabling/disabling admin chat input).
+4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled).
+5. Other character/form input.
 
-**Source**: `src/ui/key_handler/mod.rs:155-172` (Shift+I toggle), `src/ui/key_handler/mod.rs:168-172` (`handle_admin_chat_input`)
+**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
+
+#### NIP‑59 Chat Internals
+
+- **Shared key derivation**:
+  - For each (dispute, party) the admin sends a message to, Mostrix:
+    - Reads `admin_privkey` from `settings.toml`.
+    - Derives an ECDH shared secret with the party pubkey.
+    - Wraps it as `SharedChatKeys.shared_keys` and stores it in `admin_chat_shared_keys`.
+
+- **Sending messages**:
+  - Admin messages are wrapped by `chat_utils::send_admin_chat_message`:
+    - Inner `Kind::TextNote` signed with the admin identity key.
+    - Encrypted using NIP‑44 (V2) with an ephemeral key and the shared chat pubkey.
+    - Emitted as a `Kind::GiftWrap` with PoW difficulty from `settings.pow`.
+
+- **Receiving messages**:
+  - A periodic task in `main.rs` calls `fetch_chat_messages_for_shared_key` for each cached shared key:
+    - Uses `last_seen_timestamp` to request only newer `GiftWrap` events.
+    - Decrypts them with `unwrap_admin_chat_event`.
+    - Converts each inner text note into a `DisputeChatMessage` and appends it to the appropriate dispute chat history.
+    - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
+
+- **Behavior on restart**:
+  - Chat does not maintain its own persistent database; instead it:
+    - Re-derives shared keys on first send per (dispute, party).
+    - Re-fetches recent NIP‑59 events for those keys using a time-bounded, incremental strategy.
+    - Keeps the UI consistent with Mostro without storing full message history locally.
 
 #### Exit Confirmation
 

@@ -4,9 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{
-    AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR,
-};
+use super::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
 use std::str::FromStr;
 
@@ -260,18 +258,22 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (buyer_rating, seller_rating) = match is_initiator_buyer {
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
-                let buyer_rating =
-                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
-                let seller_rating =
-                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
+                let buyer_rating = super::helpers::format_user_rating(
+                    selected_dispute.initiator_info_data.as_ref(),
+                );
+                let seller_rating = super::helpers::format_user_rating(
+                    selected_dispute.counterpart_info_data.as_ref(),
+                );
                 (buyer_rating, seller_rating)
             }
             Some(false) => {
                 // Initiator is seller, counterpart is buyer
-                let seller_rating =
-                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
-                let buyer_rating =
-                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
+                let seller_rating = super::helpers::format_user_rating(
+                    selected_dispute.initiator_info_data.as_ref(),
+                );
+                let buyer_rating = super::helpers::format_user_rating(
+                    selected_dispute.counterpart_info_data.as_ref(),
+                );
                 (buyer_rating, seller_rating)
             }
             None => {

@@ -561,7 +561,9 @@ impl AdminDispute {
             .map(|s| {
                 matches!(
                     s,
-                    DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
+                    DisputeStatus::Settled
+                        | DisputeStatus::SellerRefunded
+                        | DisputeStatus::Released
                 )
             })
             .unwrap_or(false)

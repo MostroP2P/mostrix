@@ -2,6 +2,7 @@ use crate::ui::{
     helpers::save_chat_message, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
     UserMode, UserRole, UserTab,
 };
+use crate::util::derive_and_send_admin_chat_message;
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
 use sqlx::SqlitePool;
@@ -195,45 +196,40 @@ pub fn handle_enter_key(
                         // Save admin message to file (use dispute_id_key for consistency)
                         save_chat_message(&dispute_id_key, &admin_message);
 
-                        // TODO: Send message to active chat party via Nostr DM
-                        // This will be implemented when we add the DM sending logic
-
-                        // Generate mockup response from buyer or seller
-                        let mockup_responses = [
-                            "I understand, let me check the payment details.",
-                            "Can you please provide more information?",
-                            "Yes, I have completed my part of the transaction.",
-                            "I'm waiting for confirmation from my bank.",
-                            "The payment was sent on time as agreed.",
-                            "I have the screenshots if you need them.",
-                            "No, I did not receive the payment yet.",
-                            "Can we extend the deadline by 24 hours?",
-                        ];
-
-                        // Use message length to pseudo-randomly select a response
-                        let response_idx = message_content.len() % mockup_responses.len();
-                        let mockup_response = mockup_responses[response_idx];
-
-                        // Add mockup response from the active chat party
-                        let party_sender = match app.active_chat_party {
-                            crate::ui::ChatParty::Buyer => crate::ui::ChatSender::Buyer,
-                            crate::ui::ChatParty::Seller => crate::ui::ChatSender::Seller,
+                        // Resolve counterparty pubkey based on active chat party
+                        let counterparty_pubkey = match app.active_chat_party {
+                            crate::ui::ChatParty::Buyer => selected_dispute.buyer_pubkey.as_deref(),
+                            crate::ui::ChatParty::Seller => {
+                                selected_dispute.seller_pubkey.as_deref()
+                            }
                         };
 
-                        let party_message = crate::ui::DisputeChatMessage {
-                            sender: party_sender,
-                            content: mockup_response.to_string(),
-                            timestamp: timestamp + 2, // 2 seconds later
-                            target_party: None, // Buyer/Seller messages don't have a target party
-                        };
-
-                        app.admin_dispute_chats
-                            .entry(dispute_id_key.clone())
-                            .or_default()
-                            .push(party_message.clone());
-
-                        // Save party message to file
-                        save_chat_message(&dispute_id_key, &party_message);
+                        if let Some(counterparty_pubkey) = counterparty_pubkey {
+                            // Send real NIP-59 chat message using shared keys and cache shared key
+                            match futures::executor::block_on(derive_and_send_admin_chat_message(
+                                client,
+                                counterparty_pubkey,
+                                &message_content,
+                            )) {
+                                Ok(shared) => {
+                                    app.admin_chat_shared_keys.insert(
+                                        (dispute_id_key.clone(), app.active_chat_party),
+                                        crate::ui::AdminChatSharedKey {
+                                            shared_keys: shared,
+                                            last_seen_timestamp: None,
+                                        },
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to send admin chat message: {}", e);
+                                }
+                            }
+                        } else {
+                            log::warn!(
+                                "Missing counterparty pubkey for dispute {} when sending chat message",
+                                dispute_id_key
+                            );
+                        }
 
                         // Auto-scroll to bottom to show new messages
                         // Count visible messages (filtered by active party)

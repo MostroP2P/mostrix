@@ -1,3 +1,4 @@
+pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;
 pub mod filters;
@@ -5,6 +6,10 @@ pub mod order_utils;
 pub mod types;
 
 // Re-export commonly used items
+pub use chat_utils::{
+    derive_and_send_admin_chat_message, derive_shared_chat_keys,
+    fetch_chat_messages_for_shared_key, SharedChatKeys,
+};
 pub use db_utils::save_order;
 pub use dm_utils::{
     handle_message_notification, handle_order_result, listen_for_order_messages, parse_dm_events,

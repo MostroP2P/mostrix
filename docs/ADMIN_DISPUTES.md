@@ -69,7 +69,7 @@ The interface is divided into three main sections:
      - Text wrapping with word boundaries
    - **Footer (1 line)**: Context-sensitive keyboard shortcuts
 
-#### Features
+#### Settings Tab Features
 
 - **Real-time chat**: Direct typing with instant visual feedback
 - **Party switching**: Tab key toggles between buyer and seller
@@ -113,7 +113,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 
-#### Features
+#### Currency Filter Features
 
 - **Mode Display**: Shows current mode (User/Admin) at the top
 - **Mode Switching**: Press `M` key to switch between User and Admin modes
@@ -505,7 +505,7 @@ Admins communicate with buyers and sellers through an integrated chat interface 
   - **Admin messages**: Only shown in the chat view of the party they were sent to
   - **Buyer messages**: Only shown when viewing the Buyer chat
   - **Seller messages**: Only shown when viewing the Seller chat
-- **Scroll support**: 
+- **Scroll support**:
   - **PageUp/PageDown**: Navigate through message history
   - **End**: Jump to bottom of chat (latest messages)
   - **Visual scrollbar**: Right-side scrollbar shows position in chat history (↑/↓/│/█ symbols)
@@ -602,14 +602,47 @@ pub enum ChatSender {
 pub struct DisputeChatMessage {
     pub sender: ChatSender,
     pub content: String,
-    pub timestamp: i64, // Unix timestamp
+    pub timestamp: i64,                  // Unix timestamp
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
+}
+
+/// Cached shared key information for admin chat with a specific party in a dispute
+pub struct AdminChatSharedKey {
+    pub shared_keys: SharedChatKeys,     // ECDH-derived Nostr keypair (NIP-59 target)
+    pub last_seen_timestamp: Option<u64>,// Last seen message timestamp for incremental fetches
 }
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
 pub admin_chat_list_state: ratatui::widgets::ListState,
+pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
 ```
+
+##### NIP-59 Chat Flow (Admin ↔ Parties)
+
+- **Shared key derivation**:
+  - When the admin sends the first message to a party (Buyer/Seller), Mostrix:
+    - Reads `admin_privkey` from `settings.toml`.
+    - Derives a shared secret using ECDH (`generate_shared_key(admin_sk, party_pk)`).
+    - Wraps this secret as a Nostr keypair (`SharedChatKeys.shared_keys`).
+  - This shared key is cached in `AppState.admin_chat_shared_keys` under `(dispute_id, ChatParty)`.
+
+- **Sending messages**:
+  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events using the shared key as the receiver:
+    - Inner event: `Kind::TextNote` signed by the admin identity.
+    - Encryption: NIP‑44 (V2) with an ephemeral key and the shared chat pubkey.
+    - Outer event: `Kind::GiftWrap` with PoW difficulty from `settings.pow`.
+  - The event is then published to the relays; the counterparty can unwrap it using the same shared secret.
+
+- **Receiving messages**:
+  - A background task periodically polls for new `GiftWrap` events whose pubkey matches each cached shared chat key:
+    - Uses `last_seen_timestamp` to only fetch messages created after the last processed one.
+    - Decrypts each event with the shared secret, parses the inner text note, and appends it as a `DisputeChatMessage`.
+    - Skips messages signed by the admin identity (already added locally on send).
+
+- **Stateless behavior on restart**:
+  - On restart, shared keys are re-derived on first send to each party.
+  - The listener then re-fetches recent messages for that shared key using a time-bounded filter, keeping the chat view up to date without a separate local message database.
 
 #### Keyboard Shortcuts
 
@@ -651,11 +684,10 @@ pub admin_chat_list_state: ratatui::widgets::ListState,
 - Hard breaks at available width when no spaces found
 - Caps at 10 lines maximum with visual indicators
 
-**Future Enhancement**:
+**Previous Implementation Note** (historical):
 
-- Currently uses mockup responses for testing (pseudo-random selection based on message length)
-- Ready for integration with real Nostr DM sending/receiving
-- TODO markers indicate where real DM logic should be integrated
+- Early versions used local mockup responses for testing before real Nostr DM integration.
+- The current implementation now uses real NIP-59 messages with shared keys and periodic background fetching.
 
 **Source Files**:
 
@@ -696,7 +728,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 Currency filters allow admins (and users) to focus on specific fiat currencies when viewing orders. This is particularly useful for admins monitoring disputes in specific markets.
 
-#### Features
+#### Relay Management Features
 
 - **Add Currency Filter**: Add fiat currency codes (e.g., USD, EUR, ARS) to filter orders
   - Currency codes are validated (non-empty, max 10 characters)
@@ -708,7 +740,7 @@ Currency filters allow admins (and users) to focus on specific fiat currencies w
 - **Dynamic Filtering**: Currency filters are applied immediately without restart
 - **Status Bar Display**: Active currency filters are displayed in the status bar
 
-#### Implementation
+#### Relay Management Implementation
 
 **Source**: `src/ui/key_handler/settings.rs:55-78`
 
