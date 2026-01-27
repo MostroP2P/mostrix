@@ -197,7 +197,7 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
   - Green for Buyer messages
   - Red for Seller messages
 
-**Source**: `src/ui/mod.rs:482` (`apply_status_color`), `src/ui/disputes_in_progress_tab.rs` (chat colors)
+**Source**: `src/ui/mod.rs` (color constants), `src/ui/orders_tab.rs` and `src/ui/disputes_in_progress_tab.rs` (status colors), `src/ui/disputes_in_progress_tab.rs` (chat colors)
 
 ### 5. Admin Chat System
 
@@ -230,7 +230,7 @@ pub struct DisputeChatMessage {
 - **Input toggle**: Press **Shift+I** to enable/disable chat input
 - **Dynamic sizing**: Input box grows from 1 to 10 lines based on content
 - **Text wrapping**: Intelligent word-boundary wrapping with trim behavior
-- **Scrolling**: 
+- **Scrolling**:
   - **PageUp/PageDown**: Navigate through message history
   - **End**: Jump to bottom of chat (latest messages)
   - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols)

@@ -299,7 +299,7 @@ pub struct SolverDisputeInfo {
 
 **Identity & Status**:
 
-- **`id`**: Unique identifier (UUID) for the dispute
+- **`id`**: Unique identifier (UUID) for the **order** associated with this dispute. Mostrix stores this as the primary key in the `admin_disputes` table and uses it as the ID sent to Mostro when performing admin finalization actions (AdminSettle/AdminCancel).
 - **`kind`**: Order kind (e.g., "Buy" or "Sell")
 - **`status`**: Current dispute status (see [Dispute States](#dispute-states) section)
 - **`order_previous_status`**: The order's status before the dispute was initiated

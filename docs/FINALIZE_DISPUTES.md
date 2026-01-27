@@ -109,13 +109,19 @@ Both finalization actions use the same message structure:
 
 ```rust
 Message::new_dispute(
-    Some(dispute_id),  // UUID of the dispute
-    None,              // No order_id needed
-    None,              // No trade_index needed
-    action,            // AdminSettle or AdminCancel
-    None               // No payload needed
+    Some(order_id),  // UUID of the order associated with this dispute (Mostro expects the order ID)
+    None,            // No request_id needed
+    None,            // No trade_index needed
+    action,          // AdminSettle or AdminCancel
+    None             // No payload needed
 )
 ```
+
+Internally, Mostrix:
+
+- Looks up the dispute in the local `admin_disputes` table by its **dispute_id**.
+- Reads the corresponding **order ID** from the `id` column.
+- Uses that order ID as the first parameter of `Message::new_dispute`, matching what Mostro expects for finalization actions.
 
 ### Authentication
 
@@ -182,7 +188,7 @@ The chat interface provides real-time communication with dispute parties:
   - **Admin messages**: Only shown in the chat view of the party they were sent to (tracked via `target_party` field)
   - **Buyer messages**: Only shown when viewing the Buyer chat
   - **Seller messages**: Only shown when viewing the Seller chat
-- **Scroll control**: 
+- **Scroll control**:
   - PageUp/PageDown to navigate history
   - End key to jump to bottom (latest messages)
   - Visual scrollbar on the right shows position (↑/↓/│/█ symbols)

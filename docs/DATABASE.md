@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `TEXT` | Primary key. UUID of the dispute. |
+| `id` | `TEXT` | Primary key. UUID of the **order** associated with this dispute. This is also the ID sent to Mostro when performing admin finalization actions (AdminSettle/AdminCancel). |
 | `kind` | `TEXT` | Order kind: "Buy" or "Sell". |
 | `status` | `TEXT` | Current dispute status (e.g., "WaitingBuyer", "WaitingSeller", "Resolved"). |
 | `hash` | `TEXT` | Lightning invoice hash (if applicable). NULL if not available. |
