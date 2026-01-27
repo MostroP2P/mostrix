@@ -19,7 +19,7 @@ use crate::SETTINGS;
 ///
 /// # Arguments
 ///
-/// * `dispute_id` - The UUID of the dispute to settle
+/// * `order_id` - The UUID of the order associated with this dispute (Mostro expects this ID)
 /// * `client` - The Nostr client for sending messages
 /// * `mostro_pubkey` - The public key of the Mostro daemon
 ///
@@ -36,7 +36,7 @@ use crate::SETTINGS;
 /// - Failed to serialize the message
 /// - Failed to send the DM
 pub async fn execute_admin_settle(
-    dispute_id: &Uuid,
+    order_id: &Uuid,
     client: &Client,
     mostro_pubkey: PublicKey,
 ) -> Result<()> {
@@ -52,9 +52,9 @@ pub async fn execute_admin_settle(
     let admin_keys = Keys::parse(&settings.admin_privkey)?;
 
     // Create AdminSettle message
-    // No payload needed - just the dispute ID
+    // No payload needed - just the order ID (Mostro expects the order UUID here)
     let settle_message =
-        Message::new_dispute(Some(*dispute_id), None, None, Action::AdminSettle, None)
+        Message::new_dispute(Some(*order_id), None, None, Action::AdminSettle, None)
             .as_json()
             .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
@@ -71,8 +71,8 @@ pub async fn execute_admin_settle(
     .await?;
 
     log::info!(
-        "✅ Admin settle (pay buyer) message sent for dispute {}",
-        dispute_id
+        "✅ Admin settle (pay buyer) message sent for order {}",
+        order_id
     );
     Ok(())
 }

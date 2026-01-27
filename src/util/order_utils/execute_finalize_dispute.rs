@@ -83,11 +83,14 @@ pub async fn execute_finalize_dispute(
         ));
     }
 
-    // Execute the appropriate action (settle or cancel)
+    // Parse the related order ID (stored in AdminDispute.id) - this is the ID Mostro expects
+    let order_id = Uuid::parse_str(&dispute.id)?;
+
+    // Execute the appropriate action (settle or cancel) using the order ID
     let result = if is_settle {
-        execute_admin_settle(dispute_id, client, mostro_pubkey).await
+        execute_admin_settle(&order_id, client, mostro_pubkey).await
     } else {
-        execute_admin_cancel(dispute_id, client, mostro_pubkey).await
+        execute_admin_cancel(&order_id, client, mostro_pubkey).await
     };
 
     result?; // Propagate error if action failed
