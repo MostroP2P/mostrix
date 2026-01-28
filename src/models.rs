@@ -287,6 +287,8 @@ pub struct AdminDispute {
     pub invoice_held_at: Option<i64>,
     pub taken_at: i64,
     pub created_at: i64,
+    pub buyer_chat_last_seen: Option<i64>,
+    pub seller_chat_last_seen: Option<i64>,
 }
 
 impl AdminDispute {
@@ -356,6 +358,8 @@ impl AdminDispute {
             invoice_held_at: Some(dispute_info.invoice_held_at),
             taken_at: dispute_info.taken_at,
             created_at: dispute_info.created_at,
+            buyer_chat_last_seen: None,
+            seller_chat_last_seen: None,
         };
 
         // Try insert; if id already exists, perform an update instead
@@ -390,9 +394,10 @@ impl AdminDispute {
                 initiator_full_privacy, counterpart_full_privacy,
                 initiator_info, counterpart_info,
                 premium, payment_method, amount, fiat_amount, fiat_code, fee, routing_fee,
-                buyer_invoice, invoice_held_at, taken_at, created_at
+                buyer_invoice, invoice_held_at, taken_at, created_at,
+                buyer_chat_last_seen, seller_chat_last_seen
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -420,6 +425,8 @@ impl AdminDispute {
         .bind(self.invoice_held_at)
         .bind(self.taken_at)
         .bind(self.created_at)
+        .bind(self.buyer_chat_last_seen)
+        .bind(self.seller_chat_last_seen)
         .execute(pool)
         .await?;
         Ok(())
@@ -435,7 +442,7 @@ impl AdminDispute {
                 initiator_info = ?, counterpart_info = ?,
                 premium = ?, payment_method = ?, amount = ?, fiat_amount = ?, fiat_code = ?,
                 fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
-                taken_at = ?, created_at = ?
+                taken_at = ?, created_at = ?, buyer_chat_last_seen = ?, seller_chat_last_seen = ?
             WHERE id = ?
             "#,
         )
@@ -463,6 +470,8 @@ impl AdminDispute {
         .bind(self.invoice_held_at)
         .bind(self.taken_at)
         .bind(self.created_at)
+        .bind(self.buyer_chat_last_seen)
+        .bind(self.seller_chat_last_seen)
         .bind(&self.id)
         .execute(pool)
         .await?;
@@ -522,6 +531,46 @@ impl AdminDispute {
         .fetch_optional(pool)
         .await?;
         Ok(result.map(|(id,)| id))
+    }
+
+    /// Update buyer chat last_seen timestamp (unix seconds) using dispute_id
+    pub async fn update_buyer_chat_last_seen_by_dispute_id(
+        pool: &SqlitePool,
+        dispute_id: &str,
+        ts: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE admin_disputes
+            SET buyer_chat_last_seen = ?
+            WHERE dispute_id = ?
+            "#,
+        )
+        .bind(ts)
+        .bind(dispute_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update seller chat last_seen timestamp (unix seconds) using dispute_id
+    pub async fn update_seller_chat_last_seen_by_dispute_id(
+        pool: &SqlitePool,
+        dispute_id: &str,
+        ts: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE admin_disputes
+            SET seller_chat_last_seen = ?
+            WHERE dispute_id = ?
+            "#,
+        )
+        .bind(ts)
+        .bind(dispute_id)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     /// Update the status of a dispute to Settled

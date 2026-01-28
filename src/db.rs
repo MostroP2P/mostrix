@@ -83,7 +83,9 @@ pub async fn init_db() -> Result<SqlitePool> {
                 buyer_invoice TEXT,
                 invoice_held_at INTEGER,
                 taken_at INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                buyer_chat_last_seen INTEGER,
+                seller_chat_last_seen INTEGER
             );
             "#,
         )
@@ -142,9 +144,19 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
     let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
     let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
+    let has_buyer_chat_last_seen =
+        check_column_exists(pool, "buyer_chat_last_seen").await?;
+    let has_seller_chat_last_seen =
+        check_column_exists(pool, "seller_chat_last_seen").await?;
 
     // Only run migration if at least one column is missing
-    if !has_initiator_info || !has_counterpart_info || !has_fiat_code || !has_dispute_id {
+    if !has_initiator_info
+        || !has_counterpart_info
+        || !has_fiat_code
+        || !has_dispute_id
+        || !has_buyer_chat_last_seen
+        || !has_seller_chat_last_seen
+    {
         log::info!("Running migration: Adding missing columns to admin_disputes table");
 
         // Wrap all ALTER TABLE statements in a transaction for atomicity
@@ -194,6 +206,26 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             sqlx::query(
                 r#"
                 UPDATE admin_disputes SET dispute_id = id WHERE dispute_id = '';
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_buyer_chat_last_seen {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN buyer_chat_last_seen INTEGER;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_seller_chat_last_seen {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN seller_chat_last_seen INTEGER;
                 "#,
             )
             .execute(&mut *tx)
