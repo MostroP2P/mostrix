@@ -1,8 +1,15 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use nostr_sdk::prelude::*;
 
+use crate::models::AdminDispute;
+use crate::ui::{AdminChatSharedKey, AdminChatUpdate, ChatParty};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::SETTINGS;
+
+/// Messages grouped by (dispute_id, party); value is (content, timestamp, sender_pubkey).
+type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, u64, PublicKey)>>;
 
 /// Shared key information used for admin ↔ user chat.
 ///
@@ -101,6 +108,122 @@ pub async fn send_admin_chat_message(
     Ok(())
 }
 
+/// Build a NIP-59 gift wrap event encrypted to a recipient pubkey (e.g. trade pubkey).
+/// Used when admin chats with buyer/seller using their trade key from admin_dispute.
+async fn build_chat_giftwrap_event_to_pubkey(
+    sender: &Keys,
+    recipient_pubkey: &PublicKey,
+    message: &str,
+) -> Result<Event> {
+    let inner_event = EventBuilder::text_note(message)
+        .build(sender.public_key())
+        .sign(sender)
+        .await?;
+
+    let ephemeral = Keys::generate();
+    let encrypted_content = nip44::encrypt(
+        ephemeral.secret_key(),
+        recipient_pubkey,
+        inner_event.as_json(),
+        nip44::Version::V2,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to encrypt chat message: {e}"))?;
+
+    let pow: u8 = SETTINGS
+        .get()
+        .ok_or_else(|| {
+            anyhow::anyhow!("Settings not initialized. Please restart the application.")
+        })?
+        .pow;
+
+    let tags = vec![Tag::public_key(*recipient_pubkey)];
+    let wrapped_event = EventBuilder::new(Kind::GiftWrap, encrypted_content)
+        .pow(pow)
+        .tags(tags)
+        .custom_created_at(Timestamp::tweaked(nip59::RANGE_RANDOM_TIMESTAMP_TWEAK))
+        .sign_with_keys(&ephemeral)?;
+
+    Ok(wrapped_event)
+}
+
+/// Send a chat message from the admin identity to a counterparty's trade pubkey.
+/// Used for admin chat in disputes (buyer_pubkey / seller_pubkey from admin_dispute).
+pub async fn send_admin_chat_message_to_pubkey(
+    client: &Client,
+    admin_keys: &Keys,
+    recipient_pubkey: &PublicKey,
+    content: &str,
+) -> Result<()> {
+    let event = build_chat_giftwrap_event_to_pubkey(admin_keys, recipient_pubkey, content).await?;
+    client
+        .send_event(&event)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send admin chat event: {e}"))?;
+    Ok(())
+}
+
+/// Unwrap a gift wrap event addressed to the admin (decrypt with admin keys).
+/// Returns the inner text-note event (content, timestamp, sender_pubkey).
+pub async fn unwrap_giftwrap_to_admin(admin_keys: &Keys, event: &Event) -> Result<Event> {
+    let decrypted = nip44::decrypt(admin_keys.secret_key(), &event.pubkey, &event.content)
+        .map_err(|e| anyhow::anyhow!("Failed to decrypt gift wrap to admin: {e}"))?;
+
+    let inner_event = Event::from_json(&decrypted)
+        .map_err(|e| anyhow::anyhow!("Invalid inner chat event: {e}"))?;
+
+    inner_event
+        .verify()
+        .map_err(|e| anyhow::anyhow!("Invalid inner chat event signature: {e}"))?;
+
+    Ok(inner_event)
+}
+
+/// Fetch all gift wrap events addressed to the admin, decrypt with admin keys.
+/// Returns (content, timestamp, sender_pubkey) for each message. Caller routes by sender_pubkey to (dispute_id, party).
+pub async fn fetch_gift_wraps_to_admin(
+    client: &Client,
+    admin_keys: &Keys,
+) -> Result<Vec<(String, u64, PublicKey)>> {
+    let now = Timestamp::now().as_u64();
+    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
+    let wide_since = now.saturating_sub(seven_days_secs);
+
+    let admin_pubkey = admin_keys.public_key();
+    // Fetch gift wraps in window; relay filter cannot target p tag in all SDKs, so we filter in code
+    let filter = Filter::new()
+        .kind(Kind::GiftWrap)
+        .since(Timestamp::from(wide_since))
+        .limit(200);
+
+    let events = client
+        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch admin chat events: {e}"))?;
+
+    let mut messages = Vec::new();
+    for wrapped in events.iter() {
+        // Only process events addressed to admin (p tag = admin_pubkey)
+        let to_admin = wrapped.tags.public_keys().any(|pk| *pk == admin_pubkey);
+        if !to_admin {
+            continue;
+        }
+        match unwrap_giftwrap_to_admin(admin_keys, wrapped).await {
+            Ok(inner) => {
+                messages.push((
+                    inner.content.clone(),
+                    inner.created_at.as_u64(),
+                    inner.pubkey,
+                ));
+            }
+            Err(e) => {
+                log::warn!("Failed to unwrap gift wrap to admin {}: {}", wrapped.id, e);
+            }
+        }
+    }
+    messages.sort_by_key(|(_, ts, _)| *ts);
+    Ok(messages)
+}
+
 /// Unwrap a chat gift wrap event for the given shared chat keys and return the
 /// decrypted inner event (text note).
 pub async fn unwrap_admin_chat_event(shared_chat: &SharedChatKeys, event: &Event) -> Result<Event> {
@@ -165,23 +288,27 @@ pub async fn derive_and_send_admin_chat_message(
 /// Fetch and decrypt chat messages for a given shared chat key.
 ///
 /// Returns a list of (content, timestamp, sender_pubkey) tuples, ordered by
-/// timestamp ascending. If `since` is provided, only messages with a
-/// `created_at` > since will be returned.
+/// timestamp ascending. If `since` is provided, only messages whose inner
+/// (canonical) `created_at` > since are returned.
+///
+/// The relay filter always uses a wide time window (7 days). NIP-59 requires
+/// gift wrap layer timestamps to be tweaked to the past, so filtering by
+/// outer `created_at` would drop new messages; we filter by inner timestamp
+/// after unwrapping instead.
 pub async fn fetch_chat_messages_for_shared_key(
     client: &Client,
     shared_chat: &SharedChatKeys,
     since: Option<u64>,
 ) -> Result<Vec<(String, u64, PublicKey)>> {
-    let filter = {
-        let mut f = Filter::new()
-            .kind(Kind::GiftWrap)
-            .pubkey(shared_chat.shared_keys.public_key())
-            .limit(20);
-        if let Some(since_ts) = since {
-            f = f.since(Timestamp::from(since_ts));
-        }
-        f
-    };
+    let now = Timestamp::now().as_u64();
+    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
+    let wide_since = now.saturating_sub(seven_days_secs);
+
+    let filter = Filter::new()
+        .kind(Kind::GiftWrap)
+        .pubkey(shared_chat.shared_keys.public_key())
+        .since(Timestamp::from(wide_since))
+        .limit(50);
 
     let events = client
         .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
@@ -210,6 +337,68 @@ pub async fn fetch_chat_messages_for_shared_key(
 
     messages.sort_by_key(|(_, ts, _)| *ts);
     Ok(messages)
+}
+
+/// Fetch gift wraps to admin, route by sender_pubkey to (dispute_id, party), filter by last_seen.
+pub async fn fetch_admin_chat_updates(
+    client: &Client,
+    admin_keys: &Keys,
+    disputes: &[AdminDispute],
+    admin_chat_shared_keys: &HashMap<(String, ChatParty), AdminChatSharedKey>,
+) -> Result<Vec<AdminChatUpdate>, anyhow::Error> {
+    let all_messages = fetch_gift_wraps_to_admin(client, admin_keys).await?;
+
+    // Build map: sender_pubkey (trade key) -> (dispute_id, party)
+    let mut pubkey_to_dispute_party: Vec<(PublicKey, String, ChatParty)> = Vec::new();
+    for d in disputes {
+        if let Some(ref pk_str) = d.buyer_pubkey {
+            if let Ok(pk) = PublicKey::parse(pk_str) {
+                pubkey_to_dispute_party.push((pk, d.dispute_id.clone(), ChatParty::Buyer));
+            }
+        }
+        if let Some(ref pk_str) = d.seller_pubkey {
+            if let Ok(pk) = PublicKey::parse(pk_str) {
+                pubkey_to_dispute_party.push((pk, d.dispute_id.clone(), ChatParty::Seller));
+            }
+        }
+    }
+
+    // Group messages by (dispute_id, party), filtering by last_seen
+    let mut by_key: AdminChatByKey = HashMap::new();
+
+    for (content, ts, sender_pubkey) in all_messages {
+        let key = pubkey_to_dispute_party
+            .iter()
+            .find(|(pk, _, _)| pk == &sender_pubkey)
+            .map(|(_, id, party)| (id.clone(), *party));
+        let (dispute_id, party) = match key {
+            Some(k) => k,
+            None => continue,
+        };
+        let last_seen = admin_chat_shared_keys
+            .get(&(dispute_id.clone(), party))
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+        if ts <= last_seen {
+            continue;
+        }
+        by_key
+            .entry((dispute_id, party))
+            .or_default()
+            .push((content, ts, sender_pubkey));
+    }
+
+    let updates: Vec<AdminChatUpdate> = by_key
+        .into_iter()
+        .filter(|(_, msgs)| !msgs.is_empty())
+        .map(|((dispute_id, party), messages)| AdminChatUpdate {
+            dispute_id,
+            party,
+            messages,
+        })
+        .collect();
+
+    Ok(updates)
 }
 
 #[cfg(test)]

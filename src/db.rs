@@ -144,10 +144,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
     let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
     let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
-    let has_buyer_chat_last_seen =
-        check_column_exists(pool, "buyer_chat_last_seen").await?;
-    let has_seller_chat_last_seen =
-        check_column_exists(pool, "seller_chat_last_seen").await?;
+    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
+    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info

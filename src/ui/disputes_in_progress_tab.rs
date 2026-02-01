@@ -8,8 +8,9 @@ use super::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMAR
 use mostro_core::prelude::*;
 use std::str::FromStr;
 
-/// Filter disputes based on the current filter state
-fn get_filtered_disputes(app: &AppState) -> Vec<(usize, &crate::models::AdminDispute)> {
+/// Filter disputes based on the current filter state.
+/// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
+fn get_filtered_disputes(app: &AppState) -> Vec<(usize, crate::models::AdminDispute)> {
     app.admin_disputes_in_progress
         .iter()
         .enumerate()
@@ -28,6 +29,7 @@ fn get_filtered_disputes(app: &AppState) -> Vec<(usize, &crate::models::AdminDis
                 ),
             }
         })
+        .map(|(i, d)| (i, d.clone()))
         .collect()
 }
 
@@ -104,7 +106,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     }
 
     // 2. Main Area
-    if let Some((_original_idx, selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
+    if let Some((_original_idx, ref selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
         // Determine layout based on filter state
         let is_finalized = app.dispute_filter == DisputeFilter::Finalized;
 
@@ -507,16 +509,38 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let dispute_id_key = &selected_dispute.dispute_id;
             let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
 
+            // Wrap long messages to ~half chat width so they use multiple lines
+            let chat_area = main_chunks[2];
+            let max_content_width = (chat_area.width.saturating_sub(2)) / 2;
+
             let items = if let Some(messages) = chat_messages {
-                super::helpers::build_chat_list_items(messages, app.active_chat_party)
+                super::helpers::build_chat_list_items(
+                    messages,
+                    app.active_chat_party,
+                    Some(max_content_width),
+                )
             } else {
-                super::helpers::build_chat_list_items(&[], app.active_chat_party)
+                super::helpers::build_chat_list_items(
+                    &[],
+                    app.active_chat_party,
+                    Some(max_content_width),
+                )
             };
 
             // Update ListState to show latest message if we're at the bottom or selection is invalid
             let total_items = items.len();
             if total_items > 0 {
                 let current_selection = app.admin_chat_list_state.selected();
+                // Auto-scroll to bottom when new buyer/seller messages arrive for this dispute/party
+                let current_key = (dispute_id_key.clone(), app.active_chat_party);
+                if let Some((ref d, ref p, last_count)) = app.admin_chat_scroll_tracker {
+                    if *d == current_key.0 && *p == current_key.1 && total_items > last_count {
+                        app.admin_chat_list_state
+                            .select(Some(total_items.saturating_sub(1)));
+                    }
+                }
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, total_items));
                 // Reset to bottom if: no selection, selection is out of bounds, or selection is at the end
                 if current_selection.is_none_or(|sel| sel >= total_items.saturating_sub(1)) {
                     app.admin_chat_list_state
@@ -525,6 +549,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 // No items, clear selection
                 app.admin_chat_list_state.select(None);
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, 0));
             }
 
             let chat_list = List::new(items)

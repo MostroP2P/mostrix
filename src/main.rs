@@ -6,16 +6,14 @@ pub mod util;
 
 use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
+use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
-    AdminChatSharedKey, ChatParty, ChatSender, DisputeChatMessage, MessageNotification,
-    OrderResult,
+    AdminChatSharedKey, AdminChatUpdate, ChatParty, MessageNotification, OrderResult,
 };
 use crate::util::{
-    fetch_chat_messages_for_shared_key, handle_message_notification, handle_order_result,
-    listen_for_order_messages,
-    order_utils::{start_fetch_scheduler, FetchSchedulerResult},
-    derive_shared_chat_keys, SharedChatKeys,
+    handle_message_notification, handle_order_result, listen_for_order_messages,
+    order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -71,250 +69,30 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-/// Internal structure used by the admin chat fetch logic to describe which
-/// disputes/parties should be polled for new messages.
-struct AdminChatPlanEntry {
-    dispute_id: String,
-    party: ChatParty,
-    shared_keys: SharedChatKeys,
-    last_seen_timestamp: Option<u64>,
-}
-
-/// Result of polling for admin chat messages for a single dispute/party.
-struct AdminChatUpdate {
-    dispute_id: String,
-    party: ChatParty,
-    messages: Vec<(String, u64, PublicKey)>, // (content, timestamp, sender_pubkey)
-}
-
-/// Seed `app.admin_chat_shared_keys` from the list of admin disputes stored in
-/// `AppState` and the admin chat keys. This prepares per-(dispute, party)
-/// shared keys and last_seen timestamps so the background listener can start
-/// fetching messages incrementally.
-fn seed_admin_chat_shared_keys(app: &mut AppState, admin_chat_keys: &Keys) {
-    // Clone disputes list locally to avoid borrowing `app` immutably and
-    // mutably at the same time (Rust borrow checker).
+/// Seed `app.admin_chat_shared_keys` with last_seen timestamps per (dispute, party)
+/// from the list of admin disputes. Trade pubkeys (buyer_pubkey/seller_pubkey) are
+/// read from the dispute when sending; we only store last_seen here for post-unwrap filtering.
+fn seed_admin_chat_shared_keys(app: &mut AppState, _admin_chat_keys: &Keys) {
     let disputes = app.admin_disputes_in_progress.clone();
 
     for dispute in &disputes {
-        // Seed buyer party if buyer_pubkey exists
-        if let Some(ref buyer_pk_str) = dispute.buyer_pubkey {
-            match PublicKey::parse(buyer_pk_str) {
-                Ok(buyer_pk) => match derive_shared_chat_keys(admin_chat_keys, &buyer_pk) {
-                    Ok(shared) => {
-                        app.admin_chat_shared_keys.insert(
-                            (dispute.dispute_id.clone(), ChatParty::Buyer),
-                            AdminChatSharedKey {
-                                shared_keys: shared,
-                                last_seen_timestamp: dispute
-                                    .buyer_chat_last_seen
-                                    .map(|ts| ts as u64),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to derive buyer shared chat key for dispute {}: {}",
-                            dispute.dispute_id,
-                            e
-                        );
-                    }
+        if dispute.buyer_pubkey.is_some() {
+            app.admin_chat_shared_keys.insert(
+                (dispute.dispute_id.clone(), ChatParty::Buyer),
+                AdminChatSharedKey {
+                    last_seen_timestamp: dispute.buyer_chat_last_seen.map(|ts| ts as u64),
                 },
-                Err(e) => {
-                    log::warn!(
-                        "Invalid buyer_pubkey for dispute {}: {}",
-                        dispute.dispute_id,
-                        e
-                    );
-                }
-            }
+            );
         }
-
-        // Seed seller party if seller_pubkey exists
-        if let Some(ref seller_pk_str) = dispute.seller_pubkey {
-            match PublicKey::parse(seller_pk_str) {
-                Ok(seller_pk) => match derive_shared_chat_keys(admin_chat_keys, &seller_pk) {
-                    Ok(shared) => {
-                        app.admin_chat_shared_keys.insert(
-                            (dispute.dispute_id.clone(), ChatParty::Seller),
-                            AdminChatSharedKey {
-                                shared_keys: shared,
-                                last_seen_timestamp: dispute
-                                    .seller_chat_last_seen
-                                    .map(|ts| ts as u64),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to derive seller shared chat key for dispute {}: {}",
-                            dispute.dispute_id,
-                            e
-                        );
-                    }
+        if dispute.seller_pubkey.is_some() {
+            app.admin_chat_shared_keys.insert(
+                (dispute.dispute_id.clone(), ChatParty::Seller),
+                AdminChatSharedKey {
+                    last_seen_timestamp: dispute.seller_chat_last_seen.map(|ts| ts as u64),
                 },
-                Err(e) => {
-                    log::warn!(
-                        "Invalid seller_pubkey for dispute {}: {}",
-                        dispute.dispute_id,
-                        e
-                    );
-                }
-            }
+            );
         }
     }
-}
-
-/// Build a polling plan from the current UI state (cloned, read-only).
-fn build_admin_chat_plan(app: &AppState) -> Vec<AdminChatPlanEntry> {
-    app.admin_chat_shared_keys
-        .iter()
-        .map(|((dispute_id, party), shared)| AdminChatPlanEntry {
-            dispute_id: dispute_id.clone(),
-            party: *party,
-            shared_keys: shared.shared_keys.clone(),
-            last_seen_timestamp: shared.last_seen_timestamp,
-        })
-        .collect()
-}
-
-/// Fetch admin chat updates for all entries in the polling plan.
-async fn fetch_admin_chat_updates(
-    client: &Client,
-    plan: &[AdminChatPlanEntry],
-) -> Result<Vec<AdminChatUpdate>, anyhow::Error> {
-    let mut updates = Vec::new();
-
-    // Default window for initial fetches when no last_seen_timestamp is known.
-    // This avoids scanning the entire history on relays.
-    let now = Timestamp::now().as_u64();
-    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
-    let default_since = now.saturating_sub(seven_days_secs);
-
-    for entry in plan {
-        // If we don't have a last_seen_timestamp yet, fall back to a 7-day window.
-        let effective_since = entry.last_seen_timestamp.unwrap_or(default_since);
-
-        let msgs = fetch_chat_messages_for_shared_key(
-            client,
-            &entry.shared_keys,
-            Some(effective_since),
-        )
-        .await?;
-        if !msgs.is_empty() {
-            updates.push(AdminChatUpdate {
-                dispute_id: entry.dispute_id.clone(),
-                party: entry.party,
-                messages: msgs,
-            });
-        }
-    }
-
-    Ok(updates)
-}
-
-/// Apply fetched admin chat updates back into the UI state and persist
-/// last_seen timestamps to the database.
-async fn apply_admin_chat_updates(
-    app: &mut AppState,
-    updates: Vec<AdminChatUpdate>,
-    admin_chat_pubkey: Option<&PublicKey>,
-    pool: &sqlx::SqlitePool,
-) -> Result<(), anyhow::Error> {
-    for update in updates {
-        let dispute_key = update.dispute_id.clone();
-        let party = update.party;
-
-        // Get or create the chat history vector for this dispute
-        let messages_vec = app
-            .admin_dispute_chats
-            .entry(dispute_key.clone())
-            .or_default();
-
-        // Track max timestamp to update last_seen
-        let mut max_ts = app
-            .admin_chat_shared_keys
-            .get(&(dispute_key.clone(), party))
-            .and_then(|s| s.last_seen_timestamp)
-            .unwrap_or(0);
-
-        for (content, ts, sender_pubkey) in update.messages {
-            // Skip messages that we sent ourselves (admin identity), since we
-            // already add them locally when sending.
-            if let Some(admin_pk) = admin_chat_pubkey {
-                if &sender_pubkey == admin_pk {
-                    if ts > max_ts {
-                        max_ts = ts;
-                    }
-                    continue;
-                }
-            }
-
-            let sender = match party {
-                ChatParty::Buyer => ChatSender::Buyer,
-                ChatParty::Seller => ChatSender::Seller,
-            };
-
-            // Avoid duplicates: check if a message with same timestamp, sender and
-            // content already exists.
-            let is_duplicate = messages_vec.iter().any(|m: &DisputeChatMessage| {
-                m.timestamp as u64 == ts && m.sender == sender && m.content == content
-            });
-            if is_duplicate {
-                if ts > max_ts {
-                    max_ts = ts;
-                }
-                continue;
-            }
-
-            messages_vec.push(DisputeChatMessage {
-                sender,
-                content: content.clone(),
-                timestamp: ts as i64,
-                target_party: None,
-            });
-
-            if ts > max_ts {
-                max_ts = ts;
-            }
-        }
-
-        // Update last_seen_timestamp for this dispute/party in memory
-        if let Some(shared) = app
-            .admin_chat_shared_keys
-            .get_mut(&(dispute_key.clone(), party))
-        {
-            if max_ts > shared.last_seen_timestamp.unwrap_or(0) {
-                shared.last_seen_timestamp = Some(max_ts);
-            }
-        }
-
-        // Persist last_seen_timestamp to the database so we can resume incremental
-        // fetching after restart without scanning the full history.
-        if max_ts > 0 {
-            let ts_i64 = max_ts as i64;
-            match party {
-                ChatParty::Buyer => {
-                    AdminDispute::update_buyer_chat_last_seen_by_dispute_id(
-                        pool,
-                        &dispute_key,
-                        ts_i64,
-                    )
-                    .await?
-                }
-                ChatParty::Seller => {
-                    AdminDispute::update_seller_chat_last_seen_by_dispute_id(
-                        pool,
-                        &dispute_key,
-                        ts_i64,
-                    )
-                    .await?
-                }
-            };
-        }
-    }
-
-    Ok(())
 }
 
 /// Validates the range amount input against min/max limits
@@ -421,13 +199,16 @@ async fn main() -> Result<(), anyhow::Error> {
                             seed_admin_chat_shared_keys(&mut app, &admin_chat_keys);
                         }
                         Err(e) => {
-                            log::warn!(
-                                "Invalid admin_privkey in settings for admin chat: {}",
-                                e
-                            );
+                            log::warn!("Invalid admin_privkey in settings for admin chat: {}", e);
                         }
                     }
                 }
+
+                recover_admin_chat_from_files(
+                    &app.admin_disputes_in_progress,
+                    &mut app.admin_dispute_chats,
+                    &mut app.admin_chat_shared_keys,
+                );
             }
             Err(e) => {
                 log::warn!("Failed to load admin disputes: {}", e);
@@ -442,6 +223,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
         tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
+
+    // Channel to receive admin chat fetch results (fetch runs in spawned task)
+    let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+
+    // Admin chat keys (for trade-key send/fetch); only set when admin mode and admin_privkey present
+    let admin_chat_keys: Option<Keys> =
+        if app.user_role == UserRole::Admin && !settings.admin_privkey.is_empty() {
+            Keys::parse(&settings.admin_privkey).ok()
+        } else {
+            None
+        };
 
     // Spawn background task to listen for messages on active orders
     let client_for_messages = client.clone();
@@ -497,6 +290,27 @@ async fn main() -> Result<(), anyhow::Error> {
                     handle_message_notification(notification, &mut app);
                 }
             }
+            admin_chat_result = admin_chat_updates_rx.recv() => {
+                if let Some(result) = admin_chat_result {
+                    match result {
+                        Ok(updates) => {
+                            if let Err(e) = apply_admin_chat_updates(
+                                &mut app,
+                                updates,
+                                admin_chat_pubkey.as_ref(),
+                                &pool,
+                            )
+                            .await
+                            {
+                                log::warn!("Failed to apply admin chat updates: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to fetch admin chat updates: {}", e);
+                        }
+                    }
+                }
+            }
             maybe_event = events.next() => {
                 // Handle errors in event stream
                 let event = match maybe_event {
@@ -544,14 +358,6 @@ async fn main() -> Result<(), anyhow::Error> {
                     continue;
                 }
 
-                // Handle mouse events (double-click for invoice selection)
-                // Terminal's native text selection will handle the actual selection
-                // since we've removed borders from the invoice area for easier selection
-                // if let Event::Mouse(_mouse_event) = event {
-                //     // Mouse events are enabled for terminal-native text selection
-                //     // The borderless invoice display makes it easier to select the invoice text
-                //     continue;
-                // }
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
@@ -565,6 +371,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         mostro_pubkey,
                         &order_result_tx,
                         &validate_range_amount,
+                        admin_chat_keys.as_ref(),
                     ) {
                         Some(true) => continue, // Key was handled, continue loop
                         Some(false) => break,   // Exit requested (q key)
@@ -579,27 +386,14 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Refresh the UI even if there is no input.
             }
             _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
-                // Periodically fetch admin chat messages for disputes/parties that
-                // have established shared chat keys.
-                let plan = build_admin_chat_plan(&app);
-                if !plan.is_empty() {
-                    match fetch_admin_chat_updates(&client, &plan).await {
-                        Ok(updates) => {
-                            if let Err(e) = apply_admin_chat_updates(
-                                &mut app,
-                                updates,
-                                admin_chat_pubkey.as_ref(),
-                                &pool,
-                            )
-                            .await
-                            {
-                                log::warn!("Failed to apply admin chat updates: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to fetch admin chat updates: {}", e);
-                        }
-                    }
+                if let Some(ref admin_keys) = admin_chat_keys {
+                    spawn_admin_chat_fetch(
+                        client.clone(),
+                        admin_keys.clone(),
+                        app.admin_disputes_in_progress.clone(),
+                        app.admin_chat_shared_keys.clone(),
+                        admin_chat_updates_tx.clone(),
+                    );
                 }
             }
         }

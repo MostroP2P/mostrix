@@ -143,9 +143,7 @@ pub(crate) fn handle_enter_admin_mode(
     app: &mut AppState,
     mode: UiMode,
     default_mode: UiMode,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
 ) {
     match mode {
         UiMode::AdminMode(AdminMode::AddSolver(key_state)) => {
@@ -169,9 +167,9 @@ pub(crate) fn handle_enter_admin_mode(
                 execute_add_solver_action(
                     app,
                     solver_pubkey,
-                    client,
-                    mostro_pubkey,
-                    order_result_tx,
+                    ctx.client,
+                    ctx.mostro_pubkey,
+                    ctx.order_result_tx,
                 );
             } else {
                 // NO selected - go back to input

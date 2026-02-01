@@ -373,17 +373,23 @@ pub struct DisputeChatMessage {
 }
 
 /// Cached shared key information for admin chat with a specific party in a dispute
-/// The shared key is derived using ECDH between the admin private key and the
-/// counterparty public key (buyer or seller). The shared key is then treated as
-/// a Nostr key pair and used as the target of NIP-59 gift wrap events, following
-/// the simplified scheme used in the mostro-chat project.
+/// Per-(dispute, party) state for admin chat. We use buyer/seller trade keys
+/// (admin_dispute.buyer_pubkey / seller_pubkey) for sending; receiving uses
+/// admin's key (gift wraps to admin). Only last_seen is stored here.
 #[derive(Clone, Debug)]
 pub struct AdminChatSharedKey {
-    /// Shared chat key derived from (admin_sk, party_pk). Used as receiver for chat events.
-    pub shared_keys: crate::util::SharedChatKeys,
-    /// Last seen timestamp (unix seconds) for messages received on this shared key.
-    /// Used by the background listener to perform incremental fetches.
+    /// Last seen timestamp (inner/canonical unix seconds) for messages from this party.
+    /// Used for post-unwrap filtering when fetching gift wraps to admin.
     pub last_seen_timestamp: Option<u64>,
+}
+
+/// Result of polling for admin chat messages for a single dispute/party.
+#[derive(Clone, Debug)]
+pub struct AdminChatUpdate {
+    pub dispute_id: String,
+    pub party: ChatParty,
+    /// (content, timestamp, sender_pubkey)
+    pub messages: Vec<(String, u64, PublicKey)>,
 }
 
 #[derive(Clone, Debug)]
@@ -523,6 +529,8 @@ pub struct AppState {
     pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
+    /// Tracks (dispute_id, party, visible_count) for auto-scroll when new messages arrive
+    pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     /// Cached shared keys per (dispute_id, party) for admin chat, plus last-seen timestamps.
     pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
@@ -582,6 +590,7 @@ impl AppState {
             admin_chat_input_enabled: true, // Chat input enabled by default
             admin_dispute_chats: HashMap::new(),
             admin_chat_list_state: ratatui::widgets::ListState::default(),
+            admin_chat_scroll_tracker: None,
             admin_chat_shared_keys: HashMap::new(),
             selected_settings_option: 0,
             mode: UiMode::Normal,

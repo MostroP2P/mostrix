@@ -8,7 +8,8 @@ pub mod types;
 // Re-export commonly used items
 pub use chat_utils::{
     derive_and_send_admin_chat_message, derive_shared_chat_keys,
-    fetch_chat_messages_for_shared_key, SharedChatKeys,
+    fetch_chat_messages_for_shared_key, fetch_gift_wraps_to_admin,
+    send_admin_chat_message_to_pubkey, SharedChatKeys,
 };
 pub use db_utils::save_order;
 pub use dm_utils::{

@@ -1,8 +1,5 @@
 use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 use crate::SETTINGS;
-use nostr_sdk::Client;
-use sqlx::SqlitePool;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
@@ -69,10 +66,7 @@ pub fn create_key_input_state(input: &str) -> crate::ui::KeyInputState {
 /// Handle 'y' key for confirmation
 pub fn handle_confirm_key(
     app: &mut AppState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
 ) -> bool {
     // Returns true if should continue (skip further processing)
     let default_mode = match app.user_role {
@@ -86,9 +80,10 @@ pub fn handle_confirm_key(
             app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
 
             // Spawn async task to send order
-            let pool_clone = pool.clone();
-            let client_clone = client.clone();
-            let result_tx = order_result_tx.clone();
+            let pool_clone = ctx.pool.clone();
+            let client_clone = ctx.client.clone();
+            let mostro_pubkey = ctx.mostro_pubkey;
+            let result_tx = ctx.order_result_tx.clone();
 
             tokio::spawn(async move {
                 let settings = match SETTINGS.get() {
@@ -126,10 +121,10 @@ pub fn handle_confirm_key(
             execute_take_order_action(
                 app,
                 take_state,
-                pool,
-                client,
-                mostro_pubkey,
-                order_result_tx,
+                ctx.pool,
+                ctx.client,
+                ctx.mostro_pubkey,
+                ctx.order_result_tx,
             );
             true
         }
@@ -162,7 +157,7 @@ pub fn handle_confirm_key(
 
             // Also add the new relay to the running Nostr client immediately
             let relay_to_add = relay_string.clone();
-            let client_clone = client.clone();
+            let client_clone = ctx.client.clone();
             tokio::spawn(async move {
                 if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
                     log::error!("Failed to add relay at runtime: {}", e);
@@ -208,9 +203,7 @@ pub fn handle_confirm_key(
                 app,
                 mode,
                 default_mode,
-                client,
-                mostro_pubkey,
-                order_result_tx,
+                ctx,
             );
             true
         }
@@ -234,10 +227,10 @@ pub fn handle_confirm_key(
             crate::ui::key_handler::admin_handlers::execute_take_dispute_action(
                 app,
                 dispute_id,
-                client,
-                mostro_pubkey,
-                pool,
-                order_result_tx,
+                ctx.client,
+                ctx.mostro_pubkey,
+                ctx.pool,
+                ctx.order_result_tx,
             );
             true
         }

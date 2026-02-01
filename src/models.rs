@@ -481,8 +481,9 @@ impl AdminDispute {
     /// Get all admin disputes from the database
     pub async fn get_all(pool: &SqlitePool) -> Result<Vec<AdminDispute>> {
         let mut disputes = sqlx::query_as::<_, AdminDispute>(
-            r#"SELECT * FROM admin_disputes ORDER BY taken_at DESC"#,
+            r#"SELECT * FROM admin_disputes WHERE status = ? ORDER BY taken_at DESC"#,
         )
+        .bind(DisputeStatus::InProgress.to_string())
         .fetch_all(pool)
         .await?;
 

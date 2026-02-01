@@ -2,12 +2,10 @@ use crate::ui::{
     helpers::save_chat_message, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
     UserMode, UserRole, UserTab,
 };
-use crate::util::derive_and_send_admin_chat_message;
+use crate::util::send_admin_chat_message_to_pubkey;
 use mostro_core::prelude::*;
+use nostr_sdk::prelude::PublicKey as NostrPublicKey;
 use nostr_sdk::Client;
-use sqlx::SqlitePool;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -25,15 +23,7 @@ use crate::ui::key_handler::admin_handlers::{
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
-pub fn handle_enter_key(
-    app: &mut AppState,
-    orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
-) -> bool {
+pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) -> bool {
     let default_mode = match app.user_role {
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
@@ -43,7 +33,7 @@ pub fn handle_enter_key(
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
-            handle_enter_normal_mode(app, orders, disputes);
+            handle_enter_normal_mode(app, ctx);
             true
         }
         UiMode::UserMode(UserMode::CreatingOrder(ref form)) => {
@@ -56,14 +46,7 @@ pub fn handle_enter_key(
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
-            handle_enter_taking_order(
-                app,
-                take_state,
-                pool,
-                client,
-                mostro_pubkey,
-                order_result_tx,
-            );
+            handle_enter_taking_order(app, take_state, ctx);
             true
         }
         UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -87,27 +70,17 @@ pub fn handle_enter_key(
         UiMode::NewMessageNotification(notification, action, mut invoice_state) => {
             handle_enter_message_notification(
                 app,
-                client,
-                pool,
+                ctx,
                 &action,
                 &mut invoice_state,
-                mostro_pubkey,
                 notification.order_id,
-                order_result_tx,
             );
             // Mode is updated inside handle_enter_message_notification
             true
         }
         UiMode::ViewingMessage(view_state) => {
             // Enter confirms the selected button (YES or NO)
-            handle_enter_viewing_message(
-                app,
-                &view_state,
-                pool,
-                client,
-                mostro_pubkey,
-                order_result_tx,
-            );
+            handle_enter_viewing_message(app, &view_state, ctx);
             // Mode is updated inside handle_enter_viewing_message
             true
         }
@@ -115,14 +88,7 @@ pub fn handle_enter_key(
         | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
-            handle_enter_admin_mode(
-                app,
-                current_mode,
-                default_mode,
-                client,
-                mostro_pubkey,
-                order_result_tx,
-            );
+            handle_enter_admin_mode(app, current_mode, default_mode, ctx);
             true
         }
         UiMode::AddMostroPubkey(_)
@@ -134,7 +100,7 @@ pub fn handle_enter_key(
         | UiMode::ConfirmClearCurrencies(_)
         | UiMode::ConfirmExit(_) => {
             let should_continue =
-                handle_enter_settings_mode(app, current_mode, default_mode, client);
+                handle_enter_settings_mode(app, current_mode, default_mode, ctx.client);
             if !should_continue {
                 return false; // Exit application
             }
@@ -146,10 +112,10 @@ pub fn handle_enter_key(
                 execute_take_dispute_action(
                     app,
                     dispute_id,
-                    client,
-                    mostro_pubkey,
-                    pool,
-                    order_result_tx,
+                    ctx.client,
+                    ctx.mostro_pubkey,
+                    ctx.pool,
+                    ctx.order_result_tx,
                 );
             } else {
                 // NO selected - go back to normal mode
@@ -204,27 +170,30 @@ pub fn handle_enter_key(
                             }
                         };
 
-                        if let Some(counterparty_pubkey) = counterparty_pubkey {
-                            // Send real NIP-59 chat message using shared keys and cache shared key
-                            match futures::executor::block_on(derive_and_send_admin_chat_message(
-                                client,
-                                counterparty_pubkey,
-                                &message_content,
-                            )) {
-                                Ok(shared) => {
-                                    app.admin_chat_shared_keys.insert(
-                                        (dispute_id_key.clone(), app.active_chat_party),
-                                        crate::ui::AdminChatSharedKey {
-                                            shared_keys: shared,
-                                            last_seen_timestamp: None,
-                                        },
-                                    );
-                                }
-                                Err(e) => {
+                        if let (Some(admin_keys), Some(counterparty_pubkey_str)) =
+                            (ctx.admin_chat_keys, counterparty_pubkey)
+                        {
+                            // Send NIP-59 chat message to counterparty's trade pubkey
+                            if let Ok(recipient_pubkey) =
+                                NostrPublicKey::parse(counterparty_pubkey_str)
+                            {
+                                if let Err(e) =
+                                    futures::executor::block_on(send_admin_chat_message_to_pubkey(
+                                        ctx.client,
+                                        admin_keys,
+                                        &recipient_pubkey,
+                                        &message_content,
+                                    ))
+                                {
                                     log::error!("Failed to send admin chat message: {}", e);
                                 }
+                            } else {
+                                log::warn!(
+                                    "Invalid counterparty pubkey for dispute {}",
+                                    dispute_id_key
+                                );
                             }
-                        } else {
+                        } else if counterparty_pubkey.is_none() {
                             log::warn!(
                                 "Missing counterparty pubkey for dispute {} when sending chat message",
                                 dispute_id_key
@@ -308,7 +277,7 @@ pub fn handle_enter_key(
                     // Pay Buyer - show confirmation popup
                     if dispute_is_finalized {
                         // Dispute already finalized, show error
-                        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+                        let _ = ctx.order_result_tx.send(crate::ui::OrderResult::Error(
                             "Cannot finalize: dispute is already finalized".to_string(),
                         ));
                         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -325,7 +294,7 @@ pub fn handle_enter_key(
                     // Refund Seller - show confirmation popup
                     if dispute_is_finalized {
                         // Dispute already finalized, show error
-                        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+                        let _ = ctx.order_result_tx.send(crate::ui::OrderResult::Error(
                             "Cannot finalize: dispute is already finalized".to_string(),
                         ));
                         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -360,10 +329,10 @@ pub fn handle_enter_key(
                 execute_finalize_dispute_action(
                     app,
                     dispute_id,
-                    client,
-                    mostro_pubkey,
-                    pool,
-                    order_result_tx,
+                    ctx.client,
+                    ctx.mostro_pubkey,
+                    ctx.pool,
+                    ctx.order_result_tx,
                     is_settle,
                 );
             } else {
@@ -501,14 +470,10 @@ fn handle_enter_settings_mode(
     true // Continue the loop by default
 }
 
-fn handle_enter_normal_mode(
-    app: &mut AppState,
-    orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
-) {
+fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     // Show take order popup when Enter is pressed in Orders tab (user mode only)
     if let Tab::User(UserTab::Orders) = app.active_tab {
-        let orders_lock = orders.lock().unwrap();
+        let orders_lock = ctx.orders.lock().unwrap();
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
             let take_state = TakeOrderState {
@@ -522,7 +487,7 @@ fn handle_enter_normal_mode(
         }
     } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
-        let disputes_lock = disputes.lock().unwrap();
+        let disputes_lock = ctx.disputes.lock().unwrap();
         // Filter to only get "initiated" disputes
         use std::str::FromStr;
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
