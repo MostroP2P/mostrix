@@ -7,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{interval_at, Duration, Instant};
 
 use crate::models::AdminDispute;
-use crate::ui::{AdminChatSharedKey, AdminChatUpdate, ChatParty};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
 use crate::util::chat_utils::fetch_admin_chat_updates;
 
 use super::{get_disputes, get_orders};
@@ -101,11 +101,12 @@ pub fn spawn_admin_chat_fetch(
     client: Client,
     admin_keys: Keys,
     disputes: Vec<AdminDispute>,
-    shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
+    admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
 ) {
     tokio::spawn(async move {
-        let result = fetch_admin_chat_updates(&client, &admin_keys, &disputes, &shared_keys).await;
+        let result =
+            fetch_admin_chat_updates(&client, &admin_keys, &disputes, &admin_chat_last_seen).await;
         let _ = tx.send(result);
     });
 }

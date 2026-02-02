@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use nostr_sdk::prelude::PublicKey;
 
 use super::{
-    AdminChatSharedKey, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
     PRIMARY_COLOR,
 };
 
@@ -158,11 +158,11 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
 
 /// Recover chat history from saved files for InProgress disputes (instant UI).
 /// Populates `admin_dispute_chats` and advances `last_seen_timestamp` in
-/// `admin_chat_shared_keys` from file timestamps for post-unwrap filtering.
+/// `admin_chat_last_seen` from file timestamps for incremental fetch filtering.
 pub fn recover_admin_chat_from_files(
     admin_disputes_in_progress: &[AdminDispute],
     admin_dispute_chats: &mut HashMap<String, Vec<DisputeChatMessage>>,
-    admin_chat_shared_keys: &mut HashMap<(String, ChatParty), AdminChatSharedKey>,
+    admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
 ) {
     use std::str::FromStr;
     for dispute in admin_disputes_in_progress {
@@ -196,7 +196,7 @@ pub fn recover_admin_chat_from_files(
             }
             if buyer_max > 0 {
                 if let Some(shared) =
-                    admin_chat_shared_keys.get_mut(&(dispute.dispute_id.clone(), ChatParty::Buyer))
+                    admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Buyer))
                 {
                     if buyer_max > shared.last_seen_timestamp.unwrap_or(0) {
                         shared.last_seen_timestamp = Some(buyer_max);
@@ -205,7 +205,7 @@ pub fn recover_admin_chat_from_files(
             }
             if seller_max > 0 {
                 if let Some(shared) =
-                    admin_chat_shared_keys.get_mut(&(dispute.dispute_id.clone(), ChatParty::Seller))
+                    admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Seller))
                 {
                     if seller_max > shared.last_seen_timestamp.unwrap_or(0) {
                         shared.last_seen_timestamp = Some(seller_max);
@@ -236,7 +236,7 @@ pub async fn apply_admin_chat_updates(
 
         // Track max timestamp to update last_seen
         let mut max_ts = app
-            .admin_chat_shared_keys
+            .admin_chat_last_seen
             .get(&(dispute_key.clone(), party))
             .and_then(|s| s.last_seen_timestamp)
             .unwrap_or(0);
@@ -286,7 +286,7 @@ pub async fn apply_admin_chat_updates(
 
         // Update last_seen_timestamp for this dispute/party in memory
         if let Some(shared) = app
-            .admin_chat_shared_keys
+            .admin_chat_last_seen
             .get_mut(&(dispute_key.clone(), party))
         {
             if max_ts > shared.last_seen_timestamp.unwrap_or(0) {

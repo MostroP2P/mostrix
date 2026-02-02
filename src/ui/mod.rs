@@ -372,14 +372,11 @@ pub struct DisputeChatMessage {
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
-/// Cached shared key information for admin chat with a specific party in a dispute
-/// Per-(dispute, party) state for admin chat. We use buyer/seller trade keys
-/// (admin_dispute.buyer_pubkey / seller_pubkey) for sending; receiving uses
-/// admin's key (gift wraps to admin). Only last_seen is stored here.
+/// Per-(dispute, party) last-seen timestamp for admin chat.
+/// Used to filter incoming buyer/seller messages so we only process new ones.
 #[derive(Clone, Debug)]
-pub struct AdminChatSharedKey {
+pub struct AdminChatLastSeen {
     /// Last seen timestamp (inner/canonical unix seconds) for messages from this party.
-    /// Used for post-unwrap filtering when fetching gift wraps to admin.
     pub last_seen_timestamp: Option<u64>,
 }
 
@@ -532,7 +529,7 @@ pub struct AppState {
     /// Tracks (dispute_id, party, visible_count) for auto-scroll when new messages arrive
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     /// Cached shared keys per (dispute_id, party) for admin chat, plus last-seen timestamps.
-    pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
+    pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -591,7 +588,7 @@ impl AppState {
             admin_dispute_chats: HashMap::new(),
             admin_chat_list_state: ratatui::widgets::ListState::default(),
             admin_chat_scroll_tracker: None,
-            admin_chat_shared_keys: HashMap::new(),
+            admin_chat_last_seen: HashMap::new(),
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),

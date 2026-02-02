@@ -9,7 +9,7 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
-    AdminChatSharedKey, AdminChatUpdate, ChatParty, MessageNotification, OrderResult,
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, MessageNotification, OrderResult,
 };
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
@@ -69,25 +69,24 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-/// Seed `app.admin_chat_shared_keys` with last_seen timestamps per (dispute, party)
-/// from the list of admin disputes. Trade pubkeys (buyer_pubkey/seller_pubkey) are
-/// read from the dispute when sending; we only store last_seen here for post-unwrap filtering.
-fn seed_admin_chat_shared_keys(app: &mut AppState, _admin_chat_keys: &Keys) {
+/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
+/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
+fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
     let disputes = app.admin_disputes_in_progress.clone();
 
     for dispute in &disputes {
         if dispute.buyer_pubkey.is_some() {
-            app.admin_chat_shared_keys.insert(
+            app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Buyer),
-                AdminChatSharedKey {
+                AdminChatLastSeen {
                     last_seen_timestamp: dispute.buyer_chat_last_seen.map(|ts| ts as u64),
                 },
             );
         }
         if dispute.seller_pubkey.is_some() {
-            app.admin_chat_shared_keys.insert(
+            app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Seller),
-                AdminChatSharedKey {
+                AdminChatLastSeen {
                     last_seen_timestamp: dispute.seller_chat_last_seen.map(|ts| ts as u64),
                 },
             );
@@ -196,7 +195,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 if !settings.admin_privkey.is_empty() {
                     match Keys::parse(&settings.admin_privkey) {
                         Ok(admin_chat_keys) => {
-                            seed_admin_chat_shared_keys(&mut app, &admin_chat_keys);
+                            seed_admin_chat_last_seen(&mut app, &admin_chat_keys);
                         }
                         Err(e) => {
                             log::warn!("Invalid admin_privkey in settings for admin chat: {}", e);
@@ -207,7 +206,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 recover_admin_chat_from_files(
                     &app.admin_disputes_in_progress,
                     &mut app.admin_dispute_chats,
-                    &mut app.admin_chat_shared_keys,
+                    &mut app.admin_chat_last_seen,
                 );
             }
             Err(e) => {
@@ -391,7 +390,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         client.clone(),
                         admin_keys.clone(),
                         app.admin_disputes_in_progress.clone(),
-                        app.admin_chat_shared_keys.clone(),
+                        app.admin_chat_last_seen.clone(),
                         admin_chat_updates_tx.clone(),
                     );
                 }
