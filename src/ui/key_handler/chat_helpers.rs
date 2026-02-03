@@ -31,6 +31,15 @@ pub fn get_dispute_visible_message_count(app: &AppState, dispute_id_key: &str) -
         .unwrap_or(0)
 }
 
+/// Count visible messages for a dispute and auto-scroll to the bottom (e.g. after sending a new message).
+pub fn message_counter(app: &mut AppState, dispute_id_key: &str) {
+    let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
+    if visible_count > 0 {
+        app.admin_chat_list_state
+            .select(Some(visible_count.saturating_sub(1)));
+    }
+}
+
 /// Navigate chat messages (Up/Down).
 ///
 /// Returns true if navigation occurred, false otherwise.

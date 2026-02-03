@@ -8,9 +8,7 @@ use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
 use crate::ui::key_handler::handle_key_event;
-use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatParty, MessageNotification, OrderResult,
-};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, MessageNotification, OrderResult};
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},

@@ -1,10 +1,12 @@
-use crate::ui::{
-    helpers::save_chat_message, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
-    UserMode, UserRole, UserTab,
+use crate::ui::key_handler::chat_helpers::message_counter;
+use crate::ui::key_handler::input_helpers::{
+    prepare_admin_chat_message, send_admin_chat_message_to_pubkey,
 };
-use crate::util::send_admin_chat_message_to_pubkey;
+use crate::ui::{
+    AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState, UiMode, UserMode, UserRole,
+    UserTab,
+};
 use mostro_core::prelude::*;
-use nostr_sdk::prelude::PublicKey as NostrPublicKey;
 use nostr_sdk::Client;
 
 use crate::ui::key_handler::confirmation::{
@@ -141,95 +143,25 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                         .admin_disputes_in_progress
                         .get(app.selected_in_progress_idx)
                     {
-                        // Use dispute_id as the key for chat messages
+                        // Copy needed fields so we can release the borrow before calling prepare_admin_chat_message
                         let dispute_id_key = selected_dispute.dispute_id.clone();
-                        let message_content = app.admin_chat_input.trim().to_string();
-                        let timestamp = chrono::Utc::now().timestamp();
-
-                        // Add admin's message (track which party it was sent to)
-                        let admin_message = crate::ui::DisputeChatMessage {
-                            sender: crate::ui::ChatSender::Admin,
-                            content: message_content.clone(),
-                            timestamp,
-                            target_party: Some(app.active_chat_party),
-                        };
-
-                        app.admin_dispute_chats
-                            .entry(dispute_id_key.clone())
-                            .or_default()
-                            .push(admin_message.clone());
-
-                        // Save admin message to file (use dispute_id_key for consistency)
-                        save_chat_message(&dispute_id_key, &admin_message);
-
-                        // Resolve counterparty pubkey based on active chat party
                         let counterparty_pubkey = match app.active_chat_party {
-                            crate::ui::ChatParty::Buyer => selected_dispute.buyer_pubkey.as_deref(),
-                            crate::ui::ChatParty::Seller => {
-                                selected_dispute.seller_pubkey.as_deref()
-                            }
+                            ChatParty::Buyer => selected_dispute.buyer_pubkey.clone(),
+                            ChatParty::Seller => selected_dispute.seller_pubkey.clone(),
                         };
 
-                        if let (Some(admin_keys), Some(counterparty_pubkey_str)) =
-                            (ctx.admin_chat_keys, counterparty_pubkey)
-                        {
-                            // Send NIP-59 chat message to counterparty's trade pubkey
-                            if let Ok(recipient_pubkey) =
-                                NostrPublicKey::parse(counterparty_pubkey_str)
-                            {
-                                if let Err(e) =
-                                    futures::executor::block_on(send_admin_chat_message_to_pubkey(
-                                        ctx.client,
-                                        admin_keys,
-                                        &recipient_pubkey,
-                                        &message_content,
-                                    ))
-                                {
-                                    log::error!("Failed to send admin chat message: {}", e);
-                                }
-                            } else {
-                                log::warn!(
-                                    "Invalid counterparty pubkey for dispute {}",
-                                    dispute_id_key
-                                );
-                            }
-                        } else if counterparty_pubkey.is_none() {
-                            log::warn!(
-                                "Missing counterparty pubkey for dispute {} when sending chat message",
-                                dispute_id_key
-                            );
-                        }
+                        // Prepare admin chat message for sending via inputbox in admin disputes in progress tab
+                        prepare_admin_chat_message(&dispute_id_key, app);
 
-                        // Auto-scroll to bottom to show new messages
-                        // Count visible messages (filtered by active party)
-                        let visible_count = app
-                            .admin_dispute_chats
-                            .get(&dispute_id_key)
-                            .map(|msgs| {
-                                msgs.iter()
-                                    .filter(|msg| {
-                                        match msg.sender {
-                                            crate::ui::ChatSender::Admin => {
-                                                // Admin messages should only show in the chat party they were sent to
-                                                msg.target_party == Some(app.active_chat_party)
-                                            }
-                                            crate::ui::ChatSender::Buyer => {
-                                                app.active_chat_party == crate::ui::ChatParty::Buyer
-                                            }
-                                            crate::ui::ChatSender::Seller => {
-                                                app.active_chat_party
-                                                    == crate::ui::ChatParty::Seller
-                                            }
-                                        }
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0);
+                        send_admin_chat_message_to_pubkey(
+                            &dispute_id_key,
+                            counterparty_pubkey.as_deref(),
+                            &app.admin_chat_input,
+                            ctx.client,
+                            ctx.admin_chat_keys,
+                        );
 
-                        if visible_count > 0 {
-                            app.admin_chat_list_state
-                                .select(Some(visible_count.saturating_sub(1)));
-                        }
+                        message_counter(app, &dispute_id_key);
                     }
 
                     // Clear the input and keep focus

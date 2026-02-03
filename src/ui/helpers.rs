@@ -85,9 +85,7 @@ pub fn format_order_id(order_id: Option<uuid::Uuid>) -> String {
 /// Parses one message block (header line "Sender - dd-mm-yyyy - HH:MM:SS" or
 /// "Admin to Buyer/Seller - dd-mm-yyyy - HH:MM:SS", rest = content).
 /// Returns (sender, target_party for Admin, timestamp, content) if valid.
-fn parse_one_message_block(
-    block: &str,
-) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
+fn parse_one_message_block(block: &str) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
     let mut lines = block.lines();
     let header = lines.next()?;
     let parts: Vec<&str> = header.splitn(3, " - ").collect();
@@ -118,9 +116,7 @@ fn parse_one_message_block(
 }
 
 /// Parses the last message block from file content (blocks separated by "\n\n").
-fn parse_last_message_block(
-    content: &str,
-) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
+fn parse_last_message_block(content: &str) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
     let blocks: Vec<&str> = content
         .split("\n\n")
         .filter(|s| !s.trim().is_empty())

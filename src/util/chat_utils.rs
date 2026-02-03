@@ -186,7 +186,11 @@ pub async fn unwrap_giftwrap_to_admin(
     // Standard NIP-59: GW content decrypts to Seal, Seal content decrypts to Rumor
     if let Ok(unwrapped) = nip59::UnwrappedGift::from_gift_wrap(admin_keys, event).await {
         let content = extract_chat_content_from_rumor(&unwrapped.rumor.content);
-        return Ok((content, unwrapped.rumor.created_at.as_u64(), unwrapped.sender));
+        return Ok((
+            content,
+            unwrapped.rumor.created_at.as_u64(),
+            unwrapped.sender,
+        ));
     }
 
     // Legacy: GW content decrypts directly to signed Event (old Mostrix format)
