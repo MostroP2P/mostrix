@@ -1,4 +1,6 @@
-use crate::ui::key_handler::chat_helpers::message_counter;
+use crate::ui::key_handler::chat_helpers::{
+    handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
+};
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_to_pubkey,
 };
@@ -204,48 +206,15 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 .unwrap_or(false);
 
             // Handle Enter in finalization popup
-            match selected_button {
-                0 => {
-                    // Pay Buyer - show confirmation popup
-                    if dispute_is_finalized {
-                        // Dispute already finalized, show error
-                        let _ = ctx.order_result_tx.send(crate::ui::OrderResult::Error(
-                            "Cannot finalize: dispute is already finalized".to_string(),
-                        ));
-                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                    } else {
-                        // Show confirmation popup
-                        app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
-                            dispute_id, true, // is_settle
-                            true, // selected_button: true=Yes
-                        ));
-                    }
-                    true
-                }
-                1 => {
-                    // Refund Seller - show confirmation popup
-                    if dispute_is_finalized {
-                        // Dispute already finalized, show error
-                        let _ = ctx.order_result_tx.send(crate::ui::OrderResult::Error(
-                            "Cannot finalize: dispute is already finalized".to_string(),
-                        ));
-                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                    } else {
-                        // Show confirmation popup
-                        app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
-                            dispute_id, false, // is_settle
-                            true,  // selected_button: true=Yes
-                        ));
-                    }
-                    true
-                }
-                2 => {
-                    // Exit - return to normal mode
-                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                    true
-                }
-                _ => {
-                    // Invalid button, return to normal mode
+            match FinalizeDisputePopupButton::from_index(selected_button) {
+                Some(button) => handle_enter_finalize_popup(
+                    app,
+                    button,
+                    dispute_id,
+                    dispute_is_finalized,
+                    ctx.order_result_tx,
+                ),
+                None => {
                     app.mode = default_mode;
                     true
                 }
