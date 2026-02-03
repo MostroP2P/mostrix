@@ -218,15 +218,16 @@ pub async fn fetch_gift_wraps_to_admin(
     admin_keys: &Keys,
 ) -> Result<Vec<(String, u64, PublicKey)>> {
     let now = Timestamp::now().as_u64();
-    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
+    let seven_days_secs: u64 = 2 * 24 * 60 * 60;
     let wide_since = now.saturating_sub(seven_days_secs);
 
     let admin_pubkey = admin_keys.public_key();
     // Fetch gift wraps in window; relay filter cannot target p tag in all SDKs, so we filter in code
     let filter = Filter::new()
         .kind(Kind::GiftWrap)
+        .pubkey(admin_pubkey)
         .since(Timestamp::from(wide_since))
-        .limit(200);
+        .limit(100);
 
     let events = client
         .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
