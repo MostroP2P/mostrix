@@ -26,7 +26,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 toml = "0.9.8"
 base64 = "0.22.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13.1", features = ["json"] }
 lightning-invoice = { version = "0.34.0", features = ["std"] }
 lnurl-rs = { version = "0.9.0", default-features = false, features = ["ureq"] }
 arboard = "3.3"
