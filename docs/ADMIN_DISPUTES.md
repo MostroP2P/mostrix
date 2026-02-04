@@ -69,7 +69,7 @@ The interface is divided into three main sections:
      - Text wrapping with word boundaries
    - **Footer (1 line)**: Context-sensitive keyboard shortcuts
 
-#### Settings Tab Features
+#### Dispute Management Features
 
 - **Real-time chat**: Direct typing with instant visual feedback
 - **Party switching**: Tab key toggles between buyer and seller
