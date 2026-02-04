@@ -736,7 +736,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 Currency filters allow admins (and users) to focus on specific fiat currencies when viewing orders. This is particularly useful for admins monitoring disputes in specific markets.
 
-#### Relay Management Features
+#### Currency Filter Features
 
 - **Add Currency Filter**: Add fiat currency codes (e.g., USD, EUR, ARS) to filter orders
   - Currency codes are validated (non-empty, max 10 characters)
