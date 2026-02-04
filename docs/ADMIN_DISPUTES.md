@@ -748,7 +748,7 @@ Currency filters allow admins (and users) to focus on specific fiat currencies w
 - **Dynamic Filtering**: Currency filters are applied immediately without restart
 - **Status Bar Display**: Active currency filters are displayed in the status bar
 
-#### Relay Management Implementation
+#### Currency Filter Implementation
 
 **Source**: `src/ui/key_handler/settings.rs:55-78`
 
