@@ -528,7 +528,7 @@ pub struct AppState {
     pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
     /// Tracks (dispute_id, party, visible_count) for auto-scroll when new messages arrive
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
-    /// Cached shared keys per (dispute_id, party) for admin chat, plus last-seen timestamps.
+    /// Cached last-seen timestamps per (dispute_id, party) for admin chat.
     pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,

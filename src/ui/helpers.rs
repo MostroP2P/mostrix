@@ -152,6 +152,46 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
     Some(messages)
 }
 
+/// Get max timestamp for buyer and seller
+fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (u64, u64) {
+    let buyer_max = messages
+        .iter()
+        .filter(|m| m.sender == ChatSender::Buyer)
+        .map(|m| m.timestamp as u64)
+        .max()
+        .unwrap_or(0);
+    let seller_max = messages
+        .iter()
+        .filter(|m| m.sender == ChatSender::Seller)
+        .map(|m| m.timestamp as u64)
+        .max()
+        .unwrap_or(0);
+    (buyer_max, seller_max)
+}
+
+/// Update last-seen timestamps for buyer and seller
+fn update_last_seen_timestamp(
+    buyer_max_timestamp: u64,
+    seller_max_timestamp: u64,
+    dispute: &AdminDispute,
+    admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
+) {
+    if let Some(shared) =
+        admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Buyer))
+    {
+        if buyer_max_timestamp > shared.last_seen_timestamp.unwrap_or(0) {
+            shared.last_seen_timestamp = Some(buyer_max_timestamp);
+        }
+    }
+    if let Some(shared) =
+        admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Seller))
+    {
+        if seller_max_timestamp > shared.last_seen_timestamp.unwrap_or(0) {
+            shared.last_seen_timestamp = Some(seller_max_timestamp);
+        }
+    }
+}
+
 /// Recover chat history from saved files for InProgress disputes (instant UI).
 /// Populates `admin_dispute_chats` and advances `last_seen_timestamp` in
 /// `admin_chat_last_seen` from file timestamps for incremental fetch filtering.
@@ -172,42 +212,10 @@ pub fn recover_admin_chat_from_files(
         }
         if let Some(msgs) = load_chat_from_file(&dispute.dispute_id) {
             admin_dispute_chats.insert(dispute.dispute_id.clone(), msgs.clone());
-            let mut buyer_max = 0u64;
-            let mut seller_max = 0u64;
-            for m in &msgs {
-                let ts = m.timestamp as u64;
-                match m.sender {
-                    ChatSender::Buyer => {
-                        if ts > buyer_max {
-                            buyer_max = ts;
-                        }
-                    }
-                    ChatSender::Seller => {
-                        if ts > seller_max {
-                            seller_max = ts;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if buyer_max > 0 {
-                if let Some(shared) =
-                    admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Buyer))
-                {
-                    if buyer_max > shared.last_seen_timestamp.unwrap_or(0) {
-                        shared.last_seen_timestamp = Some(buyer_max);
-                    }
-                }
-            }
-            if seller_max > 0 {
-                if let Some(shared) =
-                    admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Seller))
-                {
-                    if seller_max > shared.last_seen_timestamp.unwrap_or(0) {
-                        shared.last_seen_timestamp = Some(seller_max);
-                    }
-                }
-            }
+            // Get max timestamp for buyer and seller
+            let (buyer_max, seller_max) = get_max_timestamp(&msgs);
+            // Update last-seen timestamps for buyer and seller
+            update_last_seen_timestamp(buyer_max, seller_max, dispute, admin_chat_last_seen);
         }
     }
 }
@@ -468,7 +476,7 @@ pub fn build_chat_list_items(
                 ChatSender::Admin => {
                     // Admin messages show in the chat party they were sent to.
                     // When target_party is None (e.g. recovered from file), show in both views.
-                    msg.target_party.map_or(true, |p| p == active_chat_party)
+                    msg.target_party.is_none_or(|p| p == active_chat_party)
                 }
                 ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
                 ChatSender::Seller => active_chat_party == ChatParty::Seller,

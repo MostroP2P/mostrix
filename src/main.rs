@@ -187,7 +187,7 @@ async fn main() -> Result<(), anyhow::Error> {
             Ok(all_disputes) => {
                 app.admin_disputes_in_progress = all_disputes;
 
-                // Pre-compute shared chat keys for all disputes/parties so that the
+                // Pre-compute chat last seen timestamps for all disputes/parties so that the
                 // background listener can fetch messages incrementally based on
                 // last_seen timestamps stored in the database.
                 if !settings.admin_privkey.is_empty() {
