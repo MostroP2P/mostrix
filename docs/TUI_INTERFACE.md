@@ -280,11 +280,22 @@ The key handler processes input in this order:
     - Converts each inner text note into a `DisputeChatMessage` and appends it to the appropriate dispute chat history.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
 
-- **Behavior on restart**:
-  - Chat does not maintain its own persistent database; instead it:
-    - Re-derives shared keys on first send per (dispute, party).
-    - Re-fetches recent NIP‑59 events for those keys using a time-bounded, incremental strategy.
-    - Keeps the UI consistent with Mostro without storing full message history locally.
+- **Behavior on restart (Chat Restore at Startup)**:
+  - Admin chat uses a **hybrid persistence model** to provide instant UI restore and incremental sync:
+    - For each in‑progress dispute, chat transcripts are stored as human‑readable files under:
+
+      ```text
+      ~/.mostrix/<dispute_id>.txt
+      ```
+
+    - On startup, `recover_admin_chat_from_files`:
+      - Reads each existing transcript file.
+      - Rebuilds `AppState.admin_dispute_chats` so the Disputes in Progress tab immediately shows previous messages.
+      - Computes the latest timestamps per party and updates `AppState.admin_chat_last_seen`.
+    - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) so that:
+      - Background NIP‑59 fetches only request **newer** events.
+      - Chat resumes from where it left off without replaying the full history.
+    - Shared keys are still re‑derived on first send per (dispute, party), but the UI no longer starts from an empty chat when restarting Mostrix.
 
 #### Exit Confirmation
 

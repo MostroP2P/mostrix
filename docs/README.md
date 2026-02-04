@@ -17,3 +17,4 @@ Quick links to architecture and feature guides for the Mostrix TUI client.
 
 - Run tests and lints before pushing: `cargo test`, `cargo fmt`, `cargo clippy --all-targets --all-features`.
 - See [CODING_STANDARDS.md](CODING_STANDARDS.md) for detailed coding guidelines and best practices.
+

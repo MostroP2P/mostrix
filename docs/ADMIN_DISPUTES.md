@@ -640,9 +640,21 @@ pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
     - Decrypts each event with the shared secret, parses the inner text note, and appends it as a `DisputeChatMessage`.
     - Skips messages signed by the admin identity (already added locally on send).
 
-- **Stateless behavior on restart**:
-  - On restart, shared keys are re-derived on first send to each party.
-  - The listener then re-fetches recent messages for that shared key using a time-bounded filter, keeping the chat view up to date without a separate local message database.
+- **Behavior on restart (Chat Restore at Startup)**:
+  - On restart, shared keys are still re-derived on first send to each party, but admin chat now has full restart-safe behavior:
+    - Chat messages are persisted as human-readable transcripts under:
+
+      ```text
+      ~/.mostrix/<dispute_id>.txt
+      ```
+
+    - At startup, `recover_admin_chat_from_files`:
+      - Reads each transcript file.
+      - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
+      - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
+    - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
+    - The background listener uses these DB fields as cursors for `fetch_chat_messages_for_shared_key`, so only newer NIP‑59 events are fetched after restart.
+  - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
 

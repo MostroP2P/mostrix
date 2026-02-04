@@ -206,11 +206,32 @@ Mostrix initializes a `nostr_sdk::Client` with the user's keys and connects to t
 ```
 
 ### Background Tasks
-Two main background tasks are spawned:
-1. **Order Refresh**: Periodically fetches pending orders from Mostro.
-2. **Message Listener**: Listens for new messages related to active orders.
 
-**Source**: `src/main.rs:136` (Order Refresh) & `src/main.rs:172` (Message Listener)
+Several background tasks are spawned to keep the UI and data in sync:
+
+1. **Order Refresh**: Periodically fetches pending orders from Mostro.
+2. **Trade Message Listener**: Listens for new messages related to active orders.
+3. **Admin Chat Scheduler**:
+   - Periodically fetches NIP‑59 admin chat messages for each cached shared key.
+   - Uses per‑party `last_seen_timestamp` values to request only new events.
+   - Delegates application of updates to `ui::helpers::apply_admin_chat_updates`, which:
+     - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
+     - Persists updated buyer/seller chat cursors in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`).
+
+**Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers.rs` (`apply_admin_chat_updates`)
+
+### Admin Chat Restore at Startup
+
+In addition to the background scheduler, Mostrix restores admin chat state during startup:
+
+- All persisted admin disputes are loaded from the `admin_disputes` table.
+- For disputes in `InProgress` state, `ui::helpers::recover_admin_chat_from_files`:
+  - Reads chat transcripts from `~/.mostrix/<dispute_id>.txt` (if present).
+  - Reconstructs `AppState.admin_dispute_chats` so the "Disputes in Progress" tab immediately shows prior messages.
+  - Updates in‑memory `admin_chat_last_seen` entries for Buyer and Seller based on file timestamps.
+- Subsequent background NIP‑59 fetches use the stored `buyer_chat_last_seen` / `seller_chat_last_seen` values as cursors, ensuring:
+  - **Instant UI restore** after restart.
+  - **Incremental network sync** without replaying the full chat history from relays.
 
 ## Main Event Loop
 
