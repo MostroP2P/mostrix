@@ -695,14 +695,23 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 **Previous Implementation Note** (historical):
 
 - Early versions used local mockup responses for testing before real Nostr DM integration.
-- The current implementation now uses real NIP-59 messages with shared keys and periodic background fetching.
+- Shared-key chat derivation was removed in favor of direct party pubkey addressing.
+
+**Performance Optimizations**:
+
+- Pubkey-to-dispute routing uses `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
+- Chat message sending is spawned as an async task (`tokio::spawn`) to avoid blocking the UI thread.
+- Gift wrap fetching uses a 7-day rolling window to limit relay queries.
+- Unified `update_chat_last_seen_by_dispute_id` function replaces separate buyer/seller update methods.
 
 **Source Files**:
 
 - `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, and scrollbar
-- `src/ui/key_handler/enter_handlers.rs` - Message sending logic with mockup responses
+- `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
 - `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key
-- `src/ui/helpers.rs` - Scrollbar rendering (`render_chat_scrollbar`)
+- `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing with error handling
+- `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
+- `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 
 ## Dispute Resolution Actions
 

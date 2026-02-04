@@ -405,8 +405,8 @@ Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on
 
   - Each file contains a chronological log of messages with headers like `Admin to Buyer - dd-mm-yyyy - HH:MM:SS`.
   - At startup, `recover_admin_chat_from_files` rebuilds `admin_dispute_chats` in memory from these files and computes the latest buyer/seller timestamps.
-  - These timestamps are persisted in `admin_disputes.buyer_chat_last_seen` and `admin_disputes.seller_chat_last_seen` via `apply_admin_chat_updates`.
-  - Background NIP‑59 fetches use the stored timestamps as cursors to request only newer events, providing:
+  - These timestamps are persisted in `admin_disputes.buyer_chat_last_seen` and `admin_disputes.seller_chat_last_seen` via `update_chat_last_seen_by_dispute_id` (unified function that handles both parties based on an `is_buyer` flag and returns affected row count).
+  - Background NIP‑59 fetches use the stored timestamps as cursors (7-day rolling window) to request only newer events, providing:
     - **Instant UI restore** for existing disputes.
     - **Incremental network sync** without replaying full history.
 
@@ -415,6 +415,7 @@ This approach keeps the core message flow largely stateless while giving admin c
 For more details, see:
 
 - `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers.rs`.
+- `update_chat_last_seen_by_dispute_id` in `src/models.rs` (unified DB update with row-affected verification).
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#stateless-recovery) for protocol‑level behavior.
 
 ## Security Considerations

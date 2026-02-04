@@ -265,16 +265,16 @@ The key handler processes input in this order:
   - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
 
 - **Sending messages**:
-  - Admin messages are wrapped by `chat_utils::send_admin_chat_message`:
-    - Inner `Kind::TextNote` signed with the admin identity key.
-    - Encrypted using NIP‑44 (V2) with an ephemeral key and the shared chat pubkey.
-    - Emitted as a `Kind::GiftWrap` with PoW difficulty from `settings.pow`.
+  - Admin messages are sent via `send_admin_chat_message_to_pubkey` (spawned as an async task to avoid blocking the UI):
+    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+    - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - A periodic task in `main.rs` calls `fetch_chat_messages_for_shared_key` for each cached shared key:
-    - Uses `last_seen_timestamp` to request only newer `GiftWrap` events.
-    - Decrypts them with `unwrap_admin_chat_event`.
-    - Converts each inner text note into a `DisputeChatMessage` and appends it to the appropriate dispute chat history.
+  - A periodic task in `main.rs` calls `fetch_admin_chat_updates` for active disputes:
+    - Uses `last_seen_timestamp` to request only newer `GiftWrap` events (7-day rolling window).
+    - Routes messages to disputes using a `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
+    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
 
 - **Behavior on restart (Chat Restore at Startup)**:
@@ -289,10 +289,10 @@ The key handler processes input in this order:
       - Reads each existing transcript file.
       - Rebuilds `AppState.admin_dispute_chats` so the Disputes in Progress tab immediately shows previous messages.
       - Computes the latest timestamps per party and updates `AppState.admin_chat_last_seen`.
-    - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) so that:
-      - Background NIP‑59 fetches only request **newer** events.
+    - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id` so that:
+      - Background NIP‑59 fetches only request **newer** events (7-day rolling window).
       - Chat resumes from where it left off without replaying the full history.
-    - Shared keys are still re‑derived on first send per (dispute, party), but the UI no longer starts from an empty chat when restarting Mostrix.
+    - Messages are sent directly to party pubkeys without shared key derivation.
 
 #### Exit Confirmation
 
