@@ -94,7 +94,7 @@ pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> S
 }
 
 /// Try to send admin chat message to the counterparty's pubkey.
-/// Handles missing keys, invalid pubkey, and logs errors; calls util to perform the actual send.
+/// Handles missing keys, invalid pubkey, and logs errors; spawns async task to perform the actual send.
 pub fn send_admin_chat_message_to_pubkey(
     dispute_id_key: &str,
     counterparty_pubkey: Option<&str>,
@@ -106,16 +106,24 @@ pub fn send_admin_chat_message_to_pubkey(
         (admin_chat_keys, counterparty_pubkey)
     {
         if let Ok(recipient_pubkey) = PublicKey::parse(counterparty_pubkey_str) {
-            if let Err(e) =
-                futures::executor::block_on(crate::util::send_admin_chat_message_to_pubkey(
-                    client,
-                    admin_keys,
+            // Clone values to move into spawned task
+            let client = client.clone();
+            let admin_keys = admin_keys.clone();
+            let message_content = message_content.trim().to_string();
+
+            // Spawn async task to avoid blocking the UI thread
+            tokio::spawn(async move {
+                if let Err(e) = crate::util::send_admin_chat_message_to_pubkey(
+                    &client,
+                    &admin_keys,
                     &recipient_pubkey,
-                    message_content.trim(),
-                ))
-            {
-                log::error!("Failed to send admin chat message: {}", e);
-            }
+                    &message_content,
+                )
+                .await
+                {
+                    log::error!("Failed to send admin chat message: {}", e);
+                }
+            });
         } else {
             log::warn!("Invalid counterparty pubkey for dispute {}", dispute_id_key);
         }

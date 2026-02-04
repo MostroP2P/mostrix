@@ -510,8 +510,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
 
             // Wrap long messages to ~half chat width so they use multiple lines
+            // Clamp to at least 1 to avoid zero-width wrap problems on narrow terminals
             let chat_area = main_chunks[2];
-            let max_content_width = (chat_area.width.saturating_sub(2)) / 2;
+            let max_content_width = (chat_area.width.saturating_sub(2) / 2).max(1);
 
             let items = if let Some(messages) = chat_messages {
                 super::helpers::build_chat_list_items(

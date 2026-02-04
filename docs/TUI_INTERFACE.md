@@ -221,8 +221,7 @@ pub struct DisputeChatMessage {
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
-pub struct AdminChatSharedKey {
-    pub shared_keys: SharedChatKeys,      // ECDH-derived Nostr keypair (NIP-59 target)
+pub struct AdminChatLastSeen {
     pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
 }
 ```
@@ -230,7 +229,7 @@ pub struct AdminChatSharedKey {
 **Storage**:
 
 - `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
-- `AppState.admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>` keyed by (dispute_id, party).
+- `AppState.admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>` keyed by (dispute_id, party).
 
 #### UI Features
 
@@ -261,11 +260,9 @@ The key handler processes input in this order:
 
 #### NIP‑59 Chat Internals
 
-- **Shared key derivation**:
-  - For each (dispute, party) the admin sends a message to, Mostrix:
-    - Reads `admin_privkey` from `settings.toml`.
-    - Derives an ECDH shared secret with the party pubkey.
-    - Wraps it as `SharedChatKeys.shared_keys` and stores it in `admin_chat_shared_keys`.
+- **Message addressing**:
+  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
+  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
 
 - **Sending messages**:
   - Admin messages are wrapped by `chat_utils::send_admin_chat_message`:

@@ -606,42 +606,38 @@ pub struct DisputeChatMessage {
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
 
-/// Cached shared key information for admin chat with a specific party in a dispute
-pub struct AdminChatSharedKey {
-    pub shared_keys: SharedChatKeys,     // ECDH-derived Nostr keypair (NIP-59 target)
-    pub last_seen_timestamp: Option<u64>,// Last seen message timestamp for incremental fetches
+/// Per-(dispute, party) last-seen timestamp for admin chat
+pub struct AdminChatLastSeen {
+    pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
 }
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
 pub admin_chat_list_state: ratatui::widgets::ListState,
-pub admin_chat_shared_keys: HashMap<(String, ChatParty), AdminChatSharedKey>,
+pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 ```
 
 ##### NIP-59 Chat Flow (Admin ↔ Parties)
 
-- **Shared key derivation**:
-  - When the admin sends the first message to a party (Buyer/Seller), Mostrix:
-    - Reads `admin_privkey` from `settings.toml`.
-    - Derives a shared secret using ECDH (`generate_shared_key(admin_sk, party_pk)`).
-    - Wraps this secret as a Nostr keypair (`SharedChatKeys.shared_keys`).
-  - This shared key is cached in `AppState.admin_chat_shared_keys` under `(dispute_id, ChatParty)`.
+- **Message addressing**:
+  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
+  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
+  - Per-party timestamps are tracked in `AppState.admin_chat_last_seen` under `(dispute_id, ChatParty)`.
 
 - **Sending messages**:
-  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events using the shared key as the receiver:
-    - Inner event: `Kind::TextNote` signed by the admin identity.
-    - Encryption: NIP‑44 (V2) with an ephemeral key and the shared chat pubkey.
-    - Outer event: `Kind::GiftWrap` with PoW difficulty from `settings.pow`.
-  - The event is then published to the relays; the counterparty can unwrap it using the same shared secret.
+  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events addressed to the party's trade pubkey:
+    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+  - The event is then published to the relays.
 
 - **Receiving messages**:
-  - A background task periodically polls for new `GiftWrap` events whose pubkey matches each cached shared chat key:
-    - Uses `last_seen_timestamp` to only fetch messages created after the last processed one.
-    - Decrypts each event with the shared secret, parses the inner text note, and appends it as a `DisputeChatMessage`.
+  - A background task periodically polls for new `GiftWrap` events addressed to the admin pubkey:
+    - Uses `last_seen_timestamp` to only process messages created after the last processed one.
+    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
     - Skips messages signed by the admin identity (already added locally on send).
 
 - **Behavior on restart (Chat Restore at Startup)**:
-  - On restart, shared keys are still re-derived on first send to each party, but admin chat now has full restart-safe behavior:
+  - Admin chat has full restart-safe behavior:
     - Chat messages are persisted as human-readable transcripts under:
 
       ```text

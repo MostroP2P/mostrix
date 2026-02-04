@@ -103,14 +103,21 @@ fn parse_one_message_block(block: &str) -> Option<(ChatSender, Option<ChatParty>
     };
     let date_str = parts[1].trim();
     let time_str = parts[2].trim();
-    let ts = chrono::NaiveDate::parse_from_str(date_str, "%d-%m-%Y")
-        .ok()
-        .and_then(|d| {
-            chrono::NaiveTime::parse_from_str(time_str, "%H:%M:%S")
-                .ok()
-                .map(|t| d.and_time(t).and_utc().timestamp())
-        })
-        .unwrap_or(0);
+    let date = match chrono::NaiveDate::parse_from_str(date_str, "%d-%m-%Y") {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Malformed date '{}' in chat block: {}", date_str, e);
+            return None;
+        }
+    };
+    let time = match chrono::NaiveTime::parse_from_str(time_str, "%H:%M:%S") {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("Malformed time '{}' in chat block: {}", time_str, e);
+            return None;
+        }
+    };
+    let ts = date.and_time(time).and_utc().timestamp();
     let content_block = lines.collect::<Vec<_>>().join("\n").trim().to_string();
     Some((sender, target_party, ts, content_block))
 }

@@ -118,7 +118,7 @@ pub async fn fetch_gift_wraps_to_admin(
     admin_keys: &Keys,
 ) -> Result<Vec<(String, u64, PublicKey)>> {
     let now = Timestamp::now().as_u64();
-    let seven_days_secs: u64 = 2 * 24 * 60 * 60;
+    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
     let wide_since = now.saturating_sub(seven_days_secs);
 
     let admin_pubkey = admin_keys.public_key();
