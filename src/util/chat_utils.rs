@@ -163,17 +163,17 @@ pub async fn fetch_admin_chat_updates(
 ) -> Result<Vec<AdminChatUpdate>, anyhow::Error> {
     let all_messages = fetch_gift_wraps_to_admin(client, admin_keys).await?;
 
-    // Build map: sender_pubkey (trade key) -> (dispute_id, party)
-    let mut pubkey_to_dispute_party: Vec<(PublicKey, String, ChatParty)> = Vec::new();
+    // Build map: sender_pubkey (trade key) -> (dispute_id, party) for O(1) lookups
+    let mut pubkey_to_dispute_party: HashMap<PublicKey, (String, ChatParty)> = HashMap::new();
     for d in disputes {
         if let Some(ref pk_str) = d.buyer_pubkey {
             if let Ok(pk) = PublicKey::parse(pk_str) {
-                pubkey_to_dispute_party.push((pk, d.dispute_id.clone(), ChatParty::Buyer));
+                pubkey_to_dispute_party.insert(pk, (d.dispute_id.clone(), ChatParty::Buyer));
             }
         }
         if let Some(ref pk_str) = d.seller_pubkey {
             if let Ok(pk) = PublicKey::parse(pk_str) {
-                pubkey_to_dispute_party.push((pk, d.dispute_id.clone(), ChatParty::Seller));
+                pubkey_to_dispute_party.insert(pk, (d.dispute_id.clone(), ChatParty::Seller));
             }
         }
     }
@@ -182,12 +182,8 @@ pub async fn fetch_admin_chat_updates(
     let mut by_key: AdminChatByKey = HashMap::new();
 
     for (content, ts, sender_pubkey) in all_messages {
-        let key = pubkey_to_dispute_party
-            .iter()
-            .find(|(pk, _, _)| pk == &sender_pubkey)
-            .map(|(_, id, party)| (id.clone(), *party));
-        let (dispute_id, party) = match key {
-            Some(k) => k,
+        let (dispute_id, party) = match pubkey_to_dispute_party.get(&sender_pubkey) {
+            Some((id, party)) => (id.clone(), *party),
             None => continue,
         };
         let last_seen = admin_chat_last_seen

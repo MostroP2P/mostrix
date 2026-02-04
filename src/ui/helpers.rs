@@ -296,37 +296,25 @@ pub async fn apply_admin_chat_updates(
         }
 
         // Update last_seen_timestamp for this dispute/party in memory
-        if let Some(shared) = app
+        if let Some(user) = app
             .admin_chat_last_seen
             .get_mut(&(dispute_key.clone(), party))
         {
-            if max_ts > shared.last_seen_timestamp.unwrap_or(0) {
-                shared.last_seen_timestamp = Some(max_ts);
+            if max_ts > user.last_seen_timestamp.unwrap_or(0) {
+                user.last_seen_timestamp = Some(max_ts);
             }
         }
 
         // Persist last_seen_timestamp to the database so we can resume incremental
         // fetching after restart without scanning the full history.
         if max_ts > 0 {
-            let ts_i64 = max_ts as i64;
-            match party {
-                ChatParty::Buyer => {
-                    AdminDispute::update_buyer_chat_last_seen_by_dispute_id(
-                        pool,
-                        &dispute_key,
-                        ts_i64,
-                    )
-                    .await?
-                }
-                ChatParty::Seller => {
-                    AdminDispute::update_seller_chat_last_seen_by_dispute_id(
-                        pool,
-                        &dispute_key,
-                        ts_i64,
-                    )
-                    .await?
-                }
-            };
+            AdminDispute::update_chat_last_seen_by_dispute_id(
+                pool,
+                &dispute_key,
+                max_ts as i64,
+                party == ChatParty::Buyer,
+            )
+            .await?;
         }
     }
 

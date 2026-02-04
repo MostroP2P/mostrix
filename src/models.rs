@@ -534,44 +534,28 @@ impl AdminDispute {
         Ok(result.map(|(id,)| id))
     }
 
-    /// Update buyer chat last_seen timestamp (unix seconds) using dispute_id
-    pub async fn update_buyer_chat_last_seen_by_dispute_id(
+    /// Update chat last_seen timestamp (unix seconds) for buyer or seller using dispute_id.
+    /// Returns the number of rows affected (0 if dispute_id not found).
+    ///
+    /// # Arguments
+    /// * `is_buyer` - true to update buyer_chat_last_seen, false for seller_chat_last_seen
+    pub async fn update_chat_last_seen_by_dispute_id(
         pool: &SqlitePool,
         dispute_id: &str,
         ts: i64,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE admin_disputes
-            SET buyer_chat_last_seen = ?
-            WHERE dispute_id = ?
-            "#,
-        )
-        .bind(ts)
-        .bind(dispute_id)
-        .execute(pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Update seller chat last_seen timestamp (unix seconds) using dispute_id
-    pub async fn update_seller_chat_last_seen_by_dispute_id(
-        pool: &SqlitePool,
-        dispute_id: &str,
-        ts: i64,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE admin_disputes
-            SET seller_chat_last_seen = ?
-            WHERE dispute_id = ?
-            "#,
-        )
-        .bind(ts)
-        .bind(dispute_id)
-        .execute(pool)
-        .await?;
-        Ok(())
+        is_buyer: bool,
+    ) -> Result<u64> {
+        let sql = if is_buyer {
+            "UPDATE admin_disputes SET buyer_chat_last_seen = ? WHERE dispute_id = ?"
+        } else {
+            "UPDATE admin_disputes SET seller_chat_last_seen = ? WHERE dispute_id = ?"
+        };
+        let result = sqlx::query(sql)
+            .bind(ts)
+            .bind(dispute_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Update the status of a dispute to Settled
