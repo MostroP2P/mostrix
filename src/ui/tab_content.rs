@@ -163,7 +163,7 @@ pub fn render_messages_tab(
                 "Order: Unknown".to_string()
             };
 
-            let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp as i64, 0)
+            let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "Unknown time".to_string());
 

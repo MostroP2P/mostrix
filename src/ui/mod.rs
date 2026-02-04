@@ -377,7 +377,7 @@ pub struct DisputeChatMessage {
 #[derive(Clone, Debug)]
 pub struct AdminChatLastSeen {
     /// Last seen timestamp (inner/canonical unix seconds) for messages from this party.
-    pub last_seen_timestamp: Option<u64>,
+    pub last_seen_timestamp: Option<i64>,
 }
 
 /// Result of polling for admin chat messages for a single dispute/party.
@@ -386,7 +386,7 @@ pub struct AdminChatUpdate {
     pub dispute_id: String,
     pub party: ChatParty,
     /// (content, timestamp, sender_pubkey)
-    pub messages: Vec<(String, u64, PublicKey)>,
+    pub messages: Vec<(String, i64, PublicKey)>,
 }
 
 #[derive(Clone, Debug)]
@@ -467,7 +467,7 @@ pub struct TakeOrderState {
 #[derive(Clone, Debug)]
 pub struct OrderMessage {
     pub message: Message,
-    pub timestamp: u64,
+    pub timestamp: i64,
     pub sender: PublicKey,
     pub order_id: Option<uuid::Uuid>,
     pub trade_index: i64,
@@ -483,7 +483,7 @@ pub struct OrderMessage {
 pub struct MessageNotification {
     pub order_id: Option<uuid::Uuid>,
     pub message_preview: String,
-    pub timestamp: u64,
+    pub timestamp: i64,
     pub action: Action,
     pub sat_amount: Option<i64>,
     pub invoice: Option<String>,

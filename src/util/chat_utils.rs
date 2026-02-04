@@ -11,7 +11,7 @@ use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 
 /// Messages grouped by (dispute_id, party); value is (content, timestamp, sender_pubkey).
-type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, u64, PublicKey)>>;
+type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, i64, PublicKey)>>;
 
 /// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. trade pubkey).
 /// Rumor content is Mostro protocol format: JSON of (Message, Option<String>) with
@@ -82,13 +82,13 @@ fn extract_chat_content_from_rumor(rumor_content: &str) -> String {
 pub async fn unwrap_giftwrap_to_admin(
     admin_keys: &Keys,
     event: &Event,
-) -> Result<(String, u64, PublicKey)> {
+) -> Result<(String, i64, PublicKey)> {
     // Standard NIP-59: GW content decrypts to Seal, Seal content decrypts to Rumor
     if let Ok(unwrapped) = nip59::UnwrappedGift::from_gift_wrap(admin_keys, event).await {
         let content = extract_chat_content_from_rumor(&unwrapped.rumor.content);
         return Ok((
             content,
-            unwrapped.rumor.created_at.as_u64(),
+            unwrapped.rumor.created_at.as_u64() as i64,
             unwrapped.sender,
         ));
     }
@@ -106,7 +106,7 @@ pub async fn unwrap_giftwrap_to_admin(
 
     Ok((
         inner_event.content,
-        inner_event.created_at.as_u64(),
+        inner_event.created_at.as_u64() as i64,
         inner_event.pubkey,
     ))
 }
@@ -116,7 +116,7 @@ pub async fn unwrap_giftwrap_to_admin(
 pub async fn fetch_gift_wraps_to_admin(
     client: &Client,
     admin_keys: &Keys,
-) -> Result<Vec<(String, u64, PublicKey)>> {
+) -> Result<Vec<(String, i64, PublicKey)>> {
     let now = Timestamp::now().as_u64();
     let seven_days_secs: u64 = 7 * 24 * 60 * 60;
     let wide_since = now.saturating_sub(seven_days_secs);

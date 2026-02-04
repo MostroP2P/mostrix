@@ -27,7 +27,7 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
         let notification = MessageNotification {
             order_id: order.id,
             message_preview: "Payment Request".to_string(),
-            timestamp: chrono::Utc::now().timestamp() as u64,
+            timestamp: chrono::Utc::now().timestamp(),
             action: Action::PayInvoice,
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),

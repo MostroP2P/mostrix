@@ -77,7 +77,7 @@ fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
             app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Buyer),
                 AdminChatLastSeen {
-                    last_seen_timestamp: dispute.buyer_chat_last_seen.map(|ts| ts as u64),
+                    last_seen_timestamp: dispute.buyer_chat_last_seen,
                 },
             );
         }
@@ -85,7 +85,7 @@ fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
             app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Seller),
                 AdminChatLastSeen {
-                    last_seen_timestamp: dispute.seller_chat_last_seen.map(|ts| ts as u64),
+                    last_seen_timestamp: dispute.seller_chat_last_seen,
                 },
             );
         }

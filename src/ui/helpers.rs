@@ -159,18 +159,18 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
     Some(messages)
 }
 
-/// Get max timestamp for buyer and seller
-fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (u64, u64) {
+/// Get max timestamp for buyer and seller.
+fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (i64, i64) {
     let buyer_max = messages
         .iter()
         .filter(|m| m.sender == ChatSender::Buyer)
-        .map(|m| m.timestamp as u64)
+        .map(|m| m.timestamp)
         .max()
         .unwrap_or(0);
     let seller_max = messages
         .iter()
         .filter(|m| m.sender == ChatSender::Seller)
-        .map(|m| m.timestamp as u64)
+        .map(|m| m.timestamp)
         .max()
         .unwrap_or(0);
     (buyer_max, seller_max)
@@ -180,8 +180,8 @@ fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (u64, u64) {
 /// Uses entry API to ensure entries exist before comparing, so recovered timestamps
 /// from files are stored even if the HashMap was initially empty.
 fn update_last_seen_timestamp(
-    buyer_max_timestamp: u64,
-    seller_max_timestamp: u64,
+    buyer_max_timestamp: i64,
+    seller_max_timestamp: i64,
     dispute: &AdminDispute,
     admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
 ) {
@@ -277,7 +277,7 @@ pub async fn apply_admin_chat_updates(
             // Avoid duplicates: check if a message with same timestamp, sender and
             // content already exists.
             let is_duplicate = messages_vec.iter().any(|m: &DisputeChatMessage| {
-                m.timestamp as u64 == ts && m.sender == sender && m.content == content
+                m.timestamp == ts && m.sender == sender && m.content == content
             });
             if is_duplicate {
                 if ts > max_ts {
@@ -289,7 +289,7 @@ pub async fn apply_admin_chat_updates(
             let msg = DisputeChatMessage {
                 sender,
                 content: content.clone(),
-                timestamp: ts as i64,
+                timestamp: ts,
                 target_party: None,
             };
             save_chat_message(&dispute_key, &msg);
@@ -301,13 +301,15 @@ pub async fn apply_admin_chat_updates(
         }
 
         // Update last_seen_timestamp for this dispute/party in memory
-        if let Some(user) = app
+        // Use entry API to ensure entry exists, so updates persist even for new disputes
+        let entry = app
             .admin_chat_last_seen
-            .get_mut(&(dispute_key.clone(), party))
-        {
-            if max_ts > user.last_seen_timestamp.unwrap_or(0) {
-                user.last_seen_timestamp = Some(max_ts);
-            }
+            .entry((dispute_key.clone(), party))
+            .or_insert_with(|| AdminChatLastSeen {
+                last_seen_timestamp: None,
+            });
+        if max_ts > entry.last_seen_timestamp.unwrap_or(0) {
+            entry.last_seen_timestamp = Some(max_ts);
         }
 
         // Persist last_seen_timestamp to the database so we can resume incremental
@@ -316,7 +318,7 @@ pub async fn apply_admin_chat_updates(
             AdminDispute::update_chat_last_seen_by_dispute_id(
                 pool,
                 &dispute_key,
-                max_ts as i64,
+                max_ts,
                 party == ChatParty::Buyer,
             )
             .await?;

@@ -125,13 +125,13 @@ pub async fn parse_dm_events(
     events: Events,
     pubkey: &Keys,
     since: Option<&i64>,
-) -> Vec<(Message, u64, PublicKey)> {
+) -> Vec<(Message, i64, PublicKey)> {
     use base64::engine::general_purpose;
     use base64::Engine;
     use nip44::v2::{decrypt_to_bytes, ConversationKey};
 
     let mut id_set = HashSet::<EventId>::new();
-    let mut direct_messages: Vec<(Message, u64, PublicKey)> = Vec::new();
+    let mut direct_messages: Vec<(Message, i64, PublicKey)> = Vec::new();
 
     for dm in events.iter() {
         // Skip if already processed
@@ -204,13 +204,13 @@ pub async fn parse_dm_events(
             let since_time = chrono::Utc::now()
                 .checked_sub_signed(chrono::Duration::minutes(*since_time))
                 .unwrap()
-                .timestamp() as u64;
+                .timestamp();
 
-            if created_at.as_u64() < since_time {
+            if (created_at.as_u64() as i64) < since_time {
                 continue;
             }
         }
-        direct_messages.push((message, created_at.as_u64(), sender));
+        direct_messages.push((message, created_at.as_u64() as i64, sender));
     }
     direct_messages.sort_by(|a, b| a.1.cmp(&b.1));
     direct_messages
