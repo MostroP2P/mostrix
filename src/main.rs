@@ -160,18 +160,19 @@ async fn main() -> Result<(), anyhow::Error> {
     let FetchSchedulerResult { orders, disputes } =
         start_fetch_scheduler(client.clone(), mostro_pubkey);
 
-    // Admin identity pubkey for classifying admin vs counterparty chat messages
-    let admin_chat_pubkey: Option<PublicKey> = if !settings.admin_privkey.is_empty() {
+    // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
+    let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
+        None
+    } else {
         match Keys::parse(&settings.admin_privkey) {
-            Ok(keys) => Some(keys.public_key()),
+            Ok(keys) => Some(keys),
             Err(e) => {
                 log::warn!("Invalid admin_privkey in settings: {}", e);
                 None
             }
         }
-    } else {
-        None
     };
+    let admin_chat_pubkey: Option<PublicKey> = admin_keys.as_ref().map(Keys::public_key);
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
@@ -190,15 +191,8 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Pre-compute chat last seen timestamps for all disputes/parties so that the
                 // background listener can fetch messages incrementally based on
                 // last_seen timestamps stored in the database.
-                if !settings.admin_privkey.is_empty() {
-                    match Keys::parse(&settings.admin_privkey) {
-                        Ok(admin_chat_keys) => {
-                            seed_admin_chat_last_seen(&mut app, &admin_chat_keys);
-                        }
-                        Err(e) => {
-                            log::warn!("Invalid admin_privkey in settings for admin chat: {}", e);
-                        }
-                    }
+                if let Some(ref keys) = admin_keys {
+                    seed_admin_chat_last_seen(&mut app, keys);
                 }
 
                 recover_admin_chat_from_files(
@@ -225,13 +219,12 @@ async fn main() -> Result<(), anyhow::Error> {
     let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
         tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
 
-    // Admin chat keys (for trade-key send/fetch); only set when admin mode and admin_privkey present
-    let admin_chat_keys: Option<Keys> =
-        if app.user_role == UserRole::Admin && !settings.admin_privkey.is_empty() {
-            Keys::parse(&settings.admin_privkey).ok()
-        } else {
-            None
-        };
+    // Admin chat keys (for trade-key send/fetch); only set when admin mode
+    let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
+        admin_keys
+    } else {
+        None
+    };
 
     // Spawn background task to listen for messages on active orders
     let client_for_messages = client.clone();
