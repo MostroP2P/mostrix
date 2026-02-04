@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use super::{apply_kind_color, BACKGROUND_COLOR};
+use crate::ui::{apply_kind_color, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
@@ -73,7 +73,8 @@ pub fn render_orders_tab(
 
                 let fiat_code_cell = Cell::from(order.fiat_code.clone());
 
-                let fiat_amount_cell = if order.min_amount.is_none() && order.max_amount.is_none() {
+                let fiat_amount_cell = if order.min_amount.is_none() && order.max_amount.is_none()
+                {
                     Cell::from(order.fiat_amount.to_string())
                 } else {
                     let range_str = match (order.min_amount, order.max_amount) {
@@ -106,7 +107,7 @@ pub fn render_orders_tab(
 
                 if i == selected_order_idx {
                     // Highlight the selected row.
-                    row.style(Style::default().bg(super::PRIMARY_COLOR).fg(Color::Black))
+                    row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
                 } else {
                     row
                 }

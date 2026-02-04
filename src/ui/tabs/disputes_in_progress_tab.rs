@@ -1,12 +1,13 @@
+use std::str::FromStr;
+
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
-use std::str::FromStr;
 
 /// Filter disputes based on the current filter state.
 /// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
@@ -260,20 +261,20 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (buyer_rating, seller_rating) = match is_initiator_buyer {
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
-                let buyer_rating = super::helpers::format_user_rating(
+                let buyer_rating = crate::ui::helpers::format_user_rating(
                     selected_dispute.initiator_info_data.as_ref(),
                 );
-                let seller_rating = super::helpers::format_user_rating(
+                let seller_rating = crate::ui::helpers::format_user_rating(
                     selected_dispute.counterpart_info_data.as_ref(),
                 );
                 (buyer_rating, seller_rating)
             }
             Some(false) => {
                 // Initiator is seller, counterpart is buyer
-                let seller_rating = super::helpers::format_user_rating(
+                let seller_rating = crate::ui::helpers::format_user_rating(
                     selected_dispute.initiator_info_data.as_ref(),
                 );
-                let buyer_rating = super::helpers::format_user_rating(
+                let buyer_rating = crate::ui::helpers::format_user_rating(
                     selected_dispute.counterpart_info_data.as_ref(),
                 );
                 (buyer_rating, seller_rating)
@@ -451,7 +452,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Only show party tabs, chat, and input for in-progress disputes
         if !is_finalized {
             // Party Tabs
-            let buyer_style = if app.active_chat_party == super::ChatParty::Buyer {
+            let buyer_style = if app.active_chat_party == crate::ui::ChatParty::Buyer {
                 Style::default()
                     .bg(Color::Green)
                     .fg(Color::Black)
@@ -459,7 +460,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 Style::default().fg(Color::Green)
             };
-            let seller_style = if app.active_chat_party == super::ChatParty::Seller {
+            let seller_style = if app.active_chat_party == crate::ui::ChatParty::Seller {
                 Style::default()
                     .bg(Color::Red)
                     .fg(Color::Black)
@@ -515,13 +516,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let max_content_width = (chat_area.width.saturating_sub(2) / 2).max(1);
 
             let items = if let Some(messages) = chat_messages {
-                super::helpers::build_chat_list_items(
+                crate::ui::helpers::build_chat_list_items(
                     messages,
                     app.active_chat_party,
                     Some(max_content_width),
                 )
             } else {
-                super::helpers::build_chat_list_items(
+                crate::ui::helpers::build_chat_list_items(
                     &[],
                     app.active_chat_party,
                     Some(max_content_width),
@@ -573,7 +574,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             f.render_stateful_widget(chat_list, main_chunks[2], &mut app.admin_chat_list_state);
 
             // Render scrollbar on the right side of the chat area
-            super::helpers::render_chat_scrollbar(
+            crate::ui::helpers::render_chat_scrollbar(
                 f,
                 main_chunks[2],
                 total_items,

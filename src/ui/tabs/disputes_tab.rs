@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Render the disputes tab showing a table of active disputes
 /// This tab is only visible in admin mode
@@ -85,10 +85,10 @@ pub fn render_disputes_tab(
 
         let table = Table::new(
             rows,
-            &[
-                Constraint::Max(40), // Dispute ID
-                Constraint::Max(15), // Status
-                Constraint::Max(18), // Created
+            [
+                Constraint::Length(40),
+                Constraint::Length(20),
+                Constraint::Length(25),
             ],
         )
         .header(header)
@@ -97,7 +97,14 @@ pub fn render_disputes_tab(
                 .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(PRIMARY_COLOR)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
         );
+
         f.render_widget(table, area);
     }
 }

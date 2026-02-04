@@ -293,8 +293,8 @@ fn handle_down_key(
             ) {
                 // Derive max index from actual options count (max_index = count - 1)
                 let options_count = match app.user_role {
-                    UserRole::Admin => crate::ui::settings_tab::ADMIN_SETTINGS_OPTIONS_COUNT,
-                    UserRole::User => crate::ui::settings_tab::USER_SETTINGS_OPTIONS_COUNT,
+                    UserRole::Admin => crate::ui::tabs::settings_tab::ADMIN_SETTINGS_OPTIONS_COUNT,
+                    UserRole::User => crate::ui::tabs::settings_tab::USER_SETTINGS_OPTIONS_COUNT,
                 };
                 let max_index = options_count.saturating_sub(1);
                 if app.selected_settings_option < max_index {

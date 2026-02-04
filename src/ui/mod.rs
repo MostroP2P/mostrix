@@ -15,8 +15,6 @@ pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 pub mod admin_key_confirm;
 pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;
-pub mod disputes_in_progress_tab;
-pub mod disputes_tab;
 pub mod exit_confirm;
 pub mod helpers;
 pub mod key_handler;
@@ -26,10 +24,7 @@ pub mod order_confirm;
 pub mod order_form;
 pub mod order_result;
 pub mod order_take;
-pub mod orders_tab;
-pub mod settings_tab;
 pub mod status;
-pub mod tab_content;
 pub mod tabs;
 pub mod waiting;
 
@@ -639,22 +634,27 @@ pub fn ui_draw(
     .split(f.area());
 
     // Render tabs
-    tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
+    tabs::tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
 
     // Render content based on active tab and role
     let content_area = chunks[1];
     match (&app.active_tab, app.user_role) {
         (Tab::User(UserTab::Orders), UserRole::User) => {
-            orders_tab::render_orders_tab(f, content_area, orders, app.selected_order_idx)
+            tabs::orders_tab::render_orders_tab(f, content_area, orders, app.selected_order_idx)
         }
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
-            tab_content::render_coming_soon(f, content_area, "My Trades")
+            tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
             let messages = app.messages.lock().unwrap();
-            tab_content::render_messages_tab(f, content_area, &messages, app.selected_message_idx)
+            tabs::tab_content::render_messages_tab(
+                f,
+                content_area,
+                &messages,
+                app.selected_message_idx,
+            )
         }
-        (Tab::User(UserTab::Settings), UserRole::User) => settings_tab::render_settings_tab(
+        (Tab::User(UserTab::Settings), UserRole::User) => tabs::settings_tab::render_settings_tab(
             f,
             content_area,
             app.user_role,
@@ -668,24 +668,31 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::DisputesPending), UserRole::Admin) => {
-            disputes_tab::render_disputes_tab(f, content_area, disputes, app.selected_dispute_idx)
+            tabs::disputes_tab::render_disputes_tab(
+                f,
+                content_area,
+                disputes,
+                app.selected_dispute_idx,
+            )
         }
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
-            disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
+            tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
         }
-        (Tab::Admin(AdminTab::Settings), UserRole::Admin) => settings_tab::render_settings_tab(
-            f,
-            content_area,
-            app.user_role,
-            app.selected_settings_option,
-        ),
+        (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
+            tabs::settings_tab::render_settings_tab(
+                f,
+                content_area,
+                app.user_role,
+                app.selected_settings_option,
+            )
+        }
         (Tab::User(UserTab::Exit), UserRole::User)
         | (Tab::Admin(AdminTab::Exit), UserRole::Admin) => {
-            tab_content::render_exit_tab(f, content_area)
+            tabs::tab_content::render_exit_tab(f, content_area)
         }
         _ => {
             // Fallback for invalid combinations
-            tab_content::render_coming_soon(f, content_area, "Unknown")
+            tabs::tab_content::render_coming_soon(f, content_area, "Unknown")
         }
     }
 
@@ -899,6 +906,6 @@ pub fn ui_draw(
 
     // Viewing message popup overlay
     if let UiMode::ViewingMessage(view_state) = &app.mode {
-        tab_content::render_message_view(f, view_state);
+        tabs::tab_content::render_message_view(f, view_state);
     }
 }

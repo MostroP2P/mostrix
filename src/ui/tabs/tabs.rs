@@ -3,8 +3,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Tabs};
 
-use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::ui::{Tab, UserRole};
+use crate::ui::{Tab, UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_tabs(f: &mut ratatui::Frame, area: Rect, active_tab: Tab, role: UserRole) {
     let titles = Tab::get_titles(role);
