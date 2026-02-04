@@ -109,7 +109,10 @@ pub fn spawn_admin_chat_fetch(
     tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
 ) {
     // If the semaphore is already true, return
-    if CHAT_MESSAGES_SEMAPHORE.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+    if CHAT_MESSAGES_SEMAPHORE
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
         return;
     }
     tokio::spawn(async move {

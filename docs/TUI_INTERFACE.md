@@ -271,7 +271,8 @@ The key handler processes input in this order:
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - A periodic task in `main.rs` calls `fetch_admin_chat_updates` for active disputes:
+  - The main loop (every 5 seconds when in Admin mode) calls `spawn_admin_chat_fetch`, which runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard ensures only one fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
+  - For active disputes the fetch:
     - Uses `last_seen_timestamp` to request only newer `GiftWrap` events (7-day rolling window).
     - Routes messages to disputes using a `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
     - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.

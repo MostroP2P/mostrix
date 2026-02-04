@@ -634,7 +634,7 @@ pub fn ui_draw(
     .split(f.area());
 
     // Render tabs
-    tabs::tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
+    tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
 
     // Render content based on active tab and role
     let content_area = chunks[1];

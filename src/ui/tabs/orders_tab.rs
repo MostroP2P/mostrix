@@ -73,8 +73,7 @@ pub fn render_orders_tab(
 
                 let fiat_code_cell = Cell::from(order.fiat_code.clone());
 
-                let fiat_amount_cell = if order.min_amount.is_none() && order.max_amount.is_none()
-                {
+                let fiat_amount_cell = if order.min_amount.is_none() && order.max_amount.is_none() {
                     Cell::from(order.fiat_amount.to_string())
                 } else {
                     let range_str = match (order.min_amount, order.max_amount) {

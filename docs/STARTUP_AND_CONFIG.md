@@ -212,6 +212,8 @@ Several background tasks are spawned to keep the UI and data in sync:
 1. **Order Refresh**: Periodically fetches pending orders from Mostro.
 2. **Trade Message Listener**: Listens for new messages related to active orders.
 3. **Admin Chat Scheduler**:
+   - In the main event loop, when `user_role == Admin`, a 5-second interval triggers `spawn_admin_chat_fetch` (see `src/util/order_utils/fetch_scheduler.rs`).
+   - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one admin chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
    - Periodically fetches NIP‑59 admin chat messages for each cached shared key.
    - Uses per‑party `last_seen_timestamp` values to request only new events.
    - Delegates application of updates to `ui::helpers::apply_admin_chat_updates`, which:
