@@ -126,12 +126,6 @@ use crate::ui::ui_draw;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    // Set rustls crypto provider before any TLS (reqwest/nostr) runs. Required when both
-    // ring and aws-lc-rs are in the dependency tree so rustls doesn't panic.
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("rustls default crypto provider");
-
     log::info!("MostriX started");
     let settings = init_settings();
     let pool = db::init_db().await?;

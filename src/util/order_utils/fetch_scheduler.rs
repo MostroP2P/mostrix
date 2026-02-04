@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
@@ -18,6 +19,9 @@ pub struct FetchSchedulerResult {
     pub orders: Arc<Mutex<Vec<SmallOrder>>>,
     pub disputes: Arc<Mutex<Vec<Dispute>>>,
 }
+
+// Semaphore to prevent multiple chat messages from being processed at the same time
+pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
 
 /// Start background tasks to periodically fetch orders and disputes
 ///
@@ -104,9 +108,14 @@ pub fn spawn_admin_chat_fetch(
     admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
 ) {
+    // If the semaphore is already true, return
+    if CHAT_MESSAGES_SEMAPHORE.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
     tokio::spawn(async move {
         let result =
             fetch_admin_chat_updates(&client, &admin_keys, &disputes, &admin_chat_last_seen).await;
+        CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
         let _ = tx.send(result);
     });
 }
