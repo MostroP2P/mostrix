@@ -113,7 +113,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 
-#### Currency Filter Features
+#### Settings Tab Features
 
 - **Mode Display**: Shows current mode (User/Admin) at the top
 - **Mode Switching**: Press `M` key to switch between User and Admin modes
