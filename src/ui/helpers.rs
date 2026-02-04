@@ -176,26 +176,31 @@ fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (u64, u64) {
     (buyer_max, seller_max)
 }
 
-/// Update last-seen timestamps for buyer and seller
+/// Update last-seen timestamps for buyer and seller.
+/// Uses entry API to ensure entries exist before comparing, so recovered timestamps
+/// from files are stored even if the HashMap was initially empty.
 fn update_last_seen_timestamp(
     buyer_max_timestamp: u64,
     seller_max_timestamp: u64,
     dispute: &AdminDispute,
     admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
 ) {
-    if let Some(shared) =
-        admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Buyer))
-    {
-        if buyer_max_timestamp > shared.last_seen_timestamp.unwrap_or(0) {
-            shared.last_seen_timestamp = Some(buyer_max_timestamp);
-        }
+    let buyer_entry = admin_chat_last_seen
+        .entry((dispute.dispute_id.clone(), ChatParty::Buyer))
+        .or_insert_with(|| AdminChatLastSeen {
+            last_seen_timestamp: None,
+        });
+    if buyer_max_timestamp > buyer_entry.last_seen_timestamp.unwrap_or(0) {
+        buyer_entry.last_seen_timestamp = Some(buyer_max_timestamp);
     }
-    if let Some(shared) =
-        admin_chat_last_seen.get_mut(&(dispute.dispute_id.clone(), ChatParty::Seller))
-    {
-        if seller_max_timestamp > shared.last_seen_timestamp.unwrap_or(0) {
-            shared.last_seen_timestamp = Some(seller_max_timestamp);
-        }
+
+    let seller_entry = admin_chat_last_seen
+        .entry((dispute.dispute_id.clone(), ChatParty::Seller))
+        .or_insert_with(|| AdminChatLastSeen {
+            last_seen_timestamp: None,
+        });
+    if seller_max_timestamp > seller_entry.last_seen_timestamp.unwrap_or(0) {
+        seller_entry.last_seen_timestamp = Some(seller_max_timestamp);
     }
 }
 

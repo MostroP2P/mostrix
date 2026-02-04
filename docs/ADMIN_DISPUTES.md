@@ -649,7 +649,7 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The background listener uses these DB fields as cursors for `fetch_chat_messages_for_shared_key`, so only newer NIP‑59 events are fetched after restart.
+    - The background listener uses these DB fields as cursors for `fetch_admin_chat_updates`, so only newer NIP‑59 events are fetched after restart.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
