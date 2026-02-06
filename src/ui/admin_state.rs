@@ -10,7 +10,17 @@ pub enum AdminMode {
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
     ManagingDispute,               // Mode for "Disputes in Progress" tab
-    ReviewingDisputeForFinalization(uuid::Uuid, usize), // (dispute_id, selected_button: 0=Pay Buyer, 1=Refund Seller, 2=Exit)
-    ConfirmFinalizeDispute(uuid::Uuid, bool, bool), // (dispute_id, is_settle: true=Pay Buyer, false=Refund Seller, selected_button: true=Yes, false=No)
-    WaitingDisputeFinalization(uuid::Uuid),         // (dispute_id)
+    ReviewingDisputeForFinalization {
+        dispute_id: uuid::Uuid,
+        /// Index of the selected button: 0=Pay Buyer, 1=Refund Seller, 2=Exit
+        selected_button_index: usize,
+    },
+    ConfirmFinalizeDispute {
+        dispute_id: uuid::Uuid,
+        /// true=Pay Buyer, false=Refund Seller
+        is_settle: bool,
+        /// true=Yes, false=No
+        selected_button: bool,
+    },
+    WaitingDisputeFinalization(uuid::Uuid), // (dispute_id)
 }

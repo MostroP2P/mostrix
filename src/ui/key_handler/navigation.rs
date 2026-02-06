@@ -51,7 +51,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
-        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
@@ -110,7 +113,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
-        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
@@ -213,8 +219,8 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
-        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
-        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, _))
+        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
@@ -336,8 +342,8 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
-        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _))
-        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(_, _, _))
+        | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)

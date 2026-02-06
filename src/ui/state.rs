@@ -5,5 +5,5 @@ pub use crate::ui::chat::{
 pub use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 pub use crate::ui::orders::{
     apply_kind_color, order_message_to_notification, FormState, InvoiceInputState, KeyInputState,
-    MessageNotification, MessageViewState, OrderMessage, OrderResult, TakeOrderState,
+    MessageNotification, MessageViewState, OrderMessage, OrderResult, OrderSuccess, TakeOrderState,
 };

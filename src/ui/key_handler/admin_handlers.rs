@@ -63,12 +63,9 @@ pub(crate) fn execute_add_solver_action(
     let solver_pubkey_clone = solver_pubkey.clone();
     let client_clone = client.clone();
     let result_tx = order_result_tx.clone();
-    let mostro_pubkey_clone = mostro_pubkey;
 
     tokio::spawn(async move {
-        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey_clone)
-            .await
-        {
+        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey).await {
             Ok(_) => {
                 let _ = result_tx.send(crate::ui::OrderResult::Info(
                     "Solver added successfully".to_string(),

@@ -75,7 +75,7 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-- **Finalization**: Press Enter with empty input to open finalization popup
+   - **Finalization**: Press **Shift+F** to open the dispute finalization popup from the Disputes in Progress tab
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
@@ -83,7 +83,8 @@ The interface is divided into three main sections:
 - **Up/Down**: Select dispute in sidebar
 - **Tab**: Switch between buyer and seller chat
 - **Type**: Start composing message (when input enabled)
-- **Enter**: Send message or open finalization popup
+- **Enter**: Send message (when input has text)
+- **Shift+F**: Open finalization popup for the selected dispute
 - **PageUp/PageDown**: Scroll chat history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -657,7 +658,8 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 **In Chat Interface**:
 
 - **Type**: Start typing message directly (when input enabled)
-- **Enter**: Send message (if input has text) or open finalization popup (if empty)
+- **Enter**: Send message (when input has text)
+- **Shift+F**: Open finalization popup for the currently selected dispute
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)

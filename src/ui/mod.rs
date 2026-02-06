@@ -5,8 +5,8 @@ pub const BACKGROUND_COLOR: Color = Color::Rgb(29, 33, 44); // #1D212C
 
 pub mod admin_key_confirm;
 pub mod admin_state;
-pub mod app_state;
-pub mod chat;
+pub(crate) mod app_state;
+pub(crate) mod chat;
 pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;
 pub mod draw;
@@ -15,12 +15,12 @@ pub mod helpers;
 pub mod key_handler;
 pub mod key_input_popup;
 pub mod message_notification;
-pub mod navigation;
+pub(crate) mod navigation;
 pub mod order_confirm;
 pub mod order_form;
 pub mod order_result;
 pub mod order_take;
-pub mod orders;
+pub(crate) mod orders;
 pub mod state;
 pub mod status;
 pub mod tabs;

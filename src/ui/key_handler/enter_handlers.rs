@@ -183,10 +183,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
-        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             dispute_id,
-            selected_button,
-        )) => {
+            selected_button_index,
+        }) => {
             // Check if dispute is finalized
             use std::str::FromStr;
             let dispute_is_finalized = app
@@ -206,7 +206,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 .unwrap_or(false);
 
             // Handle Enter in finalization popup
-            match FinalizeDisputePopupButton::from_index(selected_button) {
+            match FinalizeDisputePopupButton::from_index(selected_button_index) {
                 Some(button) => handle_enter_finalize_popup(
                     app,
                     button,
@@ -220,11 +220,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 }
             }
         }
-        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             dispute_id,
             is_settle,
             selected_button,
-        )) => {
+        }) => {
             if selected_button {
                 // YES selected - execute the finalization action
                 execute_finalize_dispute_action(
@@ -238,10 +238,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 );
             } else {
                 // NO selected - go back to finalization popup
-                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
-                    if is_settle { 0 } else { 1 }, // Restore the button that was selected
-                ));
+                    // Restore the button that was selected: 0=Pay Buyer, 1=Refund Seller
+                    selected_button_index: if is_settle { 0 } else { 1 },
+                });
             }
             true
         }

@@ -1,4 +1,5 @@
 // Order channel manager - handles order result messages from async tasks
+use crate::ui::orders::OrderSuccess;
 use crate::ui::{AppState, InvoiceInputState, MessageNotification, OrderResult, UiMode, UserMode};
 use mostro_core::prelude::Action;
 
@@ -46,11 +47,11 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
     }
 
     // Track trade_index for taken orders
-    if let OrderResult::Success {
+    if let OrderResult::Success(OrderSuccess {
         order_id,
         trade_index,
         ..
-    } = &result
+    }) = &result
     {
         if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
             let mut indices = app.active_order_trade_indices.lock().unwrap();

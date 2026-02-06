@@ -216,9 +216,11 @@ pub fn handle_key_event(
                     .get(app.selected_in_progress_idx)
                 {
                     if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
-                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
-                            dispute_id, 0, // Default to first button (Pay Buyer)
-                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                            dispute_id,
+                            // Default to first button (Pay Buyer)
+                            selected_button_index: 0,
+                        });
                         return Some(true);
                     }
                 }
@@ -273,10 +275,10 @@ pub fn handle_key_event(
                     view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
-                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
-                    ref mut selected_button,
-                )) => {
+                    ref mut selected_button_index,
+                }) => {
                     // Check if dispute is finalized to skip disabled buttons
                     let dispute_is_finalized = app
                         .admin_disputes_in_progress
@@ -285,7 +287,7 @@ pub fn handle_key_event(
                         .and_then(is_dispute_finalized)
                         .unwrap_or(false);
 
-                    cycle_finalization_button(selected_button, code, dispute_is_finalized);
+                    cycle_finalization_button(selected_button_index, code, dispute_is_finalized);
                     return Some(true);
                 }
                 _ => {}

@@ -2,21 +2,24 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
 
+#[derive(Clone, Debug, Default)]
+pub struct OrderSuccess {
+    pub order_id: Option<uuid::Uuid>,
+    pub kind: Option<mostro_core::order::Kind>,
+    pub amount: i64,
+    pub fiat_code: String,
+    pub fiat_amount: i64,
+    pub min_amount: Option<i64>,
+    pub max_amount: Option<i64>,
+    pub payment_method: String,
+    pub premium: i64,
+    pub status: Option<Status>,
+    pub trade_index: Option<i64>, // Trade index used for this order
+}
+
 #[derive(Clone, Debug)]
 pub enum OrderResult {
-    Success {
-        order_id: Option<uuid::Uuid>,
-        kind: Option<mostro_core::order::Kind>,
-        amount: i64,
-        fiat_code: String,
-        fiat_amount: i64,
-        min_amount: Option<i64>,
-        max_amount: Option<i64>,
-        payment_method: String,
-        premium: i64,
-        status: Option<Status>,
-        trade_index: Option<i64>, // Trade index used for this order
-    },
+    Success(OrderSuccess),
     /// Payment request required - shows invoice popup for buy orders
     PaymentRequestRequired {
         order: mostro_core::prelude::SmallOrder,

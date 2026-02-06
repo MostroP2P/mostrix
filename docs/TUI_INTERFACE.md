@@ -299,10 +299,10 @@ The key handler processes input in this order:
 
 Mostrix includes a safety feature to prevent accidental exits:
 
-- **Trigger**: Press `Q` key or navigate to Exit tab
+- **Trigger**: Navigate to the Exit tab (User or Admin) and confirm
 - **Popup**: Shows confirmation dialog with "Are you sure you want to exit Mostrix?"
 - **Navigation**: Use Left/Right arrows to select Yes/No buttons
 - **Confirmation**: Press Enter to confirm exit, or Esc to cancel
 - **Visual**: Green "✓ YES" button and red "✗ NO" button with clear styling
 
-**Source**: `src/ui/exit_confirm.rs`, `src/ui/key_handler/enter_handlers.rs:645-655`
+**Source**: `src/ui/exit_confirm.rs`, `src/ui/key_handler/enter_handlers.rs`

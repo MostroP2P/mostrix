@@ -251,20 +251,25 @@ pub fn ui_draw(
     }
 
     // Dispute finalization popup
-    if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+    if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
         dispute_id,
-        selected_button,
-    )) = &app.mode
+        selected_button_index,
+    }) = &app.mode
     {
-        dispute_finalization_popup::render_finalization_popup(f, app, dispute_id, *selected_button);
+        dispute_finalization_popup::render_finalization_popup(
+            f,
+            app,
+            dispute_id,
+            *selected_button_index,
+        );
     }
 
     // Dispute finalization confirmation popup
-    if let UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
+    if let UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
         dispute_id,
         is_settle,
         selected_button,
-    )) = &app.mode
+    }) = &app.mode
     {
         dispute_finalization_confirm::render_finalization_confirm(
             f,

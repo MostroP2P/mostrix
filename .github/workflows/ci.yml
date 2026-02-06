@@ -37,7 +37,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with: { cache-on-failure: true }
       - name: cargo test
-        run: cargo test
+        run: cargo test --all-features
 
   build:
     runs-on: ubuntu-latest

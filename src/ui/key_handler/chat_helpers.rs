@@ -163,10 +163,13 @@ pub fn handle_enter_finalize_popup(
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             } else {
-                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
-                    dispute_id, true, // is_settle
-                    true, // selected_button: true=Yes
-                ));
+                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+                    dispute_id,
+                    // is_settle: true = Pay Buyer
+                    is_settle: true,
+                    // selected_button: true = Yes
+                    selected_button: true,
+                });
             }
             true
         }
@@ -177,10 +180,13 @@ pub fn handle_enter_finalize_popup(
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             } else {
-                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(
-                    dispute_id, false, // is_settle
-                    true,  // selected_button: true=Yes
-                ));
+                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+                    dispute_id,
+                    // is_settle: false = Refund Seller
+                    is_settle: false,
+                    // selected_button: true = Yes
+                    selected_button: true,
+                });
             }
             true
         }

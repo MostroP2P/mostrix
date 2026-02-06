@@ -1,3 +1,4 @@
+use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OrderResult;
 use crate::ui::{AdminMode, AppState, MessageViewState, UiMode, UserMode, UserRole};
 use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
@@ -8,7 +9,7 @@ use uuid::Uuid;
 pub fn handle_enter_viewing_message(
     app: &mut AppState,
     view_state: &MessageViewState,
-    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
+    ctx: &EnterKeyContext<'_>,
 ) {
     // Only proceed if YES is selected
     if !view_state.selected_button {
@@ -83,7 +84,7 @@ pub fn handle_enter_viewing_message(
 /// Handle Enter key for message notifications (AddInvoice, PayInvoice, etc.)
 pub fn handle_enter_message_notification(
     app: &mut AppState,
-    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
+    ctx: &EnterKeyContext<'_>,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
     order_id: Option<Uuid>,
