@@ -3,11 +3,11 @@
 
 ## Overview
 
-Build and test mostrix fixing all error of the cargo and clippy.
+Build and test mostrix, fixing all errors reported by cargo and clippy.
 
 ## Steps
 
-- execute cargo test 
-- execute cargo build
 - execute cargo fmt --all
 - execute cargo clippy --all-targets --all-features
+- execute cargo test
+- execute cargo build

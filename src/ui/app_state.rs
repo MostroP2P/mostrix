@@ -97,5 +97,9 @@ impl AppState {
         self.selected_in_progress_idx = 0;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
+        // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
+        // admin_disputes_in_progress, admin_chat_list_state, admin_chat_scroll_tracker,
+        // and dispute_filter across role switches so that admin context is not lost
+        // when temporarily viewing user mode.
     }
 }
