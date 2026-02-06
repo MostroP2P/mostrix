@@ -106,12 +106,20 @@ pub async fn execute_take_dispute(
                 let mut dispute_info_clone = dispute_info.clone();
                 dispute_info_clone.status = DisputeStatus::InProgress.to_string();
 
-                // Fetch fiat_code from relay (order may not be in local DB); ignore errors, fallback in AdminDispute::new
+                // Fetch fiat_code from relay (order may not be in local DB); log errors, fallback in AdminDispute::new
                 let fiat_code_from_relay =
-                    fetch_order_fiat_from_relay(client, mostro_pubkey, dispute_info.id)
-                        .await
-                        .ok()
-                        .flatten();
+                    match fetch_order_fiat_from_relay(client, mostro_pubkey, dispute_info.id).await {
+                        Ok(opt) => opt,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to fetch order fiat from relay for dispute {} (mostro_pubkey: {}): {}",
+                                dispute_info.id,
+                                mostro_pubkey,
+                                e
+                            );
+                            None
+                        }
+                    };
 
                 // Save dispute info to database with InProgress status
                 // Pass the dispute_id (from the function parameter) to distinguish it from order_id
