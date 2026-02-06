@@ -291,6 +291,31 @@ pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<V
     Ok(disputes)
 }
 
+/// Fetch a single order's fiat code from the relay by order id (identifier "d" tag).
+/// Used when the order is not in the local DB (e.g. admin taking a dispute for an order they did not create).
+pub async fn fetch_order_fiat_from_relay(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    order_id: Uuid,
+) -> Result<Option<String>> {
+    let filter = Filter::new()
+        .author(mostro_pubkey)
+        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+        .identifier(order_id.to_string())
+        .limit(1);
+    let events = client
+        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay: {}", e))?;
+    let event = match events.iter().next() {
+        Some(ev) => ev,
+        None => return Ok(None),
+    };
+    let order = order_from_tags(event.tags.clone())?;
+    let fiat = order.fiat_code;
+    Ok(if fiat.is_empty() { None } else { Some(fiat) })
+}
+
 /// Helper function to create OrderResult::Success from an order
 pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) -> OrderResult {
     OrderResult::Success(OrderSuccess {

@@ -297,6 +297,7 @@ impl AdminDispute {
         pool: &SqlitePool,
         dispute_info: SolverDisputeInfo,
         dispute_id: String,
+        fiat_code_from_relay: Option<String>,
     ) -> Result<Self> {
         // Validate required fields
         if dispute_info.buyer_pubkey.is_none() || dispute_info.seller_pubkey.is_none() {
@@ -316,19 +317,10 @@ impl AdminDispute {
             .as_ref()
             .and_then(|info| serde_json::to_string(info).ok());
 
-        // Try to get fiat_code from the related order using dispute ID
-        // In Mostro, the dispute ID typically matches the order ID
-        let fiat_code = match Order::get_by_id(pool, &dispute_info.id.to_string()).await {
-            Ok(order) => order.fiat_code,
-            Err(_) => {
-                // Order not found, use default
-                log::debug!(
-                    "Order not found for dispute {}, using default fiat_code",
-                    dispute_info.id
-                );
-                "USD".to_string()
-            }
-        };
+        // Resolve fiat_code from relay (admin never has the user's order in local DB); default USD if missing
+        let fiat_code = fiat_code_from_relay
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "USD".to_string());
 
         let dispute = AdminDispute {
             id: dispute_info.id.to_string(), // Order ID
