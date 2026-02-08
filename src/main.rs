@@ -8,10 +8,13 @@ use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
 use crate::ui::key_handler::handle_key_event;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, MessageNotification, OrderResult};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification, OrderResult,
+};
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
+    spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -219,6 +222,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
         tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
 
+    // Channel to trigger save of selected attachment (Ctrl+S in dispute chat)
+    let (save_attachment_tx, mut save_attachment_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
+
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
         admin_keys
@@ -362,8 +369,18 @@ async fn main() -> Result<(), anyhow::Error> {
                         &order_result_tx,
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
+                        Some(&save_attachment_tx),
                     ) {
-                        Some(true) => continue, // Key was handled, continue loop
+                        Some(true) => {
+                            while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
+                                spawn_save_attachment(
+                                    dispute_id,
+                                    attachment,
+                                    order_result_tx.clone(),
+                                );
+                            }
+                            continue;
+                        }
                         Some(false) => break,   // Exit requested (q key)
                         None => {
                             // Key not handled by handler - this shouldn't happen with current implementation

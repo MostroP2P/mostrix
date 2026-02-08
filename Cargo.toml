@@ -30,3 +30,4 @@ lightning-invoice = { version = "0.34.0", features = ["std"] }
 lnurl-rs = { version = "0.9.0", default-features = false, features = ["ureq"] }
 arboard = "3.3"
 reqwest = { version = "0.13.1", default-features = false, features = ["native-tls", "json"] }
+chacha20poly1305 = "0.10"

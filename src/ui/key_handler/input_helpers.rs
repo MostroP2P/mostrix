@@ -79,6 +79,7 @@ pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> S
         content: message_content.clone(),
         timestamp,
         target_party: Some(app.active_chat_party),
+        attachment: None,
     };
 
     app.admin_dispute_chats

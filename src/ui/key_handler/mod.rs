@@ -12,10 +12,10 @@ mod user_handlers;
 mod validation;
 
 use crate::ui::{
-    helpers::is_dispute_finalized, AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode,
-    UserTab,
+    helpers::{get_selected_chat_message, is_dispute_finalized},
+    AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab,
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
@@ -156,9 +156,35 @@ pub fn handle_key_event(
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
+    save_attachment_tx: Option<&UnboundedSender<(String, crate::ui::ChatAttachment)>>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
     let code = key_event.code;
+
+    // Clear transient attachment toast on any key press
+    app.attachment_toast = None;
+
+    // Ctrl+S: save selected attachment in admin dispute chat
+    if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
+        if let (Tab::Admin(AdminTab::DisputesInProgress), Some(tx)) =
+            (app.active_tab, save_attachment_tx)
+        {
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Some(dispute_id_key) = app
+                    .admin_disputes_in_progress
+                    .get(app.selected_in_progress_idx)
+                    .map(|d| d.dispute_id.clone())
+                {
+                    if let Some(msg) = get_selected_chat_message(app, &dispute_id_key) {
+                        if let Some(att) = &msg.attachment {
+                            let _ = tx.send((dispute_id_key, att.clone()));
+                            return Some(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Handle invoice input first (before other key handling)
     if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {

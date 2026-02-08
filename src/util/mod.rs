@@ -1,3 +1,4 @@
+pub mod blossom;
 pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;
@@ -6,6 +7,10 @@ pub mod order_utils;
 pub mod types;
 
 // Re-export commonly used items
+pub use blossom::{
+    blossom_url_to_https, decrypt_blob, fetch_blob, save_attachment_to_disk, spawn_save_attachment,
+    BLOSSOM_MAX_BLOB_SIZE,
+};
 pub use chat_utils::{fetch_gift_wraps_to_admin, send_admin_chat_message_to_pubkey};
 pub use db_utils::save_order;
 pub use dm_utils::{

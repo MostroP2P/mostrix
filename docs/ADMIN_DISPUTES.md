@@ -618,6 +618,17 @@ pub admin_chat_list_state: ratatui::widgets::ListState,
 pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 ```
 
+##### Receiving and saving file attachments
+
+Buyers and sellers can send encrypted file or image attachments in dispute chat. The format follows **Mostro Mobile Encrypted File Messaging**: JSON messages with `type` `image_encrypted` or `file_encrypted`, containing `blossom_url`, `nonce` (base64, 12 bytes), `filename`, optional `key` (base64, 32 bytes) for decryption, and optional `mime_type`.
+
+- **Display**: Attachment messages appear in the chat with an icon (🖼 Image or 📎 File), filename, and "(key provided)" when the sender included a decryption key. The chat block title shows a file count when non-zero (e.g. "Chat with Buyer (12 messages, 2 file(s))"). A transient yellow toast notifies when a new attachment is received; it clears after 8 seconds or on any key press.
+- **Persistence**: Transcript files under `~/.mostrix/<dispute_id>.txt` store a placeholder line for attachments (e.g. `[Image: name - Ctrl+S to save]`); file bytes are not stored on disk until the admin saves.
+- **Save (Ctrl+S)**: With an attachment message selected, press **Ctrl+S** to download the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypt with ChaCha20-Poly1305 when the key was provided, and write to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the same result popup used for other operations.
+- **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download.
+
+**Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).
+
 ##### NIP-59 Chat Flow (Admin ↔ Parties)
 
 - **Message addressing**:
@@ -664,6 +675,7 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
+- **Ctrl+S**: Save selected file/image attachment to disk (when the selected message is an attachment)
 - **Backspace**: Delete characters from input (when input enabled)
 - **Up/Down**: Select different dispute in sidebar
 
@@ -672,7 +684,7 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 - **Color differentiation**: Buyer (Green) and Seller (Red) messages clearly distinguished
 - **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Red for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
-- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state
+- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state; shows "Ctrl+S: Save file" when the selected message is an attachment
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
 - **Context preservation**: Each dispute maintains its own complete message history
 - **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
@@ -708,11 +720,12 @@ pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 
 **Source Files**:
 
-- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, and scrollbar
+- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, scrollbar, attachment toast, block title file count, footer hint
 - `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
-- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key
-- `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing with error handling
+- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key, Ctrl+S save attachment
+- `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing, attachment parsing/placeholder, list styling
 - `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
+- `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 
 ## Dispute Resolution Actions

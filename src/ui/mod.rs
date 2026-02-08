@@ -31,8 +31,8 @@ pub use admin_state::AdminMode;
 pub use draw::ui_draw;
 pub use state::{
     apply_kind_color, order_message_to_notification, AdminChatLastSeen, AdminChatUpdate, AdminTab,
-    AppState, ChatParty, ChatSender, DisputeChatMessage, DisputeFilter, FormState,
-    InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OrderMessage,
-    OrderResult, Tab, TakeOrderState, UiMode, UserRole, UserTab,
+    AppState, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender, DisputeChatMessage,
+    DisputeFilter, FormState, InvoiceInputState, KeyInputState, MessageNotification,
+    MessageViewState, OrderMessage, OrderResult, Tab, TakeOrderState, UiMode, UserRole, UserTab,
 };
 pub use user_state::UserMode;
