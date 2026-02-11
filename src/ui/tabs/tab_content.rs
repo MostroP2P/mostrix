@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
-use super::{helpers, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{helpers, MessageViewState, OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -30,6 +30,7 @@ fn get_mostro_logo() -> Vec<&'static str> {
         "              ╔═══════════════════════════╗                 ",
         "              ║   Press Enter to exit     ║                 ",
         "              ╚═══════════════════════════╝                 ",
+        "    ",
     ]
 }
 
@@ -83,7 +84,7 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
             };
 
             // Style different parts of the logo
-            let spans: Vec<Span> = if line.contains("█") {
+            let spans: Vec<Span> = if line.contains('█') {
                 // Style the ASCII art logo (block characters) with primary color
                 line.chars()
                     .map(|c| {
@@ -99,12 +100,11 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
                         }
                     })
                     .collect()
-            } else if line.contains("╔") || line.contains("║") || line.contains("╚") {
+            } else if line.contains('╔') || line.contains('║') || line.contains('╚') {
                 // Style the box with primary color
                 line.chars()
                     .map(|c| {
-                        if c == '╔' || c == '║' || c == '╚' || c == '═' || c == '╗' || c == '╝'
-                        {
+                        if ['╔', '║', '╚', '═', '╗', '╝'].contains(&c) {
                             Span::styled(
                                 c.to_string(),
                                 Style::default()
@@ -163,7 +163,7 @@ pub fn render_messages_tab(
                 "Order: Unknown".to_string()
             };
 
-            let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp as i64, 0)
+            let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "Unknown time".to_string());
 

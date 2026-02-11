@@ -8,7 +8,14 @@ use ratatui::widgets::{ListItem, Paragraph, Scrollbar, ScrollbarOrientation, Scr
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-use super::{ChatParty, ChatSender, DisputeChatMessage, PRIMARY_COLOR};
+use std::collections::HashMap;
+
+use nostr_sdk::prelude::PublicKey;
+
+use super::{
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
+    PRIMARY_COLOR,
+};
 
 /// Formats user rating with star visualization
 /// Rating must be in 0-5 range. Returns formatted string with stars and stats.
@@ -75,11 +82,257 @@ pub fn format_order_id(order_id: Option<uuid::Uuid>) -> String {
     }
 }
 
+/// Parses one message block (header line "Sender - dd-mm-yyyy - HH:MM:SS" or
+/// "Admin to Buyer/Seller - dd-mm-yyyy - HH:MM:SS", rest = content).
+/// Returns (sender, target_party for Admin, timestamp, content) if valid.
+fn parse_one_message_block(block: &str) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
+    let mut lines = block.lines();
+    let header = lines.next()?;
+    let parts: Vec<&str> = header.splitn(3, " - ").collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let first = parts[0].trim();
+    let (sender, target_party) = match first {
+        "Admin to Buyer" => (ChatSender::Admin, Some(ChatParty::Buyer)),
+        "Admin to Seller" => (ChatSender::Admin, Some(ChatParty::Seller)),
+        "Admin" => (ChatSender::Admin, None),
+        "Buyer" => (ChatSender::Buyer, None),
+        "Seller" => (ChatSender::Seller, None),
+        _ => return None,
+    };
+    let date_str = parts[1].trim();
+    let time_str = parts[2].trim();
+    let date = match chrono::NaiveDate::parse_from_str(date_str, "%d-%m-%Y") {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Malformed date '{}' in chat block: {}", date_str, e);
+            return None;
+        }
+    };
+    let time = match chrono::NaiveTime::parse_from_str(time_str, "%H:%M:%S") {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("Malformed time '{}' in chat block: {}", time_str, e);
+            return None;
+        }
+    };
+    let ts = date.and_time(time).and_utc().timestamp();
+    let content_block = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Some((sender, target_party, ts, content_block))
+}
+
+/// Parses the last message block from file content (blocks separated by "\n\n").
+fn parse_last_message_block(content: &str) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
+    let blocks: Vec<&str> = content
+        .split("\n\n")
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    parse_one_message_block(blocks.last()?)
+}
+
+/// Loads chat messages from ~/.mostrix/dispute_id.txt if the file exists.
+/// Returns messages in file order. On IO/parse error returns None and logs.
+pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> {
+    if uuid::Uuid::parse_str(dispute_id).is_err() {
+        return None;
+    }
+    let home_dir = dirs::home_dir()?;
+    let file_path = home_dir
+        .join(".mostrix")
+        .join(format!("{}.txt", dispute_id));
+    let content = fs::read_to_string(&file_path).ok()?;
+    let mut messages = Vec::new();
+    for block in content.split("\n\n").filter(|s| !s.trim().is_empty()) {
+        if let Some((sender, target_party, ts, content_block)) = parse_one_message_block(block) {
+            messages.push(DisputeChatMessage {
+                sender,
+                content: content_block,
+                timestamp: ts,
+                target_party,
+            });
+        }
+    }
+    if messages.is_empty() {
+        return None;
+    }
+    Some(messages)
+}
+
+/// Get max timestamp for buyer and seller.
+fn get_max_timestamp(messages: &[DisputeChatMessage]) -> (i64, i64) {
+    let buyer_max = messages
+        .iter()
+        .filter(|m| m.sender == ChatSender::Buyer)
+        .map(|m| m.timestamp)
+        .max()
+        .unwrap_or(0);
+    let seller_max = messages
+        .iter()
+        .filter(|m| m.sender == ChatSender::Seller)
+        .map(|m| m.timestamp)
+        .max()
+        .unwrap_or(0);
+    (buyer_max, seller_max)
+}
+
+/// Update last-seen timestamps for buyer and seller.
+/// Uses entry API to ensure entries exist before comparing, so recovered timestamps
+/// from files are stored even if the HashMap was initially empty.
+fn update_last_seen_timestamp(
+    buyer_max_timestamp: i64,
+    seller_max_timestamp: i64,
+    dispute: &AdminDispute,
+    admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
+) {
+    let buyer_entry = admin_chat_last_seen
+        .entry((dispute.dispute_id.clone(), ChatParty::Buyer))
+        .or_insert_with(|| AdminChatLastSeen {
+            last_seen_timestamp: None,
+        });
+    if buyer_max_timestamp > buyer_entry.last_seen_timestamp.unwrap_or(0) {
+        buyer_entry.last_seen_timestamp = Some(buyer_max_timestamp);
+    }
+
+    let seller_entry = admin_chat_last_seen
+        .entry((dispute.dispute_id.clone(), ChatParty::Seller))
+        .or_insert_with(|| AdminChatLastSeen {
+            last_seen_timestamp: None,
+        });
+    if seller_max_timestamp > seller_entry.last_seen_timestamp.unwrap_or(0) {
+        seller_entry.last_seen_timestamp = Some(seller_max_timestamp);
+    }
+}
+
+/// Recover chat history from saved files for InProgress disputes (instant UI).
+/// Populates `admin_dispute_chats` and advances `last_seen_timestamp` in
+/// `admin_chat_last_seen` from file timestamps for incremental fetch filtering.
+pub fn recover_admin_chat_from_files(
+    admin_disputes_in_progress: &[AdminDispute],
+    admin_dispute_chats: &mut HashMap<String, Vec<DisputeChatMessage>>,
+    admin_chat_last_seen: &mut HashMap<(String, ChatParty), AdminChatLastSeen>,
+) {
+    use std::str::FromStr;
+    for dispute in admin_disputes_in_progress {
+        let is_in_progress = dispute
+            .status
+            .as_deref()
+            .and_then(|s| mostro_core::prelude::DisputeStatus::from_str(s).ok())
+            == Some(mostro_core::prelude::DisputeStatus::InProgress);
+        if !is_in_progress {
+            continue;
+        }
+        if let Some(msgs) = load_chat_from_file(&dispute.dispute_id) {
+            admin_dispute_chats.insert(dispute.dispute_id.clone(), msgs.clone());
+            // Get max timestamp for buyer and seller
+            let (buyer_max, seller_max) = get_max_timestamp(&msgs);
+            // Update last-seen timestamps for buyer and seller
+            update_last_seen_timestamp(buyer_max, seller_max, dispute, admin_chat_last_seen);
+        }
+    }
+}
+
+/// Apply fetched admin chat updates back into the UI state and persist
+/// last_seen timestamps to the database.
+pub async fn apply_admin_chat_updates(
+    app: &mut AppState,
+    updates: Vec<AdminChatUpdate>,
+    admin_chat_pubkey: Option<&PublicKey>,
+    pool: &sqlx::SqlitePool,
+) -> Result<(), anyhow::Error> {
+    for update in updates {
+        let dispute_key = update.dispute_id.clone();
+        let party = update.party;
+
+        // Get or create the chat history vector for this dispute
+        let messages_vec = app
+            .admin_dispute_chats
+            .entry(dispute_key.clone())
+            .or_default();
+
+        // Track max timestamp to update last_seen
+        let mut max_ts = app
+            .admin_chat_last_seen
+            .get(&(dispute_key.clone(), party))
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+
+        for (content, ts, sender_pubkey) in update.messages {
+            // Skip messages that we sent ourselves (admin identity), since we
+            // already add them locally when sending.
+            if let Some(admin_pk) = admin_chat_pubkey {
+                if &sender_pubkey == admin_pk {
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    continue;
+                }
+            }
+
+            let sender = match party {
+                ChatParty::Buyer => ChatSender::Buyer,
+                ChatParty::Seller => ChatSender::Seller,
+            };
+
+            // Avoid duplicates: check if a message with same timestamp, sender and
+            // content already exists.
+            let is_duplicate = messages_vec.iter().any(|m: &DisputeChatMessage| {
+                m.timestamp == ts && m.sender == sender && m.content == content
+            });
+            if is_duplicate {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                continue;
+            }
+
+            let msg = DisputeChatMessage {
+                sender,
+                content: content.clone(),
+                timestamp: ts,
+                target_party: None,
+            };
+            save_chat_message(&dispute_key, &msg);
+            messages_vec.push(msg);
+
+            if ts > max_ts {
+                max_ts = ts;
+            }
+        }
+
+        // Update last_seen_timestamp for this dispute/party in memory
+        // Use entry API to ensure entry exists, so updates persist even for new disputes
+        let entry = app
+            .admin_chat_last_seen
+            .entry((dispute_key.clone(), party))
+            .or_insert_with(|| AdminChatLastSeen {
+                last_seen_timestamp: None,
+            });
+        if max_ts > entry.last_seen_timestamp.unwrap_or(0) {
+            entry.last_seen_timestamp = Some(max_ts);
+        }
+
+        // Persist last_seen_timestamp to the database so we can resume incremental
+        // fetching after restart without scanning the full history.
+        if max_ts > 0 {
+            AdminDispute::update_chat_last_seen_by_dispute_id(
+                pool,
+                &dispute_key,
+                max_ts,
+                party == ChatParty::Buyer,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Saves a chat message to a text file in ~/.mostrix/dispute_id.txt
-/// Creates the directory and file if they don't exist, appends if they do
+/// Creates the directory and file if they don't exist, appends if they do.
+/// Idempotent: skips append if the last message in the file already matches (avoids duplicates when refetching from relay).
 pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
     // Validate dispute_id to prevent path traversal attacks
-    // Only allow valid UUID format (alphanumeric, hyphens)
     if uuid::Uuid::parse_str(dispute_id).is_err() {
         log::warn!(
             "Invalid dispute_id format, skipping chat save: {}",
@@ -88,7 +341,6 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         return;
     }
 
-    // Get ~/.mostrix directory path
     let home_dir = match dirs::home_dir() {
         Some(dir) => dir,
         None => {
@@ -98,14 +350,28 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
     };
 
     let mostrix_dir = home_dir.join(".mostrix");
-
-    // Create .mostrix directory if it doesn't exist
     if let Err(e) = fs::create_dir_all(&mostrix_dir) {
         log::warn!("Failed to create .mostrix directory: {}", e);
         return;
     }
 
-    // Format date and time
+    let file_path = mostrix_dir.join(format!("{}.txt", dispute_id));
+
+    // Idempotent: skip append if last message in file already matches
+    if let Ok(existing) = fs::read_to_string(&file_path) {
+        if let Some((last_sender, last_target_party, last_ts, last_content)) =
+            parse_last_message_block(&existing)
+        {
+            if last_sender == message.sender
+                && last_ts == message.timestamp
+                && last_content == message.content
+                && last_target_party == message.target_party
+            {
+                return;
+            }
+        }
+    }
+
     let (date_str, time_str) = DateTime::from_timestamp(message.timestamp, 0)
         .map(|dt| {
             let date = dt.format("%d-%m-%Y").to_string();
@@ -114,21 +380,21 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         })
         .unwrap_or_else(|| ("??-??-????".to_string(), "??:??:??".to_string()));
 
-    // Format sender label
-    let sender_label = match message.sender {
-        ChatSender::Admin => "Admin",
-        ChatSender::Buyer => "Buyer",
-        ChatSender::Seller => "Seller",
+    let sender_label = match (&message.sender, message.target_party) {
+        (ChatSender::Admin, Some(ChatParty::Buyer)) => "Admin to Buyer",
+        (ChatSender::Admin, Some(ChatParty::Seller)) => "Admin to Seller",
+        (ChatSender::Admin, None) => "Admin",
+        (ChatSender::Buyer, _) => "Buyer",
+        (ChatSender::Seller, _) => "Seller",
     };
 
-    // Format message for text file
+    let content_lines = wrap_text_to_lines(&message.content, 80);
+    let content_block = content_lines.join("\n");
     let formatted_message = format!(
         "{} - {} - {}\n{}\n\n",
-        sender_label, date_str, time_str, message.content
+        sender_label, date_str, time_str, content_block
     );
 
-    // Open file in append mode (create if doesn't exist)
-    let file_path = mostrix_dir.join(format!("{}.txt", dispute_id));
     match OpenOptions::new()
         .create(true)
         .append(true)
@@ -147,11 +413,61 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
     }
 }
 
-/// Builds ListItems from chat messages for display in the chat list widget
-/// Filters messages by active chat party and formats them with proper alignment
+/// Wraps text to a maximum display width (in columns), breaking at word boundaries.
+/// Uses ratatui's Span width for Unicode-aware measurement. Words longer than
+/// max_width are placed on their own line.
+fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
+    let max_width = max_width as usize;
+    if max_width == 0 {
+        return vec![content.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    for word in content.split_whitespace() {
+        let word_width = Span::raw(word).width();
+        let space_width = if current_width > 0 { 1 } else { 0 };
+
+        if word_width > max_width {
+            if !current_line.is_empty() {
+                lines.push(std::mem::take(&mut current_line));
+                current_width = 0;
+            }
+            lines.push(word.to_string());
+        } else if current_width + space_width + word_width > max_width {
+            if !current_line.is_empty() {
+                lines.push(std::mem::take(&mut current_line));
+            }
+            current_line = word.to_string();
+            current_width = word_width;
+        } else {
+            if current_width > 0 {
+                current_line.push(' ');
+                current_width += 1;
+            }
+            current_line.push_str(word);
+            current_width += word_width;
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    if lines.is_empty() {
+        lines.push(content.to_string());
+    }
+    lines
+}
+
+/// Builds ListItems from chat messages for display in the chat list widget.
+/// Filters messages by active chat party and formats them with proper alignment.
+/// If `max_content_width` is Some(w), message content is wrapped to at most w
+/// columns per line (word boundaries); long messages use multiple lines.
 pub fn build_chat_list_items(
     messages: &[DisputeChatMessage],
     active_chat_party: ChatParty,
+    max_content_width: Option<u16>,
 ) -> Vec<ListItem<'_>> {
     // First compute the filtered message iterator and collect into Vec
     let filtered_items: Vec<ListItem<'_>> = messages
@@ -160,8 +476,9 @@ pub fn build_chat_list_items(
             // Filter by active chat party
             let should_show = match msg.sender {
                 ChatSender::Admin => {
-                    // Admin messages should only show in the chat party they were sent to
-                    msg.target_party == Some(active_chat_party)
+                    // Admin messages show in the chat party they were sent to.
+                    // When target_party is None (e.g. recovered from file), show in both views.
+                    msg.target_party.is_none_or(|p| p == active_chat_party)
                 }
                 ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
                 ChatSender::Seller => active_chat_party == ChatParty::Seller,
@@ -197,19 +514,29 @@ pub fn build_chat_list_items(
                 let header_span = Span::styled(header_text, Style::default().fg(sender_color));
                 message_lines.push(header_span.into_right_aligned_line());
 
-                let message_span =
-                    Span::styled(msg.content.clone(), Style::default().fg(sender_color));
-                message_lines.push(message_span.into_right_aligned_line());
+                let content_lines = max_content_width
+                    .map(|w| wrap_text_to_lines(&msg.content, w))
+                    .unwrap_or_else(|| vec![msg.content.clone()]);
+                for line in content_lines {
+                    let span = Span::styled(line, Style::default().fg(sender_color));
+                    message_lines.push(span.into_right_aligned_line());
+                }
             } else {
                 // Left-align admin messages
                 message_lines.push(Line::from(vec![Span::styled(
                     header_text,
                     Style::default().fg(sender_color),
                 )]));
-                message_lines.push(Line::from(vec![Span::styled(
-                    msg.content.clone(),
-                    Style::default().fg(sender_color),
-                )]));
+
+                let content_lines = max_content_width
+                    .map(|w| wrap_text_to_lines(&msg.content, w))
+                    .unwrap_or_else(|| vec![msg.content.clone()]);
+                for line in content_lines {
+                    message_lines.push(Line::from(vec![Span::styled(
+                        line,
+                        Style::default().fg(sender_color),
+                    )]));
+                }
             }
 
             // Add empty line for spacing

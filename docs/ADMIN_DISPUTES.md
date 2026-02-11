@@ -69,13 +69,13 @@ The interface is divided into three main sections:
      - Text wrapping with word boundaries
    - **Footer (1 line)**: Context-sensitive keyboard shortcuts
 
-#### Features
+#### Dispute Management Features
 
 - **Real-time chat**: Direct typing with instant visual feedback
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-- **Finalization**: Press Enter with empty input to open finalization popup
+   - **Finalization**: Press **Shift+F** to open the dispute finalization popup from the Disputes in Progress tab
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
@@ -83,7 +83,8 @@ The interface is divided into three main sections:
 - **Up/Down**: Select dispute in sidebar
 - **Tab**: Switch between buyer and seller chat
 - **Type**: Start composing message (when input enabled)
-- **Enter**: Send message or open finalization popup
+- **Enter**: Send message (when input has text)
+- **Shift+F**: Open finalization popup for the selected dispute
 - **PageUp/PageDown**: Scroll chat history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -113,7 +114,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 
-#### Features
+#### Settings Tab Features
 
 - **Mode Display**: Shows current mode (User/Admin) at the top
 - **Mode Switching**: Press `M` key to switch between User and Admin modes
@@ -505,7 +506,7 @@ Admins communicate with buyers and sellers through an integrated chat interface 
   - **Admin messages**: Only shown in the chat view of the party they were sent to
   - **Buyer messages**: Only shown when viewing the Buyer chat
   - **Seller messages**: Only shown when viewing the Seller chat
-- **Scroll support**: 
+- **Scroll support**:
   - **PageUp/PageDown**: Navigate through message history
   - **End**: Jump to bottom of chat (latest messages)
   - **Visual scrollbar**: Right-side scrollbar shows position in chat history (↑/↓/│/█ symbols)
@@ -602,21 +603,63 @@ pub enum ChatSender {
 pub struct DisputeChatMessage {
     pub sender: ChatSender,
     pub content: String,
-    pub timestamp: i64, // Unix timestamp
+    pub timestamp: i64,                  // Unix timestamp
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
+}
+
+/// Per-(dispute, party) last-seen timestamp for admin chat
+pub struct AdminChatLastSeen {
+    pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
 }
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
 pub admin_chat_list_state: ratatui::widgets::ListState,
+pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 ```
+
+##### NIP-59 Chat Flow (Admin ↔ Parties)
+
+- **Message addressing**:
+  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
+  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
+  - Per-party timestamps are tracked in `AppState.admin_chat_last_seen` under `(dispute_id, ChatParty)`.
+
+- **Sending messages**:
+  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events addressed to the party's trade pubkey:
+    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+  - The event is then published to the relays.
+
+- **Receiving messages**:
+  - A background task periodically polls for new `GiftWrap` events addressed to the admin pubkey:
+    - Uses `last_seen_timestamp` to only process messages created after the last processed one.
+    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
+    - Skips messages signed by the admin identity (already added locally on send).
+
+- **Behavior on restart (Chat Restore at Startup)**:
+  - Admin chat has full restart-safe behavior:
+    - Chat messages are persisted as human-readable transcripts under:
+
+      ```text
+      ~/.mostrix/<dispute_id>.txt
+      ```
+
+    - At startup, `recover_admin_chat_from_files`:
+      - Reads each transcript file.
+      - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
+      - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
+    - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
+    - The background listener uses these DB fields as cursors for `fetch_admin_chat_updates`, so only newer NIP‑59 events are fetched after restart. A single-flight guard ensures only one admin chat fetch runs at a time (see `src/util/order_utils/fetch_scheduler.rs`).
+  - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
 
 **In Chat Interface**:
 
 - **Type**: Start typing message directly (when input enabled)
-- **Enter**: Send message (if input has text) or open finalization popup (if empty)
+- **Enter**: Send message (when input has text)
+- **Shift+F**: Open finalization popup for the currently selected dispute
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)
@@ -651,18 +694,26 @@ pub admin_chat_list_state: ratatui::widgets::ListState,
 - Hard breaks at available width when no spaces found
 - Caps at 10 lines maximum with visual indicators
 
-**Future Enhancement**:
+**Previous Implementation Note** (historical):
 
-- Currently uses mockup responses for testing (pseudo-random selection based on message length)
-- Ready for integration with real Nostr DM sending/receiving
-- TODO markers indicate where real DM logic should be integrated
+- Early versions used local mockup responses for testing before real Nostr DM integration.
+- Shared-key chat derivation was removed in favor of direct party pubkey addressing.
+
+**Performance Optimizations**:
+
+- Pubkey-to-dispute routing uses `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
+- Chat message sending is spawned as an async task (`tokio::spawn`) to avoid blocking the UI thread.
+- Gift wrap fetching uses a 7-day rolling window to limit relay queries.
+- Unified `update_chat_last_seen_by_dispute_id` function replaces separate buyer/seller update methods.
 
 **Source Files**:
 
 - `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, and scrollbar
-- `src/ui/key_handler/enter_handlers.rs` - Message sending logic with mockup responses
+- `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
 - `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key
-- `src/ui/helpers.rs` - Scrollbar rendering (`render_chat_scrollbar`)
+- `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing with error handling
+- `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
+- `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 
 ## Dispute Resolution Actions
 
@@ -696,7 +747,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 Currency filters allow admins (and users) to focus on specific fiat currencies when viewing orders. This is particularly useful for admins monitoring disputes in specific markets.
 
-#### Features
+#### Currency Filter Features
 
 - **Add Currency Filter**: Add fiat currency codes (e.g., USD, EUR, ARS) to filter orders
   - Currency codes are validated (non-empty, max 10 characters)
@@ -708,7 +759,7 @@ Currency filters allow admins (and users) to focus on specific fiat currencies w
 - **Dynamic Filtering**: Currency filters are applied immediately without restart
 - **Status Bar Display**: Active currency filters are displayed in the status bar
 
-#### Implementation
+#### Currency Filter Implementation
 
 **Source**: `src/ui/key_handler/settings.rs:55-78`
 

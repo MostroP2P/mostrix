@@ -201,9 +201,9 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 
 ### 5. Admin Chat System
 
-**Status**: ✅ **Fully Implemented**
+**Status**: ✅ **Fully Implemented (NIP‑59 Based)**
 
-The admin chat system in the "Disputes in Progress" tab provides real-time communication:
+The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys.
 
 #### Data Structures
 
@@ -220,45 +220,89 @@ pub struct DisputeChatMessage {
     pub timestamp: i64,
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
 }
+
+pub struct AdminChatLastSeen {
+    pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
+}
 ```
 
-**Storage**: Messages are stored in `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
+**Storage**:
 
-#### Features
+- `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
+- `AppState.admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>` keyed by (dispute_id, party).
 
-- **Direct input**: Type immediately without mode switching (when input enabled)
-- **Input toggle**: Press **Shift+I** to enable/disable chat input
-- **Dynamic sizing**: Input box grows from 1 to 10 lines based on content
-- **Text wrapping**: Intelligent word-boundary wrapping with trim behavior
+#### UI Features
+
+- **Direct input**: Type immediately without mode switching (when input enabled).
+- **Input toggle**: Press **Shift+I** to enable/disable chat input.
+- **Dynamic sizing**: Input box grows from 1 to 10 lines based on content.
+- **Text wrapping**: Intelligent word-boundary wrapping with trim behavior.
 - **Scrolling**:
-  - **PageUp/PageDown**: Navigate through message history
-  - **End**: Jump to bottom of chat (latest messages)
-  - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols)
-- **Party filtering**: Messages are filtered by active party:
-  - Admin messages only shown in the chat view of the party they were sent to
-  - Buyer/Seller messages only shown in their respective chat views
-- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators
+  - **PageUp/PageDown**: Navigate through message history.
+  - **End**: Jump to bottom of chat (latest messages).
+  - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols).
+- **Party filtering**:
+  - Admin messages are only shown in the chat view of the party they were sent to (based on `target_party`).
+  - Buyer/Seller messages are only shown in their respective chat views.
+- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators.
 
 #### Input Handling Priority
 
 The key handler processes input in this order:
 
-1. Invoice input (highest priority, when in invoice mode)
-2. Key input (for settings popups)
-3. **Shift+I toggle** (for enabling/disabling admin chat input)
-4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled)
-5. Other character/form input
+1. Invoice input (highest priority, when in invoice mode).
+2. Key input (for settings popups).
+3. **Shift+I toggle** (for enabling/disabling admin chat input).
+4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled).
+5. Other character/form input.
 
-**Source**: `src/ui/key_handler/mod.rs:155-172` (Shift+I toggle), `src/ui/key_handler/mod.rs:168-172` (`handle_admin_chat_input`)
+**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
+
+#### NIP‑59 Chat Internals
+
+- **Message addressing**:
+  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
+  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
+
+- **Sending messages**:
+  - Admin messages are sent via `send_admin_chat_message_to_pubkey` (spawned as an async task to avoid blocking the UI):
+    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+    - Published to relays without blocking the main UI thread.
+
+- **Receiving messages**:
+  - The main loop (every 5 seconds when in Admin mode) calls `spawn_admin_chat_fetch`, which runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard ensures only one fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
+  - For active disputes the fetch:
+    - Uses `last_seen_timestamp` to request only newer `GiftWrap` events (7-day rolling window).
+    - Routes messages to disputes using a `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
+    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
+    - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
+
+- **Behavior on restart (Chat Restore at Startup)**:
+  - Admin chat uses a **hybrid persistence model** to provide instant UI restore and incremental sync:
+    - For each in‑progress dispute, chat transcripts are stored as human‑readable files under:
+
+      ```text
+      ~/.mostrix/<dispute_id>.txt
+      ```
+
+    - On startup, `recover_admin_chat_from_files`:
+      - Reads each existing transcript file.
+      - Rebuilds `AppState.admin_dispute_chats` so the Disputes in Progress tab immediately shows previous messages.
+      - Computes the latest timestamps per party and updates `AppState.admin_chat_last_seen`.
+    - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id` so that:
+      - Background NIP‑59 fetches only request **newer** events (7-day rolling window).
+      - Chat resumes from where it left off without replaying the full history.
+    - Messages are sent directly to party pubkeys without shared key derivation.
 
 #### Exit Confirmation
 
 Mostrix includes a safety feature to prevent accidental exits:
 
-- **Trigger**: Press `Q` key or navigate to Exit tab
+- **Trigger**: Navigate to the Exit tab (User or Admin) and confirm
 - **Popup**: Shows confirmation dialog with "Are you sure you want to exit Mostrix?"
 - **Navigation**: Use Left/Right arrows to select Yes/No buttons
 - **Confirmation**: Press Enter to confirm exit, or Esc to cancel
 - **Visual**: Green "✓ YES" button and red "✗ NO" button with clear styling
 
-**Source**: `src/ui/exit_confirm.rs`, `src/ui/key_handler/enter_handlers.rs:645-655`
+**Source**: `src/ui/exit_confirm.rs`, `src/ui/key_handler/enter_handlers.rs`

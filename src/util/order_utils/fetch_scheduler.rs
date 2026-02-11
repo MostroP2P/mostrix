@@ -1,8 +1,15 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{interval_at, Duration, Instant};
+
+use crate::models::AdminDispute;
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
+use crate::util::chat_utils::fetch_admin_chat_updates;
 
 use super::{get_disputes, get_orders};
 
@@ -12,6 +19,9 @@ pub struct FetchSchedulerResult {
     pub orders: Arc<Mutex<Vec<SmallOrder>>>,
     pub disputes: Arc<Mutex<Vec<Dispute>>>,
 }
+
+// Semaphore to prevent multiple chat messages from being processed at the same time
+pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
 
 /// Start background tasks to periodically fetch orders and disputes
 ///
@@ -88,4 +98,27 @@ pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchS
     });
 
     FetchSchedulerResult { orders, disputes }
+}
+
+/// Spawns a one-off background task to fetch admin chat updates and send the result on the given channel.
+pub fn spawn_admin_chat_fetch(
+    client: Client,
+    admin_keys: Keys,
+    disputes: Vec<AdminDispute>,
+    admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
+    tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+) {
+    // If the semaphore is already true, return
+    if CHAT_MESSAGES_SEMAPHORE
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let result =
+            fetch_admin_chat_updates(&client, &admin_keys, &disputes, &admin_chat_last_seen).await;
+        CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
+        let _ = tx.send(result);
+    });
 }

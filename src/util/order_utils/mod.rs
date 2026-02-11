@@ -19,7 +19,7 @@ pub use execute_admin_settle::execute_admin_settle;
 pub use execute_finalize_dispute::execute_finalize_dispute;
 pub use execute_send_msg::execute_send_msg;
 pub use execute_take_dispute::execute_take_dispute;
-pub use fetch_scheduler::{start_fetch_scheduler, FetchSchedulerResult};
+pub use fetch_scheduler::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult};
 pub use helper::{
     dispute_from_tags, fetch_events_list, get_disputes, get_orders, order_from_tags,
     parse_disputes_events, parse_orders_events,

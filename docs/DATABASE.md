@@ -49,31 +49,55 @@ On first startup, Mostrix:
 
 For existing databases, Mostrix automatically runs migrations to add new columns or update the schema as needed. Migrations are:
 
-- **Atomic**: All migration steps are wrapped in transactions to ensure consistency
-- **Safe**: Migrations check for column existence before attempting to add them
-- **Error-aware**: Non-column-related errors (connection issues, table missing, etc.) are properly propagated rather than triggering incorrect migrations
+- **Atomic**: All migration steps are wrapped in transactions to ensure consistency.
+- **Safe**: Migrations check for column existence before attempting to add them.
+- **Error-aware**: Non-column-related errors (connection issues, table missing, etc.) are properly propagated rather than triggering incorrect migrations.
 
-**Source**: `src/db.rs:110`
+Recent migrations for the `admin_disputes` table add the following fields:
 
-```110:170:src/db.rs
+- **`initiator_info` / `counterpart_info`**: JSON-encoded user info for each party.
+- **`fiat_code`**: Fiat currency code for the disputed order.
+- **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
+- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental NIP‑59 fetches and chat restore at startup.
+
+**Source**: `src/db.rs:113`
+
+```113:238:src/db.rs
+/// Run database migrations for existing databases
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
-    // Check if columns exist by attempting to query them
-    // and checking for specific SQLite errors
+    // Migration: Add initiator_info and counterpart_info columns if they don't exist
+    // Check if columns exist by attempting to query them and checking for specific SQLite errors
     async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
-        // ... column existence check ...
+        // ...
     }
 
     // Check if columns exist
     let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
     let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
+    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
+    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
+    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
+    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
 
     // Only run migration if at least one column is missing
-    if !has_initiator_info || !has_counterpart_info {
-        // Wrap both ALTER TABLE statements in a transaction for atomicity
+    if !has_initiator_info
+        || !has_counterpart_info
+        || !has_fiat_code
+        || !has_dispute_id
+        || !has_buyer_chat_last_seen
+        || !has_seller_chat_last_seen
+    {
+        log::info!("Running migration: Adding missing columns to admin_disputes table");
+
+        // Wrap all ALTER TABLE statements in a transaction for atomicity
         let mut tx = pool.begin().await?;
-        // ... migration logic ...
+
+        // ... ALTER TABLE statements for each missing column ...
+
         tx.commit().await?;
+        log::info!("Migration completed successfully");
     }
+
     Ok(())
 }
 ```
@@ -214,11 +238,12 @@ The `orders` table is essential for:
 
 Stores dispute information received from Mostro when an admin takes a dispute. This table is used exclusively in admin mode to track and manage disputes that the admin has taken responsibility for resolving.
 
-**Schema**:
+**Schema** (simplified, see `src/db.rs` for full definition):
 
 ```sql
 CREATE TABLE IF NOT EXISTS admin_disputes (
     id TEXT PRIMARY KEY,
+    dispute_id TEXT NOT NULL,
     kind TEXT,
     status TEXT,
     hash TEXT,
@@ -235,16 +260,19 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
     payment_method TEXT NOT NULL,
     amount INTEGER NOT NULL,
     fiat_amount INTEGER NOT NULL,
+    fiat_code TEXT NOT NULL,
     fee INTEGER NOT NULL,
     routing_fee INTEGER NOT NULL,
     buyer_invoice TEXT,
-    invoice_held_at INTEGER NOT NULL,
+    invoice_held_at INTEGER,
     taken_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    buyer_chat_last_seen INTEGER,
+    seller_chat_last_seen INTEGER
 );
 ```
 
-**Source**: Based on `SolverDisputeInfo` struct from Mostro protocol
+**Source**: `src/db.rs` and `SolverDisputeInfo` struct from Mostro protocol
 
 #### Dispute Table Fields
 
@@ -267,21 +295,25 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 | `payment_method` | `TEXT` | Payment method used for the order. |
 | `amount` | `INTEGER` | Amount in satoshis. |
 | `fiat_amount` | `INTEGER` | Amount in fiat currency (smallest unit, e.g., cents). |
+| `fiat_code` | `TEXT` | Fiat currency code (e.g., "USD", "EUR") for the disputed order. |
 | `fee` | `INTEGER` | Fee amount in satoshis. |
 | `routing_fee` | `INTEGER` | Lightning routing fee in satoshis. |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). NULL if not available. |
-| `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created. |
+| `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created (if available). |
 | `taken_at` | `INTEGER` | Unix timestamp when the admin took the dispute. |
 | `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
+| `buyer_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the buyer side (used for incremental fetch and restore). |
+| `seller_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the seller side (used for incremental fetch and restore). |
 
 #### Purpose
 
 The `admin_disputes` table is essential for:
 
-- **Dispute Tracking**: Maintains a local record of all disputes the admin has taken
-- **State Persistence**: Allows the admin to see active disputes across application restarts
-- **Resolution Context**: Stores all necessary information for resolving disputes (parties, amounts, invoices, etc.)
-- **Privacy Mode Tracking**: Records which parties are using full privacy mode, which affects communication methods
+- **Dispute Tracking**: Maintains a local record of all disputes the admin has taken.
+- **State Persistence**: Allows the admin to see active disputes across application restarts.
+- **Resolution Context**: Stores all necessary information for resolving disputes (parties, amounts, invoices, etc.).
+- **Privacy Mode Tracking**: Records which parties are using full privacy mode, which affects communication methods.
+- **Chat Restore Cursors**: `buyer_chat_last_seen` and `seller_chat_last_seen` persist the last processed NIP‑59 timestamps so that admin chat can resume incrementally after restart without replaying the full history.
 
 #### Data Persistence
 
@@ -351,25 +383,40 @@ The relationship between `users.last_trade_index` and `orders.trade_keys` is cri
     let _ = User::update_last_trade_index(pool, next_idx).await;
 ```
 
-## Stateless Message Recovery
+## Message Recovery Strategy
 
-Mostrix uses a "fetch-on-startup" strategy rather than storing all messages locally:
+Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on-startup for trade messages with lightweight state for admin chat:
 
-1. **No Message Database**: Messages are not stored in the database
-2. **Active Order Tracking**: Only order IDs and trade keys are persisted
-3. **Startup Sync**: On startup, the client:
-   - Loads all orders from the database
-   - Re-derives trade keys for each order
-   - Queries Nostr relays for recent messages
-   - Reconstructs the current state from the latest messages
+- **Orders and Trades**:
+  - Messages are not stored in the database.
+  - Only order IDs and trade keys are persisted.
+  - On startup the client:
+    - Loads all orders from the database.
+    - Re-derives trade keys for each order.
+    - Queries Nostr relays for recent messages.
+    - Reconstructs the current state from the latest messages.
 
-This approach ensures:
+- **Admin Chat (Disputes in Progress)**:
+  - Per‑dispute chat transcripts are stored as human‑readable text files:
 
-- **Always Up-to-Date**: State is synchronized with Mostro daemon on every startup
-- **No State Drift**: Local state matches what Mostro knows
-- **Simpler Architecture**: No need to maintain a message database
+    ```text
+    ~/.mostrix/<dispute_id>.txt
+    ```
 
-For more details, see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#stateless-recovery).
+  - Each file contains a chronological log of messages with headers like `Admin to Buyer - dd-mm-yyyy - HH:MM:SS`.
+  - At startup, `recover_admin_chat_from_files` rebuilds `admin_dispute_chats` in memory from these files and computes the latest buyer/seller timestamps.
+  - These timestamps are persisted in `admin_disputes.buyer_chat_last_seen` and `admin_disputes.seller_chat_last_seen` via `update_chat_last_seen_by_dispute_id` (unified function that handles both parties based on an `is_buyer` flag and returns affected row count).
+  - Background NIP‑59 fetches use the stored timestamps as cursors (7-day rolling window) to request only newer events, providing:
+    - **Instant UI restore** for existing disputes.
+    - **Incremental network sync** without replaying full history.
+
+This approach keeps the core message flow largely stateless while giving admin chat a robust, restart‑safe experience.
+
+For more details, see:
+
+- `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers.rs`.
+- `update_chat_last_seen_by_dispute_id` in `src/models.rs` (unified DB update with row-affected verification).
+- [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#stateless-recovery) for protocol‑level behavior.
 
 ## Security Considerations
 

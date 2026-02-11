@@ -287,6 +287,8 @@ pub struct AdminDispute {
     pub invoice_held_at: Option<i64>,
     pub taken_at: i64,
     pub created_at: i64,
+    pub buyer_chat_last_seen: Option<i64>,
+    pub seller_chat_last_seen: Option<i64>,
 }
 
 impl AdminDispute {
@@ -295,6 +297,7 @@ impl AdminDispute {
         pool: &SqlitePool,
         dispute_info: SolverDisputeInfo,
         dispute_id: String,
+        fiat_code_from_relay: Option<String>,
     ) -> Result<Self> {
         // Validate required fields
         if dispute_info.buyer_pubkey.is_none() || dispute_info.seller_pubkey.is_none() {
@@ -314,19 +317,10 @@ impl AdminDispute {
             .as_ref()
             .and_then(|info| serde_json::to_string(info).ok());
 
-        // Try to get fiat_code from the related order using dispute ID
-        // In Mostro, the dispute ID typically matches the order ID
-        let fiat_code = match Order::get_by_id(pool, &dispute_info.id.to_string()).await {
-            Ok(order) => order.fiat_code,
-            Err(_) => {
-                // Order not found, use default
-                log::debug!(
-                    "Order not found for dispute {}, using default fiat_code",
-                    dispute_info.id
-                );
-                "USD".to_string()
-            }
-        };
+        // Resolve fiat_code from relay (admin never has the user's order in local DB); default USD if missing
+        let fiat_code = fiat_code_from_relay
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "USD".to_string());
 
         let dispute = AdminDispute {
             id: dispute_info.id.to_string(), // Order ID
@@ -356,6 +350,8 @@ impl AdminDispute {
             invoice_held_at: Some(dispute_info.invoice_held_at),
             taken_at: dispute_info.taken_at,
             created_at: dispute_info.created_at,
+            buyer_chat_last_seen: None,
+            seller_chat_last_seen: None,
         };
 
         // Try insert; if id already exists, perform an update instead
@@ -390,9 +386,10 @@ impl AdminDispute {
                 initiator_full_privacy, counterpart_full_privacy,
                 initiator_info, counterpart_info,
                 premium, payment_method, amount, fiat_amount, fiat_code, fee, routing_fee,
-                buyer_invoice, invoice_held_at, taken_at, created_at
+                buyer_invoice, invoice_held_at, taken_at, created_at,
+                buyer_chat_last_seen, seller_chat_last_seen
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -420,6 +417,8 @@ impl AdminDispute {
         .bind(self.invoice_held_at)
         .bind(self.taken_at)
         .bind(self.created_at)
+        .bind(self.buyer_chat_last_seen)
+        .bind(self.seller_chat_last_seen)
         .execute(pool)
         .await?;
         Ok(())
@@ -435,7 +434,7 @@ impl AdminDispute {
                 initiator_info = ?, counterpart_info = ?,
                 premium = ?, payment_method = ?, amount = ?, fiat_amount = ?, fiat_code = ?,
                 fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
-                taken_at = ?, created_at = ?
+                taken_at = ?, created_at = ?, buyer_chat_last_seen = ?, seller_chat_last_seen = ?
             WHERE id = ?
             "#,
         )
@@ -463,6 +462,8 @@ impl AdminDispute {
         .bind(self.invoice_held_at)
         .bind(self.taken_at)
         .bind(self.created_at)
+        .bind(self.buyer_chat_last_seen)
+        .bind(self.seller_chat_last_seen)
         .bind(&self.id)
         .execute(pool)
         .await?;
@@ -474,6 +475,7 @@ impl AdminDispute {
         let mut disputes = sqlx::query_as::<_, AdminDispute>(
             r#"SELECT * FROM admin_disputes ORDER BY taken_at DESC"#,
         )
+        .bind(DisputeStatus::InProgress.to_string())
         .fetch_all(pool)
         .await?;
 
@@ -524,6 +526,30 @@ impl AdminDispute {
         Ok(result.map(|(id,)| id))
     }
 
+    /// Update chat last_seen timestamp (unix seconds) for buyer or seller using dispute_id.
+    /// Returns the number of rows affected (0 if dispute_id not found).
+    ///
+    /// # Arguments
+    /// * `is_buyer` - true to update buyer_chat_last_seen, false for seller_chat_last_seen
+    pub async fn update_chat_last_seen_by_dispute_id(
+        pool: &SqlitePool,
+        dispute_id: &str,
+        ts: i64,
+        is_buyer: bool,
+    ) -> Result<u64> {
+        let sql = if is_buyer {
+            "UPDATE admin_disputes SET buyer_chat_last_seen = ? WHERE dispute_id = ?"
+        } else {
+            "UPDATE admin_disputes SET seller_chat_last_seen = ? WHERE dispute_id = ?"
+        };
+        let result = sqlx::query(sql)
+            .bind(ts)
+            .bind(dispute_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Update the status of a dispute to Settled
     ///
     /// This is called when an admin settles a dispute in favor of the buyer.
@@ -561,7 +587,9 @@ impl AdminDispute {
             .map(|s| {
                 matches!(
                     s,
-                    DisputeStatus::Settled | DisputeStatus::SellerRefunded | DisputeStatus::Released
+                    DisputeStatus::Settled
+                        | DisputeStatus::SellerRefunded
+                        | DisputeStatus::Released
                 )
             })
             .unwrap_or(false)

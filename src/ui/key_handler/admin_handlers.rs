@@ -10,6 +10,7 @@ use crate::ui::key_handler::confirmation::{
 };
 use crate::ui::key_handler::settings::save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{validate_npub, validate_nsec};
+use crate::util::order_utils::execute_take_dispute;
 
 /// Helper function to execute taking a dispute.
 ///
@@ -30,14 +31,7 @@ pub(crate) fn execute_take_dispute_action(
     let result_tx = order_result_tx.clone();
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        match crate::util::order_utils::execute_take_dispute(
-            &dispute_id,
-            &client_clone,
-            mostro_pubkey,
-            &pool_clone,
-        )
-        .await
-        {
+        match execute_take_dispute(&dispute_id, &client_clone, mostro_pubkey, &pool_clone).await {
             Ok(_) => {
                 let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
                     "✅ Dispute {} taken successfully!",
@@ -69,12 +63,9 @@ pub(crate) fn execute_add_solver_action(
     let solver_pubkey_clone = solver_pubkey.clone();
     let client_clone = client.clone();
     let result_tx = order_result_tx.clone();
-    let mostro_pubkey_clone = mostro_pubkey;
 
     tokio::spawn(async move {
-        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey_clone)
-            .await
-        {
+        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey).await {
             Ok(_) => {
                 let _ = result_tx.send(crate::ui::OrderResult::Info(
                     "Solver added successfully".to_string(),
@@ -143,9 +134,7 @@ pub(crate) fn handle_enter_admin_mode(
     app: &mut AppState,
     mode: UiMode,
     default_mode: UiMode,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
 ) {
     match mode {
         UiMode::AdminMode(AdminMode::AddSolver(key_state)) => {
@@ -169,9 +158,9 @@ pub(crate) fn handle_enter_admin_mode(
                 execute_add_solver_action(
                     app,
                     solver_pubkey,
-                    client,
-                    mostro_pubkey,
-                    order_result_tx,
+                    ctx.client,
+                    ctx.mostro_pubkey,
+                    ctx.order_result_tx,
                 );
             } else {
                 // NO selected - go back to input

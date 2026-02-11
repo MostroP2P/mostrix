@@ -101,17 +101,22 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(_, _)) => {
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. }) => {
             // Cancel finalization, return to managing disputes
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             true
         }
-        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute(dispute_id, is_settle, _)) => {
+        UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+            dispute_id,
+            is_settle,
+            ..
+        }) => {
             // Cancel confirmation, return to finalization popup
-            app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
-                *dispute_id,
-                if *is_settle { 0 } else { 1 }, // Restore the button that was selected
-            ));
+            app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                dispute_id: *dispute_id,
+                // Restore the button that was selected: 0=Pay Buyer, 1=Refund Seller
+                selected_button_index: if *is_settle { 0 } else { 1 },
+            });
             true
         }
         UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_)) => {

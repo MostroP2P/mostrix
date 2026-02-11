@@ -1,19 +1,15 @@
+use crate::ui::key_handler::EnterKeyContext;
+use crate::ui::OrderResult;
 use crate::ui::{AdminMode, AppState, MessageViewState, UiMode, UserMode, UserRole};
 use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
 use mostro_core::prelude::*;
-use nostr_sdk::Client;
-use sqlx::SqlitePool;
-use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 /// Handle Enter key when viewing a message.
 pub fn handle_enter_viewing_message(
     app: &mut AppState,
     view_state: &MessageViewState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    ctx: &EnterKeyContext<'_>,
 ) {
     // Only proceed if YES is selected
     if !view_state.selected_button {
@@ -26,7 +22,7 @@ pub fn handle_enter_viewing_message(
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
         _ => {
-            let _ = order_result_tx.send(crate::ui::OrderResult::Error(
+            let _ = ctx.order_result_tx.send(OrderResult::Error(
                 "Invalid action for send message".to_string(),
             ));
             let default_mode = match app.user_role {
@@ -40,9 +36,9 @@ pub fn handle_enter_viewing_message(
 
     // Get order_id from view_state
     let Some(order_id) = view_state.order_id else {
-        let _ = order_result_tx.send(crate::ui::OrderResult::Error(
-            "No order ID in message".to_string(),
-        ));
+        let _ = ctx
+            .order_result_tx
+            .send(OrderResult::Error("No order ID in message".to_string()));
         let default_mode = match app.user_role {
             UserRole::User => UiMode::UserMode(UserMode::Normal),
             UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
@@ -59,9 +55,10 @@ pub fn handle_enter_viewing_message(
     app.mode = default_mode;
 
     // Spawn async task to send message
-    let pool_clone = pool.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let result_tx = ctx.order_result_tx.clone();
 
     tokio::spawn(async move {
         match execute_send_msg(
@@ -74,34 +71,28 @@ pub fn handle_enter_viewing_message(
         .await
         {
             Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(
-                    "Message sent successfully".to_string(),
-                ));
+                let _ = result_tx.send(OrderResult::Info("Message sent successfully".to_string()));
             }
             Err(e) => {
                 log::error!("Failed to send message: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(OrderResult::Error(e.to_string()));
             }
         }
     });
 }
 
 /// Handle Enter key for message notifications (AddInvoice, PayInvoice, etc.)
-#[allow(clippy::too_many_arguments)]
 pub fn handle_enter_message_notification(
     app: &mut AppState,
-    client: &Client,
-    pool: &SqlitePool,
+    ctx: &EnterKeyContext<'_>,
     action: &mostro_core::prelude::Action,
     invoice_state: &mut crate::ui::InvoiceInputState,
-    mostro_pubkey: nostr_sdk::PublicKey,
     order_id: Option<Uuid>,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
 ) {
     match action {
         Action::AddInvoice => {
             // For AddInvoice, Enter submits the invoice
-            let order_result_tx_clone = order_result_tx.clone();
+            let order_result_tx_clone = ctx.order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
                     // Set waiting mode based on user role
@@ -113,8 +104,9 @@ pub fn handle_enter_message_notification(
 
                     // Send invoice to Mostro
                     let invoice_state_clone = invoice_state.clone();
-                    let pool_clone = pool.clone();
-                    let client_clone = client.clone();
+                    let pool_clone = ctx.pool.clone();
+                    let client_clone = ctx.client.clone();
+                    let mostro_pubkey = ctx.mostro_pubkey;
                     tokio::spawn(async move {
                         match execute_add_invoice(
                             &order_id,
@@ -126,14 +118,14 @@ pub fn handle_enter_message_notification(
                         .await
                         {
                             Ok(_) => {
-                                let _ = order_result_tx_clone.send(crate::ui::OrderResult::Info(
+                                let _ = order_result_tx_clone.send(OrderResult::Info(
                                     "Invoice sent successfully".to_string(),
                                 ));
                             }
                             Err(e) => {
                                 log::error!("Failed to add invoice: {}", e);
-                                let _ = order_result_tx_clone
-                                    .send(crate::ui::OrderResult::Error(e.to_string()));
+                                let _ =
+                                    order_result_tx_clone.send(OrderResult::Error(e.to_string()));
                             }
                         }
                     });
@@ -142,8 +134,9 @@ pub fn handle_enter_message_notification(
         }
         Action::PayInvoice => {}
         _ => {
-            let _ =
-                order_result_tx.send(crate::ui::OrderResult::Error("Invalid action".to_string()));
+            let _ = ctx
+                .order_result_tx
+                .send(OrderResult::Error("Invalid action".to_string()));
         }
     }
 }

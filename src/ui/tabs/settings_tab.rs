@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Number of settings options for Admin role
 pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 6; // Change Mostro Pubkey, Add Nostr Relay, Add Currency Filter, Clear Currency Filters, Add Dispute Solver, Change Admin Key
@@ -79,73 +79,65 @@ pub fn render_settings_tab(
         ]
     };
 
-    let items: Vec<ListItem> = options
+    let list_items: Vec<ListItem> = options
         .iter()
         .enumerate()
-        .map(|(idx, opt)| {
-            let style = if idx == selected_option {
+        .map(|(i, option)| {
+            let style = if i == selected_option {
                 Style::default()
-                    .bg(PRIMARY_COLOR)
-                    .fg(Color::Black)
+                    .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default()
             };
-            ListItem::new(Line::from(vec![Span::styled(*opt, style)]))
+            ListItem::new(Line::from(Span::styled(*option, style)))
         })
         .collect();
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
-        .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-        .highlight_symbol(">> ");
-
-    // Determine list area: center when there's enough width, otherwise use full width
-    let list_width = 30u16; // Desired width for the options list
-    let list_area = if chunks[3].width <= list_width {
-        // Terminal is narrow: use the full available width to avoid clipping text
+    // Determine the list width based on terminal width to keep it readable
+    let list_width = if inner_area.width > 60 {
+        // center the list for wide terminals
+        let chunks = Layout::new(
+            Direction::Horizontal,
+            [
+                Constraint::Fill(1),
+                Constraint::Length(50),
+                Constraint::Fill(1),
+            ],
+        )
+        .flex(Flex::Center)
+        .split(chunks[3]);
+        chunks[1]
+    } else {
+        // use full width on narrow terminals
         chunks[3]
-    } else {
-        // Terminal is wide enough: center the list horizontally
-        let [centered_area] = Layout::horizontal([Constraint::Length(list_width)])
-            .flex(Flex::Center)
-            .areas(chunks[3]);
-        centered_area
     };
 
-    f.render_stateful_widget(
-        list,
-        list_area,
-        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_option)),
-    );
+    let list = List::new(list_items)
+        .block(
+            Block::default()
+                .borders(Borders::NONE)
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::White)
+                .bg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        );
 
-    // Instructions footer
-    let footer_text = if user_role == UserRole::User {
-        vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "M",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to switch to Admin mode", Style::default()),
-        ]
-    } else {
-        vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "M",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to switch to User mode", Style::default()),
-        ]
-    };
+    f.render_widget(list, list_width);
 
+    // Footer hint
     f.render_widget(
-        Paragraph::new(Line::from(footer_text)).alignment(ratatui::layout::Alignment::Center),
-        chunks[4], // Footer area
+        Paragraph::new(Line::from(vec![
+            Span::styled("Use ", Style::default().fg(Color::White)),
+            Span::styled("↑/↓", Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(" to navigate, ", Style::default().fg(Color::White)),
+            Span::styled("Enter", Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(" to select", Style::default().fg(Color::White)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[4],
     );
 }

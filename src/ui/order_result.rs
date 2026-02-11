@@ -4,12 +4,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{OrderResult, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::orders::OrderSuccess;
 
 pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
     let area: Rect = f.area();
     let popup_width = 70;
     let popup_height = match result {
-        OrderResult::Success { .. } => 18,
+        OrderResult::Success(_) => 18,
         OrderResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
         OrderResult::Error(_) | OrderResult::Info(_) => 8,
     };
@@ -28,7 +29,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
     f.render_widget(Clear, popup);
 
     match result {
-        OrderResult::Success {
+        OrderResult::Success(OrderSuccess {
             order_id,
             kind,
             amount,
@@ -40,7 +41,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             premium,
             status,
             trade_index: _,
-        } => {
+        }) => {
             let block = Block::default()
                 .title("✅ Order Created Successfully")
                 .borders(Borders::ALL)

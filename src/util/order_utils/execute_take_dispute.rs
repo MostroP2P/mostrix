@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::models::AdminDispute;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
 use crate::SETTINGS;
 
 /// Take a dispute as an admin.
@@ -105,10 +106,35 @@ pub async fn execute_take_dispute(
                 let mut dispute_info_clone = dispute_info.clone();
                 dispute_info_clone.status = DisputeStatus::InProgress.to_string();
 
+                // Fetch fiat_code from relay (order may not be in local DB); log errors, fallback in AdminDispute::new
+                let fiat_code_from_relay = match fetch_order_fiat_from_relay(
+                    client,
+                    mostro_pubkey,
+                    dispute_info.id,
+                )
+                .await
+                {
+                    Ok(opt) => opt,
+                    Err(e) => {
+                        log::warn!(
+                                "Failed to fetch order fiat from relay for dispute {} (mostro_pubkey: {}): {}",
+                                dispute_info.id,
+                                mostro_pubkey,
+                                e
+                            );
+                        None
+                    }
+                };
+
                 // Save dispute info to database with InProgress status
                 // Pass the dispute_id (from the function parameter) to distinguish it from order_id
-                if let Err(e) =
-                    AdminDispute::new(pool, dispute_info_clone, dispute_id.to_string()).await
+                if let Err(e) = AdminDispute::new(
+                    pool,
+                    dispute_info_clone,
+                    dispute_id.to_string(),
+                    fiat_code_from_relay,
+                )
+                .await
                 {
                     log::error!("Failed to save dispute to database: {}", e);
                     return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));

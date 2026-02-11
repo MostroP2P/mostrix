@@ -22,6 +22,17 @@ use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Context passed to Enter and confirmation handlers to avoid too many arguments.
+pub struct EnterKeyContext<'a> {
+    pub orders: &'a Arc<Mutex<Vec<SmallOrder>>>,
+    pub disputes: &'a Arc<Mutex<Vec<Dispute>>>,
+    pub pool: &'a SqlitePool,
+    pub client: &'a Client,
+    pub mostro_pubkey: PublicKey,
+    pub order_result_tx: &'a UnboundedSender<crate::ui::OrderResult>,
+    pub admin_chat_keys: Option<&'a Keys>,
+}
+
 // Re-export public functions
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
@@ -144,6 +155,7 @@ pub fn handle_key_event(
     mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
+    admin_chat_keys: Option<&nostr_sdk::Keys>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
     let code = key_event.code;
@@ -204,9 +216,11 @@ pub fn handle_key_event(
                     .get(app.selected_in_progress_idx)
                 {
                     if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
-                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
-                            dispute_id, 0, // Default to first button (Pay Buyer)
-                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                            dispute_id,
+                            // Default to first button (Pay Buyer)
+                            selected_button_index: 0,
+                        });
                         return Some(true);
                     }
                 }
@@ -261,10 +275,10 @@ pub fn handle_key_event(
                     view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
-                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization(
+                UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
-                    ref mut selected_button,
-                )) => {
+                    ref mut selected_button_index,
+                }) => {
                     // Check if dispute is finalized to skip disabled buttons
                     let dispute_is_finalized = app
                         .admin_disputes_in_progress
@@ -273,7 +287,7 @@ pub fn handle_key_event(
                         .and_then(is_dispute_finalized)
                         .unwrap_or(false);
 
-                    cycle_finalization_button(selected_button, code, dispute_is_finalized);
+                    cycle_finalization_button(selected_button_index, code, dispute_is_finalized);
                     return Some(true);
                 }
                 _ => {}
@@ -323,15 +337,16 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Enter => {
-            let should_continue = handle_enter_key(
-                app,
+            let ctx = EnterKeyContext {
                 orders,
                 disputes,
                 pool,
                 client,
                 mostro_pubkey,
                 order_result_tx,
-            );
+                admin_chat_keys,
+            };
+            let should_continue = handle_enter_key(app, &ctx);
             Some(should_continue)
         }
         KeyCode::Esc => {
@@ -357,8 +372,16 @@ pub fn handle_key_event(
         }
         // 'q' key removed - use Exit tab instead
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let should_continue =
-                handle_confirm_key(app, pool, client, mostro_pubkey, order_result_tx);
+            let ctx = EnterKeyContext {
+                orders,
+                disputes,
+                pool,
+                client,
+                mostro_pubkey,
+                order_result_tx,
+                admin_chat_keys,
+            };
+            let should_continue = handle_confirm_key(app, &ctx);
             Some(should_continue)
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {

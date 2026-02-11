@@ -6,11 +6,12 @@ pub mod util;
 
 use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
+use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
 use crate::ui::key_handler::handle_key_event;
-use crate::ui::{MessageNotification, OrderResult};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, MessageNotification, OrderResult};
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
-    order_utils::{start_fetch_scheduler, FetchSchedulerResult},
+    order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -64,6 +65,31 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
+}
+
+/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
+/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
+fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
+    let disputes = app.admin_disputes_in_progress.clone();
+
+    for dispute in &disputes {
+        if dispute.buyer_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Buyer),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.buyer_chat_last_seen,
+                },
+            );
+        }
+        if dispute.seller_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Seller),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.seller_chat_last_seen,
+                },
+            );
+        }
+    }
 }
 
 /// Validates the range amount input against min/max limits
@@ -134,9 +160,24 @@ async fn main() -> Result<(), anyhow::Error> {
     let FetchSchedulerResult { orders, disputes } =
         start_fetch_scheduler(client.clone(), mostro_pubkey);
 
+    // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
+    let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
+        None
+    } else {
+        match Keys::parse(&settings.admin_privkey) {
+            Ok(keys) => Some(keys),
+            Err(e) => {
+                log::warn!("Invalid admin_privkey in settings: {}", e);
+                None
+            }
+        }
+    };
+    let admin_chat_pubkey: Option<PublicKey> = admin_keys.as_ref().map(Keys::public_key);
+
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
+    let mut admin_chat_interval = interval(Duration::from_secs(5));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
@@ -146,6 +187,19 @@ async fn main() -> Result<(), anyhow::Error> {
         match AdminDispute::get_all(&pool).await {
             Ok(all_disputes) => {
                 app.admin_disputes_in_progress = all_disputes;
+
+                // Pre-compute chat last seen timestamps for all disputes/parties so that the
+                // background listener can fetch messages incrementally based on
+                // last_seen timestamps stored in the database.
+                if let Some(ref keys) = admin_keys {
+                    seed_admin_chat_last_seen(&mut app, keys);
+                }
+
+                recover_admin_chat_from_files(
+                    &app.admin_disputes_in_progress,
+                    &mut app.admin_dispute_chats,
+                    &mut app.admin_chat_last_seen,
+                );
             }
             Err(e) => {
                 log::warn!("Failed to load admin disputes: {}", e);
@@ -160,6 +214,17 @@ async fn main() -> Result<(), anyhow::Error> {
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
         tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
+
+    // Channel to receive admin chat fetch results (fetch runs in spawned task)
+    let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+
+    // Admin chat keys (for trade-key send/fetch); only set when admin mode
+    let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
+        admin_keys
+    } else {
+        None
+    };
 
     // Spawn background task to listen for messages on active orders
     let client_for_messages = client.clone();
@@ -215,6 +280,27 @@ async fn main() -> Result<(), anyhow::Error> {
                     handle_message_notification(notification, &mut app);
                 }
             }
+            admin_chat_result = admin_chat_updates_rx.recv() => {
+                if let Some(result) = admin_chat_result {
+                    match result {
+                        Ok(updates) => {
+                            if let Err(e) = apply_admin_chat_updates(
+                                &mut app,
+                                updates,
+                                admin_chat_pubkey.as_ref(),
+                                &pool,
+                            )
+                            .await
+                            {
+                                log::warn!("Failed to apply admin chat updates: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to fetch admin chat updates: {}", e);
+                        }
+                    }
+                }
+            }
             maybe_event = events.next() => {
                 // Handle errors in event stream
                 let event = match maybe_event {
@@ -262,14 +348,6 @@ async fn main() -> Result<(), anyhow::Error> {
                     continue;
                 }
 
-                // Handle mouse events (double-click for invoice selection)
-                // Terminal's native text selection will handle the actual selection
-                // since we've removed borders from the invoice area for easier selection
-                // if let Event::Mouse(_mouse_event) = event {
-                //     // Mouse events are enabled for terminal-native text selection
-                //     // The borderless invoice display makes it easier to select the invoice text
-                //     continue;
-                // }
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
@@ -283,6 +361,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         mostro_pubkey,
                         &order_result_tx,
                         &validate_range_amount,
+                        admin_chat_keys.as_ref(),
                     ) {
                         Some(true) => continue, // Key was handled, continue loop
                         Some(false) => break,   // Exit requested (q key)
@@ -295,6 +374,17 @@ async fn main() -> Result<(), anyhow::Error> {
             },
             _ = refresh_interval.tick() => {
                 // Refresh the UI even if there is no input.
+            }
+            _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
+                if let Some(ref admin_keys) = admin_chat_keys {
+                    spawn_admin_chat_fetch(
+                        client.clone(),
+                        admin_keys.clone(),
+                        app.admin_disputes_in_progress.clone(),
+                        app.admin_chat_last_seen.clone(),
+                        admin_chat_updates_tx.clone(),
+                    );
+                }
             }
         }
 

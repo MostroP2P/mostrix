@@ -111,6 +111,17 @@ pow = 0
   - Required proof-of-work difficulty for Nostr events created by Mostrix.  
   - `0` disables additional PoW; higher values increase CPU cost per event but can help with relay anti-spam policies.
 
+### Admin features
+
+When `user_mode = "admin"` and `admin_privkey` is set in `settings.toml`, Mostrix shows admin tabs and allows dispute resolution.
+
+- **Mode switch**: In the Settings tab, press **M** to toggle between User and Admin mode (persisted to `settings.toml`).
+- **Disputes Pending**: Lists disputes with status `Initiated`. Select one and press **Enter** to take the dispute (ownership moves to you; other admins cannot take it). Order fiat code is fetched from the relay when taking a dispute, so admins do not need the order in their local database.
+- **Disputes in Progress**: Workspace for disputes you have taken (`InProgress`). Per-dispute sidebar, header with full dispute info (parties, amounts, currency, ratings), and integrated chat with buyer and seller. Use **Tab** to switch chat view, **Shift+I** to enable/disable chat input, **PageUp**/ **PageDown** to scroll, **End** to jump to latest. Press **Shift+F** to open the finalization popup.
+- **Finalization**: From the popup you can **Pay Buyer** (AdminSettle: release sats to buyer) or **Refund Seller** (AdminCancel: refund to seller), or **Exit** without action. Finalized disputes (Settled, SellerRefunded, Released) cannot be modified.
+- **Settings (admin)**: **Add Dispute Solver** (add another solver by `npub`), **Change Admin Key** (update `admin_privkey`).
+
+For detailed flows and UI, see [docs/ADMIN_DISPUTES.md](docs/ADMIN_DISPUTES.md), [docs/FINALIZE_DISPUTES.md](docs/FINALIZE_DISPUTES.md), and [docs/TUI_INTERFACE.md](docs/TUI_INTERFACE.md).
 
 ### Run
 
@@ -140,6 +151,6 @@ $ cargo run
 - [x] Buyer: add new invoice if payment fails
 - [ ] Rate users
 - [ ] Dispute flow (users)
-- [ ] Dispute management (for admins)
+- [x] Dispute management (for admins): take dispute, chat with parties, finalize (Pay Buyer / Refund Seller), add solver
 
 **Note:** Many parts of the codebase still need thorough testing. Even features marked as complete may require additional testing, bug fixes, and refinement before production use.

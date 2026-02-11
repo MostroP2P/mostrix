@@ -1,17 +1,17 @@
+use std::str::FromStr;
+
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use super::{
-    AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR,
-};
+use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
-use std::str::FromStr;
 
-/// Filter disputes based on the current filter state
-fn get_filtered_disputes(app: &AppState) -> Vec<(usize, &crate::models::AdminDispute)> {
+/// Filter disputes based on the current filter state.
+/// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
+fn get_filtered_disputes(app: &AppState) -> Vec<(usize, crate::models::AdminDispute)> {
     app.admin_disputes_in_progress
         .iter()
         .enumerate()
@@ -30,6 +30,7 @@ fn get_filtered_disputes(app: &AppState) -> Vec<(usize, &crate::models::AdminDis
                 ),
             }
         })
+        .map(|(i, d)| (i, d.clone()))
         .collect()
 }
 
@@ -106,7 +107,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     }
 
     // 2. Main Area
-    if let Some((_original_idx, selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
+    if let Some((_original_idx, ref selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
         // Determine layout based on filter state
         let is_finalized = app.dispute_filter == DisputeFilter::Finalized;
 
@@ -260,18 +261,22 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (buyer_rating, seller_rating) = match is_initiator_buyer {
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
-                let buyer_rating =
-                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
-                let seller_rating =
-                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
+                let buyer_rating = crate::ui::helpers::format_user_rating(
+                    selected_dispute.initiator_info_data.as_ref(),
+                );
+                let seller_rating = crate::ui::helpers::format_user_rating(
+                    selected_dispute.counterpart_info_data.as_ref(),
+                );
                 (buyer_rating, seller_rating)
             }
             Some(false) => {
                 // Initiator is seller, counterpart is buyer
-                let seller_rating =
-                    super::helpers::format_user_rating(selected_dispute.initiator_info_data.as_ref());
-                let buyer_rating =
-                    super::helpers::format_user_rating(selected_dispute.counterpart_info_data.as_ref());
+                let seller_rating = crate::ui::helpers::format_user_rating(
+                    selected_dispute.initiator_info_data.as_ref(),
+                );
+                let buyer_rating = crate::ui::helpers::format_user_rating(
+                    selected_dispute.counterpart_info_data.as_ref(),
+                );
                 (buyer_rating, seller_rating)
             }
             None => {
@@ -447,7 +452,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Only show party tabs, chat, and input for in-progress disputes
         if !is_finalized {
             // Party Tabs
-            let buyer_style = if app.active_chat_party == super::ChatParty::Buyer {
+            let buyer_style = if app.active_chat_party == crate::ui::ChatParty::Buyer {
                 Style::default()
                     .bg(Color::Green)
                     .fg(Color::Black)
@@ -455,7 +460,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 Style::default().fg(Color::Green)
             };
-            let seller_style = if app.active_chat_party == super::ChatParty::Seller {
+            let seller_style = if app.active_chat_party == crate::ui::ChatParty::Seller {
                 Style::default()
                     .bg(Color::Red)
                     .fg(Color::Black)
@@ -505,16 +510,39 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let dispute_id_key = &selected_dispute.dispute_id;
             let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
 
+            // Wrap long messages to ~half chat width so they use multiple lines
+            // Clamp to at least 1 to avoid zero-width wrap problems on narrow terminals
+            let chat_area = main_chunks[2];
+            let max_content_width = (chat_area.width.saturating_sub(2) / 2).max(1);
+
             let items = if let Some(messages) = chat_messages {
-                super::helpers::build_chat_list_items(messages, app.active_chat_party)
+                crate::ui::helpers::build_chat_list_items(
+                    messages,
+                    app.active_chat_party,
+                    Some(max_content_width),
+                )
             } else {
-                super::helpers::build_chat_list_items(&[], app.active_chat_party)
+                crate::ui::helpers::build_chat_list_items(
+                    &[],
+                    app.active_chat_party,
+                    Some(max_content_width),
+                )
             };
 
             // Update ListState to show latest message if we're at the bottom or selection is invalid
             let total_items = items.len();
             if total_items > 0 {
                 let current_selection = app.admin_chat_list_state.selected();
+                // Auto-scroll to bottom when new buyer/seller messages arrive for this dispute/party
+                let current_key = (dispute_id_key.clone(), app.active_chat_party);
+                if let Some((ref d, ref p, last_count)) = app.admin_chat_scroll_tracker {
+                    if *d == current_key.0 && *p == current_key.1 && total_items > last_count {
+                        app.admin_chat_list_state
+                            .select(Some(total_items.saturating_sub(1)));
+                    }
+                }
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, total_items));
                 // Reset to bottom if: no selection, selection is out of bounds, or selection is at the end
                 if current_selection.is_none_or(|sel| sel >= total_items.saturating_sub(1)) {
                     app.admin_chat_list_state
@@ -523,6 +551,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 // No items, clear selection
                 app.admin_chat_list_state.select(None);
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, 0));
             }
 
             let chat_list = List::new(items)
@@ -544,7 +574,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             f.render_stateful_widget(chat_list, main_chunks[2], &mut app.admin_chat_list_state);
 
             // Render scrollbar on the right side of the chat area
-            super::helpers::render_chat_scrollbar(
+            crate::ui::helpers::render_chat_scrollbar(
                 f,
                 main_chunks[2],
                 total_items,

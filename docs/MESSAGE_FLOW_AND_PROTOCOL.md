@@ -451,6 +451,18 @@ If the response's `request_id` doesn't match the sent request, the operation is 
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
 
+## Admin Chat Fetch (Single-Flight)
+
+When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages from buyers and sellers.
+
+- **Trigger**: Every 5 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin` and `admin_chat_keys` is set.
+- **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, admin keys, current disputes, `admin_chat_last_seen`, and the channel to send results.
+- **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) is used so that only one admin chat fetch runs concurrently. On entry, `compare_exchange(false, true)` is used; if it fails (flag already `true`), the call returns without spawning. The flag is cleared when the fetch completes (success or error), then the result is sent on the channel.
+- **Fetch work**: The spawned task calls `fetch_admin_chat_updates` (which internally uses `fetch_gift_wraps_to_admin`), then sends the `Result<Vec<AdminChatUpdate>, _>` to the main loop.
+- **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates` (unchanged): appends new messages to `admin_dispute_chats`, updates `admin_chat_last_seen`, and persists cursors to the database.
+
+This avoids overlapping relay queries and duplicate work when the 5-second tick fires before a previous fetch has finished.
+
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.
 

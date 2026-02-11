@@ -18,10 +18,7 @@ pub fn handle_enter_creating_order(app: &mut AppState, form: &FormState) {
 pub fn handle_enter_taking_order(
     app: &mut AppState,
     take_state: TakeOrderState,
-    pool: &SqlitePool,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
 ) {
     // Enter confirms the selected button
     if take_state.selected_button {
@@ -29,10 +26,10 @@ pub fn handle_enter_taking_order(
         execute_take_order_action(
             app,
             take_state,
-            pool,
-            client,
-            mostro_pubkey,
-            order_result_tx,
+            ctx.pool,
+            ctx.client,
+            ctx.mostro_pubkey,
+            ctx.order_result_tx,
         );
     } else {
         // NO selected - cancel and return to the appropriate normal mode

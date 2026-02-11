@@ -60,7 +60,11 @@ pub async fn execute_finalize_dispute(
 
     // Check if dispute is already finalized - block further actions
     if dispute.is_finalized() {
-        let action_name = if is_settle { "AdminSettle" } else { "AdminCancel" };
+        let action_name = if is_settle {
+            "AdminSettle"
+        } else {
+            "AdminCancel"
+        };
         return Err(anyhow::anyhow!(
             "Cannot execute {}: dispute {} is already finalized (status: {})",
             action_name,
