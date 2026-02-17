@@ -289,15 +289,23 @@ pub struct AdminDispute {
     pub created_at: i64,
     pub buyer_chat_last_seen: Option<i64>,
     pub seller_chat_last_seen: Option<i64>,
+    pub buyer_shared_key_hex: Option<String>,
+    pub seller_shared_key_hex: Option<String>,
 }
 
 impl AdminDispute {
-    /// Create a new admin dispute from SolverDisputeInfo and save it to the database
+    /// Create a new admin dispute from SolverDisputeInfo and save it to the database.
+    ///
+    /// When `admin_keys` is provided, per-dispute shared keys are eagerly derived
+    /// via ECDH (`generate_shared_key(admin_secret, counterparty_pubkey)`) and
+    /// persisted alongside the dispute so that admin chat messages are addressed to
+    /// (and decrypted with) the shared key, mirroring the mostro-chat model.
     pub async fn new(
         pool: &SqlitePool,
         dispute_info: SolverDisputeInfo,
         dispute_id: String,
         fiat_code_from_relay: Option<String>,
+        admin_keys: Option<&nostr_sdk::Keys>,
     ) -> Result<Self> {
         // Validate required fields
         if dispute_info.buyer_pubkey.is_none() || dispute_info.seller_pubkey.is_none() {
@@ -305,6 +313,23 @@ impl AdminDispute {
                 "Invalid dispute data: buyer_pubkey and seller_pubkey are required fields. \
                  The database entry cannot be saved without these fields."
             ));
+        }
+
+        // Eagerly derive per-party shared keys when admin_keys is available
+        let buyer_shared_key_hex = crate::util::chat_utils::derive_shared_key_hex(
+            admin_keys,
+            dispute_info.buyer_pubkey.as_deref(),
+        );
+        let seller_shared_key_hex = crate::util::chat_utils::derive_shared_key_hex(
+            admin_keys,
+            dispute_info.seller_pubkey.as_deref(),
+        );
+
+        if buyer_shared_key_hex.is_some() {
+            log::info!("Derived buyer shared key for dispute {}", dispute_id,);
+        }
+        if seller_shared_key_hex.is_some() {
+            log::info!("Derived seller shared key for dispute {}", dispute_id,);
         }
 
         // Serialize UserInfo to JSON
@@ -352,6 +377,8 @@ impl AdminDispute {
             created_at: dispute_info.created_at,
             buyer_chat_last_seen: None,
             seller_chat_last_seen: None,
+            buyer_shared_key_hex,
+            seller_shared_key_hex,
         };
 
         // Try insert; if id already exists, perform an update instead
@@ -387,9 +414,10 @@ impl AdminDispute {
                 initiator_info, counterpart_info,
                 premium, payment_method, amount, fiat_amount, fiat_code, fee, routing_fee,
                 buyer_invoice, invoice_held_at, taken_at, created_at,
-                buyer_chat_last_seen, seller_chat_last_seen
+                buyer_chat_last_seen, seller_chat_last_seen,
+                buyer_shared_key_hex, seller_shared_key_hex
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -419,6 +447,8 @@ impl AdminDispute {
         .bind(self.created_at)
         .bind(self.buyer_chat_last_seen)
         .bind(self.seller_chat_last_seen)
+        .bind(&self.buyer_shared_key_hex)
+        .bind(&self.seller_shared_key_hex)
         .execute(pool)
         .await?;
         Ok(())
@@ -434,7 +464,8 @@ impl AdminDispute {
                 initiator_info = ?, counterpart_info = ?,
                 premium = ?, payment_method = ?, amount = ?, fiat_amount = ?, fiat_code = ?,
                 fee = ?, routing_fee = ?, buyer_invoice = ?, invoice_held_at = ?,
-                taken_at = ?, created_at = ?, buyer_chat_last_seen = ?, seller_chat_last_seen = ?
+                taken_at = ?, created_at = ?, buyer_chat_last_seen = ?, seller_chat_last_seen = ?,
+                buyer_shared_key_hex = ?, seller_shared_key_hex = ?
             WHERE id = ?
             "#,
         )
@@ -464,6 +495,8 @@ impl AdminDispute {
         .bind(self.created_at)
         .bind(self.buyer_chat_last_seen)
         .bind(self.seller_chat_last_seen)
+        .bind(&self.buyer_shared_key_hex)
+        .bind(&self.seller_shared_key_hex)
         .bind(&self.id)
         .execute(pool)
         .await?;

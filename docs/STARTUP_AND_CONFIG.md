@@ -211,10 +211,11 @@ Several background tasks are spawned to keep the UI and data in sync:
 
 1. **Order Refresh**: Periodically fetches pending orders from Mostro.
 2. **Trade Message Listener**: Listens for new messages related to active orders.
-3. **Admin Chat Scheduler**:
+3. **Admin Chat Scheduler** (shared-key model):
    - In the main event loop, when `user_role == Admin`, a 5-second interval triggers `spawn_admin_chat_fetch` (see `src/util/order_utils/fetch_scheduler.rs`).
    - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one admin chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
-   - Periodically fetches NIP‑59 admin chat messages for each cached shared key.
+   - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
+   - Fetches NIP‑59 `GiftWrap` events addressed to each shared key's public key (ECDH-derived, same model as `mostro-chat`).
    - Uses per‑party `last_seen_timestamp` values to request only new events.
    - Delegates application of updates to `ui::helpers::apply_admin_chat_updates`, which:
      - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.

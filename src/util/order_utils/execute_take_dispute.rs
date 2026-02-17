@@ -128,11 +128,13 @@ pub async fn execute_take_dispute(
 
                 // Save dispute info to database with InProgress status
                 // Pass the dispute_id (from the function parameter) to distinguish it from order_id
+                // Pass admin_keys so shared keys are eagerly derived for chat
                 if let Err(e) = AdminDispute::new(
                     pool,
                     dispute_info_clone,
                     dispute_id.to_string(),
                     fiat_code_from_relay,
+                    Some(&admin_keys),
                 )
                 .await
                 {

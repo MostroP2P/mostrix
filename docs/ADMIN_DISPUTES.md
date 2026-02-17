@@ -629,23 +629,29 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).
 
-##### NIP-59 Chat Flow (Admin ↔ Parties)
+##### NIP-59 Chat Flow (Admin ↔ Parties — Shared Key Model)
+
+- **Shared key derivation**:
+  - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
+  - Two shared keys are stored (as hex) in the `admin_disputes` table: `buyer_shared_key_hex` and `seller_shared_key_hex`.
+  - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key.
 
 - **Message addressing**:
-  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
-  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
+  - Admin chat messages are addressed to the **shared key's public key** (not the counterparty's trade pubkey directly).
+  - The admin reads `admin_privkey` from `settings.toml` to sign the inner rumor; the gift wrap `p` tag targets the shared key pubkey.
   - Per-party timestamps are tracked in `AppState.admin_chat_last_seen` under `(dispute_id, ChatParty)`.
 
 - **Sending messages**:
-  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events addressed to the party's trade pubkey:
+  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events addressed to the shared key's public key:
     - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
-    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and the shared key pubkey as recipient.
   - The event is then published to the relays.
 
 - **Receiving messages**:
-  - A background task periodically polls for new `GiftWrap` events addressed to the admin pubkey:
+  - A background task periodically polls for new `GiftWrap` events addressed to each shared key's public key:
+    - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
     - Uses `last_seen_timestamp` to only process messages created after the last processed one.
-    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
+    - Decrypts each event using the shared key (standard NIP-59 or simplified mostro-chat format).
     - Skips messages signed by the admin identity (already added locally on send).
 
 - **Behavior on restart (Chat Restore at Startup)**:
