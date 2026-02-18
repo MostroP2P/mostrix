@@ -331,6 +331,20 @@ impl AdminDispute {
         if seller_shared_key_hex.is_some() {
             log::info!("Derived seller shared key for dispute {}", dispute_id,);
         }
+        // Sanity check: different counterparties must yield different shared keys for chat
+        if let (Some(buyer_pk), Some(seller_pk), Some(ref b_hex), Some(ref s_hex)) = (
+            dispute_info.buyer_pubkey.as_deref(),
+            dispute_info.seller_pubkey.as_deref(),
+            &buyer_shared_key_hex,
+            &seller_shared_key_hex,
+        ) {
+            if buyer_pk != seller_pk && b_hex == s_hex {
+                log::error!(
+                    "Shared keys for dispute {} are identical for different buyer/seller pubkeys; chat may be broken",
+                    dispute_id
+                );
+            }
+        }
 
         // Serialize UserInfo to JSON
         let initiator_info_json = dispute_info

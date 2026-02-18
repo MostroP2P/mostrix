@@ -246,6 +246,28 @@ pub fn recover_admin_chat_from_files(
     }
 }
 
+/// Decodes a 12-byte nonce from JSON. Mostro CLI sends nonce as hex (24 chars); some senders may use base64.
+fn decode_nonce_12(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Hex: 24 hex chars = 12 bytes (Mostro CLI uses nonce_hex)
+    if s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (0..24)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+            .collect();
+    }
+    // Base64 fallback
+    let decoded = BASE64.decode(s.as_bytes()).ok()?;
+    if decoded.len() == 12 {
+        Some(decoded)
+    } else {
+        None
+    }
+}
+
 /// Parses Mostro Mobile image_encrypted / file_encrypted JSON. Returns (ChatAttachment, display_content) or None.
 fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachment, String)> {
     let content = content.trim();
@@ -261,11 +283,8 @@ fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachment, String
         _ => return None,
     };
     let blossom_url = obj.get("blossom_url")?.as_str()?.to_string();
-    let nonce_b64 = obj.get("nonce")?.as_str()?;
-    let nonce = BASE64.decode(nonce_b64.as_bytes()).ok()?;
-    if nonce.len() != 12 {
-        return None;
-    }
+    let nonce_str = obj.get("nonce")?.as_str()?;
+    let nonce = decode_nonce_12(nonce_str)?;
     let filename = obj.get("filename")?.as_str()?.to_string();
     let mime_type = obj
         .get("mime_type")
@@ -616,7 +635,7 @@ pub fn build_chat_list_items(
             let (sender_label, sender_color, is_right_aligned) = match msg.sender {
                 ChatSender::Admin => ("Admin", Color::Cyan, false),
                 ChatSender::Buyer => ("Buyer", Color::Green, true),
-                ChatSender::Seller => ("Seller", Color::Red, true),
+                ChatSender::Seller => ("Seller", Color::Magenta, true),
             };
             // Attachment messages: distinct color so they stand out (content already has 📎/🖼)
             let content_color = msg

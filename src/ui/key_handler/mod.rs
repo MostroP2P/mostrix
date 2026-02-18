@@ -170,14 +170,38 @@ pub fn handle_key_event(
             (app.active_tab, save_attachment_tx)
         {
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-                if let Some(dispute_id_key) = app
+                if let Some(dispute) = app
                     .admin_disputes_in_progress
                     .get(app.selected_in_progress_idx)
-                    .map(|d| d.dispute_id.clone())
                 {
+                    let dispute_id_key = dispute.dispute_id.clone();
                     if let Some(msg) = get_selected_chat_message(app, &dispute_id_key) {
                         if let Some(att) = &msg.attachment {
-                            let _ = tx.send((dispute_id_key, att.clone()));
+                            let mut attachment = att.clone();
+                            // If no key in message, derive shared key from our private key + sender pubkey
+                            if attachment.decryption_key.is_none() {
+                                if let (Some(admin_keys), Some(pk_str)) = (
+                                    admin_chat_keys,
+                                    match msg.sender {
+                                        crate::ui::ChatSender::Buyer => {
+                                            dispute.buyer_pubkey.as_deref()
+                                        }
+                                        crate::ui::ChatSender::Seller => {
+                                            dispute.seller_pubkey.as_deref()
+                                        }
+                                        crate::ui::ChatSender::Admin => None,
+                                    },
+                                ) {
+                                    if let Ok(sender_pk) = PublicKey::parse(pk_str) {
+                                        if let Ok(shared) = crate::util::blossom::derive_shared_key(
+                                            admin_keys, &sender_pk,
+                                        ) {
+                                            attachment.decryption_key = Some(shared.to_vec());
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send((dispute_id_key, attachment));
                             return Some(true);
                         }
                     }

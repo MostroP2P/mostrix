@@ -1,12 +1,31 @@
 //! Blossom URL resolution, blob download, and ChaCha20-Poly1305 decryption.
 //! Matches Mostro Mobile encrypted file messaging: blob layout [nonce:12][ciphertext][tag:16].
+//! Shared key for decryption: ECDH(admin_sk, sender_pubkey), same as mostro-cli with roles swapped.
 
 use anyhow::{anyhow, Result};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::ChaCha20Poly1305;
+use nostr_sdk::prelude::{Keys, PublicKey};
 use reqwest::Client;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
+/// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
+pub fn derive_shared_key(admin_keys: &Keys, sender_pubkey: &PublicKey) -> Result<[u8; 32]> {
+    use nostr_sdk::secp256k1::ecdh::shared_secret_point;
+    use nostr_sdk::secp256k1::{Parity, PublicKey as SecpPublicKey};
+
+    let sk = admin_keys.secret_key();
+    let xonly = sender_pubkey
+        .xonly()
+        .map_err(|_| anyhow!("failed to get x-only public key for sender"))?;
+    let secp_pk = SecpPublicKey::from_x_only_public_key(xonly, Parity::Even);
+    let point = shared_secret_point(&secp_pk, sk);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&point[..32]);
+    Ok(key)
+}
 
 /// Max size for a single Blossom blob download (25 MB, same as Mostro Mobile).
 pub const BLOSSOM_MAX_BLOB_SIZE: usize = 25 * 1024 * 1024;

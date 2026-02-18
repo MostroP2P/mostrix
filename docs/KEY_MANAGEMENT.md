@@ -48,6 +48,8 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
   - Both admin and counterparty can independently derive the same shared key, mirroring the `mostro-chat` model.
   - Per‑party last‑seen timestamps (`buyer_chat_last_seen`, `seller_chat_last_seen`) are used together with these keys to implement incremental, restart‑safe admin chat sync.
 
+- **Validation**: When saving a new dispute, if buyer and seller pubkeys differ but the two derived shared keys are identical, the client logs an error (`Shared keys for dispute … are identical for different buyer/seller pubkeys; chat may be broken`). This guards against bad relay data or parsing issues. A unit test in `src/util/chat_utils.rs` asserts that different counterparty pubkeys yield different shared keys.
+
 ## NIP-59 Gift Wrap Structure
 
 Mostrix implements NIP-59 to communicate with the Mostro daemon. The key usage within this structure depends on the selected privacy mode.

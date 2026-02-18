@@ -60,7 +60,7 @@ The interface is divided into three main sections:
      - Red "SELLER" button with truncated pubkey
      - Tab key switches between parties
    - **Chat Area (flexible)**: Scrollable message history
-     - Color-coded messages (Cyan=Admin, Green=Buyer, Red=Seller)
+     - Color-coded messages (Cyan=Admin, Green=Buyer, Magenta=Seller)
      - PageUp/PageDown scrolling
      - Shows "No messages yet" when empty
    - **Input Box (dynamic 1-10 lines)**: Message composition
@@ -356,6 +356,7 @@ This comprehensive information allows admins to:
 
 - **Required Fields**: `buyer_pubkey` and `seller_pubkey` are validated when taking a dispute. If either field is missing, the dispute cannot be saved to the database and an error is displayed.
 - **Data Integrity**: The finalization popup also validates these fields before displaying dispute details. If data is incomplete, a "Data Integrity Error" popup is shown instead of the finalization options.
+- **Shared-key sanity**: When saving a dispute, the client checks that buyer and seller derived shared keys differ when the two pubkeys differ. If they are identical, an error is logged (see [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md)).
 
 **Post-Finalization Action Blocking**:
 
@@ -687,7 +688,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Visual Safety Features**:
 
-- **Color differentiation**: Buyer (Green) and Seller (Red) messages clearly distinguished
+- **Color differentiation**: Buyer (Green) and Seller (Magenta) messages clearly distinguished
 - **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Red for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
 - **Dynamic footer**: Shows different shortcuts based on input focus and enabled state; shows "Ctrl+S: Save file" when the selected message is an attachment
