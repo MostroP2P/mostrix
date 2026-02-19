@@ -689,7 +689,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 **Visual Safety Features**:
 
 - **Color differentiation**: Buyer (Green) and Seller (Magenta) messages clearly distinguished
-- **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Red for Seller)
+- **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Magenta for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
 - **Dynamic footer**: Shows different shortcuts based on input focus and enabled state; shows "Ctrl+S: Save file" when the selected message is an attachment
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
@@ -712,11 +712,6 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - Finds word boundaries for natural wrapping
 - Hard breaks at available width when no spaces found
 - Caps at 10 lines maximum with visual indicators
-
-**Previous Implementation Note** (historical):
-
-- Early versions used local mockup responses for testing before real Nostr DM integration.
-- Shared-key chat derivation was removed in favor of direct party pubkey addressing.
 
 **Performance Optimizations**:
 

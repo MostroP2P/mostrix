@@ -192,11 +192,33 @@ pub fn handle_key_event(
                                         crate::ui::ChatSender::Admin => None,
                                     },
                                 ) {
-                                    if let Ok(sender_pk) = PublicKey::parse(pk_str) {
-                                        if let Ok(shared) = crate::util::blossom::derive_shared_key(
-                                            admin_keys, &sender_pk,
-                                        ) {
-                                            attachment.decryption_key = Some(shared.to_vec());
+                                    match PublicKey::parse(pk_str) {
+                                        Ok(sender_pk) => {
+                                            match crate::util::blossom::derive_shared_key(
+                                                admin_keys, &sender_pk,
+                                            ) {
+                                                Ok(shared) => {
+                                                    attachment.decryption_key =
+                                                        Some(shared.to_vec());
+                                                }
+                                                Err(e) => {
+                                                    log::warn!(
+                                                        "Failed to derive Blossom shared key for dispute {} from sender {:?}: {}",
+                                                        dispute.dispute_id,
+                                                        msg.sender,
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "Failed to parse sender pubkey '{}' for Blossom attachment in dispute {} from sender {:?}: {}",
+                                                pk_str,
+                                                dispute.dispute_id,
+                                                msg.sender,
+                                                e
+                                            );
                                         }
                                     }
                                 }

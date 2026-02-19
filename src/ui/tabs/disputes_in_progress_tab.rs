@@ -1,5 +1,4 @@
 use std::str::FromStr;
-use std::time::Duration;
 
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -10,9 +9,6 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::ui::helpers::{count_visible_attachments, get_selected_chat_message};
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
-
-/// Toast expiry duration for attachment notification.
-const ATTACHMENT_TOAST_DURATION: Duration = Duration::from_secs(8);
 
 /// Filter disputes based on the current filter state.
 /// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
@@ -458,15 +454,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
         // Only show party tabs, chat, and input for in-progress disputes
         if !is_finalized {
-            // Clear attachment toast when expired
-            if app
-                .attachment_toast
-                .as_ref()
-                .is_some_and(|(_, t)| t.elapsed() > ATTACHMENT_TOAST_DURATION)
-            {
-                app.attachment_toast = None;
-            }
-
             // Party Tabs
             let buyer_style = if app.active_chat_party == crate::ui::ChatParty::Buyer {
                 Style::default()

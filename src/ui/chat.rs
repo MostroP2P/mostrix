@@ -44,7 +44,6 @@ pub enum ChatAttachmentType {
 #[derive(Clone, Debug)]
 pub struct ChatAttachment {
     pub blossom_url: String,
-    pub nonce: Vec<u8>,
     pub filename: String,
     pub mime_type: Option<String>,
     pub file_type: ChatAttachmentType,

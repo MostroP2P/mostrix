@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::ChaCha20Poly1305;
 use nostr_sdk::prelude::{Keys, PublicKey};
-use reqwest::Client;
+use reqwest::{header::CONTENT_LENGTH, Client};
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -70,18 +70,39 @@ pub async fn fetch_blob(
     if !res.status().is_success() {
         return Err(anyhow!("Blossom fetch returned status: {}", res.status()));
     }
-    let bytes = res
-        .bytes()
-        .await
-        .map_err(|e| anyhow!("Blossom read body failed: {}", e))?;
-    if bytes.len() > max_bytes {
-        return Err(anyhow!(
-            "Blossom blob too large: {} bytes (max {})",
-            bytes.len(),
-            max_bytes
-        ));
+    if let Some(len_header) = res.headers().get(CONTENT_LENGTH) {
+        if let Ok(len_str) = len_header.to_str() {
+            if let Ok(len) = len_str.parse::<usize>() {
+                if len > max_bytes {
+                    return Err(anyhow!(
+                        "Blossom blob too large: {} bytes (max {})",
+                        len,
+                        max_bytes
+                    ));
+                }
+            }
+        }
     }
-    Ok(bytes.to_vec())
+
+    let mut body = Vec::new();
+    let mut downloaded: usize = 0;
+    let mut res = res;
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| anyhow!("Blossom read body failed: {}", e))?
+    {
+        downloaded += chunk.len();
+        if downloaded > max_bytes {
+            return Err(anyhow!(
+                "Blossom blob too large while streaming: {} bytes (max {})",
+                downloaded,
+                max_bytes
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Decrypts a blob with ChaCha20-Poly1305. Blob layout: [nonce:12][ciphertext][auth_tag:16].

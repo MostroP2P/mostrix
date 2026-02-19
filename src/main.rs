@@ -6,7 +6,9 @@ pub mod util;
 
 use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
-use crate::ui::helpers::{apply_admin_chat_updates, recover_admin_chat_from_files};
+use crate::ui::helpers::{
+    apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
+};
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification, OrderResult,
@@ -393,10 +395,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Refresh the UI even if there is no input.
             }
             _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
-                if let Some(ref admin_keys) = admin_chat_keys {
+                if admin_chat_keys.is_some() {
                     spawn_admin_chat_fetch(
                         client.clone(),
-                        admin_keys.clone(),
                         app.admin_disputes_in_progress.clone(),
                         app.admin_chat_last_seen.clone(),
                         admin_chat_updates_tx.clone(),
@@ -433,6 +434,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 app.selected_dispute_idx = 0;
             }
         }
+
+        // Expire transient UI timers/toasts before rendering.
+        expire_attachment_toast(&mut app);
 
         // Status bar text - 3 separate lines
         // Reload settings from disk so newly added relays and currencies are reflected immediately.

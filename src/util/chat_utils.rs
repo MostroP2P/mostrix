@@ -210,7 +210,7 @@ async fn fetch_party_messages(
     };
 
     for (content, ts, sender_pubkey) in messages {
-        if ts <= last_seen {
+        if ts < last_seen {
             continue;
         }
         by_key
@@ -228,7 +228,6 @@ async fn fetch_party_messages(
 /// `AdminChatUpdate` results the same way as before.
 pub async fn fetch_admin_chat_updates(
     client: &Client,
-    _admin_keys: &Keys,
     disputes: &[AdminDispute],
     admin_chat_last_seen: &HashMap<(String, ChatParty), AdminChatLastSeen>,
 ) -> Result<Vec<AdminChatUpdate>, anyhow::Error> {
