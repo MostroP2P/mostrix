@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
+use crate::ui::helpers::{count_visible_attachments, get_selected_chat_message};
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
 
@@ -159,15 +160,17 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
             let input_height = (input_lines.min(10) as u16) + 2;
+            // Reserve two lines for footer when attachment toast is shown
+            let footer_height = if app.attachment_toast.is_some() { 2 } else { 1 };
 
             Layout::new(
                 Direction::Vertical,
                 [
-                    Constraint::Length(8),            // Header (expanded for ratings)
-                    Constraint::Length(3),            // Party Tabs
-                    Constraint::Min(0),               // Chat
-                    Constraint::Length(input_height), // Input (dynamic!)
-                    Constraint::Length(1),            // Footer
+                    Constraint::Length(8),             // Header (expanded for ratings)
+                    Constraint::Length(3),             // Party Tabs
+                    Constraint::Min(0),                // Chat
+                    Constraint::Length(input_height),  // Input (dynamic!)
+                    Constraint::Length(footer_height), // Footer (2 when toast visible)
                 ],
             )
             .split(main_area)
@@ -555,20 +558,26 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Some((dispute_id_key.clone(), app.active_chat_party, 0));
             }
 
+            let file_count = chat_messages
+                .map(|msgs| count_visible_attachments(msgs, app.active_chat_party))
+                .unwrap_or(0);
+            let chat_title = if total_items > 0 {
+                if file_count > 0 {
+                    format!(
+                        "Chat with {} ({} messages, {} file(s))",
+                        app.active_chat_party, total_items, file_count
+                    )
+                } else {
+                    format!(
+                        "Chat with {} ({} messages)",
+                        app.active_chat_party, total_items
+                    )
+                }
+            } else {
+                format!("Chat with {} (no messages)", app.active_chat_party)
+            };
             let chat_list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(format!(
-                            "Chat with {} ({})",
-                            app.active_chat_party,
-                            if total_items > 0 {
-                                format!("{} messages", total_items)
-                            } else {
-                                "no messages".to_string()
-                            }
-                        ))
-                        .borders(Borders::ALL),
-                )
+                .block(Block::default().title(chat_title).borders(Borders::ALL))
                 .style(Style::default());
 
             f.render_stateful_widget(chat_list, main_chunks[2], &mut app.admin_chat_list_state);
@@ -628,6 +637,15 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             DisputeFilter::InProgress => "Shift+C: View Finalized",
             DisputeFilter::Finalized => "Shift+C: View In Progress",
         };
+        let has_selected_attachment = !is_finalized
+            && get_selected_chat_message(app, &selected_dispute.dispute_id)
+                .and_then(|m| m.attachment.as_ref())
+                .is_some();
+        let ctrl_s_hint = if has_selected_attachment {
+            " | Ctrl+S: Save file"
+        } else {
+            ""
+        };
         let footer_text = if is_finalized {
             // Simplified footer for finalized disputes
             format!("{} | ↑↓: Select Dispute", filter_hint)
@@ -635,7 +653,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             // Full footer for in-progress disputes
             let is_input_focused =
                 matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-            if is_input_focused {
+            let base = if is_input_focused {
                 let is_input_enabled = app.admin_chat_input_enabled;
                 if is_input_enabled {
                     format!("Tab: Switch Party | Enter: Send | Shift+I: Disable | Shift+F: Resolve | {} | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute", filter_hint)
@@ -644,11 +662,29 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 }
             } else {
                 format!("Tab: Switch Party | Shift+F: Resolve | {} | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom", filter_hint)
-            }
+            };
+            format!("{}{}", base, ctrl_s_hint)
         };
-        let footer = Paragraph::new(footer_text);
         let footer_chunk_idx = if is_finalized { 1 } else { 4 };
-        f.render_widget(footer, main_chunks[footer_chunk_idx]);
+        let footer_area = main_chunks[footer_chunk_idx];
+        if !is_finalized && app.attachment_toast.is_some() {
+            let (toast_area, footer_line_area) = {
+                let chunks = Layout::new(
+                    Direction::Vertical,
+                    [Constraint::Length(1), Constraint::Length(1)],
+                )
+                .split(footer_area);
+                (chunks[0], chunks[1])
+            };
+            let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
+            f.render_widget(
+                Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
+                toast_area,
+            );
+            f.render_widget(Paragraph::new(footer_text.as_str()), footer_line_area);
+        } else {
+            f.render_widget(Paragraph::new(footer_text.as_str()), footer_area);
+        }
 
         // Update the selected index after rendering is complete (to avoid borrow checker issues)
         app.selected_in_progress_idx = valid_selected_idx;

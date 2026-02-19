@@ -117,7 +117,10 @@ When `user_mode = "admin"` and `admin_privkey` is set in `settings.toml`, Mostri
 
 - **Mode switch**: In the Settings tab, press **M** to toggle between User and Admin mode (persisted to `settings.toml`).
 - **Disputes Pending**: Lists disputes with status `Initiated`. Select one and press **Enter** to take the dispute (ownership moves to you; other admins cannot take it). Order fiat code is fetched from the relay when taking a dispute, so admins do not need the order in their local database.
-- **Disputes in Progress**: Workspace for disputes you have taken (`InProgress`). Per-dispute sidebar, header with full dispute info (parties, amounts, currency, ratings), and integrated chat with buyer and seller. Use **Tab** to switch chat view, **Shift+I** to enable/disable chat input, **PageUp**/ **PageDown** to scroll, **End** to jump to latest. Press **Shift+F** to open the finalization popup.
+- **Disputes in Progress**: Workspace for disputes you have taken (`InProgress`). Per-dispute sidebar, header with full dispute info (parties, amounts, currency, ratings), and an integrated **shared-keys chat** with buyer and seller:
+  - For each `(dispute, party)` pair, a shared key is derived between the admin key and the party’s trade pubkey and stored as hex in the local DB.
+  - Admin and party chat via NIP‑59 gift-wrap events addressed to the shared key’s public key, providing restart‑safe, per‑dispute conversations.
+  - Use **Tab** to switch chat view, **Shift+I** to enable/disable chat input, **PageUp** / **PageDown** to scroll, **End** to jump to latest. Press **Ctrl+S** to save the selected attachment to `~/.mostrix/downloads/`. Press **Shift+F** to open the finalization popup.
 - **Finalization**: From the popup you can **Pay Buyer** (AdminSettle: release sats to buyer) or **Refund Seller** (AdminCancel: refund to seller), or **Exit** without action. Finalized disputes (Settled, SellerRefunded, Released) cannot be modified.
 - **Settings (admin)**: **Add Dispute Solver** (add another solver by `npub`), **Change Admin Key** (update `admin_privkey`).
 

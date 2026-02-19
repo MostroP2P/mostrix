@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use mostro_core::prelude::Action;
 
@@ -59,6 +60,8 @@ pub struct AppState {
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<AdminDispute>, // Taken disputes
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
+    /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
+    pub attachment_toast: Option<(String, Instant)>,
 }
 
 impl AppState {
@@ -85,6 +88,7 @@ impl AppState {
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
+            attachment_toast: None,
         }
     }
 

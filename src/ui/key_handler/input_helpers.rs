@@ -1,7 +1,7 @@
 use crate::ui::{helpers::save_chat_message, AppState, ChatSender, DisputeChatMessage};
 use crate::ui::{InvoiceInputState, KeyInputState};
 use crossterm::event::KeyCode;
-use nostr_sdk::prelude::{Client, Keys, PublicKey};
+use nostr_sdk::prelude::{Client, Keys};
 /// Trait for input states that can handle text input
 trait TextInputState {
     fn get_input_mut(&mut self) -> &mut String;
@@ -79,6 +79,7 @@ pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> S
         content: message_content.clone(),
         timestamp,
         target_party: Some(app.active_chat_party),
+        attachment: None,
     };
 
     app.admin_dispute_chats
@@ -93,44 +94,53 @@ pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> S
     dispute_id_key
 }
 
-/// Try to send admin chat message to the counterparty's pubkey.
-/// Handles missing keys, invalid pubkey, and logs errors; spawns async task to perform the actual send.
-pub fn send_admin_chat_message_to_pubkey(
+/// Send an admin chat message using the per-dispute shared key.
+///
+/// Looks up the stored `shared_key_hex` for the given party, rebuilds the
+/// shared `Keys`, and spawns an async task that wraps the message in a NIP-59
+/// gift wrap addressed to the shared key's public key.
+pub fn send_admin_chat_message_via_shared_key(
     dispute_id_key: &str,
-    counterparty_pubkey: Option<&str>,
+    shared_key_hex: Option<&str>,
     message_content: &str,
     client: &Client,
     admin_chat_keys: Option<&Keys>,
 ) {
-    if let (Some(admin_keys), Some(counterparty_pubkey_str)) =
-        (admin_chat_keys, counterparty_pubkey)
-    {
-        if let Ok(recipient_pubkey) = PublicKey::parse(counterparty_pubkey_str) {
-            // Clone values to move into spawned task
-            let client = client.clone();
-            let admin_keys = admin_keys.clone();
-            let message_content = message_content.trim().to_string();
-
-            // Spawn async task to avoid blocking the UI thread
-            tokio::spawn(async move {
-                if let Err(e) = crate::util::send_admin_chat_message_to_pubkey(
-                    &client,
-                    &admin_keys,
-                    &recipient_pubkey,
-                    &message_content,
-                )
-                .await
-                {
-                    log::error!("Failed to send admin chat message: {}", e);
-                }
-            });
-        } else {
-            log::warn!("Invalid counterparty pubkey for dispute {}", dispute_id_key);
-        }
-    } else if counterparty_pubkey.is_none() {
+    let Some(admin_keys) = admin_chat_keys else {
         log::warn!(
-            "Missing counterparty pubkey for dispute {} when sending chat message",
+            "Admin chat keys not available; cannot send message for dispute {}",
             dispute_id_key
         );
-    }
+        return;
+    };
+
+    let Some(hex) = shared_key_hex else {
+        log::warn!(
+            "Missing shared key for dispute {} when sending chat message",
+            dispute_id_key
+        );
+        return;
+    };
+
+    let Some(shared_keys) = crate::util::chat_utils::keys_from_shared_hex(hex) else {
+        log::warn!("Invalid shared key hex for dispute {}", dispute_id_key);
+        return;
+    };
+
+    let client = client.clone();
+    let admin_keys = admin_keys.clone();
+    let message_content = message_content.trim().to_string();
+
+    tokio::spawn(async move {
+        if let Err(e) = crate::util::send_admin_chat_message_via_shared_key(
+            &client,
+            &admin_keys,
+            &shared_keys,
+            &message_content,
+        )
+        .await
+        {
+            log::error!("Failed to send admin chat message: {}", e);
+        }
+    });
 }

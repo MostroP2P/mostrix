@@ -59,6 +59,7 @@ Recent migrations for the `admin_disputes` table add the following fields:
 - **`fiat_code`**: Fiat currency code for the disputed order.
 - **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
 - **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental NIP‑59 fetches and chat restore at startup.
+- **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded per‑dispute shared keys derived between the admin key and each party’s trade pubkey, used as the identity for the shared‑keys admin chat system.
 
 **Source**: `src/db.rs:113`
 
@@ -268,7 +269,9 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
     taken_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
     buyer_chat_last_seen INTEGER,
-    seller_chat_last_seen INTEGER
+    seller_chat_last_seen INTEGER,
+    buyer_shared_key_hex TEXT,
+    seller_shared_key_hex TEXT
 );
 ```
 
@@ -304,6 +307,8 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 | `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
 | `buyer_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the buyer side (used for incremental fetch and restore). |
 | `seller_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the seller side (used for incremental fetch and restore). |
+| `buyer_shared_key_hex` | `TEXT` | Hex‑encoded shared key (secret) derived via ECDH between the admin key and the buyer’s trade pubkey; used as the identity for buyer‑side admin chat. |
+| `seller_shared_key_hex` | `TEXT` | Hex‑encoded shared key (secret) derived via ECDH between the admin key and the seller’s trade pubkey; used as the identity for seller‑side admin chat. |
 
 #### Purpose
 

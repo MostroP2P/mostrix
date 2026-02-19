@@ -32,6 +32,25 @@ pub enum ChatSender {
     Seller,
 }
 
+/// Type of file attachment (Mostro Mobile image_encrypted / file_encrypted).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatAttachmentType {
+    Image,
+    File,
+}
+
+/// Attachment metadata for a dispute chat message (Blossom URL + decryption key).
+/// File bytes are fetched from Blossom when the admin saves (Ctrl+S).
+#[derive(Clone, Debug)]
+pub struct ChatAttachment {
+    pub blossom_url: String,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub file_type: ChatAttachmentType,
+    /// When provided by the sender, used to decrypt the blob when saving.
+    pub decryption_key: Option<Vec<u8>>,
+}
+
 /// A chat message in the dispute resolution interface
 #[derive(Clone, Debug)]
 pub struct DisputeChatMessage {
@@ -39,6 +58,8 @@ pub struct DisputeChatMessage {
     pub content: String,
     pub timestamp: i64,                  // Unix timestamp
     pub target_party: Option<ChatParty>, // For Admin messages: which party this was sent to
+    /// When set, this message is an attachment (image or file); content is display-only (e.g. "📎 File: name").
+    pub attachment: Option<ChatAttachment>,
 }
 
 /// Per-(dispute, party) last-seen timestamp for admin chat.

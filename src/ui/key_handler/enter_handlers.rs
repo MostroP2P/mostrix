@@ -2,7 +2,7 @@ use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
 use crate::ui::key_handler::input_helpers::{
-    prepare_admin_chat_message, send_admin_chat_message_to_pubkey,
+    prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::{
     AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState, UiMode, UserMode, UserRole,
@@ -147,17 +147,17 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     {
                         // Copy needed fields so we can release the borrow before calling prepare_admin_chat_message
                         let dispute_id_key = selected_dispute.dispute_id.clone();
-                        let counterparty_pubkey = match app.active_chat_party {
-                            ChatParty::Buyer => selected_dispute.buyer_pubkey.clone(),
-                            ChatParty::Seller => selected_dispute.seller_pubkey.clone(),
+                        let shared_key_hex = match app.active_chat_party {
+                            ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
+                            ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
                         };
 
                         // Prepare admin chat message for sending via inputbox in admin disputes in progress tab
                         prepare_admin_chat_message(&dispute_id_key, app);
 
-                        send_admin_chat_message_to_pubkey(
+                        send_admin_chat_message_via_shared_key(
                             &dispute_id_key,
-                            counterparty_pubkey.as_deref(),
+                            shared_key_hex.as_deref(),
                             &app.admin_chat_input,
                             ctx.client,
                             ctx.admin_chat_keys,

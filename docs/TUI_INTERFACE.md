@@ -201,9 +201,9 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 
 ### 5. Admin Chat System
 
-**Status**: ✅ **Fully Implemented (NIP‑59 Based)**
+**Status**: ✅ **Fully Implemented (NIP‑59 + Shared Keys)**
 
-The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys.
+The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys derived between the admin key and each party’s trade pubkey.
 
 #### Data Structures
 
@@ -258,24 +258,30 @@ The key handler processes input in this order:
 
 **Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
 
-#### NIP‑59 Chat Internals
+#### NIP‑59 Chat Internals (Shared Key Model)
+
+- **Shared key derivation**:
+  - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
+  - Two shared keys are stored (as hex) in the `admin_disputes` table: `buyer_shared_key_hex` and `seller_shared_key_hex`.
+  - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key and subscribe to the same events.
 
 - **Message addressing**:
-  - Admin chat messages are sent directly to the party's trade pubkey (buyer_pubkey / seller_pubkey from the dispute).
-  - The admin reads `admin_privkey` from `settings.toml` to sign outgoing messages.
+  - Admin chat messages are addressed to the **shared key's public key** (not the counterparty's trade pubkey directly).
+  - The admin reads `admin_privkey` from `settings.toml` to sign the inner rumor; the gift wrap `p` tag targets the shared key pubkey.
 
 - **Sending messages**:
-  - Admin messages are sent via `send_admin_chat_message_to_pubkey` (spawned as an async task to avoid blocking the UI):
+  - Admin messages are sent via `send_admin_chat_message_via_shared_key` (spawned as an async task to avoid blocking the UI):
     - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
-    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and recipient pubkey.
+    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and the shared key public key as the recipient.
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
   - The main loop (every 5 seconds when in Admin mode) calls `spawn_admin_chat_fetch`, which runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard ensures only one fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
-  - For active disputes the fetch:
-    - Uses `last_seen_timestamp` to request only newer `GiftWrap` events (7-day rolling window).
-    - Routes messages to disputes using a `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
-    - Decrypts each event, extracts the rumor content, and appends it as a `DisputeChatMessage`.
+  - For each in-progress dispute, the fetch:
+    - Rebuilds buyer/seller shared `Keys` from the stored hex.
+    - Fetches `GiftWrap` events addressed to each shared key's public key (7-day rolling window).
+    - Decrypts each event using the shared key (standard NIP-59 or simplified mostro-chat format).
+    - Uses `last_seen_timestamp` to skip already-processed events.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
 
 - **Behavior on restart (Chat Restore at Startup)**:
@@ -293,7 +299,6 @@ The key handler processes input in this order:
     - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id` so that:
       - Background NIP‑59 fetches only request **newer** events (7-day rolling window).
       - Chat resumes from where it left off without replaying the full history.
-    - Messages are sent directly to party pubkeys without shared key derivation.
 
 #### Exit Confirmation
 

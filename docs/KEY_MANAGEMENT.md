@@ -28,6 +28,28 @@ To maximize privacy, Mostrix derives a **fresh ephemeral trade key** for every n
 - **Role**: Signs the **Rumor** (kind 1) inside the NIP-59 Gift Wrap.
 - **Privacy**: Ensures that trades are not easily linkable to the user's primary identity by external observers.
 
+## Admin Shared Keys for Disputes
+
+In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute chat system. These are not derived directly from the mnemonic path above, but from an ECDH operation between the admin identity key and each party’s trade pubkey.
+
+- **Derivation**:
+  - When an admin takes a dispute, the client derives two shared secrets using:
+    - The admin secret key (`admin_privkey` from `settings.toml`), and
+    - The buyer’s trade pubkey / seller’s trade pubkey from the dispute.
+  - ECDH is performed via `nostr_sdk::util::generate_shared_key`, and the resulting bytes are wrapped into a `Keys` instance.
+  - These keys are persisted as hex‑encoded secrets in the `admin_disputes` table as:
+    - `buyer_shared_key_hex`
+    - `seller_shared_key_hex`
+
+- **Usage**:
+  - The shared keys act as **per‑(dispute, party) chat identities**:
+    - Outgoing admin chat messages are sent as NIP‑59 `GiftWrap` events addressed to the shared key’s public key.
+    - Incoming messages are fetched by querying `Kind::GiftWrap` events to that same shared key pubkey and decrypting with the shared secret.
+  - Both admin and counterparty can independently derive the same shared key, mirroring the `mostro-chat` model.
+  - Per‑party last‑seen timestamps (`buyer_chat_last_seen`, `seller_chat_last_seen`) are used together with these keys to implement incremental, restart‑safe admin chat sync.
+
+- **Validation**: When saving a new dispute, if buyer and seller pubkeys differ but the two derived shared keys are identical, the client logs an error (`Shared keys for dispute … are identical for different buyer/seller pubkeys; chat may be broken`). This guards against bad relay data or parsing issues. A unit test in `src/util/chat_utils.rs` asserts that different counterparty pubkeys yield different shared keys.
+
 ## NIP-59 Gift Wrap Structure
 
 Mostrix implements NIP-59 to communicate with the Mostro daemon. The key usage within this structure depends on the selected privacy mode.

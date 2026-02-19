@@ -1,6 +1,7 @@
 pub use crate::ui::app_state::{AppState, UiMode};
 pub use crate::ui::chat::{
-    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage, DisputeFilter,
+    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender,
+    DisputeChatMessage, DisputeFilter,
 };
 pub use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 pub use crate::ui::orders::{

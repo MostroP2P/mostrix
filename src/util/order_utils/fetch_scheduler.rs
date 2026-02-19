@@ -103,7 +103,6 @@ pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchS
 /// Spawns a one-off background task to fetch admin chat updates and send the result on the given channel.
 pub fn spawn_admin_chat_fetch(
     client: Client,
-    admin_keys: Keys,
     disputes: Vec<AdminDispute>,
     admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
@@ -116,8 +115,7 @@ pub fn spawn_admin_chat_fetch(
         return;
     }
     tokio::spawn(async move {
-        let result =
-            fetch_admin_chat_updates(&client, &admin_keys, &disputes, &admin_chat_last_seen).await;
+        let result = fetch_admin_chat_updates(&client, &disputes, &admin_chat_last_seen).await;
         CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
         let _ = tx.send(result);
     });

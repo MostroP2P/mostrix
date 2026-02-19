@@ -451,17 +451,26 @@ If the response's `request_id` doesn't match the sent request, the operation is 
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
 
-## Admin Chat Fetch (Single-Flight)
+## Admin Chat Fetch (Single-Flight, Shared-Key Based)
 
-When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages from buyers and sellers.
+When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys**.
 
-- **Trigger**: Every 5 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin` and `admin_chat_keys` is set.
-- **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, admin keys, current disputes, `admin_chat_last_seen`, and the channel to send results.
-- **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) is used so that only one admin chat fetch runs concurrently. On entry, `compare_exchange(false, true)` is used; if it fails (flag already `true`), the call returns without spawning. The flag is cleared when the fetch completes (success or error), then the result is sent on the channel.
-- **Fetch work**: The spawned task calls `fetch_admin_chat_updates` (which internally uses `fetch_gift_wraps_to_admin`), then sends the `Result<Vec<AdminChatUpdate>, _>` to the main loop.
-- **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates` (unchanged): appends new messages to `admin_dispute_chats`, updates `admin_chat_last_seen`, and persists cursors to the database.
+- **Trigger**: Every 5 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin`.
+- **Shared keys**: For each `AdminDispute` in `InProgress` state, the database may hold `buyer_shared_key_hex` / `seller_shared_key_hex`. At runtime these are converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
+- **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, the current disputes, `admin_chat_last_seen`, and the channel to send results.
+- **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) ensures that only one admin chat fetch runs concurrently. If a previous fetch is still running, subsequent ticks are skipped until the flag is cleared.
+- **Fetch work**: The spawned task calls `fetch_admin_chat_updates`, which, for every dispute+party that has a stored shared key:
+  - Rebuilds the shared `Keys` from hex.
+  - Fetches `Kind::GiftWrap` events **addressed to the shared key’s public key** over a 7‑day rolling window.
+  - Decrypts each event with the shared key (first trying standard NIP‑59 `from_gift_wrap`, then falling back to the simplified Mostro‑chat format).
+  - Applies per‑(dispute, party) `last_seen_timestamp` filtering so only newer messages are returned.
+- **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates`, which:
+  - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
+  - Updates in‑memory `admin_chat_last_seen` entries.
+  - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.
+- **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. The admin can press **Ctrl+S** on an attachment to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
-This avoids overlapping relay queries and duplicate work when the 5-second tick fires before a previous fetch has finished.
+This avoids overlapping relay queries and duplicate work when the 5‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
 
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.

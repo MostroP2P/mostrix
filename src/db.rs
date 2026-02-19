@@ -85,7 +85,9 @@ pub async fn init_db() -> Result<SqlitePool> {
                 taken_at INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 buyer_chat_last_seen INTEGER,
-                seller_chat_last_seen INTEGER
+                seller_chat_last_seen INTEGER,
+                buyer_shared_key_hex TEXT,
+                seller_shared_key_hex TEXT
             );
             "#,
         )
@@ -146,6 +148,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
     let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
     let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
+    let has_buyer_shared_key_hex = check_column_exists(pool, "buyer_shared_key_hex").await?;
+    let has_seller_shared_key_hex = check_column_exists(pool, "seller_shared_key_hex").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -154,6 +158,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_dispute_id
         || !has_buyer_chat_last_seen
         || !has_seller_chat_last_seen
+        || !has_buyer_shared_key_hex
+        || !has_seller_shared_key_hex
     {
         log::info!("Running migration: Adding missing columns to admin_disputes table");
 
@@ -224,6 +230,26 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             sqlx::query(
                 r#"
                 ALTER TABLE admin_disputes ADD COLUMN seller_chat_last_seen INTEGER;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_buyer_shared_key_hex {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN buyer_shared_key_hex TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_seller_shared_key_hex {
+            sqlx::query(
+                r#"
+                ALTER TABLE admin_disputes ADD COLUMN seller_shared_key_hex TEXT;
                 "#,
             )
             .execute(&mut *tx)

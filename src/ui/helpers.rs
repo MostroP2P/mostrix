@@ -9,13 +9,41 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::serde_json::{from_str as json_from_str, Value};
 
 use super::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
-    PRIMARY_COLOR,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatAttachment, ChatAttachmentType, ChatParty,
+    ChatSender, DisputeChatMessage, PRIMARY_COLOR,
 };
+
+/// Toast expiry duration for attachment notification.
+const ATTACHMENT_TOAST_DURATION: Duration = Duration::from_secs(8);
+
+/// Placeholder text written to transcript file for attachment messages (no blob persisted).
+fn attachment_placeholder(att: &ChatAttachment) -> String {
+    let kind = match att.file_type {
+        ChatAttachmentType::Image => "Image",
+        ChatAttachmentType::File => "File",
+    };
+    format!("[{}: {} - Ctrl+S to save]", kind, att.filename)
+}
+
+/// Clears the transient attachment toast when it has expired.
+/// Intended to be called from the main update/tick path before rendering.
+pub fn expire_attachment_toast(app: &mut AppState) {
+    if app
+        .attachment_toast
+        .as_ref()
+        .is_some_and(|(_, t)| t.elapsed() > ATTACHMENT_TOAST_DURATION)
+    {
+        app.attachment_toast = None;
+    }
+}
 
 /// Formats user rating with star visualization
 /// Rating must be in 0-5 range. Returns formatted string with stars and stats.
@@ -150,6 +178,7 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
                 content: content_block,
                 timestamp: ts,
                 target_party,
+                attachment: None,
             });
         }
     }
@@ -232,6 +261,50 @@ pub fn recover_admin_chat_from_files(
     }
 }
 
+/// Parses Mostro Mobile image_encrypted / file_encrypted JSON. Returns (ChatAttachment, display_content) or None.
+fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachment, String)> {
+    let content = content.trim();
+    if !content.starts_with('{') {
+        return None;
+    }
+    let root: Value = json_from_str(content).ok()?;
+    let obj = root.as_object()?;
+    let msg_type = obj.get("type")?.as_str()?;
+    let (file_type, icon) = match msg_type {
+        "image_encrypted" => (ChatAttachmentType::Image, "🖼"),
+        "file_encrypted" => (ChatAttachmentType::File, "📎"),
+        _ => return None,
+    };
+    let blossom_url = obj.get("blossom_url")?.as_str()?.to_string();
+    let filename = obj.get("filename")?.as_str()?.to_string();
+    let mime_type = obj
+        .get("mime_type")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let decryption_key = obj
+        .get("key")
+        .and_then(|v| v.as_str())
+        .and_then(|s| BASE64.decode(s.as_bytes()).ok())
+        .filter(|k| k.len() == 32);
+    let key_hint = if decryption_key.is_some() {
+        " (key provided)"
+    } else {
+        ""
+    };
+    let attachment = ChatAttachment {
+        blossom_url,
+        filename: filename.clone(),
+        mime_type,
+        file_type,
+        decryption_key,
+    };
+    let display = match file_type {
+        ChatAttachmentType::Image => format!("{} Image: {}{}", icon, filename, key_hint),
+        ChatAttachmentType::File => format!("{} File: {}{}", icon, filename, key_hint),
+    };
+    Some((attachment, display))
+}
+
 /// Apply fetched admin chat updates back into the UI state and persist
 /// last_seen timestamps to the database.
 pub async fn apply_admin_chat_updates(
@@ -274,10 +347,18 @@ pub async fn apply_admin_chat_updates(
                 ChatParty::Seller => ChatSender::Seller,
             };
 
-            // Avoid duplicates: check if a message with same timestamp, sender and
-            // content already exists.
+            // Normalize to (display content, optional attachment + filename for toast)
+            let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
+                Some((attachment, display)) => {
+                    let filename = attachment.filename.clone();
+                    (display, Some((attachment, filename)))
+                }
+                None => (content.clone(), None),
+            };
+
+            // Single duplicate check (same timestamp, sender, and content)
             let is_duplicate = messages_vec.iter().any(|m: &DisputeChatMessage| {
-                m.timestamp == ts && m.sender == sender && m.content == content
+                m.timestamp == ts && m.sender == sender && m.content == msg_content
             });
             if is_duplicate {
                 if ts > max_ts {
@@ -286,15 +367,30 @@ pub async fn apply_admin_chat_updates(
                 continue;
             }
 
-            let msg = DisputeChatMessage {
-                sender,
-                content: content.clone(),
-                timestamp: ts,
-                target_party: None,
+            if let Some((_, filename_for_toast)) = &attachment_opt {
+                app.attachment_toast = Some((
+                    format!("📎 File received: {} — Ctrl+S to save", filename_for_toast),
+                    Instant::now(),
+                ));
+            }
+            let msg = match attachment_opt {
+                Some((attachment, _)) => DisputeChatMessage {
+                    sender,
+                    content: msg_content,
+                    timestamp: ts,
+                    target_party: None,
+                    attachment: Some(attachment),
+                },
+                None => DisputeChatMessage {
+                    sender,
+                    content: msg_content,
+                    timestamp: ts,
+                    target_party: None,
+                    attachment: None,
+                },
             };
             save_chat_message(&dispute_key, &msg);
             messages_vec.push(msg);
-
             if ts > max_ts {
                 max_ts = ts;
             }
@@ -357,6 +453,12 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
 
     let file_path = mostrix_dir.join(format!("{}.txt", dispute_id));
 
+    // Content to write: placeholder for attachments, wrapped text for plain messages
+    let content_block = match &message.attachment {
+        Some(att) => attachment_placeholder(att),
+        None => wrap_text_to_lines(&message.content, 80).join("\n"),
+    };
+
     // Idempotent: skip append if last message in file already matches
     if let Ok(existing) = fs::read_to_string(&file_path) {
         if let Some((last_sender, last_target_party, last_ts, last_content)) =
@@ -364,7 +466,7 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         {
             if last_sender == message.sender
                 && last_ts == message.timestamp
-                && last_content == message.content
+                && last_content == content_block
                 && last_target_party == message.target_party
             {
                 return;
@@ -387,9 +489,6 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         (ChatSender::Buyer, _) => "Buyer",
         (ChatSender::Seller, _) => "Seller",
     };
-
-    let content_lines = wrap_text_to_lines(&message.content, 80);
-    let content_block = content_lines.join("\n");
     let formatted_message = format!(
         "{} - {} - {}\n{}\n\n",
         sender_label, date_str, time_str, content_block
@@ -460,6 +559,40 @@ fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
     lines
 }
 
+/// Returns true if this message should be shown in the given party's chat view.
+fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
+    match msg.sender {
+        ChatSender::Admin => msg.target_party.is_none_or(|p| p == active_chat_party),
+        ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
+        ChatSender::Seller => active_chat_party == ChatParty::Seller,
+    }
+}
+
+/// Returns the number of messages in the given list that are visible for the active party and have an attachment.
+pub fn count_visible_attachments(
+    messages: &[DisputeChatMessage],
+    active_chat_party: ChatParty,
+) -> usize {
+    messages
+        .iter()
+        .filter(|msg| message_visible_for_party(msg, active_chat_party) && msg.attachment.is_some())
+        .count()
+}
+
+/// Returns the currently selected chat message (by list index) for the given dispute, or None.
+pub fn get_selected_chat_message<'a>(
+    app: &'a AppState,
+    dispute_id_key: &str,
+) -> Option<&'a DisputeChatMessage> {
+    let messages = app.admin_dispute_chats.get(dispute_id_key)?;
+    let selected_idx = app.admin_chat_list_state.selected()?;
+    let visible: Vec<&DisputeChatMessage> = messages
+        .iter()
+        .filter(|msg| message_visible_for_party(msg, app.active_chat_party))
+        .collect();
+    visible.get(selected_idx).copied()
+}
+
 /// Builds ListItems from chat messages for display in the chat list widget.
 /// Filters messages by active chat party and formats them with proper alignment.
 /// If `max_content_width` is Some(w), message content is wrapped to at most w
@@ -474,15 +607,7 @@ pub fn build_chat_list_items(
         .iter()
         .filter_map(|msg| {
             // Filter by active chat party
-            let should_show = match msg.sender {
-                ChatSender::Admin => {
-                    // Admin messages show in the chat party they were sent to.
-                    // When target_party is None (e.g. recovered from file), show in both views.
-                    msg.target_party.is_none_or(|p| p == active_chat_party)
-                }
-                ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
-                ChatSender::Seller => active_chat_party == ChatParty::Seller,
-            };
+            let should_show = message_visible_for_party(msg, active_chat_party);
 
             if !should_show {
                 return None;
@@ -502,6 +627,12 @@ pub fn build_chat_list_items(
                 ChatSender::Buyer => ("Buyer", Color::Green, true),
                 ChatSender::Seller => ("Seller", Color::Red, true),
             };
+            // Attachment messages: distinct color so they stand out (content already has 📎/🖼)
+            let content_color = msg
+                .attachment
+                .as_ref()
+                .map(|_| Color::Yellow)
+                .unwrap_or(sender_color);
 
             // Header line: "Sender - date - time"
             let header_text = format!("{} - {} - {}", sender_label, date_str, time_str);
@@ -518,7 +649,7 @@ pub fn build_chat_list_items(
                     .map(|w| wrap_text_to_lines(&msg.content, w))
                     .unwrap_or_else(|| vec![msg.content.clone()]);
                 for line in content_lines {
-                    let span = Span::styled(line, Style::default().fg(sender_color));
+                    let span = Span::styled(line, Style::default().fg(content_color));
                     message_lines.push(span.into_right_aligned_line());
                 }
             } else {
@@ -534,7 +665,7 @@ pub fn build_chat_list_items(
                 for line in content_lines {
                     message_lines.push(Line::from(vec![Span::styled(
                         line,
-                        Style::default().fg(sender_color),
+                        Style::default().fg(content_color),
                     )]));
                 }
             }
