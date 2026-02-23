@@ -10,6 +10,7 @@ use crate::ui::{
 };
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
+use std::path::{Path, PathBuf};
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -435,6 +436,78 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            }
+        }
+    } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        // Load and decrypt an encrypted chat file using a shared key
+        if app.observer_file_path_input.trim().is_empty()
+            || app.observer_shared_key_input.trim().is_empty()
+        {
+            app.observer_error = Some("Both file path and shared key are required".to_string());
+            return;
+        }
+
+        // Parse shared key as 32-byte hex
+        let key_str = app.observer_shared_key_input.trim();
+        let mut key_bytes = [0u8; 32];
+        match crate::util::chat_utils::keys_from_shared_hex(key_str) {
+            Some(keys) => {
+                key_bytes.copy_from_slice(&keys.secret_key().secret_bytes());
+            }
+            None => {
+                app.observer_error =
+                    Some("Shared key must be a valid 64-char hex secret (32 bytes)".to_string());
+                app.observer_chat_lines.clear();
+                return;
+            }
+        }
+
+        // Resolve file path (relative to ~/.mostrix/downloads by default)
+        let raw_path = app.observer_file_path_input.trim();
+        let path = {
+            let p = Path::new(raw_path);
+            if p.is_absolute() {
+                PathBuf::from(p)
+            } else {
+                match dirs::home_dir() {
+                    Some(home) => home.join(".mostrix").join("downloads").join(p),
+                    None => {
+                        app.observer_error =
+                            Some("No home directory available to resolve path".to_string());
+                        app.observer_chat_lines.clear();
+                        return;
+                    }
+                }
+            }
+        };
+
+        match std::fs::read(&path) {
+            Ok(blob) => match crate::util::blossom::decrypt_blob(&key_bytes, &blob) {
+                Ok(plaintext) => {
+                    let text = String::from_utf8_lossy(&plaintext);
+                    let mut lines: Vec<String> =
+                        text.lines().map(|s| s.trim_end().to_string()).collect();
+                    while matches!(lines.last(), Some(l) if l.is_empty()) {
+                        lines.pop();
+                    }
+                    app.observer_chat_lines = lines;
+                    app.observer_error = None;
+                }
+                Err(e) => {
+                    app.observer_error = Some(format!("Decryption failed: {e}"));
+                    app.observer_chat_lines.clear();
+                }
+            },
+            Err(e) => {
+                // Show a popup when the file does not exist, keep header error for context
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
+                        "Observer file not found: {}",
+                        path.display()
+                    )));
+                }
+                app.observer_error = Some(format!("Failed to read file {}: {e}", path.display()));
+                app.observer_chat_lines.clear();
             }
         }
     } else if matches!(

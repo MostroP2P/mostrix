@@ -386,6 +386,12 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
             app.mode = UiMode::AdminMode(AdminMode::Normal);
         }
     }
+
+    // Clear transient observer state when leaving Observer tab
+    if let Tab::Admin(AdminTab::Observer) = prev_tab {
+        app.observer_chat_lines.clear();
+        app.observer_error = None;
+    }
 }
 
 /// Handle Tab and BackTab keys
@@ -399,6 +405,15 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll to bottom when switching parties (will be set in render)
                 app.admin_chat_list_state.select(None);
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_focus = match app.observer_focus {
+                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
+                    }
+                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
+                    }
+                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = (form.focused + 1) % 9;
                 // Skip field 4 if not using range
@@ -415,6 +430,15 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll to bottom when switching parties (will be set in render)
                 app.admin_chat_list_state.select(None);
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_focus = match app.observer_focus {
+                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
+                    }
+                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
+                    }
+                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = if form.focused == 0 {
                     8

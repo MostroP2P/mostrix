@@ -69,6 +69,9 @@ pub fn ui_draw(
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
             tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
         }
+        (Tab::Admin(AdminTab::Observer), UserRole::Admin) => {
+            tabs::observer_tab::render_observer_tab(f, content_area, app)
+        }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
             tabs::settings_tab::render_settings_tab(
                 f,

@@ -92,7 +92,44 @@ The interface is divided into three main sections:
 
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 
-### 3. Settings Tab
+### 3. Observer Tab
+
+**Status**: ✅ **Implemented – Offline chat inspection**
+
+The Observer tab is a read-only tool that lets admins inspect encrypted chats that users have exported to files and shared out-of-band (for example, when two users provide their full conversation plus the shared key so the admin can decide who is right).
+
+#### Observer Workflow
+
+1. **Acquire evidence**:
+   - Users A and B establish a shared symmetric key (derived from their pubkeys and private keys) and use it to encrypt a chat transcript with the same Blossom file layout used by Mostro Mobile attachments (`[nonce:12][ciphertext][tag:16]`, ChaCha20-Poly1305).
+   - One of the users sends the admin:
+     - The **encrypted file** (e.g. uploaded somewhere and then downloaded via Blossom mechanisms into `~/.mostrix/downloads/...`).
+     - The **shared key** as a 64-character hex string (32-byte secret).
+2. **Open Observer tab**:
+   - Switch to Admin mode and navigate to the **Observer** tab.
+3. **Set file path**:
+   - In the “File path” input, type either:
+     - A **relative path** under `~/.mostrix/downloads/` (default base for saved Blossom attachments), or
+     - An **absolute path** to the encrypted file.
+4. **Paste shared key**:
+   - In the “Shared key (32-byte hex)” input, paste the 64-character hex key provided by the user.
+5. **Decrypt and preview**:
+   - Press **Enter** to:
+     - Read the file into memory.
+     - Derive a 32-byte decryption key from the shared-key hex (same helper used for shared-key chat: `keys_from_shared_hex` in `chat_utils.rs`).
+     - Decrypt the blob using `decrypt_blob` in `blossom.rs` (ChaCha20-Poly1305 over `[nonce:12][ciphertext][tag:16]`).
+     - Decode the plaintext as UTF‑8 and split into lines.
+   - The decrypted chat appears in a scrollable “Decrypted chat preview” area.
+
+#### Observer Keyboard Shortcuts
+
+- **Tab / Shift+Tab**: Switch focus between file path and shared key fields.
+- **Enter**: Load file and attempt decryption with the current shared key.
+- **Ctrl+C**: Clear both inputs, error state, and decrypted preview.
+
+> **Note**: Observer runs entirely **locally**. It does not contact Nostr relays or Blossom servers; it only reads files already present on disk (typically under `~/.mostrix/downloads/`) and uses the user-provided shared key to decrypt them.
+
+### 4. Settings Tab
 
 **Status**: ✅ **Fully Implemented and Working**
 
@@ -625,7 +662,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - **Display**: Attachment messages appear in the chat with an icon (🖼 Image or 📎 File), filename, and "(key provided)" when the sender included a decryption key. The chat block title shows a file count when non-zero (e.g. "Chat with Buyer (12 messages, 2 file(s))"). A transient yellow toast notifies when a new attachment is received; it clears after 8 seconds or on any key press.
 - **Persistence**: Transcript files under `~/.mostrix/<dispute_id>.txt` store a placeholder line for attachments (e.g. `[Image: name - Ctrl+S to save]`); file bytes are not stored on disk until the admin saves.
-- **Save (Ctrl+S)**: With an attachment message selected, press **Ctrl+S** to download the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypt with ChaCha20-Poly1305 when the key was provided, and write to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the same result popup used for other operations.
+- **Save (Ctrl+S)**: With an attachment message selected, press **Ctrl+S** to download the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypt with ChaCha20-Poly1305 when the key was provided, and write to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the same result popup used for other operations. These saved files are the natural input for the **Observer** tab when a party later provides the corresponding shared key.
 - **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).

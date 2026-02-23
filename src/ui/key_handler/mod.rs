@@ -328,6 +328,41 @@ pub fn handle_key_event(
         return Some(result);
     }
 
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the inputs
+    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        let is_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if !is_ctrl {
+            match code {
+                KeyCode::Char(c) => {
+                    match app.observer_focus {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                            app.observer_file_path_input.push(c);
+                        }
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                            app.observer_shared_key_input.push(c);
+                        }
+                    }
+                    return Some(true);
+                }
+                KeyCode::Backspace => {
+                    let target = match app.observer_focus {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                            &mut app.observer_file_path_input
+                        }
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                            &mut app.observer_shared_key_input
+                        }
+                    };
+                    target.pop();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups
@@ -471,6 +506,20 @@ pub fn handle_key_event(
             }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
+            // In Observer tab, Ctrl+C clears inputs and decrypted content
+            if let (Tab::Admin(AdminTab::Observer), true) = (
+                app.active_tab,
+                key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL),
+            ) {
+                app.observer_file_path_input.clear();
+                app.observer_shared_key_input.clear();
+                app.observer_chat_lines.clear();
+                app.observer_error = None;
+                return Some(true);
+            }
+
             // Handle copy invoice for PayInvoice notifications
             if let UiMode::NewMessageNotification(
                 ref notification,
@@ -485,7 +534,8 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
-            // Chat input is handled at the top of this function (takes priority)
+            // Observer tab input is handled early in handle_key_event
+            // Chat input is handled at the top (takes priority)
             // This handles form inputs and other character entry
             handle_char_input(code, app, validate_range_amount);
             if code == KeyCode::Backspace {

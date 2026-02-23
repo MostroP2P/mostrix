@@ -93,6 +93,7 @@ impl UserTab {
 pub enum AdminTab {
     DisputesPending,
     DisputesInProgress,
+    Observer,
     Settings,
     Exit,
 }
@@ -105,6 +106,7 @@ impl Display for AdminTab {
             match self {
                 AdminTab::DisputesPending => "Disputes Pending",
                 AdminTab::DisputesInProgress => "Disputes Management",
+                AdminTab::Observer => "Observer",
                 AdminTab::Settings => "Settings",
                 AdminTab::Exit => "Exit",
             }
@@ -117,8 +119,9 @@ impl AdminTab {
         match index {
             0 => AdminTab::DisputesPending,
             1 => AdminTab::DisputesInProgress,
-            2 => AdminTab::Settings,
-            3 => AdminTab::Exit,
+            2 => AdminTab::Observer,
+            3 => AdminTab::Settings,
+            4 => AdminTab::Exit,
             _ => panic!("Invalid admin tab index: {}", index),
         }
     }
@@ -127,13 +130,14 @@ impl AdminTab {
         match self {
             AdminTab::DisputesPending => 0,
             AdminTab::DisputesInProgress => 1,
-            AdminTab::Settings => 2,
-            AdminTab::Exit => 3,
+            AdminTab::Observer => 2,
+            AdminTab::Settings => 3,
+            AdminTab::Exit => 4,
         }
     }
 
     pub fn count() -> usize {
-        4
+        5
     }
 
     pub fn first() -> Self {
@@ -148,7 +152,8 @@ impl AdminTab {
         match self {
             AdminTab::DisputesPending => AdminTab::DisputesPending,
             AdminTab::DisputesInProgress => AdminTab::DisputesPending,
-            AdminTab::Settings => AdminTab::DisputesInProgress,
+            AdminTab::Observer => AdminTab::DisputesInProgress,
+            AdminTab::Settings => AdminTab::Observer,
             AdminTab::Exit => AdminTab::Settings,
         }
     }
@@ -156,7 +161,8 @@ impl AdminTab {
     pub fn next(self) -> Self {
         match self {
             AdminTab::DisputesPending => AdminTab::DisputesInProgress,
-            AdminTab::DisputesInProgress => AdminTab::Settings,
+            AdminTab::DisputesInProgress => AdminTab::Observer,
+            AdminTab::Observer => AdminTab::Settings,
             AdminTab::Settings => AdminTab::Exit,
             AdminTab::Exit => AdminTab::Exit,
         }

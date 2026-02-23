@@ -62,6 +62,16 @@ pub struct AppState {
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
     /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
     pub attachment_toast: Option<(String, Instant)>,
+    /// Observer mode: path to encrypted chat file (relative to ~/.mostrix/downloads or absolute).
+    pub observer_file_path_input: String,
+    /// Observer mode: shared key as 64-char hex string (32 bytes).
+    pub observer_shared_key_input: String,
+    /// Observer mode: which input field is currently focused.
+    pub observer_focus: crate::ui::tabs::observer_tab::ObserverFocus,
+    /// Observer mode: decrypted chat lines for preview.
+    pub observer_chat_lines: Vec<String>,
+    /// Observer mode: last error message (if any).
+    pub observer_error: Option<String>,
 }
 
 impl AppState {
@@ -89,6 +99,11 @@ impl AppState {
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
+            observer_file_path_input: String::new(),
+            observer_shared_key_input: String::new(),
+            observer_focus: crate::ui::tabs::observer_tab::ObserverFocus::FilePath,
+            observer_chat_lines: Vec::new(),
+            observer_error: None,
         }
     }
 

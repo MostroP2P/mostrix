@@ -78,6 +78,11 @@ Focused on dispute resolution and protocol management.
   - Chat history with scrolling (PageUp/PageDown)
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (`Shift+C: View Finalized | ↑↓: Select Dispute`)
+- **Observer**: Read-only workspace for inspecting user-to-user encrypted chats that have been uploaded as files:
+  - File-path input (relative to `~/.mostrix/downloads` or absolute)
+  - Shared-key input (64-char hex secret used by both users)
+  - Decrypts Blossom-encrypted blobs locally using ChaCha20-Poly1305 and renders the plaintext as a scrollable chat preview
+  - Keyboard hints: `Tab/Shift+Tab` to switch between file and key fields, `Enter` to load & decrypt, `Ctrl+C` to clear inputs and preview
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key
