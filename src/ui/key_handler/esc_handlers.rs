@@ -29,12 +29,14 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
-        UiMode::OrderResult(_) => {
+        UiMode::OperationResult(_) => {
             // Close result popup
-            // If we're on Settings tab, stay there; otherwise return to first tab
+            // If we're on Settings or Observer tab, stay there; otherwise return to first tab
             if !matches!(
                 app.active_tab,
-                Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
+                Tab::Admin(AdminTab::Settings)
+                    | Tab::User(UserTab::Settings)
+                    | Tab::Admin(AdminTab::Observer)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }

@@ -41,7 +41,7 @@ pub async fn take_order(
     order: &SmallOrder,
     amount: Option<i64>,
     invoice: Option<String>,
-) -> Result<crate::ui::OrderResult, anyhow::Error> {
+) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Determine action based on order kind
     let action = match order.kind {
         Some(mostro_core::order::Kind::Buy) => {
@@ -166,7 +166,7 @@ pub async fn take_order(
                             );
 
                             // Return PaymentRequestRequired to trigger invoice popup
-                            Ok(crate::ui::OrderResult::PaymentRequestRequired {
+                            Ok(crate::ui::OperationResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),
                                 sat_amount: *opt_amount,

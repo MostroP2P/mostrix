@@ -13,20 +13,31 @@ Mostrix is built using:
 
 ### 1. AppState: The Single Source of Truth
 
-The `AppState` struct in `src/ui/mod.rs` manages the global state of the interface.
+The `AppState` struct in `src/ui/app_state.rs` manages the global state of the interface.
 
-**Source**: `src/ui/mod.rs:415`
+**Source**: `src/ui/app_state.rs`
 
-```415:424:src/ui/mod.rs
+```rust
 pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
+    pub selected_dispute_idx: usize,
+    pub selected_in_progress_idx: usize,
+    pub active_chat_party: ChatParty,
+    pub admin_chat_input: String,
+    pub admin_chat_input_enabled: bool,
+    pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
+    pub admin_chat_list_state: ratatui::widgets::ListState,
+    pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
+    pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
+    pub selected_settings_option: usize,
     pub mode: UiMode,
-    pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
-    pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
-    pub selected_message_idx: usize, // Selected message in Messages tab
-    pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
+    pub messages: Arc<Mutex<Vec<OrderMessage>>>,
+    pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
+    pub selected_message_idx: usize,
+    pub pending_notifications: Arc<Mutex<usize>>,
+    // …see source for observer and attachment fields…
 }
 ```
 
@@ -94,15 +105,15 @@ For detailed information about admin dispute resolution workflows, see [ADMIN_DI
 
 The interface uses a nested state machine defined by `UiMode`, `UserMode`, and `AdminMode`.
 
-**Source**: `src/ui/mod.rs:306`
+**Source**: `src/ui/app_state.rs`
 
-```306:318:src/ui/mod.rs
+```rust
 pub enum UiMode {
     // Shared modes (available to both user and admin)
     Normal,
-    ViewingMessage(MessageViewState), // Simple message popup with yes/no options
-    NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
-    OrderResult(OrderResult), // Show order result (success or error)
+    ViewingMessage(MessageViewState),
+    NewMessageNotification(MessageNotification, Action, InvoiceInputState),
+    OperationResult(OperationResult), // Generic operation result popup (success/info/error)
 
     // User-specific modes
     UserMode(UserMode),
@@ -116,13 +127,20 @@ pub enum UiMode {
 
 Popups are implemented by rendering additional widgets on top of the main layout when the `UiMode` is not `Normal`. They are drawn at the end of the `ui_draw` function to ensure they appear as overlays.
 
-**Example**: Rendering the `OrderResult` popup.
+The primary shared popup is the **operation result** modal, used for:
 
-```600:603:src/ui/mod.rs
-    // Order result popup overlay (shared)
-    if let UiMode::OrderResult(result) = &app.mode {
-        order_result::render_order_result(f, result);
-    }
+- Order creation / take-order flows
+- Settings validation errors (invalid pubkey, relay, currency, etc.)
+- Admin actions (add solver, finalize disputes)
+- Blossom attachment downloads and Observer-mode file/key errors
+
+**Example**: Rendering the `OperationResult` popup.
+
+```rust
+// Operation result popup overlay (shared)
+if let UiMode::OperationResult(result) = &app.mode {
+    operation_result::render_operation_result(f, result);
+}
 ```
 
 ## Navigation & Input Handling

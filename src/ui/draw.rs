@@ -121,9 +121,9 @@ pub fn ui_draw(
         waiting::render_waiting(f);
     }
 
-    // Order result popup overlay (shared)
-    if let UiMode::OrderResult(result) = &app.mode {
-        order_result::render_order_result(f, result);
+    // Operation result popup overlay (shared)
+    if let UiMode::OperationResult(result) = &app.mode {
+        operation_result::render_operation_result(f, result);
     }
 
     // Shared settings popups

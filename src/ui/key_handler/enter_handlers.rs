@@ -5,8 +5,12 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::{
-    AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState, UiMode, UserMode, UserRole,
-    UserTab,
+    order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState,
+    UiMode, UserMode, UserRole, UserTab,
+};
+// User handlers moved to user_handlers.rs
+use crate::ui::key_handler::user_handlers::{
+    handle_enter_creating_order, handle_enter_taking_order,
 };
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
@@ -25,6 +29,11 @@ use crate::ui::key_handler::validation::{
 // Admin handlers moved to admin_handlers.rs
 use crate::ui::key_handler::admin_handlers::{
     execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+};
+
+// Message handlers moved to message_handlers.rs
+use crate::ui::key_handler::message_handlers::{
+    handle_enter_message_notification, handle_enter_viewing_message,
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -61,12 +70,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
-        UiMode::OrderResult(_) => {
+        UiMode::OperationResult(_) => {
             // Close result popup
-            // If we're on Settings tab, stay there; otherwise return to first tab
+            // If we're on Settings or Observer tab, stay there; otherwise return to first tab
             if !matches!(
                 app.active_tab,
-                Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
+                Tab::Admin(AdminTab::Settings)
+                    | Tab::User(UserTab::Settings)
+                    | Tab::Admin(AdminTab::Observer)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
@@ -274,7 +285,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
                 }
             }
         }
@@ -298,7 +309,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
                 }
             }
         }
@@ -333,7 +344,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
                 }
             }
         }
@@ -416,7 +427,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             let action = inner_message_kind.action.clone();
             if matches!(action, Action::AddInvoice | Action::PayInvoice) {
                 // Show invoice/payment popup for actionable messages
-                let notification = crate::ui::order_message_to_notification(msg);
+                let notification = order_message_to_notification(msg);
                 let action = notification.action.clone();
                 let invoice_state = crate::ui::InvoiceInputState {
                     invoice_input: String::new(),
@@ -428,7 +439,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
             } else {
                 // Show simple message view popup for other message types
-                let notification = crate::ui::order_message_to_notification(msg);
+                let notification = order_message_to_notification(msg);
                 let view_state = crate::ui::MessageViewState {
                     message_content: notification.message_preview,
                     order_id: notification.order_id,
@@ -443,7 +454,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if app.observer_file_path_input.trim().is_empty()
             || app.observer_shared_key_input.trim().is_empty()
         {
-            app.observer_error = Some("Both file path and shared key are required".to_string());
+            let msg = "Both file path and shared key are required".to_string();
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             return;
         }
 
@@ -455,9 +468,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 key_bytes.copy_from_slice(&keys.secret_key().secret_bytes());
             }
             None => {
-                app.observer_error =
-                    Some("Shared key must be a valid 64-char hex secret (32 bytes)".to_string());
+                let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+                app.observer_error = Some(msg.clone());
                 app.observer_chat_lines.clear();
+                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                 return;
             }
         }
@@ -472,9 +486,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 match dirs::home_dir() {
                     Some(home) => home.join(".mostrix").join("downloads").join(p),
                     None => {
-                        app.observer_error =
-                            Some("No home directory available to resolve path".to_string());
+                        let msg = "No home directory available to resolve path".to_string();
+                        app.observer_error = Some(msg.clone());
                         app.observer_chat_lines.clear();
+                        app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                         return;
                     }
                 }
@@ -494,20 +509,21 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     app.observer_error = None;
                 }
                 Err(e) => {
-                    app.observer_error = Some(format!("Decryption failed: {e}"));
+                    let msg = format!("Decryption failed: {e}");
+                    app.observer_error = Some(msg.clone());
                     app.observer_chat_lines.clear();
+                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                 }
             },
             Err(e) => {
-                // Show a popup when the file does not exist, keep header error for context
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(format!(
-                        "Observer file not found: {}",
-                        path.display()
-                    )));
-                }
-                app.observer_error = Some(format!("Failed to read file {}: {e}", path.display()));
+                let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                    format!("Observer file not found: {}", path.display())
+                } else {
+                    format!("Failed to read file {}: {e}", path.display())
+                };
+                app.observer_error = Some(msg.clone());
                 app.observer_chat_lines.clear();
+                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             }
         }
     } else if matches!(
@@ -552,13 +568,3 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         }
     }
 }
-
-// User handlers moved to user_handlers.rs
-use crate::ui::key_handler::user_handlers::{
-    handle_enter_creating_order, handle_enter_taking_order,
-};
-
-// Message handlers moved to message_handlers.rs
-use crate::ui::key_handler::message_handlers::{
-    handle_enter_message_notification, handle_enter_viewing_message,
-};

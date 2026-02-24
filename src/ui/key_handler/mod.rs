@@ -29,7 +29,7 @@ pub struct EnterKeyContext<'a> {
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
     pub mostro_pubkey: PublicKey,
-    pub order_result_tx: &'a UnboundedSender<crate::ui::OrderResult>,
+    pub order_result_tx: &'a UnboundedSender<crate::ui::OperationResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
@@ -153,7 +153,7 @@ pub fn handle_key_event(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
     save_attachment_tx: Option<&UnboundedSender<(String, crate::ui::ChatAttachment)>>,

@@ -18,7 +18,7 @@ pub struct OrderSuccess {
 }
 
 #[derive(Clone, Debug)]
-pub enum OrderResult {
+pub enum OperationResult {
     Success(OrderSuccess),
     /// Payment request required - shows invoice popup for buy orders
     PaymentRequestRequired {

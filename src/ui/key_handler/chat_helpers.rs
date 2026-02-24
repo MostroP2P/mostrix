@@ -1,4 +1,4 @@
-use crate::ui::{AdminMode, AppState, ChatParty, ChatSender, OrderResult, UiMode};
+use crate::ui::{AdminMode, AppState, ChatParty, ChatSender, OperationResult, UiMode};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Filter messages by active chat party and return the count of visible messages.
@@ -153,12 +153,12 @@ pub fn handle_enter_finalize_popup(
     button: FinalizeDisputePopupButton,
     dispute_id: uuid::Uuid,
     dispute_is_finalized: bool,
-    order_result_tx: &UnboundedSender<OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) -> bool {
     match button {
         FinalizeDisputePopupButton::PayBuyer => {
             if dispute_is_finalized {
-                let _ = order_result_tx.send(OrderResult::Error(
+                let _ = order_result_tx.send(OperationResult::Error(
                     "Cannot finalize: dispute is already finalized".to_string(),
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -175,7 +175,7 @@ pub fn handle_enter_finalize_popup(
         }
         FinalizeDisputePopupButton::RefundSeller => {
             if dispute_is_finalized {
-                let _ = order_result_tx.send(OrderResult::Error(
+                let _ = order_result_tx.send(OperationResult::Error(
                     "Cannot finalize: dispute is already finalized".to_string(),
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);

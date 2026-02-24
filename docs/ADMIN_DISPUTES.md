@@ -127,6 +127,8 @@ The Observer tab is a read-only tool that lets admins inspect encrypted chats th
 - **Enter**: Load file and attempt decryption with the current shared key.
 - **Ctrl+C**: Clear both inputs, error state, and decrypted preview.
 
+When validation or I/O fails (missing path, invalid key format, unreadable file, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the inputs and retry.
+
 > **Note**: Observer runs entirely **locally**. It does not contact Nostr relays or Blossom servers; it only reads files already present on disk (typically under `~/.mostrix/downloads/`) and uses the user-provided shared key to decrypt them.
 
 ### 4. Settings Tab

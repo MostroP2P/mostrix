@@ -9,9 +9,10 @@ use crate::ui::admin_state::AdminMode;
 use crate::ui::chat::{AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeFilter};
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
-    InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OrderMessage,
-    OrderResult,
+    InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
+    OrderMessage,
 };
+use crate::ui::tabs::observer_tab::ObserverFocus;
 use crate::ui::user_state::UserMode;
 
 #[derive(Clone, Debug)]
@@ -20,7 +21,7 @@ pub enum UiMode {
     Normal,
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
-    OrderResult(OrderResult), // Show order result (success or error)
+    OperationResult(OperationResult), // Show operation result (success or error)
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -67,7 +68,7 @@ pub struct AppState {
     /// Observer mode: shared key as 64-char hex string (32 bytes).
     pub observer_shared_key_input: String,
     /// Observer mode: which input field is currently focused.
-    pub observer_focus: crate::ui::tabs::observer_tab::ObserverFocus,
+    pub observer_focus: ObserverFocus,
     /// Observer mode: decrypted chat lines for preview.
     pub observer_chat_lines: Vec<String>,
     /// Observer mode: last error message (if any).

@@ -11,7 +11,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification, OrderResult,
+    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
+    OperationResult,
 };
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
@@ -214,7 +215,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<OrderResult>();
+        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
 
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
@@ -259,7 +260,7 @@ async fn main() -> Result<(), anyhow::Error> {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
                     // Check if this is a dispute-related result before handling
-                    let is_dispute_related = matches!(&result, OrderResult::Info(msg)
+                    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
