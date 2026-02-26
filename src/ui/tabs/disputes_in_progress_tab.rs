@@ -767,9 +767,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     ),
                     format!(
                         "{} | {}{}",
-                        FOOTER_PGUP_PGDN_SCROLL_CHAT,
-                        FOOTER_END_BOTTOM,
-                        ctrl_s_hint
+                        FOOTER_PGUP_PGDN_SCROLL_CHAT, FOOTER_END_BOTTOM, ctrl_s_hint
                     ),
                 )
             };

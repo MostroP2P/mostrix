@@ -22,7 +22,7 @@ pub enum UiMode {
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
-    HelpPopup(Tab, Box<UiMode>),      // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
+    HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
