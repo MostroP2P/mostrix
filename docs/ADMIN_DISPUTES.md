@@ -47,7 +47,7 @@ The interface is divided into three main sections:
    - Shows "No disputes in progress" when empty
 
 2. **Main Area (80%)**:
-   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (`Shift+C: View Finalized | ↑↓: Select Dispute`). The footer is always visible to provide navigation guidance.
+   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (filter + `↑↓: Select Dispute | Ctrl+H: Help`). The footer is width-aware and always includes Ctrl+H for the help popup.
    - **Header (8 lines)**: Comprehensive dispute information
      - Dispute ID, Type, Status
      - Creation date and timestamps
@@ -67,7 +67,7 @@ The interface is divided into three main sections:
      - Grows automatically based on content
      - Yellow bold border when focused
      - Text wrapping with word boundaries
-   - **Footer (1 line)**: Context-sensitive keyboard shortcuts
+   - **Footer (1 line)**: Context-sensitive keyboard shortcuts. The footer is **width-aware**: on very narrow terminals it shows only **Ctrl+H: Help**; on medium width it shows essential keys plus Ctrl+H; on wide terminals it shows the full list. All variants include **Ctrl+H: Help** to open the context-aware shortcuts popup.
 
 #### Dispute Management Features
 
@@ -89,6 +89,7 @@ The interface is divided into three main sections:
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
 - **Backspace**: Delete characters (when input enabled)
+- **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
 
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 
@@ -126,6 +127,7 @@ The Observer tab is a read-only tool that lets admins inspect encrypted chats th
 - **Tab / Shift+Tab**: Switch focus between file path and shared key fields.
 - **Enter**: Load file and attempt decryption with the current shared key.
 - **Ctrl+C**: Clear both inputs, error state, and decrypted preview.
+- **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
 
 When validation or I/O fails (missing path, invalid key format, unreadable file, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the inputs and retry.
 
@@ -654,7 +656,10 @@ pub struct AdminChatLastSeen {
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
-pub admin_chat_list_state: ratatui::widgets::ListState,
+pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
+pub admin_chat_selected_message_idx: Option<usize>,
+pub admin_chat_line_starts: Vec<usize>,
+pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
 pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 ```
 

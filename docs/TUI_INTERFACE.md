@@ -28,7 +28,9 @@ pub struct AppState {
     pub admin_chat_input: String,
     pub admin_chat_input_enabled: bool,
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
-    pub admin_chat_list_state: ratatui::widgets::ListState,
+    pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
+    pub admin_chat_selected_message_idx: Option<usize>,
+    pub admin_chat_line_starts: Vec<usize>,
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     pub selected_settings_option: usize,
@@ -88,12 +90,12 @@ Focused on dispute resolution and protocol management.
   - Dynamic message input with text wrapping
   - Chat history with scrolling (PageUp/PageDown)
   - Finalization popup for resolution actions
-  - **Empty state**: When no disputes are available, displays helpful key hints footer (`Shift+C: View Finalized | ↑↓: Select Dispute`)
+  - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats that have been uploaded as files:
   - File-path input (relative to `~/.mostrix/downloads` or absolute)
   - Shared-key input (64-char hex secret used by both users)
   - Decrypts Blossom-encrypted blobs locally using ChaCha20-Poly1305 and renders the plaintext as a scrollable chat preview
-  - Keyboard hints: `Tab/Shift+Tab` to switch between file and key fields, `Enter` to load & decrypt, `Ctrl+C` to clear inputs and preview
+  - Keyboard hints: `Tab/Shift+Tab` to switch between file and key fields, `Enter` to load & decrypt, `Ctrl+C` to clear inputs and preview, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key
@@ -114,6 +116,7 @@ pub enum UiMode {
     ViewingMessage(MessageViewState),
     NewMessageNotification(MessageNotification, Action, InvoiceInputState),
     OperationResult(OperationResult), // Generic operation result popup (success/info/error)
+    HelpPopup(Tab),                   // Context-aware keyboard shortcuts (Ctrl+H)
 
     // User-specific modes
     UserMode(UserMode),
@@ -136,6 +139,8 @@ The primary shared popup is the **operation result** modal, used for:
 
 **Example**: Rendering the `OperationResult` popup.
 
+**Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum).
+
 ```rust
 // Operation result popup overlay (shared)
 if let UiMode::OperationResult(result) = &app.mode {
@@ -143,9 +148,20 @@ if let UiMode::OperationResult(result) = &app.mode {
 }
 ```
 
+**Help popup (Ctrl+H)**:
+
+- **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S for attachments when applicable.
+- **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
+- **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
+
+### UI constants
+
+Shared copy (help titles, footer hints, filter labels) lives in **`src/ui/constants.rs`** so strings are defined once and reused by the help popup and by width-aware footers (e.g. Disputes in Progress). Use these constants when adding or changing UI text to avoid duplication.
+
 ## Navigation & Input Handling
 
-Input handling is centralized in `src/ui/key_handler.rs`.
+Input handling is centralized in `src/ui/key_handler/` (mod.rs and submodules: enter_handlers, esc_handlers, navigation, etc.).
 
 ### Tab Navigation
 
@@ -158,21 +174,7 @@ Users can switch between roles (User/Admin) and tabs using arrow keys.
 
 The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
-**Example**: Handling the `Enter` key.
-
-```934:944:src/ui/key_handler.rs
-        KeyCode::Enter => {
-            handle_enter_key(
-                app,
-                orders,
-                pool,
-                client,
-                mostro_pubkey,
-                order_result_tx,
-            );
-            Some(true)
-        }
-```
+**Example**: Handling the `Enter` key (dispatched from `key_handler/mod.rs` to `enter_handlers::handle_enter_key`, which uses `order_result_tx` for operation-result feedback).
 
 ### Specialized Input
 
@@ -187,6 +189,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
   - **Visual feedback**: Input title shows enabled/disabled state
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` notification uses the `arboard` crate to copy the invoice. On Linux, it uses the `SetExtLinux::wait()` method to properly wait until the clipboard is overwritten, ensuring reliable clipboard handling without arbitrary delays.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
+- **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
 
 ## UI Components
 

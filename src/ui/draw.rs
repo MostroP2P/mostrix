@@ -126,6 +126,11 @@ pub fn ui_draw(
         operation_result::render_operation_result(f, result);
     }
 
+    // Help popup (Ctrl+H)
+    if let UiMode::HelpPopup(tab, _) = &app.mode {
+        help_popup::render_help_popup(f, app, *tab);
+    }
+
     // Shared settings popups
     if let UiMode::AddMostroPubkey(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(

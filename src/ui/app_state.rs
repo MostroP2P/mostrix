@@ -22,6 +22,7 @@ pub enum UiMode {
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
+    HelpPopup(Tab, Box<UiMode>),      // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -48,7 +49,11 @@ pub struct AppState {
     pub admin_chat_input: String,    // Current message being typed by admin
     pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
-    pub admin_chat_list_state: ratatui::widgets::ListState, // ListState for chat scrolling
+    pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
+    /// Selected message index (for Up/Down and Ctrl+S attachment save)
+    pub admin_chat_selected_message_idx: Option<usize>,
+    /// Line start index per visible message; updated each frame when rendering chat (for scroll sync)
+    pub admin_chat_line_starts: Vec<usize>,
     /// Tracks (dispute_id, party, visible_count) for auto-scroll when new messages arrive
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     /// Cached last-seen timestamps per (dispute_id, party) for admin chat.
@@ -88,7 +93,9 @@ impl AppState {
             admin_chat_input: String::new(),
             admin_chat_input_enabled: true, // Chat input enabled by default
             admin_dispute_chats: HashMap::new(),
-            admin_chat_list_state: ratatui::widgets::ListState::default(),
+            admin_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
+            admin_chat_selected_message_idx: None,
+            admin_chat_line_starts: Vec::new(),
             admin_chat_scroll_tracker: None,
             admin_chat_last_seen: HashMap::new(),
             selected_settings_option: 0,
@@ -118,8 +125,8 @@ impl AppState {
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
-        // admin_disputes_in_progress, admin_chat_list_state, admin_chat_scroll_tracker,
-        // and dispute_filter across role switches so that admin context is not lost
-        // when temporarily viewing user mode.
+        // admin_disputes_in_progress, admin_chat_scrollview_state, admin_chat_selected_message_idx,
+        // admin_chat_line_starts, admin_chat_scroll_tracker, and dispute_filter across role switches
+        // so that admin context is not lost when temporarily viewing user mode.
     }
 }

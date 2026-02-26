@@ -36,8 +36,8 @@ pub fn get_dispute_visible_message_count(app: &AppState, dispute_id_key: &str) -
 pub fn message_counter(app: &mut AppState, dispute_id_key: &str) {
     let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
     if visible_count > 0 {
-        app.admin_chat_list_state
-            .select(Some(visible_count.saturating_sub(1)));
+        app.admin_chat_scrollview_state.scroll_to_bottom();
+        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
     }
 }
 
@@ -55,27 +55,29 @@ pub fn navigate_chat_messages(
     }
 
     let current = app
-        .admin_chat_list_state
-        .selected()
+        .admin_chat_selected_message_idx
         .unwrap_or(visible_count.saturating_sub(1));
 
     let new_selection = match direction {
         crossterm::event::KeyCode::Up => {
-            // Move up (older messages)
             if current > 0 {
                 current - 1
             } else {
                 0
             }
         }
-        crossterm::event::KeyCode::Down => {
-            // Move down (newer messages)
-            (current + 1).min(visible_count.saturating_sub(1))
-        }
+        crossterm::event::KeyCode::Down => (current + 1).min(visible_count.saturating_sub(1)),
         _ => return false,
     };
 
-    app.admin_chat_list_state.select(Some(new_selection));
+    app.admin_chat_selected_message_idx = Some(new_selection);
+
+    // Sync scroll position so the selected message is in view (use line_starts from last render)
+    if new_selection < app.admin_chat_line_starts.len() {
+        let line_start = app.admin_chat_line_starts[new_selection];
+        app.admin_chat_scrollview_state
+            .set_offset(ratatui::layout::Position::new(0, line_start as u16));
+    }
     true
 }
 
@@ -84,33 +86,20 @@ pub fn navigate_chat_messages(
 /// Returns true if scrolling occurred, false otherwise.
 pub fn scroll_chat_messages(
     app: &mut AppState,
-    dispute_id_key: &str,
+    _dispute_id_key: &str,
     direction: crossterm::event::KeyCode,
 ) -> bool {
-    let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
-    if visible_count == 0 {
-        return false;
-    }
-
-    let current = app
-        .admin_chat_list_state
-        .selected()
-        .unwrap_or(visible_count.saturating_sub(1));
-
-    let new_selection = match direction {
+    match direction {
         crossterm::event::KeyCode::PageUp => {
-            // Scroll up (show older messages) - move selection up by ~10 items
-            current.saturating_sub(10)
+            app.admin_chat_scrollview_state.scroll_page_up();
+            true
         }
         crossterm::event::KeyCode::PageDown => {
-            // Scroll down (show newer messages) - move selection down by ~10 items
-            (current + 10).min(visible_count.saturating_sub(1))
+            app.admin_chat_scrollview_state.scroll_page_down();
+            true
         }
-        _ => return false,
-    };
-
-    app.admin_chat_list_state.select(Some(new_selection));
-    true
+        _ => false,
+    }
 }
 
 /// Jump to the bottom of the chat (latest messages).
@@ -122,9 +111,8 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
         return false;
     }
 
-    // Jump to last message (bottom)
-    app.admin_chat_list_state
-        .select(Some(visible_count.saturating_sub(1)));
+    app.admin_chat_scrollview_state.scroll_to_bottom();
+    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
     true
 }
 

@@ -13,7 +13,7 @@ mod validation;
 
 use crate::ui::{
     helpers::{get_selected_chat_message, is_dispute_finalized},
-    AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab,
+    AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
@@ -163,6 +163,34 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    // Help popup (Ctrl+H): close on Esc, Enter, or Ctrl+H; restore previous mode so input state is preserved
+    if let UiMode::HelpPopup(_, ref previous_mode) = &app.mode {
+        if (key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h'))
+            || code == KeyCode::Esc
+            || code == KeyCode::Enter
+        {
+            app.mode = (**previous_mode).clone();
+            return Some(true);
+        }
+        return Some(true); // consume all other keys while help is open
+    }
+
+    // Ctrl+H: open context-aware help popup when in normal/managing-dispute mode (store current mode to restore on close)
+    if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h') {
+        let can_open = matches!(
+            app.mode,
+            UiMode::Normal
+                | UiMode::UserMode(UserMode::Normal)
+                | UiMode::AdminMode(AdminMode::Normal)
+                | UiMode::AdminMode(AdminMode::ManagingDispute)
+        );
+        if can_open {
+            let previous = app.mode.clone();
+            app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
+            return Some(true);
+        }
+    }
 
     // Ctrl+S: save selected attachment in admin dispute chat
     if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {

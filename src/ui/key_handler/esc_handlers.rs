@@ -29,6 +29,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
+        UiMode::HelpPopup(_, ref previous_mode) => {
+            app.mode = (**previous_mode).clone();
+            true
+        }
         UiMode::OperationResult(_) => {
             // Close result popup
             // If we're on Settings or Observer tab, stay there; otherwise return to first tab

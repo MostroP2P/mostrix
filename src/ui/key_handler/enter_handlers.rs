@@ -70,6 +70,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
+        UiMode::HelpPopup(..) => {
+            // Close help popup (mode restored in key_handler/mod.rs)
+            true
+        }
         UiMode::OperationResult(_) => {
             // Close result popup
             // If we're on Settings or Observer tab, stay there; otherwise return to first tab

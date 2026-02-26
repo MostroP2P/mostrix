@@ -210,6 +210,7 @@ fn handle_up_key(
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
+        | UiMode::HelpPopup(..)
         | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)
@@ -333,6 +334,7 @@ fn handle_down_key(
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
+        | UiMode::HelpPopup(..)
         | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)
@@ -403,8 +405,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
-                // Reset scroll to bottom when switching parties (will be set in render)
-                app.admin_chat_list_state.select(None);
+                // Reset scroll/selection when switching parties (will be set in render)
+                app.admin_chat_selected_message_idx = None;
             } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
                 app.observer_focus = match app.observer_focus {
                     crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
@@ -428,8 +430,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
-                // Reset scroll to bottom when switching parties (will be set in render)
-                app.admin_chat_list_state.select(None);
+                // Reset scroll/selection when switching parties (will be set in render)
+                app.admin_chat_selected_message_idx = None;
             } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
                 app.observer_focus = match app.observer_focus {
                     crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
