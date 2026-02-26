@@ -747,11 +747,12 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                             filter_hint
                         ),
                         format!(
-                            "{} | {} | {} | {}",
+                            "{} | {} | {} | {}{}",
                             FOOTER_PGUP_PGDN_SCROLL,
                             FOOTER_NAV_CHAT,
                             FOOTER_END_BOTTOM,
-                            FOOTER_UP_DOWN_SELECT_DISPUTE
+                            FOOTER_UP_DOWN_SELECT_DISPUTE,
+                            ctrl_s_hint
                         ),
                     )
                 }

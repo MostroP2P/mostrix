@@ -52,7 +52,7 @@ pub fn init_settings() -> &'static Settings {
 - Copies the default `settings.toml` from the project root if missing.
 - Loads configuration using the `config` crate.
 
-**Error Handling**: If settings initialization fails at runtime (e.g., settings accessed before initialization), the application will display user-friendly error messages via `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users.
+**Error Handling**: Settings initialization uses `.expect()` calls for critical failures (e.g., missing home directory, inability to create config directory, malformed settings.toml). These failures will panic with descriptive error messages. Runtime access to settings after initialization returns user-friendly error messages via `OperationResult::Error` instead of panicking.
 
 ### 2. Database Initialization
 The database is initialized at startup to ensure the schema is ready.

@@ -358,10 +358,14 @@ pub fn handle_key_event(
 
     // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the inputs
     if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        let observer_inputs_editable = matches!(
+            app.mode,
+            UiMode::Normal | UiMode::AdminMode(AdminMode::Normal)
+        );
         let is_ctrl = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL);
-        if !is_ctrl {
+        if observer_inputs_editable && !is_ctrl {
             match code {
                 KeyCode::Char(c) => {
                     match app.observer_focus {

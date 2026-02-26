@@ -48,7 +48,7 @@ The interface is divided into three main sections:
 
 2. **Main Area (80%)**:
    - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (filter + `↑↓: Select Dispute | Ctrl+H: Help`). The footer is width-aware and always includes Ctrl+H for the help popup.
-   - **Header (8 lines)**: Comprehensive dispute information
+   - **Header (7 lines)**: Comprehensive dispute information
      - Dispute ID, Type, Status
      - Creation date and timestamps
      - Initiator role (Buyer or Seller with pubkey)
@@ -67,7 +67,7 @@ The interface is divided into three main sections:
      - Grows automatically based on content
      - Yellow bold border when focused
      - Text wrapping with word boundaries
-   - **Footer (1 line)**: Context-sensitive keyboard shortcuts. The footer is **width-aware**: on very narrow terminals it shows only **Ctrl+H: Help**; on medium width it shows essential keys plus Ctrl+H; on wide terminals it shows the full list. All variants include **Ctrl+H: Help** to open the context-aware shortcuts popup.
+   - **Footer (1-2 lines)**: Context-sensitive keyboard shortcuts. The footer is **width-aware**: on very narrow terminals it shows only **Ctrl+H: Help**; on medium width it shows essential keys plus Ctrl+H; on wide terminals it can split into **two lines** for readability. All variants include **Ctrl+H: Help** to open the context-aware shortcuts popup.
 
 #### Dispute Management Features
 

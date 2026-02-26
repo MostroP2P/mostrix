@@ -116,6 +116,13 @@ impl AppState {
     }
 
     pub fn switch_role(&mut self, new_role: UserRole) {
+        // Clear observer sensitive/transient state across role changes.
+        self.observer_file_path_input.clear();
+        self.observer_shared_key_input.clear();
+        self.observer_chat_lines.clear();
+        self.observer_error = None;
+        self.observer_focus = ObserverFocus::FilePath;
+
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
         self.mode = UiMode::Normal;
