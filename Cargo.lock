@@ -2048,6 +2048,7 @@ dependencies = [
  "toml",
  "tui-scrollview",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

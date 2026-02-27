@@ -391,8 +391,7 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
 
     // Clear transient observer state when leaving Observer tab
     if let Tab::Admin(AdminTab::Observer) = prev_tab {
-        app.observer_chat_lines.clear();
-        app.observer_error = None;
+        app.clear_observer_secrets();
     }
 }
 

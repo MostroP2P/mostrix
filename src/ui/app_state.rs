@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mostro_core::prelude::Action;
+use zeroize::Zeroize;
 
 use crate::models::AdminDispute;
 use crate::ui::admin_state::AdminMode;
@@ -115,6 +116,28 @@ impl AppState {
         }
     }
 
+    /// Securely wipe all observer inputs and decrypted content.
+    /// Uses `zeroize` to overwrite strings before clearing them, then
+    /// resets focus and error state to safe defaults.
+    pub fn clear_observer_secrets(&mut self) {
+        self.observer_file_path_input.zeroize();
+        self.observer_file_path_input.clear();
+
+        self.observer_shared_key_input.zeroize();
+        self.observer_shared_key_input.clear();
+
+        for line in &mut self.observer_chat_lines {
+            line.zeroize();
+        }
+        self.observer_chat_lines.clear();
+
+        if let Some(err) = &mut self.observer_error {
+            err.zeroize();
+        }
+        self.observer_error = None;
+        self.observer_focus = ObserverFocus::FilePath;
+    }
+
     pub fn switch_role(&mut self, new_role: UserRole) {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
@@ -125,11 +148,7 @@ impl AppState {
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
         // Clear observer state when switching roles so sensitive data does not linger
-        self.observer_file_path_input.clear();
-        self.observer_shared_key_input.clear();
-        self.observer_focus = ObserverFocus::FilePath;
-        self.observer_chat_lines.clear();
-        self.observer_error = None;
+        self.clear_observer_secrets();
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
         // admin_disputes_in_progress, admin_chat_scrollview_state, admin_chat_selected_message_idx,
         // admin_chat_line_starts, admin_chat_scroll_tracker, and dispute_filter across role switches

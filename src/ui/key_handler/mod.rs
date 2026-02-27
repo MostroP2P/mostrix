@@ -541,10 +541,7 @@ pub fn handle_key_event(
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL),
             ) {
-                app.observer_file_path_input.clear();
-                app.observer_shared_key_input.clear();
-                app.observer_chat_lines.clear();
-                app.observer_error = None;
+                app.clear_observer_secrets();
                 return Some(true);
             }
 

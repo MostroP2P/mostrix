@@ -69,7 +69,7 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
 - Copies the default `settings.toml` from the project root if missing.
 - Loads configuration using the `config` crate.
 
-**Error Handling**: If settings initialization fails at runtime (e.g., settings accessed before initialization), the application will display user-friendly error messages via `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users.
+**Error Handling**: Startup failures in `init_settings()` are propagated as `anyhow::Error` (causing a clean process exit with an error message). If settings are accessed later at runtime before initialization (via the `SETTINGS` global), those failures are surfaced as user-friendly messages using `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users in both cases.
 
 ### 2. Database Initialization
 The database is initialized at startup to ensure the schema is ready.

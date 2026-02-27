@@ -459,6 +459,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             || app.observer_shared_key_input.trim().is_empty()
         {
             let msg = "Both file path and shared key are required".to_string();
+            app.clear_observer_secrets();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             return;
@@ -473,8 +474,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             None => {
                 let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+                app.clear_observer_secrets();
                 app.observer_error = Some(msg.clone());
-                app.observer_chat_lines.clear();
                 app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                 return;
             }
@@ -491,8 +492,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     Some(home) => home.join(".mostrix").join("downloads").join(p),
                     None => {
                         let msg = "No home directory available to resolve path".to_string();
+                        app.clear_observer_secrets();
                         app.observer_error = Some(msg.clone());
-                        app.observer_chat_lines.clear();
                         app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                         return;
                     }
@@ -509,13 +510,14 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     while matches!(lines.last(), Some(l) if l.is_empty()) {
                         lines.pop();
                     }
+                    // Wipe any previous decrypted content before replacing
+                    app.clear_observer_secrets();
                     app.observer_chat_lines = lines;
-                    app.observer_error = None;
                 }
                 Err(e) => {
                     let msg = format!("Decryption failed: {e}");
+                    app.clear_observer_secrets();
                     app.observer_error = Some(msg.clone());
-                    app.observer_chat_lines.clear();
                     app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
                 }
             },
@@ -525,8 +527,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 } else {
                     format!("Failed to read file {}: {e}", path.display())
                 };
+                app.clear_observer_secrets();
                 app.observer_error = Some(msg.clone());
-                app.observer_chat_lines.clear();
                 app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             }
         }
