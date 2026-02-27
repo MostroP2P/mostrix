@@ -13,6 +13,7 @@ mod validation;
 
 use crate::ui::{
     helpers::{get_selected_chat_message, is_dispute_finalized},
+    tabs::observer_tab::ObserverFocus,
     AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -367,10 +368,10 @@ pub fn handle_key_event(
                 match code {
                     KeyCode::Char(c) => {
                         match app.observer_focus {
-                            crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                            ObserverFocus::FilePath => {
                                 app.observer_file_path_input.push(c);
                             }
-                            crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                            ObserverFocus::SharedKey => {
                                 app.observer_shared_key_input.push(c);
                             }
                         }
@@ -378,12 +379,8 @@ pub fn handle_key_event(
                     }
                     KeyCode::Backspace => {
                         let target = match app.observer_focus {
-                            crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
-                                &mut app.observer_file_path_input
-                            }
-                            crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
-                                &mut app.observer_shared_key_input
-                            }
+                            ObserverFocus::FilePath => &mut app.observer_file_path_input,
+                            ObserverFocus::SharedKey => &mut app.observer_shared_key_input,
                         };
                         target.pop();
                         return Some(true);

@@ -109,7 +109,7 @@ impl AppState {
             attachment_toast: None,
             observer_file_path_input: String::new(),
             observer_shared_key_input: String::new(),
-            observer_focus: crate::ui::tabs::observer_tab::ObserverFocus::FilePath,
+            observer_focus: ObserverFocus::FilePath,
             observer_chat_lines: Vec::new(),
             observer_error: None,
         }
@@ -127,7 +127,7 @@ impl AppState {
         // Clear observer state when switching roles so sensitive data does not linger
         self.observer_file_path_input.clear();
         self.observer_shared_key_input.clear();
-        self.observer_focus = crate::ui::tabs::observer_tab::ObserverFocus::FilePath;
+        self.observer_focus = ObserverFocus::FilePath;
         self.observer_chat_lines.clear();
         self.observer_error = None;
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
