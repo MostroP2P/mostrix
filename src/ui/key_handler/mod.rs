@@ -356,37 +356,40 @@ pub fn handle_key_event(
         return Some(result);
     }
 
-    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the inputs
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the inputs.
+    // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
     if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        let is_ctrl = key_event
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL);
-        if !is_ctrl {
-            match code {
-                KeyCode::Char(c) => {
-                    match app.observer_focus {
-                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
-                            app.observer_file_path_input.push(c);
+        if !matches!(app.mode, UiMode::OperationResult(_)) {
+            let is_ctrl = key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+            if !is_ctrl {
+                match code {
+                    KeyCode::Char(c) => {
+                        match app.observer_focus {
+                            crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                                app.observer_file_path_input.push(c);
+                            }
+                            crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                                app.observer_shared_key_input.push(c);
+                            }
                         }
-                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
-                            app.observer_shared_key_input.push(c);
-                        }
+                        return Some(true);
                     }
-                    return Some(true);
+                    KeyCode::Backspace => {
+                        let target = match app.observer_focus {
+                            crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                                &mut app.observer_file_path_input
+                            }
+                            crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                                &mut app.observer_shared_key_input
+                            }
+                        };
+                        target.pop();
+                        return Some(true);
+                    }
+                    _ => {}
                 }
-                KeyCode::Backspace => {
-                    let target = match app.observer_focus {
-                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
-                            &mut app.observer_file_path_input
-                        }
-                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
-                            &mut app.observer_shared_key_input
-                        }
-                    };
-                    target.pop();
-                    return Some(true);
-                }
-                _ => {}
             }
         }
     }

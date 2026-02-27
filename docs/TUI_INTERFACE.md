@@ -116,7 +116,7 @@ pub enum UiMode {
     ViewingMessage(MessageViewState),
     NewMessageNotification(MessageNotification, Action, InvoiceInputState),
     OperationResult(OperationResult), // Generic operation result popup (success/info/error)
-    HelpPopup(Tab),                   // Context-aware keyboard shortcuts (Ctrl+H)
+    HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
 
     // User-specific modes
     UserMode(UserMode),

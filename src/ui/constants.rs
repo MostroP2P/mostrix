@@ -3,7 +3,7 @@
 
 // --- Help popup (Ctrl+H) ---
 
-pub const HELP_CLOSE_HINT: &str = "Esc or Enter to close";
+pub const HELP_CLOSE_HINT: &str = "Esc, Enter or Ctrl+H to close";
 
 /// Footer hint shown in help and disputes footer
 pub const HELP_KEY: &str = "Ctrl+H: Help";

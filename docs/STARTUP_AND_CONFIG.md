@@ -39,12 +39,12 @@ pub fn init_settings() -> &'static Settings {
 
         // Use the `config` crate to deserialize to the Settings struct
         let cfg = config::Config::builder()
-            .add_source(config::File::from(hidden_file))
+            .add_source(config::File::from(hidden_file.as_path()))
             .build()
-            .expect("settings.toml malformed");
+            .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
 
         cfg.try_deserialize::<Settings>()
-            .expect("Error deserializing settings.toml")
+            .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
     })
 }
 ```

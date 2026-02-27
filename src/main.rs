@@ -133,7 +133,7 @@ use crate::ui::ui_draw;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
-    let settings = init_settings();
+    let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");

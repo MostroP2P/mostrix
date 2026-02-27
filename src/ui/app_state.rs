@@ -124,6 +124,12 @@ impl AppState {
         self.selected_in_progress_idx = 0;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
+        // Clear observer state when switching roles so sensitive data does not linger
+        self.observer_file_path_input.clear();
+        self.observer_shared_key_input.clear();
+        self.observer_focus = crate::ui::tabs::observer_tab::ObserverFocus::FilePath;
+        self.observer_chat_lines.clear();
+        self.observer_error = None;
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
         // admin_disputes_in_progress, admin_chat_scrollview_state, admin_chat_selected_message_idx,
         // admin_chat_line_starts, admin_chat_scroll_tracker, and dispute_filter across role switches

@@ -739,12 +739,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 } else {
                     (
                         format!(
-                            "{} | {} | {} | {} | {}",
+                            "{} | {} | {} | {} | {}{}",
                             HELP_KEY,
                             FOOTER_TAB_SWITCH_PARTY,
                             FOOTER_SHIFT_I_ENABLE,
                             FOOTER_SHIFT_F_RESOLVE,
-                            filter_hint
+                            filter_hint,
+                            ctrl_s_hint
                         ),
                         format!(
                             "{} | {} | {} | {}",
