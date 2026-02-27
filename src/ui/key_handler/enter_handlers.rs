@@ -15,6 +15,7 @@ use crate::ui::key_handler::user_handlers::{
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -477,6 +478,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.clear_observer_secrets();
                 app.observer_error = Some(msg.clone());
                 app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
+                key_bytes.zeroize();
                 return;
             }
         }
@@ -495,6 +497,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                         app.clear_observer_secrets();
                         app.observer_error = Some(msg.clone());
                         app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
+                        key_bytes.zeroize();
                         return;
                     }
                 }
@@ -532,6 +535,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             }
         }
+        // Always wipe key material before leaving the Observer branch
+        key_bytes.zeroize();
     } else if matches!(
         app.active_tab,
         Tab::Admin(AdminTab::Exit) | Tab::User(UserTab::Exit)
