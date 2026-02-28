@@ -215,7 +215,8 @@ pub fn handle_key_event(
             KeyCode::Enter => {
                 if let (Some(tx), Some(dispute), Some(id)) = (
                     save_attachment_tx,
-                    app.admin_disputes_in_progress.get(app.selected_in_progress_idx),
+                    app.admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx),
                     dispute_id_key.as_ref(),
                 ) {
                     let list = get_visible_attachment_messages(app, id);
@@ -236,13 +237,10 @@ pub fn handle_key_event(
                                     },
                                 ) {
                                     if let Ok(sender_pk) = PublicKey::parse(pk_str) {
-                                        if let Ok(shared) =
-                                            crate::util::blossom::derive_shared_key(
-                                                admin_keys, &sender_pk,
-                                            )
-                                        {
-                                            attachment.decryption_key =
-                                                Some(shared.to_vec());
+                                        if let Ok(shared) = crate::util::blossom::derive_shared_key(
+                                            admin_keys, &sender_pk,
+                                        ) {
+                                            attachment.decryption_key = Some(shared.to_vec());
                                         }
                                     }
                                 }
