@@ -32,8 +32,7 @@ pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
 pub const HELP_DIP_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable message input";
 pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
-pub const HELP_DIP_CTRL_S_ATTACH: &str =
-    "Ctrl+S: Save selected attachment (when on a file message)";
+pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 
 // Help popup lines (Disputes Pending)
 pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
@@ -70,6 +69,9 @@ pub const HELP_CNO_TAB_NEXT: &str = "Tab: Next field";
 pub const HELP_CNO_ENTER_CONFIRM: &str = "Enter: Confirm order (from form)";
 
 // --- Footer (Disputes in Progress) ---
+
+/// Hint shown in the Save Attachment popup footer (↑↓ Select, Enter Save, Esc Cancel).
+pub const SAVE_ATTACHMENT_POPUP_HINT: &str = "↑↓ Select, Enter Save, Esc Cancel";
 
 pub const FOOTER_CTRL_S_SAVE_FILE: &str = " | Ctrl+S: Save file";
 pub const FOOTER_UP_DOWN_SELECT: &str = "↑↓: Select";

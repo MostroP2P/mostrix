@@ -117,6 +117,7 @@ pub enum UiMode {
     NewMessageNotification(MessageNotification, Action, InvoiceInputState),
     OperationResult(OperationResult), // Generic operation result popup (success/info/error)
     HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
+    SaveAttachmentPopup(usize),      // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
 
     // User-specific modes
     UserMode(UserMode),
@@ -137,6 +138,8 @@ The primary shared popup is the **operation result** modal, used for:
 - Admin actions (add solver, finalize disputes)
 - Blossom attachment downloads and Observer-mode file/key errors
 
+When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress** tab, the app stays on that tab and returns to **ManagingDispute** mode (it does not switch to the first tab).
+
 **Example**: Rendering the `OperationResult` popup.
 
 **Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum).
@@ -151,9 +154,15 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S for attachments when applicable.
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable.
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
+
+**Save attachment popup (Ctrl+S in Disputes in Progress)**:
+
+- **Open**: When managing a dispute, press **Ctrl+S** to open a centered popup listing all file/image attachments for the current dispute and active party (Buyer or Seller). If there are no attachments, Ctrl+S does nothing.
+- **In popup**: **↑/↓** change selection, **Enter** saves the selected attachment to `~/.mostrix/downloads/`, **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
+- **Source**: `src/ui/save_attachment_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`).
 
 ### UI constants
 

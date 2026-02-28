@@ -24,6 +24,8 @@ pub enum UiMode {
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
+    /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
+    SaveAttachmentPopup(usize),
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -51,7 +53,7 @@ pub struct AppState {
     pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
-    /// Selected message index (for Up/Down and Ctrl+S attachment save)
+    /// Selected message index for chat navigation (Up/Down) and footer hint; Save Attachment popup uses its own selection.
     pub admin_chat_selected_message_idx: Option<usize>,
     /// Line start index per visible message; updated each frame when rendering chat (for scroll sync)
     pub admin_chat_line_starts: Vec<usize>,

@@ -75,10 +75,16 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Close help popup (mode restored in key_handler/mod.rs)
             true
         }
+        UiMode::SaveAttachmentPopup(_) => {
+            // Up/Down/Enter/Esc handled in key_handler/mod.rs
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
         UiMode::OperationResult(_) => {
-            // Close result popup
-            // If we're on Settings or Observer tab, stay there; otherwise return to first tab
-            if !matches!(
+            // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
+            if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            } else if !matches!(
                 app.active_tab,
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)

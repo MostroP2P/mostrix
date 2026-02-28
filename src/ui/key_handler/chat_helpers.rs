@@ -1,24 +1,19 @@
-use crate::ui::{AdminMode, AppState, ChatParty, ChatSender, OperationResult, UiMode};
+use crate::ui::{
+    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, OperationResult, UiMode,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Filter messages by active chat party and return the count of visible messages.
 ///
-/// This helper eliminates code duplication across multiple key handlers.
-/// Admin messages are only shown in the chat party they were sent to.
+/// Uses the same visibility logic as the chat scrollview and get_selected_chat_message
+/// so that selection index and visible list stay in sync.
 pub fn get_visible_message_count(
     messages: &[crate::ui::DisputeChatMessage],
     active_chat_party: ChatParty,
 ) -> usize {
     messages
         .iter()
-        .filter(|msg| match msg.sender {
-            ChatSender::Admin => {
-                // Admin messages should only show in the chat party they were sent to
-                msg.target_party == Some(active_chat_party)
-            }
-            ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
-            ChatSender::Seller => active_chat_party == ChatParty::Seller,
-        })
+        .filter(|msg| message_visible_for_party(msg, active_chat_party))
         .count()
 }
 

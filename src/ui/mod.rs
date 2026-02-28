@@ -23,6 +23,7 @@ pub mod order_confirm;
 pub mod order_form;
 pub mod order_take;
 pub(crate) mod orders;
+pub mod save_attachment_popup;
 pub mod state;
 pub mod status;
 pub mod tabs;

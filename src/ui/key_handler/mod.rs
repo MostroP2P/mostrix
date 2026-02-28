@@ -12,7 +12,7 @@ mod user_handlers;
 mod validation;
 
 use crate::ui::{
-    helpers::{get_selected_chat_message, is_dispute_finalized},
+    helpers::{get_visible_attachment_messages, is_dispute_finalized},
     tabs::observer_tab::ObserverFocus,
     AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
@@ -177,6 +177,87 @@ pub fn handle_key_event(
         return Some(true); // consume all other keys while help is open
     }
 
+    // Save attachment popup: Up/Down to select, Enter to save, Esc to cancel
+    if matches!(app.mode, UiMode::SaveAttachmentPopup(_)) {
+        let dispute_id_key = app
+            .admin_disputes_in_progress
+            .get(app.selected_in_progress_idx)
+            .map(|d| d.dispute_id.clone());
+        let list_len = dispute_id_key
+            .as_ref()
+            .map(|id| get_visible_attachment_messages(app, id).len())
+            .unwrap_or(0);
+        let selected_idx = match &app.mode {
+            UiMode::SaveAttachmentPopup(i) => *i,
+            _ => 0,
+        };
+        match code {
+            KeyCode::Esc => {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                return Some(true);
+            }
+            KeyCode::Up => {
+                if selected_idx > 0 {
+                    if let UiMode::SaveAttachmentPopup(ref mut idx) = app.mode {
+                        *idx = selected_idx - 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Down => {
+                if list_len > 0 && selected_idx + 1 < list_len {
+                    if let UiMode::SaveAttachmentPopup(ref mut idx) = app.mode {
+                        *idx = selected_idx + 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                if let (Some(tx), Some(dispute), Some(id)) = (
+                    save_attachment_tx,
+                    app.admin_disputes_in_progress.get(app.selected_in_progress_idx),
+                    dispute_id_key.as_ref(),
+                ) {
+                    let list = get_visible_attachment_messages(app, id);
+                    if let Some(msg) = list.get(selected_idx) {
+                        if let Some(att) = &msg.attachment {
+                            let mut attachment = att.clone();
+                            if attachment.decryption_key.is_none() {
+                                if let (Some(admin_keys), Some(pk_str)) = (
+                                    admin_chat_keys,
+                                    match msg.sender {
+                                        crate::ui::ChatSender::Buyer => {
+                                            dispute.buyer_pubkey.as_deref()
+                                        }
+                                        crate::ui::ChatSender::Seller => {
+                                            dispute.seller_pubkey.as_deref()
+                                        }
+                                        crate::ui::ChatSender::Admin => None,
+                                    },
+                                ) {
+                                    if let Ok(sender_pk) = PublicKey::parse(pk_str) {
+                                        if let Ok(shared) =
+                                            crate::util::blossom::derive_shared_key(
+                                                admin_keys, &sender_pk,
+                                            )
+                                        {
+                                            attachment.decryption_key =
+                                                Some(shared.to_vec());
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send((dispute.dispute_id.clone(), attachment));
+                        }
+                    }
+                }
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                return Some(true);
+            }
+            _ => return Some(true), // consume other keys while popup is open
+        }
+    }
+
     // Ctrl+H: open context-aware help popup when in normal/managing-dispute mode (store current mode to restore on close)
     if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h') {
         let can_open = matches!(
@@ -193,68 +274,18 @@ pub fn handle_key_event(
         }
     }
 
-    // Ctrl+S: save selected attachment in admin dispute chat
+    // Ctrl+S: open save attachment popup (list of attachments) or do nothing if none
     if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
-        if let (Tab::Admin(AdminTab::DisputesInProgress), Some(tx)) =
-            (app.active_tab, save_attachment_tx)
-        {
+        if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Some(dispute) = app
                     .admin_disputes_in_progress
                     .get(app.selected_in_progress_idx)
                 {
-                    let dispute_id_key = dispute.dispute_id.clone();
-                    if let Some(msg) = get_selected_chat_message(app, &dispute_id_key) {
-                        if let Some(att) = &msg.attachment {
-                            let mut attachment = att.clone();
-                            // If no key in message, derive shared key from our private key + sender pubkey
-                            if attachment.decryption_key.is_none() {
-                                if let (Some(admin_keys), Some(pk_str)) = (
-                                    admin_chat_keys,
-                                    match msg.sender {
-                                        crate::ui::ChatSender::Buyer => {
-                                            dispute.buyer_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Seller => {
-                                            dispute.seller_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Admin => None,
-                                    },
-                                ) {
-                                    match PublicKey::parse(pk_str) {
-                                        Ok(sender_pk) => {
-                                            match crate::util::blossom::derive_shared_key(
-                                                admin_keys, &sender_pk,
-                                            ) {
-                                                Ok(shared) => {
-                                                    attachment.decryption_key =
-                                                        Some(shared.to_vec());
-                                                }
-                                                Err(e) => {
-                                                    log::warn!(
-                                                        "Failed to derive Blossom shared key for dispute {} from sender {:?}: {}",
-                                                        dispute.dispute_id,
-                                                        msg.sender,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "Failed to parse sender pubkey '{}' for Blossom attachment in dispute {} from sender {:?}: {}",
-                                                pk_str,
-                                                dispute.dispute_id,
-                                                msg.sender,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = tx.send((dispute_id_key, attachment));
-                            return Some(true);
-                        }
+                    let list = get_visible_attachment_messages(app, &dispute.dispute_id);
+                    if !list.is_empty() {
+                        app.mode = UiMode::SaveAttachmentPopup(0);
+                        return Some(true);
                     }
                 }
             }

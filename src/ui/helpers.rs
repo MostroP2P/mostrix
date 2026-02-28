@@ -9,6 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -342,10 +343,37 @@ pub async fn apply_admin_chat_updates(
                 }
             }
 
-            let sender = match party {
-                ChatParty::Buyer => ChatSender::Buyer,
-                ChatParty::Seller => ChatSender::Seller,
-            };
+            // Resolve sender and target_party from sender_pubkey so admin-sent messages
+            // (e.g. from mostro-cli) are shown as Admin and visible in the correct party view.
+            let (sender, target_party) = app
+                .admin_disputes_in_progress
+                .iter()
+                .find(|d| d.dispute_id == dispute_key)
+                .map(|dispute| {
+                    let buyer_pk = dispute
+                        .buyer_pubkey
+                        .as_deref()
+                        .and_then(|s| PublicKey::from_str(s).ok());
+                    let seller_pk = dispute
+                        .seller_pubkey
+                        .as_deref()
+                        .and_then(|s| PublicKey::from_str(s).ok());
+                    if buyer_pk.as_ref() == Some(&sender_pubkey) {
+                        (ChatSender::Buyer, None)
+                    } else if seller_pk.as_ref() == Some(&sender_pubkey) {
+                        (ChatSender::Seller, None)
+                    } else {
+                        // Not our admin, not buyer/seller → treat as Admin (e.g. mostro-cli) to this party
+                        (ChatSender::Admin, Some(party))
+                    }
+                })
+                .unwrap_or((
+                    match party {
+                        ChatParty::Buyer => ChatSender::Buyer,
+                        ChatParty::Seller => ChatSender::Seller,
+                    },
+                    None,
+                ));
 
             // Normalize to (display content, optional attachment + filename for toast)
             let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
@@ -372,20 +400,31 @@ pub async fn apply_admin_chat_updates(
                     format!("📎 File received: {} — Ctrl+S to save", filename_for_toast),
                     Instant::now(),
                 ));
+                // Switch selection to the dispute that received the attachment so the chat
+                // area shows it and Ctrl+S works (logs showed message pushed to one dispute
+                // while UI was showing another).
+                if let Some(idx) = app
+                    .admin_disputes_in_progress
+                    .iter()
+                    .position(|d| d.dispute_id == dispute_key)
+                {
+                    app.selected_in_progress_idx = idx;
+                    app.active_chat_party = party;
+                }
             }
             let msg = match attachment_opt {
                 Some((attachment, _)) => DisputeChatMessage {
                     sender,
                     content: msg_content,
                     timestamp: ts,
-                    target_party: None,
+                    target_party,
                     attachment: Some(attachment),
                 },
                 None => DisputeChatMessage {
                     sender,
                     content: msg_content,
                     timestamp: ts,
-                    target_party: None,
+                    target_party,
                     attachment: None,
                 },
             };
@@ -560,7 +599,7 @@ fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
 }
 
 /// Returns true if this message should be shown in the given party's chat view.
-fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
+pub fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
     match msg.sender {
         ChatSender::Admin => msg.target_party.is_none_or(|p| p == active_chat_party),
         ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
@@ -568,7 +607,7 @@ fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatPa
     }
 }
 
-/// Returns the number of messages in the given list that are visible for the active party and have an attachment.
+/// Returns the number of messages in the given list that are visible for the given party and have an attachment.
 pub fn count_visible_attachments(
     messages: &[DisputeChatMessage],
     active_chat_party: ChatParty,
@@ -577,6 +616,24 @@ pub fn count_visible_attachments(
         .iter()
         .filter(|msg| message_visible_for_party(msg, active_chat_party) && msg.attachment.is_some())
         .count()
+}
+
+/// Returns visible messages that have an attachment, for the current dispute and party.
+/// Used by the Save Attachment popup (Ctrl+S) to list saveable files.
+pub fn get_visible_attachment_messages<'a>(
+    app: &'a AppState,
+    dispute_id_key: &str,
+) -> Vec<&'a DisputeChatMessage> {
+    let messages = match app.admin_dispute_chats.get(dispute_id_key) {
+        Some(m) => m,
+        None => return vec![],
+    };
+    messages
+        .iter()
+        .filter(|msg| {
+            message_visible_for_party(msg, app.active_chat_party) && msg.attachment.is_some()
+        })
+        .collect()
 }
 
 /// Returns the currently selected chat message (by index) for the given dispute, or None.
@@ -609,7 +666,7 @@ fn format_message_lines(
     let (sender_label, sender_color, is_right_aligned) = match msg.sender {
         ChatSender::Admin => ("Admin", Color::Cyan, false),
         ChatSender::Buyer => ("Buyer", Color::Green, true),
-        ChatSender::Seller => ("Seller", Color::Red, true),
+        ChatSender::Seller => ("Seller", Color::Magenta, true),
     };
     let content_color = msg
         .attachment

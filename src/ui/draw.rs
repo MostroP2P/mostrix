@@ -131,6 +131,11 @@ pub fn ui_draw(
         help_popup::render_help_popup(f, app, *tab);
     }
 
+    // Save attachment popup (Ctrl+S in dispute chat)
+    if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
+        save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);
+    }
+
     // Shared settings popups
     if let UiMode::AddMostroPubkey(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
