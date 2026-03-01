@@ -210,7 +210,8 @@ fn handle_up_key(
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
-        | UiMode::OrderResult(_)
+        | UiMode::HelpPopup(..)
+        | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)
         | UiMode::AdminMode(AdminMode::AddSolver(_))
@@ -222,6 +223,7 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
+        | UiMode::SaveAttachmentPopup(_)
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
@@ -333,7 +335,8 @@ fn handle_down_key(
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
-        | UiMode::OrderResult(_)
+        | UiMode::HelpPopup(..)
+        | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)
         | UiMode::AdminMode(AdminMode::AddSolver(_))
@@ -345,6 +348,7 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
+        | UiMode::SaveAttachmentPopup(_)
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
@@ -386,6 +390,11 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
             app.mode = UiMode::AdminMode(AdminMode::Normal);
         }
     }
+
+    // Clear transient observer state when leaving Observer tab
+    if let Tab::Admin(AdminTab::Observer) = prev_tab {
+        app.clear_observer_secrets();
+    }
 }
 
 /// Handle Tab and BackTab keys
@@ -397,8 +406,17 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
-                // Reset scroll to bottom when switching parties (will be set in render)
-                app.admin_chat_list_state.select(None);
+                // Reset scroll/selection when switching parties (will be set in render)
+                app.admin_chat_selected_message_idx = None;
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_focus = match app.observer_focus {
+                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
+                    }
+                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
+                    }
+                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = (form.focused + 1) % 9;
                 // Skip field 4 if not using range
@@ -413,8 +431,17 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                     crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
                     crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
                 };
-                // Reset scroll to bottom when switching parties (will be set in render)
-                app.admin_chat_list_state.select(None);
+                // Reset scroll/selection when switching parties (will be set in render)
+                app.admin_chat_selected_message_idx = None;
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_focus = match app.observer_focus {
+                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
+                    }
+                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
+                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
+                    }
+                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = if form.focused == 0 {
                     8

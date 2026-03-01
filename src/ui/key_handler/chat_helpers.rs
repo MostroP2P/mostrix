@@ -1,24 +1,19 @@
-use crate::ui::{AdminMode, AppState, ChatParty, ChatSender, OrderResult, UiMode};
+use crate::ui::{
+    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, OperationResult, UiMode,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Filter messages by active chat party and return the count of visible messages.
 ///
-/// This helper eliminates code duplication across multiple key handlers.
-/// Admin messages are only shown in the chat party they were sent to.
+/// Uses the same visibility logic as the chat scrollview and get_selected_chat_message
+/// so that selection index and visible list stay in sync.
 pub fn get_visible_message_count(
     messages: &[crate::ui::DisputeChatMessage],
     active_chat_party: ChatParty,
 ) -> usize {
     messages
         .iter()
-        .filter(|msg| match msg.sender {
-            ChatSender::Admin => {
-                // Admin messages should only show in the chat party they were sent to
-                msg.target_party == Some(active_chat_party)
-            }
-            ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
-            ChatSender::Seller => active_chat_party == ChatParty::Seller,
-        })
+        .filter(|msg| message_visible_for_party(msg, active_chat_party))
         .count()
 }
 
@@ -36,8 +31,8 @@ pub fn get_dispute_visible_message_count(app: &AppState, dispute_id_key: &str) -
 pub fn message_counter(app: &mut AppState, dispute_id_key: &str) {
     let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
     if visible_count > 0 {
-        app.admin_chat_list_state
-            .select(Some(visible_count.saturating_sub(1)));
+        app.admin_chat_scrollview_state.scroll_to_bottom();
+        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
     }
 }
 
@@ -55,27 +50,32 @@ pub fn navigate_chat_messages(
     }
 
     let current = app
-        .admin_chat_list_state
-        .selected()
+        .admin_chat_selected_message_idx
         .unwrap_or(visible_count.saturating_sub(1));
 
     let new_selection = match direction {
         crossterm::event::KeyCode::Up => {
-            // Move up (older messages)
             if current > 0 {
                 current - 1
             } else {
                 0
             }
         }
-        crossterm::event::KeyCode::Down => {
-            // Move down (newer messages)
-            (current + 1).min(visible_count.saturating_sub(1))
-        }
+        crossterm::event::KeyCode::Down => (current + 1).min(visible_count.saturating_sub(1)),
         _ => return false,
     };
 
-    app.admin_chat_list_state.select(Some(new_selection));
+    app.admin_chat_selected_message_idx = Some(new_selection);
+
+    // Sync scroll position so the selected message is in view. Only use line_starts when they
+    // match the current visible count (same dispute/party and layout from last render);
+    // otherwise skip and the next render will have fresh line_starts.
+    if app.admin_chat_line_starts.len() == visible_count {
+        if let Some(&line_start) = app.admin_chat_line_starts.get(new_selection) {
+            app.admin_chat_scrollview_state
+                .set_offset(ratatui::layout::Position::new(0, line_start as u16));
+        }
+    }
     true
 }
 
@@ -84,33 +84,20 @@ pub fn navigate_chat_messages(
 /// Returns true if scrolling occurred, false otherwise.
 pub fn scroll_chat_messages(
     app: &mut AppState,
-    dispute_id_key: &str,
+    _dispute_id_key: &str,
     direction: crossterm::event::KeyCode,
 ) -> bool {
-    let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
-    if visible_count == 0 {
-        return false;
-    }
-
-    let current = app
-        .admin_chat_list_state
-        .selected()
-        .unwrap_or(visible_count.saturating_sub(1));
-
-    let new_selection = match direction {
+    match direction {
         crossterm::event::KeyCode::PageUp => {
-            // Scroll up (show older messages) - move selection up by ~10 items
-            current.saturating_sub(10)
+            app.admin_chat_scrollview_state.scroll_page_up();
+            true
         }
         crossterm::event::KeyCode::PageDown => {
-            // Scroll down (show newer messages) - move selection down by ~10 items
-            (current + 10).min(visible_count.saturating_sub(1))
+            app.admin_chat_scrollview_state.scroll_page_down();
+            true
         }
-        _ => return false,
-    };
-
-    app.admin_chat_list_state.select(Some(new_selection));
-    true
+        _ => false,
+    }
 }
 
 /// Jump to the bottom of the chat (latest messages).
@@ -122,9 +109,8 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
         return false;
     }
 
-    // Jump to last message (bottom)
-    app.admin_chat_list_state
-        .select(Some(visible_count.saturating_sub(1)));
+    app.admin_chat_scrollview_state.scroll_to_bottom();
+    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
     true
 }
 
@@ -153,12 +139,12 @@ pub fn handle_enter_finalize_popup(
     button: FinalizeDisputePopupButton,
     dispute_id: uuid::Uuid,
     dispute_is_finalized: bool,
-    order_result_tx: &UnboundedSender<OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) -> bool {
     match button {
         FinalizeDisputePopupButton::PayBuyer => {
             if dispute_is_finalized {
-                let _ = order_result_tx.send(OrderResult::Error(
+                let _ = order_result_tx.send(OperationResult::Error(
                     "Cannot finalize: dispute is already finalized".to_string(),
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -175,7 +161,7 @@ pub fn handle_enter_finalize_popup(
         }
         FinalizeDisputePopupButton::RefundSeller => {
             if dispute_is_finalized {
-                let _ = order_result_tx.send(OrderResult::Error(
+                let _ = order_result_tx.send(OperationResult::Error(
                     "Cannot finalize: dispute is already finalized".to_string(),
                 ));
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);

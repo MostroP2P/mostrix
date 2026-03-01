@@ -468,7 +468,7 @@ When the user is in **Admin** mode, the main event loop runs a periodic admin ch
   - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
   - Updates in‑memory `admin_chat_last_seen` entries.
   - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.
-- **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. The admin can press **Ctrl+S** on an attachment to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
+- **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. From the dispute chat, the admin presses **Ctrl+S** to open a **Save attachment** popup listing all attachments for the current dispute/party; they select one with ↑/↓ and press Enter to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
 This avoids overlapping relay queries and duplicate work when the 5‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
 

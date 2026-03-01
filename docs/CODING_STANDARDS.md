@@ -82,7 +82,7 @@ This document outlines the coding standards and best practices for the Mostrix p
 **Example**:
 
 ```rust
-pub async fn send_new_order(...) -> Result<OrderResult> {
+pub async fn send_new_order(...) -> Result<OperationResult> {
     let trade_keys = user.derive_trade_keys(next_idx)?; // Propagate error
     // ...
 }
@@ -182,7 +182,7 @@ cargo clippy --all-targets --all-features  # Lint code
 ## Naming Conventions
 
 - **Functions**: `snake_case` (e.g., `send_new_order`, `parse_dm_events`)
-- **Types/Structs**: `PascalCase` (e.g., `AppState`, `UiMode`, `OrderResult`)
+- **Types/Structs**: `PascalCase` (e.g., `AppState`, `UiMode`, `OperationResult`)
 - **Constants**: `UPPER_SNAKE_CASE` (e.g., `FETCH_EVENTS_TIMEOUT`)
 - **Modules**: `snake_case` (e.g., `order_utils`, `dm_utils`)
 

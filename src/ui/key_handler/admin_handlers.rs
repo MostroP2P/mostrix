@@ -10,6 +10,7 @@ use crate::ui::key_handler::confirmation::{
 };
 use crate::ui::key_handler::settings::save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{validate_npub, validate_nsec};
+use crate::ui::orders::OperationResult;
 use crate::util::order_utils::execute_take_dispute;
 
 /// Helper function to execute taking a dispute.
@@ -22,7 +23,7 @@ pub(crate) fn execute_take_dispute_action(
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
     pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     app.mode = UiMode::AdminMode(AdminMode::WaitingTakeDispute(dispute_id));
 
@@ -33,14 +34,14 @@ pub(crate) fn execute_take_dispute_action(
     tokio::spawn(async move {
         match execute_take_dispute(&dispute_id, &client_clone, mostro_pubkey, &pool_clone).await {
             Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
+                let _ = result_tx.send(OperationResult::Info(format!(
                     "✅ Dispute {} taken successfully!",
                     dispute_id
                 )));
             }
             Err(e) => {
                 log::error!("Failed to take dispute: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });
@@ -55,7 +56,7 @@ pub(crate) fn execute_add_solver_action(
     solver_pubkey: String,
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     // Stay on Settings tab after confirmation
     app.mode = UiMode::AdminMode(AdminMode::Normal);
@@ -67,13 +68,13 @@ pub(crate) fn execute_add_solver_action(
     tokio::spawn(async move {
         match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey).await {
             Ok(_) => {
-                let _ = result_tx.send(crate::ui::OrderResult::Info(
+                let _ = result_tx.send(OperationResult::Info(
                     "Solver added successfully".to_string(),
                 ));
             }
             Err(e) => {
                 log::error!("Failed to add solver: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });
@@ -89,7 +90,7 @@ pub(crate) fn execute_finalize_dispute_action(
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
     pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
     is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
 ) {
     app.mode = UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(dispute_id));
@@ -114,14 +115,14 @@ pub(crate) fn execute_finalize_dispute_action(
                 } else {
                     "canceled (seller refunded)"
                 };
-                let _ = result_tx.send(crate::ui::OrderResult::Info(format!(
+                let _ = result_tx.send(OperationResult::Info(format!(
                     "✅ Dispute {} {}!",
                     dispute_id, action_name
                 )));
             }
             Err(e) => {
                 log::error!("Failed to finalize dispute: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });
@@ -148,7 +149,7 @@ pub(crate) fn handle_enter_admin_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -178,7 +179,7 @@ pub(crate) fn handle_enter_admin_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }

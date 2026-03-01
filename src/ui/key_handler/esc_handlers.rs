@@ -29,16 +29,29 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
-        UiMode::OrderResult(_) => {
-            // Close result popup
-            // If we're on Settings tab, stay there; otherwise return to first tab
-            if !matches!(
+        UiMode::HelpPopup(_, ref previous_mode) => {
+            app.mode = (**previous_mode).clone();
+            true
+        }
+        UiMode::SaveAttachmentPopup(_) => {
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::OperationResult(_) => {
+            // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
+            if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            } else if !matches!(
                 app.active_tab,
-                Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
+                Tab::Admin(AdminTab::Settings)
+                    | Tab::User(UserTab::Settings)
+                    | Tab::Admin(AdminTab::Observer)
             ) {
                 app.active_tab = Tab::first(app.user_role);
+                app.mode = default_mode.clone();
+            } else {
+                app.mode = default_mode.clone();
             }
-            app.mode = default_mode.clone();
             true
         }
         UiMode::NewMessageNotification(_, _, _) => {

@@ -11,7 +11,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification, OrderResult,
+    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
+    OperationResult,
 };
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
@@ -132,7 +133,7 @@ use crate::ui::ui_draw;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
-    let settings = init_settings();
+    let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
@@ -182,7 +183,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
-    let mut admin_chat_interval = interval(Duration::from_secs(5));
+    let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
@@ -214,7 +215,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<OrderResult>();
+        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
 
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
@@ -259,7 +260,7 @@ async fn main() -> Result<(), anyhow::Error> {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
                     // Check if this is a dispute-related result before handling
-                    let is_dispute_related = matches!(&result, OrderResult::Info(msg)
+                    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::ui::state::{OrderResult, OrderSuccess};
+use crate::ui::state::{OperationResult, OrderSuccess};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
@@ -316,9 +316,9 @@ pub async fn fetch_order_fiat_from_relay(
     Ok(if fiat.is_empty() { None } else { Some(fiat) })
 }
 
-/// Helper function to create OrderResult::Success from an order
-pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) -> OrderResult {
-    OrderResult::Success(OrderSuccess {
+/// Helper function to create OperationResult::Success from an order
+pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) -> OperationResult {
+    OperationResult::Success(OrderSuccess {
         order_id: order.id,
         kind: order.kind,
         amount: order.amount,
@@ -333,7 +333,7 @@ pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) 
     })
 }
 
-/// Helper function to create OrderResult::Success from form data (fallback)
+/// Helper function to create OperationResult::Success from form data (fallback)
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_order_result_from_form(
     kind: mostro_core::order::Kind,
@@ -345,8 +345,8 @@ pub(super) fn create_order_result_from_form(
     payment_method: String,
     premium: i64,
     trade_index: i64,
-) -> OrderResult {
-    OrderResult::Success(OrderSuccess {
+) -> OperationResult {
+    OperationResult::Success(OrderSuccess {
         order_id: None,
         kind: Some(kind),
         amount,

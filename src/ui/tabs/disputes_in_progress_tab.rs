@@ -1,12 +1,21 @@
 use std::str::FromStr;
 
 use chrono::DateTime;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
-use crate::ui::helpers::{count_visible_attachments, get_selected_chat_message};
+use crate::ui::constants::{
+    FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_CTRL_S_SAVE_FILE, FOOTER_END_BOTTOM,
+    FOOTER_ENTER_SEND, FOOTER_NAV_CHAT, FOOTER_PGUP_PGDN_SCROLL, FOOTER_PGUP_PGDN_SCROLL_CHAT,
+    FOOTER_SHIFT_F_RESOLVE, FOOTER_SHIFT_I_DISABLE, FOOTER_SHIFT_I_ENABLE, FOOTER_TAB_PARTY,
+    FOOTER_TAB_SWITCH_PARTY, FOOTER_UP_DOWN_SELECT, FOOTER_UP_DOWN_SELECT_DISPUTE, HELP_KEY,
+};
+use crate::ui::helpers::{
+    build_chat_scrollview_content, count_visible_attachments, get_selected_chat_message,
+};
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
 
@@ -160,13 +169,24 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
             let input_height = (input_lines.min(10) as u16) + 2;
-            // Reserve two lines for footer when attachment toast is shown
-            let footer_height = if app.attachment_toast.is_some() { 2 } else { 1 };
+            // Reserve two lines for footer when wide (two-line hints) or when attachment toast is shown
+            let use_two_line_footer = main_area.width >= 90;
+            let footer_height = if app.attachment_toast.is_some() {
+                if use_two_line_footer {
+                    3
+                } else {
+                    2
+                }
+            } else if use_two_line_footer {
+                2
+            } else {
+                1
+            };
 
             Layout::new(
                 Direction::Vertical,
                 [
-                    Constraint::Length(8),             // Header (expanded for ratings)
+                    Constraint::Length(7),             // Header (amount+fiat+privacy on one line)
                     Constraint::Length(3),             // Party Tabs
                     Constraint::Min(0),                // Chat
                     Constraint::Length(input_height),  // Input (dynamic!)
@@ -354,11 +374,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     ),
                     Style::default().fg(Color::Yellow),
                 ),
-            ]),
-            Line::from(vec![
+                Span::raw("  |  "),
                 Span::styled("Privacy: ", Style::default().fg(Color::Gray)),
                 Span::styled(&buyer_label, Style::default().fg(Color::White)),
-                Span::raw("  |  "),
+                Span::raw("  "),
                 Span::styled(&seller_label, Style::default().fg(Color::White)),
             ]),
             Line::from(vec![
@@ -509,85 +528,93 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 party_chunks[1],
             );
 
-            // Chat History - Display chat messages for this dispute using List widget
+            // Chat History - Display chat messages using ScrollView
             let dispute_id_key = &selected_dispute.dispute_id;
             let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
-
-            // Wrap long messages to ~half chat width so they use multiple lines
-            // Clamp to at least 1 to avoid zero-width wrap problems on narrow terminals
             let chat_area = main_chunks[2];
-            let max_content_width = (chat_area.width.saturating_sub(2) / 2).max(1);
 
-            let items = if let Some(messages) = chat_messages {
-                crate::ui::helpers::build_chat_list_items(
-                    messages,
-                    app.active_chat_party,
-                    Some(max_content_width),
-                )
-            } else {
-                crate::ui::helpers::build_chat_list_items(
-                    &[],
-                    app.active_chat_party,
-                    Some(max_content_width),
-                )
-            };
-
-            // Update ListState to show latest message if we're at the bottom or selection is invalid
-            let total_items = items.len();
-            if total_items > 0 {
-                let current_selection = app.admin_chat_list_state.selected();
-                // Auto-scroll to bottom when new buyer/seller messages arrive for this dispute/party
-                let current_key = (dispute_id_key.clone(), app.active_chat_party);
-                if let Some((ref d, ref p, last_count)) = app.admin_chat_scroll_tracker {
-                    if *d == current_key.0 && *p == current_key.1 && total_items > last_count {
-                        app.admin_chat_list_state
-                            .select(Some(total_items.saturating_sub(1)));
-                    }
-                }
-                app.admin_chat_scroll_tracker =
-                    Some((dispute_id_key.clone(), app.active_chat_party, total_items));
-                // Reset to bottom if: no selection, selection is out of bounds, or selection is at the end
-                if current_selection.is_none_or(|sel| sel >= total_items.saturating_sub(1)) {
-                    app.admin_chat_list_state
-                        .select(Some(total_items.saturating_sub(1)));
-                }
-            } else {
-                // No items, clear selection
-                app.admin_chat_list_state.select(None);
-                app.admin_chat_scroll_tracker =
-                    Some((dispute_id_key.clone(), app.active_chat_party, 0));
-            }
+            // Full inner width (minus borders and scrollbar) so counterpart messages align to the right edge
+            let inner_width = Block::default()
+                .borders(Borders::ALL)
+                .inner(chat_area)
+                .width;
+            let content_width = inner_width.saturating_sub(1).max(1); // reserve 1 col for scrollbar
+            let max_content_width = (content_width / 2).max(1); // wrap long lines at half width for readability
 
             let file_count = chat_messages
                 .map(|msgs| count_visible_attachments(msgs, app.active_chat_party))
                 .unwrap_or(0);
-            let chat_title = if total_items > 0 {
+
+            let messages_slice = chat_messages.map(|m| m.as_slice()).unwrap_or(&[]);
+            let content = build_chat_scrollview_content(
+                messages_slice,
+                app.active_chat_party,
+                content_width,
+                Some(max_content_width),
+            );
+
+            let visible_count = content.line_start_per_message.len();
+            app.admin_chat_line_starts = content.line_start_per_message.clone();
+
+            if visible_count > 0 {
+                let current_key = (dispute_id_key.clone(), app.active_chat_party);
+                if let Some((ref d, ref p, last_count)) = app.admin_chat_scroll_tracker {
+                    if *d == current_key.0 && *p == current_key.1 && visible_count > last_count {
+                        app.admin_chat_scrollview_state.scroll_to_bottom();
+                        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                    }
+                }
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, visible_count));
+
+                let sel = app.admin_chat_selected_message_idx;
+                if sel.is_none_or(|idx| idx >= visible_count.saturating_sub(1)) {
+                    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                }
+            } else {
+                app.admin_chat_selected_message_idx = None;
+                app.admin_chat_scroll_tracker =
+                    Some((dispute_id_key.clone(), app.active_chat_party, 0));
+            }
+
+            let chat_title = if visible_count > 0 {
                 if file_count > 0 {
                     format!(
                         "Chat with {} ({} messages, {} file(s))",
-                        app.active_chat_party, total_items, file_count
+                        app.active_chat_party, visible_count, file_count
                     )
                 } else {
                     format!(
                         "Chat with {} ({} messages)",
-                        app.active_chat_party, total_items
+                        app.active_chat_party, visible_count
                     )
                 }
             } else {
                 format!("Chat with {} (no messages)", app.active_chat_party)
             };
-            let chat_list = List::new(items)
-                .block(Block::default().title(chat_title).borders(Borders::ALL))
+
+            let chat_block = Block::default()
+                .title(chat_title)
+                .borders(Borders::ALL)
                 .style(Style::default());
+            let inner_area = chat_block.inner(chat_area);
+            f.render_widget(chat_block, chat_area);
 
-            f.render_stateful_widget(chat_list, main_chunks[2], &mut app.admin_chat_list_state);
-
-            // Render scrollbar on the right side of the chat area
-            crate::ui::helpers::render_chat_scrollbar(
-                f,
-                main_chunks[2],
-                total_items,
-                &app.admin_chat_list_state,
+            let mut scroll_view = ScrollView::new(Size::new(
+                content.content_width,
+                content.content_height.max(1),
+            ))
+            .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
+            let content_rect =
+                Rect::new(0, 0, content.content_width, content.content_height.max(1));
+            scroll_view.render_widget(
+                Paragraph::new(content.lines).wrap(ratatui::widgets::Wrap { trim: true }),
+                content_rect,
+            );
+            f.render_stateful_widget(
+                scroll_view,
+                inner_area,
+                &mut app.admin_chat_scrollview_state,
             );
 
             // Input Area
@@ -632,58 +659,149 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             f.render_widget(input, main_chunks[3]);
         }
 
-        // Footer
+        // Footer (width-aware: minimal on narrow, 1 or 2 lines when wide; always include Ctrl+H)
         let filter_hint = match app.dispute_filter {
-            DisputeFilter::InProgress => "Shift+C: View Finalized",
-            DisputeFilter::Finalized => "Shift+C: View In Progress",
+            DisputeFilter::InProgress => FILTER_VIEW_FINALIZED,
+            DisputeFilter::Finalized => FILTER_VIEW_IN_PROGRESS,
         };
         let has_selected_attachment = !is_finalized
             && get_selected_chat_message(app, &selected_dispute.dispute_id)
                 .and_then(|m| m.attachment.as_ref())
                 .is_some();
         let ctrl_s_hint = if has_selected_attachment {
-            " | Ctrl+S: Save file"
+            FOOTER_CTRL_S_SAVE_FILE
         } else {
             ""
         };
-        let footer_text = if is_finalized {
-            // Simplified footer for finalized disputes
-            format!("{} | ↑↓: Select Dispute", filter_hint)
-        } else {
-            // Full footer for in-progress disputes
-            let is_input_focused =
-                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-            let base = if is_input_focused {
-                let is_input_enabled = app.admin_chat_input_enabled;
-                if is_input_enabled {
-                    format!("Tab: Switch Party | Enter: Send | Shift+I: Disable | Shift+F: Resolve | {} | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute", filter_hint)
-                } else {
-                    format!("Tab: Switch Party | Shift+I: Enable | Shift+F: Resolve | {} | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute", filter_hint)
-                }
-            } else {
-                format!("Tab: Switch Party | Shift+F: Resolve | {} | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom", filter_hint)
-            };
-            format!("{}{}", base, ctrl_s_hint)
-        };
         let footer_chunk_idx = if is_finalized { 1 } else { 4 };
         let footer_area = main_chunks[footer_chunk_idx];
-        if !is_finalized && app.attachment_toast.is_some() {
-            let (toast_area, footer_line_area) = {
-                let chunks = Layout::new(
-                    Direction::Vertical,
-                    [Constraint::Length(1), Constraint::Length(1)],
-                )
-                .split(footer_area);
-                (chunks[0], chunks[1])
+        let footer_width = footer_area.width;
+
+        // When wide (>=90) and not finalized, use two lines to avoid overflow
+        let (footer_line1, footer_line2) = if footer_width < 50 {
+            (HELP_KEY.to_string(), None)
+        } else if footer_width < 90 {
+            let one = if is_finalized {
+                format!("{} | {} | {}", HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT)
+            } else {
+                let is_input_focused =
+                    matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+                let short = if is_input_focused && app.admin_chat_input_enabled {
+                    format!(
+                        "{} | {} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_ENTER_SEND,
+                        FOOTER_TAB_PARTY,
+                        FOOTER_SHIFT_F_RESOLVE,
+                        filter_hint
+                    )
+                } else {
+                    format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY, FOOTER_TAB_PARTY, FOOTER_SHIFT_F_RESOLVE, filter_hint
+                    )
+                };
+                format!("{}{}", short, ctrl_s_hint)
             };
+            (one, None)
+        } else if is_finalized {
+            (
+                format!(
+                    "{} | {} | {}",
+                    HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+                ),
+                None,
+            )
+        } else {
+            let is_input_focused =
+                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+            let (line1, line2) = if is_input_focused {
+                let is_input_enabled = app.admin_chat_input_enabled;
+                if is_input_enabled {
+                    (
+                        format!(
+                            "{} | {} | {} | {} | {} | {}",
+                            HELP_KEY,
+                            FOOTER_TAB_SWITCH_PARTY,
+                            FOOTER_ENTER_SEND,
+                            FOOTER_SHIFT_I_DISABLE,
+                            FOOTER_SHIFT_F_RESOLVE,
+                            filter_hint
+                        ),
+                        format!(
+                            "{} | {} | {}{}",
+                            FOOTER_PGUP_PGDN_SCROLL,
+                            FOOTER_END_BOTTOM,
+                            FOOTER_UP_DOWN_SELECT_DISPUTE,
+                            ctrl_s_hint
+                        ),
+                    )
+                } else {
+                    (
+                        format!(
+                            "{} | {} | {} | {} | {}{}",
+                            HELP_KEY,
+                            FOOTER_TAB_SWITCH_PARTY,
+                            FOOTER_SHIFT_I_ENABLE,
+                            FOOTER_SHIFT_F_RESOLVE,
+                            filter_hint,
+                            ctrl_s_hint
+                        ),
+                        format!(
+                            "{} | {} | {} | {}",
+                            FOOTER_PGUP_PGDN_SCROLL,
+                            FOOTER_NAV_CHAT,
+                            FOOTER_END_BOTTOM,
+                            FOOTER_UP_DOWN_SELECT_DISPUTE
+                        ),
+                    )
+                }
+            } else {
+                (
+                    format!(
+                        "{} | {} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_TAB_SWITCH_PARTY,
+                        FOOTER_SHIFT_F_RESOLVE,
+                        filter_hint,
+                        FOOTER_UP_DOWN_SELECT_DISPUTE
+                    ),
+                    format!(
+                        "{} | {}{}",
+                        FOOTER_PGUP_PGDN_SCROLL_CHAT, FOOTER_END_BOTTOM, ctrl_s_hint
+                    ),
+                )
+            };
+            (line1, Some(line2))
+        };
+
+        if !is_finalized && app.attachment_toast.is_some() {
+            let n = if footer_line2.is_some() { 3 } else { 2 };
+            let chunks = Layout::new(
+                Direction::Vertical,
+                (0..n).map(|_| Constraint::Length(1)).collect::<Vec<_>>(),
+            )
+            .split(footer_area);
+            let (toast_area, footer_areas) = (chunks[0], &chunks[1..]);
             let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
             f.render_widget(
                 Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
                 toast_area,
             );
-            f.render_widget(Paragraph::new(footer_text.as_str()), footer_line_area);
+            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_areas[0]);
+            if let Some(ref line2) = footer_line2 {
+                f.render_widget(Paragraph::new(line2.as_str()), footer_areas[1]);
+            }
+        } else if let Some(ref line2) = footer_line2 {
+            let footer_chunks = Layout::new(
+                Direction::Vertical,
+                [Constraint::Length(1), Constraint::Length(1)],
+            )
+            .split(footer_area);
+            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_chunks[0]);
+            f.render_widget(Paragraph::new(line2.as_str()), footer_chunks[1]);
         } else {
-            f.render_widget(Paragraph::new(footer_text.as_str()), footer_area);
+            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_area);
         }
 
         // Update the selected index after rendering is complete (to avoid borrow checker issues)
@@ -712,12 +830,20 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(no_selection, inner_chunks[0]);
 
-        // Render footer with key hints
+        // Render footer with key hints (width-aware)
         let filter_hint = match app.dispute_filter {
-            DisputeFilter::InProgress => "Shift+C: View Finalized",
-            DisputeFilter::Finalized => "Shift+C: View In Progress",
+            DisputeFilter::InProgress => FILTER_VIEW_FINALIZED,
+            DisputeFilter::Finalized => FILTER_VIEW_IN_PROGRESS,
         };
-        let footer_text = format!("{} | ↑↓: Select Dispute", filter_hint);
+        let footer_width = inner_chunks[1].width;
+        let footer_text = if footer_width < 50 {
+            HELP_KEY.to_string()
+        } else {
+            format!(
+                "{} | {} | {}",
+                HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+            )
+        };
         let footer = Paragraph::new(footer_text);
         f.render_widget(footer, inner_chunks[1]);
 

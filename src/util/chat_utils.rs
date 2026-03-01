@@ -50,9 +50,9 @@ pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
     Some(Keys::new(secret))
 }
 
-/// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. trade pubkey).
-/// Rumor content is Mostro protocol format: JSON of (Message, Option<String>) with
-/// Message::Dm(SendDm, TextMessage(...)) so mostro-cli and mostro daemon can parse it.
+/// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. shared key pubkey).
+/// The inner content is a simple text note, not Mostro protocol format, as this is
+/// used for admin chat messages which are plain text communications.
 async fn build_custom_wrap_event(
     sender: &Keys,
     recipient_pubkey: &PublicKey,

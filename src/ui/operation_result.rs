@@ -3,16 +3,16 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::{OrderResult, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{OperationResult, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::orders::OrderSuccess;
 
-pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
+pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult) {
     let area: Rect = f.area();
     let popup_width = 70;
     let popup_height = match result {
-        OrderResult::Success(_) => 18,
-        OrderResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
-        OrderResult::Error(_) | OrderResult::Info(_) => 8,
+        OperationResult::Success(_) => 18,
+        OperationResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
+        OperationResult::Error(_) | OperationResult::Info(_) => 8,
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -29,7 +29,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
     f.render_widget(Clear, popup);
 
     match result {
-        OrderResult::Success(OrderSuccess {
+        OperationResult::Success(OrderSuccess {
             order_id,
             kind,
             amount,
@@ -121,9 +121,9 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OrderResult::Error(error_msg) => {
+        OperationResult::Error(error_msg) => {
             let block = Block::default()
-                .title("❌ Order Failed")
+                .title("❌ Operation Failed")
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Red));
 
@@ -152,7 +152,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OrderResult::Info(message) => {
+        OperationResult::Info(message) => {
             let block = Block::default()
                 .title("✅ Operation Successful")
                 .borders(Borders::ALL)
@@ -183,7 +183,7 @@ pub fn render_order_result(f: &mut ratatui::Frame, result: &OrderResult) {
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OrderResult::PaymentRequestRequired { .. } => {
+        OperationResult::PaymentRequestRequired { .. } => {
             // This should not be displayed - it's converted to a notification in main.rs
             // But if it somehow reaches here, show a simple message
             let block = Block::default()

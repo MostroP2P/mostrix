@@ -4,11 +4,12 @@ use mostro_core::prelude::UserInfo;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{ListItem, Paragraph};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -342,10 +343,37 @@ pub async fn apply_admin_chat_updates(
                 }
             }
 
-            let sender = match party {
-                ChatParty::Buyer => ChatSender::Buyer,
-                ChatParty::Seller => ChatSender::Seller,
-            };
+            // Resolve sender and target_party from sender_pubkey so admin-sent messages
+            // (e.g. from mostro-cli) are shown as Admin and visible in the correct party view.
+            let (sender, target_party) = app
+                .admin_disputes_in_progress
+                .iter()
+                .find(|d| d.dispute_id == dispute_key)
+                .map(|dispute| {
+                    let buyer_pk = dispute
+                        .buyer_pubkey
+                        .as_deref()
+                        .and_then(|s| PublicKey::from_str(s).ok());
+                    let seller_pk = dispute
+                        .seller_pubkey
+                        .as_deref()
+                        .and_then(|s| PublicKey::from_str(s).ok());
+                    if buyer_pk.as_ref() == Some(&sender_pubkey) {
+                        (ChatSender::Buyer, None)
+                    } else if seller_pk.as_ref() == Some(&sender_pubkey) {
+                        (ChatSender::Seller, None)
+                    } else {
+                        // Not our admin, not buyer/seller → treat as Admin (e.g. mostro-cli) to this party
+                        (ChatSender::Admin, Some(party))
+                    }
+                })
+                .unwrap_or((
+                    match party {
+                        ChatParty::Buyer => ChatSender::Buyer,
+                        ChatParty::Seller => ChatSender::Seller,
+                    },
+                    None,
+                ));
 
             // Normalize to (display content, optional attachment + filename for toast)
             let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
@@ -372,20 +400,31 @@ pub async fn apply_admin_chat_updates(
                     format!("📎 File received: {} — Ctrl+S to save", filename_for_toast),
                     Instant::now(),
                 ));
+                // Switch selection to the dispute that received the attachment so the chat
+                // area shows it and Ctrl+S works (logs showed message pushed to one dispute
+                // while UI was showing another).
+                if let Some(idx) = app
+                    .admin_disputes_in_progress
+                    .iter()
+                    .position(|d| d.dispute_id == dispute_key)
+                {
+                    app.selected_in_progress_idx = idx;
+                    app.active_chat_party = party;
+                }
             }
             let msg = match attachment_opt {
                 Some((attachment, _)) => DisputeChatMessage {
                     sender,
                     content: msg_content,
                     timestamp: ts,
-                    target_party: None,
+                    target_party,
                     attachment: Some(attachment),
                 },
                 None => DisputeChatMessage {
                     sender,
                     content: msg_content,
                     timestamp: ts,
-                    target_party: None,
+                    target_party,
                     attachment: None,
                 },
             };
@@ -560,7 +599,7 @@ fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
 }
 
 /// Returns true if this message should be shown in the given party's chat view.
-fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
+pub fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
     match msg.sender {
         ChatSender::Admin => msg.target_party.is_none_or(|p| p == active_chat_party),
         ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
@@ -568,7 +607,7 @@ fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatPa
     }
 }
 
-/// Returns the number of messages in the given list that are visible for the active party and have an attachment.
+/// Returns the number of messages in the given list that are visible for the given party and have an attachment.
 pub fn count_visible_attachments(
     messages: &[DisputeChatMessage],
     active_chat_party: ChatParty,
@@ -579,18 +618,93 @@ pub fn count_visible_attachments(
         .count()
 }
 
-/// Returns the currently selected chat message (by list index) for the given dispute, or None.
+/// Returns visible messages that have an attachment, for the current dispute and party.
+/// Used by the Save Attachment popup (Ctrl+S) to list saveable files.
+pub fn get_visible_attachment_messages<'a>(
+    app: &'a AppState,
+    dispute_id_key: &str,
+) -> Vec<&'a DisputeChatMessage> {
+    let messages = match app.admin_dispute_chats.get(dispute_id_key) {
+        Some(m) => m,
+        None => return vec![],
+    };
+    messages
+        .iter()
+        .filter(|msg| {
+            message_visible_for_party(msg, app.active_chat_party) && msg.attachment.is_some()
+        })
+        .collect()
+}
+
+/// Returns the currently selected chat message (by index) for the given dispute, or None.
 pub fn get_selected_chat_message<'a>(
     app: &'a AppState,
     dispute_id_key: &str,
 ) -> Option<&'a DisputeChatMessage> {
     let messages = app.admin_dispute_chats.get(dispute_id_key)?;
-    let selected_idx = app.admin_chat_list_state.selected()?;
+    let selected_idx = app.admin_chat_selected_message_idx?;
     let visible: Vec<&DisputeChatMessage> = messages
         .iter()
         .filter(|msg| message_visible_for_party(msg, app.active_chat_party))
         .collect();
     visible.get(selected_idx).copied()
+}
+
+/// Formats a single message as display lines (header + content + blank). Used by list and scrollview.
+fn format_message_lines(
+    msg: &DisputeChatMessage,
+    max_content_width: Option<u16>,
+) -> Vec<Line<'static>> {
+    let (date_str, time_str) = DateTime::from_timestamp(msg.timestamp, 0)
+        .map(|dt| {
+            let date = dt.format("%d-%m-%Y").to_string();
+            let time = dt.format("%H:%M").to_string();
+            (date, time)
+        })
+        .unwrap_or_else(|| ("??-??-????".to_string(), "??:??".to_string()));
+
+    let (sender_label, sender_color, is_right_aligned) = match msg.sender {
+        ChatSender::Admin => ("Admin", Color::Cyan, false),
+        ChatSender::Buyer => ("Buyer", Color::Green, true),
+        ChatSender::Seller => ("Seller", Color::Magenta, true),
+    };
+    let content_color = msg
+        .attachment
+        .as_ref()
+        .map(|_| Color::Yellow)
+        .unwrap_or(sender_color);
+
+    let header_text = format!("{} - {} - {}", sender_label, date_str, time_str);
+    let mut message_lines = Vec::new();
+
+    if is_right_aligned {
+        let header_span = Span::styled(header_text, Style::default().fg(sender_color));
+        message_lines.push(header_span.into_right_aligned_line());
+        let content_lines = max_content_width
+            .map(|w| wrap_text_to_lines(&msg.content, w))
+            .unwrap_or_else(|| vec![msg.content.clone()]);
+        for line in content_lines {
+            message_lines.push(
+                Span::styled(line, Style::default().fg(content_color)).into_right_aligned_line(),
+            );
+        }
+    } else {
+        message_lines.push(Line::from(vec![Span::styled(
+            header_text,
+            Style::default().fg(sender_color),
+        )]));
+        let content_lines = max_content_width
+            .map(|w| wrap_text_to_lines(&msg.content, w))
+            .unwrap_or_else(|| vec![msg.content.clone()]);
+        for line in content_lines {
+            message_lines.push(Line::from(vec![Span::styled(
+                line,
+                Style::default().fg(content_color),
+            )]));
+        }
+    }
+    message_lines.push(Line::from(""));
+    message_lines
 }
 
 /// Builds ListItems from chat messages for display in the chat list widget.
@@ -602,82 +716,12 @@ pub fn build_chat_list_items(
     active_chat_party: ChatParty,
     max_content_width: Option<u16>,
 ) -> Vec<ListItem<'_>> {
-    // First compute the filtered message iterator and collect into Vec
     let filtered_items: Vec<ListItem<'_>> = messages
         .iter()
-        .filter_map(|msg| {
-            // Filter by active chat party
-            let should_show = message_visible_for_party(msg, active_chat_party);
-
-            if !should_show {
-                return None;
-            }
-
-            // Format date and time
-            let (date_str, time_str) = DateTime::from_timestamp(msg.timestamp, 0)
-                .map(|dt| {
-                    let date = dt.format("%d-%m-%Y").to_string();
-                    let time = dt.format("%H:%M").to_string();
-                    (date, time)
-                })
-                .unwrap_or_else(|| ("??-??-????".to_string(), "??:??".to_string()));
-
-            let (sender_label, sender_color, is_right_aligned) = match msg.sender {
-                ChatSender::Admin => ("Admin", Color::Cyan, false),
-                ChatSender::Buyer => ("Buyer", Color::Green, true),
-                ChatSender::Seller => ("Seller", Color::Red, true),
-            };
-            // Attachment messages: distinct color so they stand out (content already has 📎/🖼)
-            let content_color = msg
-                .attachment
-                .as_ref()
-                .map(|_| Color::Yellow)
-                .unwrap_or(sender_color);
-
-            // Header line: "Sender - date - time"
-            let header_text = format!("{} - {} - {}", sender_label, date_str, time_str);
-
-            // Create multi-line ListItem for this message
-            let mut message_lines = Vec::new();
-
-            if is_right_aligned {
-                // Right-align buyer/seller messages
-                let header_span = Span::styled(header_text, Style::default().fg(sender_color));
-                message_lines.push(header_span.into_right_aligned_line());
-
-                let content_lines = max_content_width
-                    .map(|w| wrap_text_to_lines(&msg.content, w))
-                    .unwrap_or_else(|| vec![msg.content.clone()]);
-                for line in content_lines {
-                    let span = Span::styled(line, Style::default().fg(content_color));
-                    message_lines.push(span.into_right_aligned_line());
-                }
-            } else {
-                // Left-align admin messages
-                message_lines.push(Line::from(vec![Span::styled(
-                    header_text,
-                    Style::default().fg(sender_color),
-                )]));
-
-                let content_lines = max_content_width
-                    .map(|w| wrap_text_to_lines(&msg.content, w))
-                    .unwrap_or_else(|| vec![msg.content.clone()]);
-                for line in content_lines {
-                    message_lines.push(Line::from(vec![Span::styled(
-                        line,
-                        Style::default().fg(content_color),
-                    )]));
-                }
-            }
-
-            // Add empty line for spacing
-            message_lines.push(Line::from(""));
-
-            Some(ListItem::new(message_lines))
-        })
+        .filter(|msg| message_visible_for_party(msg, active_chat_party))
+        .map(|msg| ListItem::new(format_message_lines(msg, max_content_width)))
         .collect();
 
-    // If filtered list is empty, return placeholder
     if filtered_items.is_empty() {
         return vec![ListItem::new(Line::from(Span::styled(
             "No messages yet. Start the conversation!",
@@ -688,49 +732,45 @@ pub fn build_chat_list_items(
     filtered_items
 }
 
-/// Renders a vertical scrollbar for the chat list on the right side of the given area
-/// Calculates scroll position based on ListState selection
-pub fn render_chat_scrollbar(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    total_items: usize,
-    list_state: &ratatui::widgets::ListState,
-) {
-    if total_items == 0 {
-        return;
+/// Content for the dispute chat ScrollView: all lines, dimensions, and line start index per message.
+pub struct ChatScrollViewContent {
+    pub lines: Vec<Line<'static>>,
+    pub content_height: u16,
+    pub content_width: u16,
+    pub line_start_per_message: Vec<usize>,
+}
+
+/// Builds scrollview content: flat lines, height, width, and line_start_per_message for the visible messages.
+/// Same filtering and formatting as build_chat_list_items.
+pub fn build_chat_scrollview_content(
+    messages: &[DisputeChatMessage],
+    active_chat_party: ChatParty,
+    content_width: u16,
+    max_content_width: Option<u16>,
+) -> ChatScrollViewContent {
+    let mut lines = Vec::new();
+    let mut line_start_per_message = Vec::new();
+
+    for msg in messages
+        .iter()
+        .filter(|m| message_visible_for_party(m, active_chat_party))
+    {
+        line_start_per_message.push(lines.len());
+        lines.extend(format_message_lines(msg, max_content_width));
     }
 
-    let chat_area_height = area.height.saturating_sub(2); // Subtract borders
-    let viewport_content_length = chat_area_height as usize;
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No messages yet. Start the conversation!",
+            Style::default().fg(Color::Gray),
+        )));
+    }
 
-    // Calculate scrollbar position from ListState selection
-    // Position represents how many items are scrolled past at the top
-    let selection_idx = list_state
-        .selected()
-        .unwrap_or(total_items.saturating_sub(1));
-
-    // When at bottom, show max scroll position; otherwise approximate based on selection
-    let scroll_position =
-        if selection_idx >= total_items.saturating_sub(viewport_content_length.min(total_items)) {
-            // At or near bottom: show maximum scroll position
-            total_items.saturating_sub(viewport_content_length.min(total_items))
-        } else {
-            // Not at bottom: use selection as approximate position
-            selection_idx
-        };
-
-    // Create scrollbar state
-    let mut scrollbar_state = ScrollbarState::new(total_items)
-        .content_length(total_items)
-        .viewport_content_length(viewport_content_length.min(total_items))
-        .position(scroll_position);
-
-    // Create and render vertical scrollbar on the right
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("↑"))
-        .end_symbol(Some("↓"))
-        .track_symbol(Some("│"))
-        .thumb_symbol("█");
-
-    f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    let content_height = lines.len().min(u16::MAX as usize) as u16;
+    ChatScrollViewContent {
+        lines,
+        content_height,
+        content_width,
+        line_start_per_message,
+    }
 }

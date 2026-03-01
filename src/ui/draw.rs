@@ -69,6 +69,9 @@ pub fn ui_draw(
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
             tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
         }
+        (Tab::Admin(AdminTab::Observer), UserRole::Admin) => {
+            tabs::observer_tab::render_observer_tab(f, content_area, app)
+        }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
             tabs::settings_tab::render_settings_tab(
                 f,
@@ -118,9 +121,19 @@ pub fn ui_draw(
         waiting::render_waiting(f);
     }
 
-    // Order result popup overlay (shared)
-    if let UiMode::OrderResult(result) = &app.mode {
-        order_result::render_order_result(f, result);
+    // Operation result popup overlay (shared)
+    if let UiMode::OperationResult(result) = &app.mode {
+        operation_result::render_operation_result(f, result);
+    }
+
+    // Help popup (Ctrl+H)
+    if let UiMode::HelpPopup(tab, _) = &app.mode {
+        help_popup::render_help_popup(f, app, *tab);
+    }
+
+    // Save attachment popup (Ctrl+S in dispute chat)
+    if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
+        save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);
     }
 
     // Shared settings popups

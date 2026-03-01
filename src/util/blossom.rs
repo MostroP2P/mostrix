@@ -175,11 +175,11 @@ pub async fn save_attachment_to_disk(
 }
 
 /// Spawns a task to download the attachment, optionally decrypt it, and write to
-/// `~/.mostrix/downloads/`. Sends `OrderResult::Info(path)` or `OrderResult::Error` on completion.
+/// `~/.mostrix/downloads/`. Sends `OperationResult::Info(path)` or `OperationResult::Error` on completion.
 pub fn spawn_save_attachment(
     dispute_id: String,
     attachment: crate::ui::ChatAttachment,
-    order_result_tx: UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: UnboundedSender<crate::ui::OperationResult>,
 ) {
     let blossom_url = attachment.blossom_url;
     let filename = attachment.filename;
@@ -187,13 +187,13 @@ pub fn spawn_save_attachment(
     tokio::spawn(async move {
         match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_key).await {
             Ok(path) => {
-                let _ = order_result_tx.send(crate::ui::OrderResult::Info(format!(
+                let _ = order_result_tx.send(crate::ui::OperationResult::Info(format!(
                     "Saved to {}",
                     path.display()
                 )));
             }
             Err(e) => {
-                let _ = order_result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = order_result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
             }
         }
     });

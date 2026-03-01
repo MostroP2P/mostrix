@@ -1,12 +1,14 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::orders::OrderSuccess;
-use crate::ui::{AppState, InvoiceInputState, MessageNotification, OrderResult, UiMode, UserMode};
+use crate::ui::{
+    AppState, InvoiceInputState, MessageNotification, OperationResult, UiMode, UserMode,
+};
 use mostro_core::prelude::Action;
 
 /// Handle order result from the order result channel
-pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
+pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
     // Handle PaymentRequestRequired - show invoice popup for buy orders
-    if let OrderResult::PaymentRequestRequired {
+    if let OperationResult::PaymentRequestRequired {
         order,
         invoice,
         sat_amount,
@@ -47,7 +49,7 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
     }
 
     // Track trade_index for taken orders
-    if let OrderResult::Success(OrderSuccess {
+    if let OperationResult::Success(OrderSuccess {
         order_id,
         trade_index,
         ..
@@ -67,17 +69,17 @@ pub fn handle_order_result(result: OrderResult, app: &mut AppState) {
     // Set appropriate result mode based on current state
     match app.mode {
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
-            app.mode = UiMode::OrderResult(result);
+            app.mode = UiMode::OperationResult(result);
         }
         UiMode::UserMode(UserMode::WaitingAddInvoice) => {
-            app.mode = UiMode::OrderResult(result);
+            app.mode = UiMode::OperationResult(result);
         }
         UiMode::NewMessageNotification(_, _, _) => {
             // If we have a notification, replace it with the result
-            app.mode = UiMode::OrderResult(result);
+            app.mode = UiMode::OperationResult(result);
         }
         _ => {
-            app.mode = UiMode::OrderResult(result);
+            app.mode = UiMode::OperationResult(result);
         }
     }
 }

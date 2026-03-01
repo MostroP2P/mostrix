@@ -1,11 +1,14 @@
 use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 use crate::SETTINGS;
 
+use crate::ui::key_handler::admin_handlers::{
+    execute_take_dispute_action, handle_enter_admin_mode,
+};
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
-    save_admin_key_to_settings, save_currency_to_settings, save_mostro_pubkey_to_settings,
-    save_relay_to_settings,
+    clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
+    save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
 
 /// Helper: Transition from input mode to confirmation mode
@@ -92,7 +95,7 @@ pub fn handle_confirm_key(
                         let error_msg =
                             "Settings not initialized. Please restart the application.".to_string();
                         log::error!("{}", error_msg);
-                        let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
+                        let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
                         return;
                     }
                 };
@@ -110,7 +113,7 @@ pub fn handle_confirm_key(
                     }
                     Err(e) => {
                         log::error!("Failed to send order: {}", e);
-                        let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                        let _ = result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
                     }
                 }
             });
@@ -185,7 +188,6 @@ pub fn handle_confirm_key(
                 UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
             };
             // YES selected - clear currency filters
-            use crate::ui::key_handler::settings::clear_currency_filters;
             clear_currency_filters();
             app.mode = default_mode;
             true
@@ -199,12 +201,7 @@ pub fn handle_confirm_key(
             // Delegate to the same handler used for Enter to keep logic DRY
             // (synthesize a mode with YES selected)
             let mode = UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, true));
-            crate::ui::key_handler::admin_handlers::handle_enter_admin_mode(
-                app,
-                mode,
-                default_mode,
-                ctx,
-            );
+            handle_enter_admin_mode(app, mode, default_mode, ctx);
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, _)) => {
@@ -224,7 +221,7 @@ pub fn handle_confirm_key(
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
             // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
             // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
-            crate::ui::key_handler::admin_handlers::execute_take_dispute_action(
+            execute_take_dispute_action(
                 app,
                 dispute_id,
                 ctx.client,

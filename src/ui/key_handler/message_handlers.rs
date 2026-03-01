@@ -1,5 +1,5 @@
 use crate::ui::key_handler::EnterKeyContext;
-use crate::ui::OrderResult;
+use crate::ui::OperationResult;
 use crate::ui::{AdminMode, AppState, MessageViewState, UiMode, UserMode, UserRole};
 use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
 use mostro_core::prelude::*;
@@ -22,7 +22,7 @@ pub fn handle_enter_viewing_message(
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
         _ => {
-            let _ = ctx.order_result_tx.send(OrderResult::Error(
+            let _ = ctx.order_result_tx.send(OperationResult::Error(
                 "Invalid action for send message".to_string(),
             ));
             let default_mode = match app.user_role {
@@ -38,7 +38,7 @@ pub fn handle_enter_viewing_message(
     let Some(order_id) = view_state.order_id else {
         let _ = ctx
             .order_result_tx
-            .send(OrderResult::Error("No order ID in message".to_string()));
+            .send(OperationResult::Error("No order ID in message".to_string()));
         let default_mode = match app.user_role {
             UserRole::User => UiMode::UserMode(UserMode::Normal),
             UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
@@ -71,11 +71,13 @@ pub fn handle_enter_viewing_message(
         .await
         {
             Ok(_) => {
-                let _ = result_tx.send(OrderResult::Info("Message sent successfully".to_string()));
+                let _ = result_tx.send(OperationResult::Info(
+                    "Message sent successfully".to_string(),
+                ));
             }
             Err(e) => {
                 log::error!("Failed to send message: {}", e);
-                let _ = result_tx.send(OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });
@@ -118,14 +120,14 @@ pub fn handle_enter_message_notification(
                         .await
                         {
                             Ok(_) => {
-                                let _ = order_result_tx_clone.send(OrderResult::Info(
+                                let _ = order_result_tx_clone.send(OperationResult::Info(
                                     "Invoice sent successfully".to_string(),
                                 ));
                             }
                             Err(e) => {
                                 log::error!("Failed to add invoice: {}", e);
-                                let _ =
-                                    order_result_tx_clone.send(OrderResult::Error(e.to_string()));
+                                let _ = order_result_tx_clone
+                                    .send(OperationResult::Error(e.to_string()));
                             }
                         }
                     });
@@ -136,7 +138,7 @@ pub fn handle_enter_message_notification(
         _ => {
             let _ = ctx
                 .order_result_tx
-                .send(OrderResult::Error("Invalid action".to_string()));
+                .send(OperationResult::Error("Invalid action".to_string()));
         }
     }
 }

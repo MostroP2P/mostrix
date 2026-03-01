@@ -12,47 +12,64 @@ This guide explains Mostrix’s boot sequence and configuration surfaces.
 ### 1. Settings Initialization
 Mostrix uses a centralized settings management in `src/settings.rs`.
 
-**Source**: `src/settings.rs:39`
-```39:71:src/settings.rs
-pub fn init_settings() -> &'static Settings {
-    SETTINGS.get_or_init(|| {
-        // HOME and package name at compile time
-        let home_dir = dirs::home_dir().expect("Could not find home directory");
-        let package_name = env!("CARGO_PKG_NAME");
-        let hidden_dir = home_dir.join(format!(".{package_name}"));
-        let hidden_file = hidden_dir.join("settings.toml");
+**Source**: `src/settings.rs:40`
+```rust
+pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
+    if let Some(settings) = SETTINGS.get() {
+        return Ok(settings);
+    }
 
-        println!("hidden_file: {:?}", hidden_file);
+    let settings = init_or_load_settings_from_disk()?;
 
-        // Path to the settings.toml included in the repo (next to Cargo.toml)
-        let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
+    // It's fine if another thread initialized SETTINGS first; in that case we just reuse it.
+    if SETTINGS.set(settings).is_err() {
+        // SETTINGS was already set between the get() above and set() here.
+        // Safe to unwrap because we know some value is now present.
+        return Ok(SETTINGS.get().expect("SETTINGS should be initialized"));
+    }
 
-        // Create ~/.mostrix if it doesn't exist
-        if !hidden_dir.exists() {
-            fs::create_dir(&hidden_dir).expect("The configuration directory could not be created");
-        }
+    Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
+}
 
-        // Copy settings.toml if it isn't already in ~/.mostrix
-        if !hidden_file.exists() {
-            fs::copy(&default_file, &hidden_file).expect("Could not copy default settings.toml");
-        }
+fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
+    // HOME and package name at compile time
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let package_name = env!("CARGO_PKG_NAME");
+    let hidden_dir = home_dir.join(format!(".{package_name}"));
+    let hidden_file = hidden_dir.join("settings.toml");
 
-        // Use the `config` crate to deserialize to the Settings struct
-        let cfg = config::Config::builder()
-            .add_source(config::File::from(hidden_file))
-            .build()
-            .expect("settings.toml malformed");
+    // Path to the settings.toml included in the repo (next to Cargo.toml)
+    let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
 
-        cfg.try_deserialize::<Settings>()
-            .expect("Error deserializing settings.toml")
-    })
+    // Create ~/.mostrix if it doesn't exist
+    if !hidden_dir.exists() {
+        fs::create_dir(&hidden_dir).map_err(|e| {
+            anyhow::anyhow!("The configuration directory could not be created: {}", e)
+        })?;
+    }
+
+    // Copy settings.toml if it isn't already in ~/.mostrix
+    if !hidden_file.exists() {
+        fs::copy(&default_file, &hidden_file)
+            .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
+    }
+
+    // Use the `config` crate to deserialize to the Settings struct
+    let cfg = config::Config::builder()
+        .add_source(config::File::from(hidden_file.as_path()))
+        .build()
+        .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
+
+    cfg.try_deserialize::<Settings>()
+        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
 }
 ```
 - Creates `~/.mostrix/` directory if it doesn't exist.
 - Copies the default `settings.toml` from the project root if missing.
 - Loads configuration using the `config` crate.
 
-**Error Handling**: If settings initialization fails at runtime (e.g., settings accessed before initialization), the application will display user-friendly error messages via `OrderResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users.
+**Error Handling**: Startup failures in `init_settings()` are propagated as `anyhow::Error` (causing a clean process exit with an error message). If settings are accessed later at runtime before initialization (via the `SETTINGS` global), those failures are surfaced as user-friendly messages using `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users in both cases.
 
 ### 2. Database Initialization
 The database is initialized at startup to ensure the schema is ready.
