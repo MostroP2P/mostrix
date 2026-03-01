@@ -59,17 +59,27 @@ pub fn render_save_attachment_popup(f: &mut ratatui::Frame, app: &AppState, sele
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let content: Vec<Line> = list
+    // Show a window of list rows around selected_idx so the selection stays in view (centered when possible).
+    // Reserve 2 lines for blank + footer hint.
+    let visible_list_height = (inner.height.saturating_sub(2) as usize).min(list.len());
+    let half_window = visible_list_height / 2;
+    let window_start = selected_idx
+        .saturating_sub(half_window)
+        .min(list.len().saturating_sub(visible_list_height).max(0));
+    let window_end = (window_start + visible_list_height).min(list.len());
+
+    let content: Vec<Line> = list[window_start..window_end]
         .iter()
         .enumerate()
         .map(|(i, msg)| {
+            let global_i = window_start + i;
             let att = msg.attachment.as_ref().unwrap();
             let icon = match att.file_type {
                 ChatAttachmentType::Image => "🖼",
                 ChatAttachmentType::File => "📎",
             };
             let text = format!("{} {}", icon, att.filename);
-            let style = if i == selected_idx {
+            let style = if global_i == selected_idx {
                 Style::default().fg(BACKGROUND_COLOR).bg(PRIMARY_COLOR)
             } else {
                 Style::default().fg(Color::White)

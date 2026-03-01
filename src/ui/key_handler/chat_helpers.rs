@@ -67,11 +67,14 @@ pub fn navigate_chat_messages(
 
     app.admin_chat_selected_message_idx = Some(new_selection);
 
-    // Sync scroll position so the selected message is in view (use line_starts from last render)
-    if new_selection < app.admin_chat_line_starts.len() {
-        let line_start = app.admin_chat_line_starts[new_selection];
-        app.admin_chat_scrollview_state
-            .set_offset(ratatui::layout::Position::new(0, line_start as u16));
+    // Sync scroll position so the selected message is in view. Only use line_starts when they
+    // match the current visible count (same dispute/party and layout from last render);
+    // otherwise skip and the next render will have fresh line_starts.
+    if app.admin_chat_line_starts.len() == visible_count {
+        if let Some(&line_start) = app.admin_chat_line_starts.get(new_selection) {
+            app.admin_chat_scrollview_state
+                .set_offset(ratatui::layout::Position::new(0, line_start as u16));
+        }
     }
     true
 }
