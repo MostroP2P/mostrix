@@ -37,6 +37,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             true
         }
+        UiMode::ObserverSaveAttachmentPopup(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
         UiMode::OperationResult(_) => {
             // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
             if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {

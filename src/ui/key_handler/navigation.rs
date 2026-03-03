@@ -224,6 +224,7 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::SaveAttachmentPopup(_)
+        | UiMode::ObserverSaveAttachmentPopup(_)
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
@@ -349,6 +350,7 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(_))
         | UiMode::SaveAttachmentPopup(_)
+        | UiMode::ObserverSaveAttachmentPopup(_)
         | UiMode::AddMostroPubkey(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
@@ -408,15 +410,6 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
-            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-                app.observer_focus = match app.observer_focus {
-                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
-                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
-                    }
-                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
-                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
-                    }
-                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = (form.focused + 1) % 9;
                 // Skip field 4 if not using range
@@ -433,15 +426,6 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
-            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-                app.observer_focus = match app.observer_focus {
-                    crate::ui::tabs::observer_tab::ObserverFocus::FilePath => {
-                        crate::ui::tabs::observer_tab::ObserverFocus::SharedKey
-                    }
-                    crate::ui::tabs::observer_tab::ObserverFocus::SharedKey => {
-                        crate::ui::tabs::observer_tab::ObserverFocus::FilePath
-                    }
-                };
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = if form.focused == 0 {
                     8

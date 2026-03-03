@@ -91,11 +91,13 @@ Focused on dispute resolution and protocol management.
   - Chat history with scrolling (PageUp/PageDown)
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
-- **Observer**: Read-only workspace for inspecting user-to-user encrypted chats that have been uploaded as files:
-  - File-path input (relative to `~/.mostrix/downloads` or absolute)
-  - Shared-key input (64-char hex secret used by both users)
-  - Decrypts Blossom-encrypted blobs locally using ChaCha20-Poly1305 and renders the plaintext as a scrollable chat preview
-  - Keyboard hints: `Tab/Shift+Tab` to switch between file and key fields, `Enter` to load & decrypt, `Ctrl+C` to clear inputs and preview, `Ctrl+H` for help
+- **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a shared key:
+  - Single shared-key input (64-char hex secret, paste-friendly)
+  - Fetches NIP-59 gift-wrap messages from relays for the last 7 days using the shared key's public key
+  - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
+  - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
+  - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
+  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key
@@ -117,7 +119,8 @@ pub enum UiMode {
     NewMessageNotification(MessageNotification, Action, InvoiceInputState),
     OperationResult(OperationResult), // Generic operation result popup (success/info/error)
     HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
-    SaveAttachmentPopup(usize),      // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
+    SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
+    ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
 
     // User-specific modes
     UserMode(UserMode),
@@ -136,7 +139,7 @@ The primary shared popup is the **operation result** modal, used for:
 - Order creation / take-order flows
 - Settings validation errors (invalid pubkey, relay, currency, etc.)
 - Admin actions (add solver, finalize disputes)
-- Blossom attachment downloads and Observer-mode file/key errors
+- Blossom attachment downloads and Observer-mode shared-key errors
 
 When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress** tab, the app stays on that tab and returns to **ManagingDispute** mode (it does not switch to the first tab).
 
@@ -158,11 +161,11 @@ if let UiMode::OperationResult(result) = &app.mode {
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
-**Save attachment popup (Ctrl+S in Disputes in Progress)**:
+**Save attachment popup (Ctrl+S in Disputes in Progress or Observer tab)**:
 
-- **Open**: When managing a dispute, press **Ctrl+S** to open a centered popup listing all file/image attachments for the current dispute and active party (Buyer or Seller). If there are no attachments, Ctrl+S does nothing.
+- **Open**: When managing a dispute or viewing an observer chat, press **Ctrl+S** to open a centered popup listing all file/image attachments. In Disputes in Progress, attachments are scoped to the current dispute and active party (Buyer or Seller). In Observer mode, attachments are drawn from all observer messages. If there are no attachments, Ctrl+S does nothing.
 - **In popup**: **↑/↓** change selection, **Enter** saves the selected attachment to `~/.mostrix/downloads/`, **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
-- **Source**: `src/ui/save_attachment_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`).
+- **Source**: `src/ui/save_attachment_popup.rs` (rendering for both dispute and observer popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`).
 
 ### UI constants
 

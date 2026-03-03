@@ -11,7 +11,9 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
     let popup_width = 70;
     let popup_height = match result {
         OperationResult::Success(_) => 18,
-        OperationResult::PaymentRequestRequired { .. } => 8, // Should not be displayed, converted to notification
+        OperationResult::PaymentRequestRequired { .. }
+        | OperationResult::ObserverChatLoaded(_)
+        | OperationResult::ObserverChatError(_) => 8,
         OperationResult::Error(_) | OperationResult::Info(_) => 8,
     };
     // Center the popup using Flex::Center
@@ -182,6 +184,9 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
 
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
+        }
+        OperationResult::ObserverChatLoaded(_) | OperationResult::ObserverChatError(_) => {
+            // Handled directly in handle_order_result, should not reach render
         }
         OperationResult::PaymentRequestRequired { .. } => {
             // This should not be displayed - it's converted to a notification in main.rs

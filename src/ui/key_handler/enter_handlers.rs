@@ -14,8 +14,6 @@ use crate::ui::key_handler::user_handlers::{
 };
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
-use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -78,6 +76,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::SaveAttachmentPopup(_) => {
             // Up/Down/Enter/Esc handled in key_handler/mod.rs
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::ObserverSaveAttachmentPopup(_) => {
+            // Handled in key_handler/mod.rs
+            app.mode = default_mode;
             true
         }
         UiMode::OperationResult(_) => {
@@ -461,88 +464,54 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Load and decrypt an encrypted chat file using a shared key
-        if app.observer_file_path_input.trim().is_empty()
-            || app.observer_shared_key_input.trim().is_empty()
-        {
-            let msg = "Both file path and shared key are required".to_string();
-            app.clear_observer_secrets();
-            app.observer_error = Some(msg.clone());
-            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
+        // Validate and trigger async fetch for observer chat via shared key
+        let key_str = app.observer_shared_key_input.trim().to_string();
+        if key_str.is_empty() {
+            app.observer_error = Some("Shared key is required".to_string());
+            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
+                "Shared key is required".to_string(),
+            ));
             return;
         }
 
-        // Parse shared key as 32-byte hex
-        let key_str = app.observer_shared_key_input.trim();
-        let mut key_bytes = [0u8; 32];
-        match crate::util::chat_utils::keys_from_shared_hex(key_str) {
-            Some(keys) => {
-                key_bytes.copy_from_slice(&keys.secret_key().secret_bytes());
-            }
-            None => {
-                let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
-                app.clear_observer_secrets();
-                app.observer_error = Some(msg.clone());
-                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
-                key_bytes.zeroize();
-                return;
-            }
+        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+            app.observer_error =
+                Some("Shared key must be a valid 64-char hex secret (32 bytes)".to_string());
+            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
+                "Shared key must be a valid 64-char hex secret (32 bytes)".to_string(),
+            ));
+            return;
         }
 
-        // Resolve file path (relative to ~/.mostrix/downloads by default)
-        let raw_path = app.observer_file_path_input.trim();
-        let path = {
-            let p = Path::new(raw_path);
-            if p.is_absolute() {
-                PathBuf::from(p)
-            } else {
-                match dirs::home_dir() {
-                    Some(home) => home.join(".mostrix").join("downloads").join(p),
-                    None => {
-                        let msg = "No home directory available to resolve path".to_string();
-                        app.clear_observer_secrets();
-                        app.observer_error = Some(msg.clone());
-                        app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
-                        key_bytes.zeroize();
-                        return;
-                    }
-                }
-            }
-        };
+        // Clear previous results and set loading state
+        for msg in &mut app.observer_messages {
+            zeroize::Zeroize::zeroize(&mut msg.content);
+        }
+        app.observer_messages.clear();
+        app.observer_error = None;
+        app.observer_loading = true;
 
-        match std::fs::read(&path) {
-            Ok(blob) => match crate::util::blossom::decrypt_blob(&key_bytes, &blob) {
-                Ok(plaintext) => {
-                    let text = String::from_utf8_lossy(&plaintext);
-                    let mut lines: Vec<String> =
-                        text.lines().map(|s| s.trim_end().to_string()).collect();
-                    while matches!(lines.last(), Some(l) if l.is_empty()) {
-                        lines.pop();
-                    }
-                    // Wipe any previous decrypted content before replacing
-                    app.clear_observer_secrets();
-                    app.observer_chat_lines = lines;
+        // Spawn async fetch via the order_result channel
+        let client = ctx.client.clone();
+        let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
+        let tx = ctx.order_result_tx.clone();
+
+        tokio::spawn(async move {
+            match crate::util::chat_utils::fetch_observer_chat(
+                &client,
+                &key_str,
+                admin_pubkey.as_ref(),
+            )
+            .await
+            {
+                Ok(messages) => {
+                    let _ = tx.send(crate::ui::OperationResult::ObserverChatLoaded(messages));
                 }
                 Err(e) => {
-                    let msg = format!("Decryption failed: {e}");
-                    app.clear_observer_secrets();
-                    app.observer_error = Some(msg.clone());
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
+                    let _ = tx.send(crate::ui::OperationResult::ObserverChatError(e.to_string()));
                 }
-            },
-            Err(e) => {
-                let msg = if e.kind() == std::io::ErrorKind::NotFound {
-                    format!("Observer file not found: {}", path.display())
-                } else {
-                    format!("Failed to read file {}: {e}", path.display())
-                };
-                app.clear_observer_secrets();
-                app.observer_error = Some(msg.clone());
-                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(msg));
             }
-        }
-        // Always wipe key material before leaving the Observer branch
-        key_bytes.zeroize();
+        });
     } else if matches!(
         app.active_tab,
         Tab::Admin(AdminTab::Exit) | Tab::User(UserTab::Exit)

@@ -97,3 +97,84 @@ pub fn render_save_attachment_popup(f: &mut ratatui::Frame, app: &AppState, sele
     let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
     f.render_widget(paragraph, inner);
 }
+
+/// Renders the Observer Save Attachment popup (Ctrl+S in Observer tab).
+/// Operates on `app.observer_messages` instead of dispute chats.
+pub fn render_observer_save_attachment_popup(
+    f: &mut ratatui::Frame,
+    app: &AppState,
+    selected_idx: usize,
+) {
+    let attachments: Vec<&super::chat::ChatAttachment> = app
+        .observer_messages
+        .iter()
+        .filter_map(|m| m.attachment.as_ref())
+        .collect();
+    if attachments.is_empty() {
+        return;
+    }
+
+    let selected_idx = selected_idx.min(attachments.len().saturating_sub(1));
+    let line_count = attachments.len();
+    let popup_height = (line_count as u16 + 4).min(f.area().height.saturating_sub(2));
+
+    let area = f.area();
+    let popup = {
+        let [p] = Layout::horizontal([Constraint::Length(POPUP_WIDTH)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [p] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(p);
+        p
+    };
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(Span::styled(
+            TITLE,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let visible_list_height = (inner.height.saturating_sub(2) as usize).min(attachments.len());
+    let half_window = visible_list_height / 2;
+    let window_start = selected_idx
+        .saturating_sub(half_window)
+        .min(attachments.len().saturating_sub(visible_list_height).max(0));
+    let window_end = (window_start + visible_list_height).min(attachments.len());
+
+    let content: Vec<Line> = attachments[window_start..window_end]
+        .iter()
+        .enumerate()
+        .map(|(i, att)| {
+            let global_i = window_start + i;
+            let icon = match att.file_type {
+                ChatAttachmentType::Image => "🖼",
+                ChatAttachmentType::File => "📎",
+            };
+            let text = format!("{} {}", icon, att.filename);
+            let style = if global_i == selected_idx {
+                Style::default().fg(BACKGROUND_COLOR).bg(PRIMARY_COLOR)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+
+    let mut all = content;
+    all.push(Line::from(""));
+    all.push(Line::from(Span::styled(
+        SAVE_ATTACHMENT_POPUP_HINT,
+        Style::default().fg(Color::DarkGray),
+    )));
+    let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
+    f.render_widget(paragraph, inner);
+}

@@ -13,7 +13,6 @@ mod validation;
 
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
-    tabs::observer_tab::ObserverFocus,
     AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -256,6 +255,68 @@ pub fn handle_key_event(
         }
     }
 
+    // Observer save attachment popup: Up/Down to select, Enter to save, Esc to cancel
+    if let UiMode::ObserverSaveAttachmentPopup(selected_idx) = app.mode {
+        let list_len = app
+            .observer_messages
+            .iter()
+            .filter(|m| m.attachment.is_some())
+            .count();
+        match code {
+            KeyCode::Esc => {
+                app.mode = UiMode::AdminMode(AdminMode::Normal);
+                return Some(true);
+            }
+            KeyCode::Up => {
+                if selected_idx > 0 {
+                    app.mode = UiMode::ObserverSaveAttachmentPopup(selected_idx - 1);
+                }
+                return Some(true);
+            }
+            KeyCode::Down => {
+                if list_len > 0 && selected_idx + 1 < list_len {
+                    app.mode = UiMode::ObserverSaveAttachmentPopup(selected_idx + 1);
+                }
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                let attachments: Vec<&crate::ui::ChatAttachment> = app
+                    .observer_messages
+                    .iter()
+                    .filter_map(|m| m.attachment.as_ref())
+                    .collect();
+                if let Some(att) = attachments.get(selected_idx) {
+                    if let Some(tx) = save_attachment_tx {
+                        let key_prefix: String =
+                            app.observer_shared_key_input.chars().take(8).collect();
+                        let id = format!("observer_{}", key_prefix);
+
+                        // For Observer mode (pure P2P chats), attachment JSON often omits a `key`
+                        // and expects decryption using the same shared key used for messages.
+                        // If no explicit decryption_key was provided, derive it from the pasted
+                        // shared key hex so the saved file is decrypted instead of left encrypted.
+                        let mut att_clone = (*att).clone();
+                        if att_clone.decryption_key.is_none() {
+                            if let Some(keys) =
+                                crate::util::chat_utils::keys_from_shared_hex(
+                                    &app.observer_shared_key_input,
+                                )
+                            {
+                                att_clone.decryption_key =
+                                    Some(keys.secret_key().secret_bytes().to_vec());
+                            }
+                        }
+
+                        let _ = tx.send((id, att_clone));
+                    }
+                }
+                app.mode = UiMode::AdminMode(AdminMode::Normal);
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
+    }
+
     // Ctrl+H: open context-aware help popup when in normal/managing-dispute mode (store current mode to restore on close)
     if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h') {
         let can_open = matches!(
@@ -286,6 +347,14 @@ pub fn handle_key_event(
                         return Some(true);
                     }
                 }
+            }
+        }
+        // Observer tab: open save attachment popup for observer messages
+        if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+            let has_attachments = app.observer_messages.iter().any(|m| m.attachment.is_some());
+            if has_attachments {
+                app.mode = UiMode::ObserverSaveAttachmentPopup(0);
+                return Some(true);
             }
         }
     }
@@ -386,7 +455,7 @@ pub fn handle_key_event(
         return Some(result);
     }
 
-    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the inputs.
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the shared key input.
     // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
     if let Tab::Admin(AdminTab::Observer) = app.active_tab {
         if !matches!(app.mode, UiMode::OperationResult(_)) {
@@ -396,22 +465,11 @@ pub fn handle_key_event(
             if !is_ctrl {
                 match code {
                     KeyCode::Char(c) => {
-                        match app.observer_focus {
-                            ObserverFocus::FilePath => {
-                                app.observer_file_path_input.push(c);
-                            }
-                            ObserverFocus::SharedKey => {
-                                app.observer_shared_key_input.push(c);
-                            }
-                        }
+                        app.observer_shared_key_input.push(c);
                         return Some(true);
                     }
                     KeyCode::Backspace => {
-                        let target = match app.observer_focus {
-                            ObserverFocus::FilePath => &mut app.observer_file_path_input,
-                            ObserverFocus::SharedKey => &mut app.observer_shared_key_input,
-                        };
-                        target.pop();
+                        app.observer_shared_key_input.pop();
                         return Some(true);
                     }
                     _ => {}
@@ -460,7 +518,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
-            // Handle chat message navigation when input is disabled
+            // Handle chat message navigation when input is disabled (Disputes in Progress)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                     if !app.admin_chat_input_enabled {
@@ -476,6 +534,22 @@ pub fn handle_key_event(
                     }
                 }
             }
+
+            // Observer tab: use Up/Down to scroll the chat vertically
+            if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                match code {
+                    KeyCode::Up => {
+                        app.observer_scrollview_state.scroll_up();
+                        return Some(true);
+                    }
+                    KeyCode::Down => {
+                        app.observer_scrollview_state.scroll_down();
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+
             handle_navigation(code, app, orders, disputes);
             Some(true)
         }
@@ -494,6 +568,22 @@ pub fn handle_key_event(
                     }
                 }
             }
+
+            // Observer tab: PageUp/PageDown scroll the observer chat
+            if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                match code {
+                    KeyCode::PageUp => {
+                        app.observer_scrollview_state.scroll_page_up();
+                        return Some(true);
+                    }
+                    KeyCode::PageDown => {
+                        app.observer_scrollview_state.scroll_page_down();
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {

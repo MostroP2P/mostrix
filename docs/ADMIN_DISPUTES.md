@@ -95,45 +95,54 @@ See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workf
 
 ### 3. Observer Tab
 
-**Status**: ✅ **Implemented – Offline chat inspection**
+**Status**: ✅ **Implemented – Relay-based chat inspection**
 
-The Observer tab is a read-only tool that lets admins inspect encrypted chats that users have exported to files and shared out-of-band (for example, when two users provide their full conversation plus the shared key so the admin can decide who is right).
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching NIP-59 gift-wrap messages from Nostr relays. A party involved in a dispute provides the admin with their shared key (64-char hex) out-of-band so the admin can view the full conversation and decide who is right.
 
 #### Observer Workflow
 
-1. **Acquire evidence**:
-   - Users A and B establish a shared symmetric key (derived from their pubkeys and private keys) and use it to encrypt a chat transcript with the same Blossom file layout used by Mostro Mobile attachments (`[nonce:12][ciphertext][tag:16]`, ChaCha20-Poly1305).
-   - One of the users sends the admin:
-     - The **encrypted file** (e.g. uploaded somewhere and then downloaded via Blossom mechanisms into `~/.mostrix/downloads/...`).
-     - The **shared key** as a 64-character hex string (32-byte secret).
+1. **Acquire the shared key**:
+   - During a dispute, one of the parties provides the admin with their **shared key** as a 64-character hex string (32-byte ECDH secret derived between the two trade pubkeys).
 2. **Open Observer tab**:
    - Switch to Admin mode and navigate to the **Observer** tab.
-3. **Set file path**:
-   - In the “File path” input, type either:
-     - A **relative path** under `~/.mostrix/downloads/` (default base for saved Blossom attachments), or
-     - An **absolute path** to the encrypted file.
-4. **Paste shared key**:
-   - In the “Shared key (32-byte hex)” input, paste the 64-character hex key provided by the user.
-5. **Decrypt and preview**:
+3. **Paste shared key**:
+   - In the "Shared key (64-char hex)" input, paste the key provided by the user. The input supports bracketed paste mode for seamless pasting.
+4. **Fetch and view chat**:
    - Press **Enter** to:
-     - Read the file into memory.
-     - Derive a 32-byte decryption key from the shared-key hex (same helper used for shared-key chat: `keys_from_shared_hex` in `chat_utils.rs`).
-     - Decrypt the blob using `decrypt_blob` in `blossom.rs` (ChaCha20-Poly1305 over `[nonce:12][ciphertext][tag:16]`).
-     - Decode the plaintext as UTF‑8 and split into lines.
-   - The decrypted chat appears in a scrollable “Decrypted chat preview” area.
+     - Validate the shared key (non-empty, valid hex).
+     - Derive `Keys` from the shared key hex (via `keys_from_shared_hex` in `chat_utils.rs`).
+     - Fetch all `Kind::GiftWrap` events addressed to the shared key's public key from the last 7 days (reuses `fetch_gift_wraps_for_shared_key`).
+     - Decrypt each event using the shared key (standard NIP-59 or simplified Mostro-chat format).
+     - Map sender public keys to roles: known admin pubkey = Admin, first unknown pubkey = Buyer, second unknown pubkey = Seller.
+     - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
+   - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
+5. **Save attachments**:
+   - Press **Ctrl+S** to open a save-attachment popup listing all file/image attachments found in the observer chat. Select with **Up/Down**, save with **Enter**, cancel with **Esc**. Files are saved to `~/.mostrix/downloads/observer_<key_prefix>_<filename>`.
 
 #### Observer Keyboard Shortcuts
 
-- **Tab / Shift+Tab**: Switch focus between file path and shared key fields.
-- **Enter**: Load file and attempt decryption with the current shared key.
-- **Ctrl+C**: Clear both inputs, error state, and decrypted preview.
+- **Enter**: Fetch chat from relays using the current shared key.
+- **Ctrl+C**: Clear shared key input, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
+- **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
 
-When validation or I/O fails (missing path, invalid key format, unreadable file, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the inputs and retry.
+When validation or fetching fails (empty key, invalid hex, no messages found, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the input and retry.
+
+#### Observer State (AppState)
+
+- `observer_shared_key_input: String` -- current shared key input.
+- `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages.
+- `observer_loading: bool` -- indicates an async fetch is in progress.
+- `observer_error: Option<String>` -- inline error message.
+- `UiMode::ObserverSaveAttachmentPopup(usize)` -- active when the save-attachment popup is open for observer messages.
+
+The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fetch_observer_chat`. Results are sent back to the main event loop through the `order_result_tx` channel using the `OperationResult::ObserverChatLoaded` and `OperationResult::ObserverChatError` variants.
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer runs entirely **locally**. It does not contact Nostr relays or Blossom servers; it only reads files already present on disk (typically under `~/.mostrix/downloads/`) and uses the user-provided shared key to decrypt them.
+> **Note**: Observer fetches messages from Nostr relays using the shared key. It reuses the same gift-wrap fetch infrastructure as the admin chat system (`fetch_gift_wraps_for_shared_key` in `chat_utils.rs`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+
+**Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
 
 ### 4. Settings Tab
 
@@ -674,7 +683,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Save (Ctrl+S)**:
   - From the dispute chat, press **Ctrl+S** to open a **Save attachment** popup. The popup lists all file/image attachments in the current dispute for the active party (Buyer or Seller). If there are no attachments, Ctrl+S does nothing.
   - **In the popup**: Use **↑/↓** to select an attachment, **Enter** to save the selected one, **Esc** to cancel. The popup shows one line per attachment (🖼 image or 📎 file + filename) and a footer hint: "↑↓ Select, Enter Save, Esc Cancel".
-  - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared operation result popup. These saved files are the natural input for the **Observer** tab when a party later provides the corresponding shared key.
+  - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared operation result popup. When a party later provides the corresponding shared key, the admin can use the **Observer** tab to fetch and view the full chat from relays, including any attachments.
 - **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).

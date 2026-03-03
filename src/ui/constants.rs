@@ -39,10 +39,10 @@ pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
 pub const HELP_DP_SELECT_DISPUTE: &str = "↑↓: Select dispute";
 
 // Help popup lines (Observer)
-pub const HELP_OBS_TAB_FIELD: &str = "Tab / Shift+Tab: Switch field (path / key)";
-pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Load file and decrypt";
+pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Fetch chat from relays";
 pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
-pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all inputs and preview";
+pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all";
+pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)
 pub const HELP_SETTINGS_M_MODE: &str = "M: Switch User/Admin mode";

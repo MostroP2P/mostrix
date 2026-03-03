@@ -263,7 +263,7 @@ pub fn recover_admin_chat_from_files(
 }
 
 /// Parses Mostro Mobile image_encrypted / file_encrypted JSON. Returns (ChatAttachment, display_content) or None.
-fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachment, String)> {
+pub(crate) fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachment, String)> {
     let content = content.trim();
     if !content.starts_with('{') {
         return None;
@@ -663,10 +663,14 @@ fn format_message_lines(
         })
         .unwrap_or_else(|| ("??-??-????".to_string(), "??:??".to_string()));
 
+    // Alignment:
+    // - Admin: left
+    // - Buyer: right (incoming from buyer)
+    // - Seller: left (mirrors admin side to visually distinguish parties)
     let (sender_label, sender_color, is_right_aligned) = match msg.sender {
         ChatSender::Admin => ("Admin", Color::Cyan, false),
         ChatSender::Buyer => ("Buyer", Color::Green, true),
-        ChatSender::Seller => ("Seller", Color::Magenta, true),
+        ChatSender::Seller => ("Seller", Color::Magenta, false),
     };
     let content_color = msg
         .attachment
@@ -707,7 +711,7 @@ fn format_message_lines(
     message_lines
 }
 
-/// Builds ListItems from chat messages for display in the chat list widget.
+/// Builds `ListItem`s from chat messages for display in the dispute chat list widget.
 /// Filters messages by active chat party and formats them with proper alignment.
 /// If `max_content_width` is Some(w), message content is wrapped to at most w
 /// columns per line (word boundaries); long messages use multiple lines.
@@ -762,6 +766,37 @@ pub fn build_chat_scrollview_content(
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "No messages yet. Start the conversation!",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+
+    let content_height = lines.len().min(u16::MAX as usize) as u16;
+    ChatScrollViewContent {
+        lines,
+        content_height,
+        content_width,
+        line_start_per_message,
+    }
+}
+
+/// Builds scrollview content for the **Observer** tab (no party filtering).
+/// All messages are shown, with the same formatting as dispute chat.
+pub fn build_observer_scrollview_content(
+    messages: &[DisputeChatMessage],
+    content_width: u16,
+    max_content_width: Option<u16>,
+) -> ChatScrollViewContent {
+    let mut lines = Vec::new();
+    let mut line_start_per_message = Vec::new();
+
+    for msg in messages.iter() {
+        line_start_per_message.push(lines.len());
+        lines.extend(format_message_lines(msg, max_content_width));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No messages yet. Paste a shared key and press Enter to load.",
             Style::default().fg(Color::Gray),
         )));
     }

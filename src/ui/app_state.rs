@@ -13,7 +13,6 @@ use crate::ui::orders::{
     InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
     OrderMessage,
 };
-use crate::ui::tabs::observer_tab::ObserverFocus;
 use crate::ui::user_state::UserMode;
 
 #[derive(Clone, Debug)]
@@ -26,6 +25,8 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
     SaveAttachmentPopup(usize),
+    /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
+    ObserverSaveAttachmentPopup(usize),
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -71,14 +72,16 @@ pub struct AppState {
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
     /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
     pub attachment_toast: Option<(String, Instant)>,
-    /// Observer mode: path to encrypted chat file (relative to ~/.mostrix/downloads or absolute).
-    pub observer_file_path_input: String,
     /// Observer mode: shared key as 64-char hex string (32 bytes).
     pub observer_shared_key_input: String,
-    /// Observer mode: which input field is currently focused.
-    pub observer_focus: ObserverFocus,
-    /// Observer mode: decrypted chat lines for preview.
-    pub observer_chat_lines: Vec<String>,
+    /// Observer mode: chat messages fetched from relays for the pasted shared key.
+    pub observer_messages: Vec<DisputeChatMessage>,
+    /// Observer mode: scroll state for chat messages.
+    pub observer_scrollview_state: tui_scrollview::ScrollViewState,
+    /// Observer mode: last seen message count for auto-scroll.
+    pub observer_scroll_tracker: Option<usize>,
+    /// Observer mode: true while an async fetch is in flight.
+    pub observer_loading: bool,
     /// Observer mode: last error message (if any).
     pub observer_error: Option<String>,
 }
@@ -110,34 +113,32 @@ impl AppState {
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
-            observer_file_path_input: String::new(),
             observer_shared_key_input: String::new(),
-            observer_focus: ObserverFocus::FilePath,
-            observer_chat_lines: Vec::new(),
+            observer_messages: Vec::new(),
+            observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
+            observer_scroll_tracker: None,
+            observer_loading: false,
             observer_error: None,
         }
     }
 
-    /// Securely wipe all observer inputs and decrypted content.
+    /// Securely wipe all observer inputs and fetched content.
     /// Uses `zeroize` to overwrite strings before clearing them, then
-    /// resets focus and error state to safe defaults.
+    /// resets error state to safe defaults.
     pub fn clear_observer_secrets(&mut self) {
-        self.observer_file_path_input.zeroize();
-        self.observer_file_path_input.clear();
-
         self.observer_shared_key_input.zeroize();
         self.observer_shared_key_input.clear();
 
-        for line in &mut self.observer_chat_lines {
-            line.zeroize();
+        for msg in &mut self.observer_messages {
+            msg.content.zeroize();
         }
-        self.observer_chat_lines.clear();
+        self.observer_messages.clear();
+        self.observer_loading = false;
 
         if let Some(err) = &mut self.observer_error {
             err.zeroize();
         }
         self.observer_error = None;
-        self.observer_focus = ObserverFocus::FilePath;
     }
 
     pub fn switch_role(&mut self, new_role: UserRole) {

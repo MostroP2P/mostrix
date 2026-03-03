@@ -66,6 +66,23 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
         }
     }
 
+    // Handle observer chat results directly (don't show popup)
+    match result {
+        OperationResult::ObserverChatLoaded(messages) => {
+            app.observer_loading = false;
+            app.observer_error = None;
+            app.observer_messages = messages;
+            return;
+        }
+        OperationResult::ObserverChatError(msg) => {
+            app.observer_loading = false;
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            return;
+        }
+        _ => {}
+    }
+
     // Set appropriate result mode based on current state
     match app.mode {
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {

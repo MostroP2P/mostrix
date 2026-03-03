@@ -30,6 +30,10 @@ pub enum OperationResult {
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
     Error(String),
+    /// Observer chat loaded successfully from relays.
+    ObserverChatLoaded(Vec<crate::ui::chat::DisputeChatMessage>),
+    /// Observer chat fetch failed.
+    ObserverChatError(String),
 }
 
 #[derive(Clone, Debug, Default)]
