@@ -131,17 +131,12 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         ))
         .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
 
-        let content_rect =
-            Rect::new(0, 0, content.content_width, content.content_height.max(1));
+        let content_rect = Rect::new(0, 0, content.content_width, content.content_height.max(1));
         scroll_view.render_widget(
             Paragraph::new(content.lines).wrap(Wrap { trim: true }),
             content_rect,
         );
-        f.render_stateful_widget(
-            scroll_view,
-            inner_area,
-            &mut app.observer_scrollview_state,
-        );
+        f.render_stateful_widget(scroll_view, inner_area, &mut app.observer_scrollview_state);
     }
 
     // Shared key input + footer

@@ -297,11 +297,9 @@ pub fn handle_key_event(
                         // shared key hex so the saved file is decrypted instead of left encrypted.
                         let mut att_clone = (*att).clone();
                         if att_clone.decryption_key.is_none() {
-                            if let Some(keys) =
-                                crate::util::chat_utils::keys_from_shared_hex(
-                                    &app.observer_shared_key_input,
-                                )
-                            {
+                            if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
+                                &app.observer_shared_key_input,
+                            ) {
                                 att_clone.decryption_key =
                                     Some(keys.secret_key().secret_bytes().to_vec());
                             }
