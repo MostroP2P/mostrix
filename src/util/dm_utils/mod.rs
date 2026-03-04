@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::models::User;
-use crate::ui::MessageNotification;
+use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
