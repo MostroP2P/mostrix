@@ -7,12 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
-use crate::ui::constants::{
-    FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_CTRL_S_SAVE_FILE, FOOTER_END_BOTTOM,
-    FOOTER_ENTER_SEND, FOOTER_NAV_CHAT, FOOTER_PGUP_PGDN_SCROLL, FOOTER_PGUP_PGDN_SCROLL_CHAT,
-    FOOTER_SHIFT_F_RESOLVE, FOOTER_SHIFT_I_DISABLE, FOOTER_SHIFT_I_ENABLE, FOOTER_TAB_PARTY,
-    FOOTER_TAB_SWITCH_PARTY, FOOTER_UP_DOWN_SELECT, FOOTER_UP_DOWN_SELECT_DISPUTE, HELP_KEY,
-};
+use crate::ui::constants::*;
 use crate::ui::helpers::{
     build_chat_scrollview_content, count_visible_attachments, get_selected_chat_message,
 };

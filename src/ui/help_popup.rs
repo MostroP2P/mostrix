@@ -91,8 +91,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
-                HELP_OBS_TAB_FOCUS.to_string(),
-                HELP_OBS_CTRL_SHIFT_V.to_string(),
+                HELP_OBS_PASTE_SHARED_KEY.to_string(),
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
                 HELP_OBS_ESC_CLEAR_ERR.to_string(),

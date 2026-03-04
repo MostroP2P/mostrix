@@ -13,7 +13,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         [
             Constraint::Length(3), // Header / status
             Constraint::Min(0),    // Chat messages
-            Constraint::Length(4), // Input + footer
+            Constraint::Length(6), // Input + footer
         ],
     )
     .split(area);
@@ -142,7 +142,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     // Shared key input + footer
     let input_chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(3), Constraint::Length(1)],
+        [Constraint::Length(4), Constraint::Length(2)],
     )
     .split(chunks[2]);
 
