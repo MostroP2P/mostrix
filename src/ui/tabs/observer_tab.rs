@@ -101,11 +101,13 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         )));
         f.render_widget(paragraph, inner_area);
     } else {
-        let content_width = inner_area.width.max(1);
-        let max_content_width = (content_width / 2).max(1);
+        // Match the disputes chat behavior: use the full inner width (minus one column)
+        // so right-aligned messages don't lose their last character.
+        let viewport_width = inner_area.width.saturating_sub(1).max(1);
+        let max_content_width = (viewport_width / 2).max(1);
         let content = build_observer_scrollview_content(
             &app.observer_messages,
-            content_width,
+            viewport_width,
             Some(max_content_width),
         );
 
