@@ -9,8 +9,10 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::*;
 use crate::ui::helpers::{
-    build_chat_scrollview_content, count_visible_attachments, get_selected_chat_message,
+    build_chat_scrollview_content, count_visible_attachments, format_user_rating,
+    get_selected_chat_message,
 };
+use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
 
@@ -279,22 +281,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (buyer_rating, seller_rating) = match is_initiator_buyer {
             Some(true) => {
                 // Initiator is buyer, counterpart is seller
-                let buyer_rating = crate::ui::helpers::format_user_rating(
-                    selected_dispute.initiator_info_data.as_ref(),
-                );
-                let seller_rating = crate::ui::helpers::format_user_rating(
-                    selected_dispute.counterpart_info_data.as_ref(),
-                );
+                let buyer_rating =
+                    format_user_rating(selected_dispute.initiator_info_data.as_ref());
+                let seller_rating =
+                    format_user_rating(selected_dispute.counterpart_info_data.as_ref());
                 (buyer_rating, seller_rating)
             }
             Some(false) => {
                 // Initiator is seller, counterpart is buyer
-                let seller_rating = crate::ui::helpers::format_user_rating(
-                    selected_dispute.initiator_info_data.as_ref(),
-                );
-                let buyer_rating = crate::ui::helpers::format_user_rating(
-                    selected_dispute.counterpart_info_data.as_ref(),
-                );
+                let seller_rating =
+                    format_user_rating(selected_dispute.initiator_info_data.as_ref());
+                let buyer_rating =
+                    format_user_rating(selected_dispute.counterpart_info_data.as_ref());
                 (buyer_rating, seller_rating)
             }
             None => {
@@ -469,7 +467,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Only show party tabs, chat, and input for in-progress disputes
         if !is_finalized {
             // Party Tabs
-            let buyer_style = if app.active_chat_party == crate::ui::ChatParty::Buyer {
+            let buyer_style = if app.active_chat_party == ChatParty::Buyer {
                 Style::default()
                     .bg(Color::Green)
                     .fg(Color::Black)
@@ -477,7 +475,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 Style::default().fg(Color::Green)
             };
-            let seller_style = if app.active_chat_party == crate::ui::ChatParty::Seller {
+            let seller_style = if app.active_chat_party == ChatParty::Seller {
                 Style::default()
                     .bg(Color::Red)
                     .fg(Color::Black)

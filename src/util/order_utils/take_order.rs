@@ -5,6 +5,7 @@ use nostr_sdk::prelude::*;
 
 use crate::models::User;
 use crate::settings::Settings;
+use crate::ui::OperationResult;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
@@ -166,7 +167,7 @@ pub async fn take_order(
                             );
 
                             // Return PaymentRequestRequired to trigger invoice popup
-                            Ok(crate::ui::OperationResult::PaymentRequestRequired {
+                            Ok(OperationResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),
                                 sat_amount: *opt_amount,

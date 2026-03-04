@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::models::User;
+use crate::ui::MessageNotification;
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -222,8 +223,8 @@ pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
     active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
-    messages: Arc<Mutex<Vec<crate::ui::OrderMessage>>>,
-    message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
+    messages: Arc<Mutex<Vec<OrderMessage>>>,
+    message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
 ) {
     let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -384,7 +385,7 @@ pub async fn listen_for_order_messages(
                     _ => "New Message",
                 };
 
-                let notification = crate::ui::MessageNotification {
+                let notification = MessageNotification {
                     order_id: Some(*order_id),
                     message_preview: action_str.to_string(),
                     timestamp,
