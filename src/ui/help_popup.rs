@@ -3,18 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use super::constants::{
-    FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, HELP_CLOSE_HINT, HELP_CNO_CHANGE_FIELD,
-    HELP_CNO_ENTER_CONFIRM, HELP_CNO_TAB_NEXT, HELP_DIP_CTRL_S_ATTACH, HELP_DIP_END_BOTTOM,
-    HELP_DIP_ENTER_SEND, HELP_DIP_SCROLL_CHAT, HELP_DIP_SELECT_DISPUTE, HELP_DIP_SHIFT_F_RESOLVE,
-    HELP_DIP_SHIFT_I_INPUT, HELP_DIP_TAB_PARTY, HELP_DP_ENTER_TAKE, HELP_DP_SELECT_DISPUTE,
-    HELP_EXIT_ENTER_CONFIRM, HELP_MSG_ENTER_OPEN, HELP_MSG_SELECT, HELP_MY_TRADES_NAV,
-    HELP_OBS_CTRL_C_CLEAR, HELP_OBS_CTRL_S_ATTACH, HELP_OBS_ENTER_LOAD, HELP_OBS_ESC_CLEAR_ERR,
-    HELP_ORDERS_ENTER_TAKE, HELP_ORDERS_SELECT, HELP_SETTINGS_ENTER_OPEN, HELP_SETTINGS_M_MODE,
-    HELP_SETTINGS_SELECT_OPTION, HELP_TITLE_CREATE_NEW_ORDER, HELP_TITLE_DISPUTES_IN_PROGRESS,
-    HELP_TITLE_DISPUTES_PENDING, HELP_TITLE_EXIT, HELP_TITLE_MESSAGES, HELP_TITLE_MY_TRADES,
-    HELP_TITLE_OBSERVER, HELP_TITLE_ORDERS, HELP_TITLE_SETTINGS_ADMIN, HELP_TITLE_SETTINGS_USER,
-};
+use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserTab};
 
@@ -102,6 +91,10 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
+                HELP_OBS_TAB_FOCUS.to_string(),
+                HELP_OBS_CTRL_SHIFT_V.to_string(),
+                HELP_OBS_SCROLL_LINE.to_string(),
+                HELP_OBS_SCROLL_PAGE.to_string(),
                 HELP_OBS_ESC_CLEAR_ERR.to_string(),
                 HELP_OBS_CTRL_C_CLEAR.to_string(),
                 HELP_OBS_CTRL_S_ATTACH.to_string(),

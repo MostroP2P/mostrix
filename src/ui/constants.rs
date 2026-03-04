@@ -39,7 +39,11 @@ pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
 pub const HELP_DP_SELECT_DISPUTE: &str = "↑↓: Select dispute";
 
 // Help popup lines (Observer)
-pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Fetch chat from relays";
+pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Load chat for shared key";
+pub const HELP_OBS_TAB_FOCUS: &str = "Tab/Shift+Tab: Switch focus (file/key)";
+pub const HELP_OBS_CTRL_SHIFT_V: &str = "Ctrl+Shift+V: Paste shared key";
+pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
+pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
 pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
 pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";

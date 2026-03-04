@@ -6,7 +6,7 @@ use mostro_core::prelude::DisputeStatus;
 use nostr_sdk::prelude::*;
 
 use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::SETTINGS;
 
@@ -279,11 +279,10 @@ pub async fn fetch_observer_chat(
     client: &Client,
     shared_key_hex: &str,
     admin_pubkey: Option<&PublicKey>,
-) -> Result<Vec<crate::ui::DisputeChatMessage>> {
+) -> Result<Vec<DisputeChatMessage>> {
     use std::collections::HashMap;
 
     use crate::ui::helpers::try_parse_attachment_message;
-    use crate::ui::{ChatSender, DisputeChatMessage};
 
     let shared_keys = keys_from_shared_hex(shared_key_hex)
         .ok_or_else(|| anyhow::anyhow!("Invalid shared key hex"))?;

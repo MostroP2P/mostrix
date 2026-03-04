@@ -13,7 +13,8 @@ mod validation;
 
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
-    AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserMode, UserTab,
+    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter, OperationResult, Tab,
+    TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
@@ -29,7 +30,7 @@ pub struct EnterKeyContext<'a> {
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
     pub mostro_pubkey: PublicKey,
-    pub order_result_tx: &'a UnboundedSender<crate::ui::OperationResult>,
+    pub order_result_tx: &'a UnboundedSender<OperationResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
@@ -153,10 +154,10 @@ pub fn handle_key_event(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
-    save_attachment_tx: Option<&UnboundedSender<(String, crate::ui::ChatAttachment)>>,
+    save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
     let code = key_event.code;
@@ -226,13 +227,9 @@ pub fn handle_key_event(
                                 if let (Some(admin_keys), Some(pk_str)) = (
                                     admin_chat_keys,
                                     match msg.sender {
-                                        crate::ui::ChatSender::Buyer => {
-                                            dispute.buyer_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Seller => {
-                                            dispute.seller_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Admin => None,
+                                        ChatSender::Buyer => dispute.buyer_pubkey.as_deref(),
+                                        ChatSender::Seller => dispute.seller_pubkey.as_deref(),
+                                        ChatSender::Admin => None,
                                     },
                                 ) {
                                     if let Ok(sender_pk) = PublicKey::parse(pk_str) {
@@ -428,8 +425,8 @@ pub fn handle_key_event(
         if has_shift && (code == KeyCode::Char('c') || code == KeyCode::Char('C')) {
             // Toggle filter between InProgress and Finalized
             app.dispute_filter = match app.dispute_filter {
-                crate::ui::DisputeFilter::InProgress => crate::ui::DisputeFilter::Finalized,
-                crate::ui::DisputeFilter::Finalized => crate::ui::DisputeFilter::InProgress,
+                DisputeFilter::InProgress => DisputeFilter::Finalized,
+                DisputeFilter::Finalized => DisputeFilter::InProgress,
             };
             // Reset selection index when switching filters
             app.selected_in_progress_idx = 0;

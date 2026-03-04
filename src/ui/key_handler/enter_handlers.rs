@@ -5,8 +5,8 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::{
-    order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState,
-    UiMode, UserMode, UserRole, UserTab,
+    order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
+    MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::user_handlers::{
@@ -299,7 +299,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -323,7 +323,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -358,7 +358,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -443,7 +443,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 // Show invoice/payment popup for actionable messages
                 let notification = order_message_to_notification(msg);
                 let action = notification.action.clone();
-                let invoice_state = crate::ui::InvoiceInputState {
+                let invoice_state = InvoiceInputState {
                     invoice_input: String::new(),
                     focused: matches!(action, Action::AddInvoice),
                     just_pasted: false,
@@ -454,7 +454,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             } else {
                 // Show simple message view popup for other message types
                 let notification = order_message_to_notification(msg);
-                let view_state = crate::ui::MessageViewState {
+                let view_state = MessageViewState {
                     message_content: notification.message_preview,
                     order_id: notification.order_id,
                     action: notification.action,
@@ -467,19 +467,16 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // Validate and trigger async fetch for observer chat via shared key
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
-            app.observer_error = Some("Shared key is required".to_string());
-            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
-                "Shared key is required".to_string(),
-            ));
+            let msg = "Shared key is required".to_string();
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
             return;
         }
 
         if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
-            app.observer_error =
-                Some("Shared key must be a valid 64-char hex secret (32 bytes)".to_string());
-            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
-                "Shared key must be a valid 64-char hex secret (32 bytes)".to_string(),
-            ));
+            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
             return;
         }
 
@@ -505,10 +502,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             .await
             {
                 Ok(messages) => {
-                    let _ = tx.send(crate::ui::OperationResult::ObserverChatLoaded(messages));
+                    let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
                 }
                 Err(e) => {
-                    let _ = tx.send(crate::ui::OperationResult::ObserverChatError(e.to_string()));
+                    let _ = tx.send(OperationResult::ObserverChatError(e.to_string()));
                 }
             }
         });

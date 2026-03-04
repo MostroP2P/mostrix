@@ -10,6 +10,8 @@ use reqwest::{header::CONTENT_LENGTH, Client};
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ui::{ChatAttachment, OperationResult};
+
 /// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
 /// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
 pub fn derive_shared_key(admin_keys: &Keys, sender_pubkey: &PublicKey) -> Result<[u8; 32]> {
@@ -178,8 +180,8 @@ pub async fn save_attachment_to_disk(
 /// `~/.mostrix/downloads/`. Sends `OperationResult::Info(path)` or `OperationResult::Error` on completion.
 pub fn spawn_save_attachment(
     dispute_id: String,
-    attachment: crate::ui::ChatAttachment,
-    order_result_tx: UnboundedSender<crate::ui::OperationResult>,
+    attachment: ChatAttachment,
+    order_result_tx: UnboundedSender<OperationResult>,
 ) {
     let blossom_url = attachment.blossom_url;
     let filename = attachment.filename;
@@ -187,13 +189,13 @@ pub fn spawn_save_attachment(
     tokio::spawn(async move {
         match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_key).await {
             Ok(path) => {
-                let _ = order_result_tx.send(crate::ui::OperationResult::Info(format!(
+                let _ = order_result_tx.send(OperationResult::Info(format!(
                     "Saved to {}",
                     path.display()
                 )));
             }
             Err(e) => {
-                let _ = order_result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
+                let _ = order_result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });

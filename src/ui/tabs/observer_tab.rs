@@ -163,7 +163,8 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     f.render_widget(key_input, input_chunks[0]);
 
     let footer = Paragraph::new(
-        "Paste shared key | Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | Up/Down: Scroll | PgUp/PgDn: Scroll page",
+        "Ctrl+H: Help | Tab/Shift+Tab: Switch focus | Ctrl+Shift+V: Paste shared key\n\
+Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll",
     );
     f.render_widget(footer, input_chunks[1]);
 }
