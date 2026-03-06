@@ -51,7 +51,7 @@ pub(crate) fn execute_take_order_action(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
 ) -> bool {
     // Validate range order if needed
     if take_state.is_range_order {
@@ -94,7 +94,7 @@ pub(crate) fn execute_take_order_action(
                 let error_msg =
                     "Settings not initialized. Please restart the application.".to_string();
                 log::error!("{}", error_msg);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(error_msg));
+                let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
                 return;
             }
         };
@@ -114,7 +114,7 @@ pub(crate) fn execute_take_order_action(
             }
             Err(e) => {
                 log::error!("Failed to take order: {}", e);
-                let _ = result_tx.send(crate::ui::OrderResult::Error(e.to_string()));
+                let _ = result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
             }
         }
     });

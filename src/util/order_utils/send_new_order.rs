@@ -20,7 +20,7 @@ pub async fn send_new_order(
     _settings: &Settings,
     mostro_pubkey: PublicKey,
     form: &crate::ui::FormState,
-) -> Result<crate::ui::OrderResult, anyhow::Error> {
+) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Parse form data
     let kind_str = if form.kind.trim().is_empty() {
         "buy".to_string()

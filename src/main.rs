@@ -11,7 +11,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification, OrderResult,
+    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
+    OperationResult,
 };
 use crate::util::{
     handle_message_notification, handle_order_result, listen_for_order_messages,
@@ -45,7 +46,7 @@ use tokio::time::{interval, Duration};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AdminMode, AppState, TakeOrderState, UiMode, UserRole};
+use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserRole};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -132,7 +133,7 @@ use crate::ui::ui_draw;
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     log::info!("MostriX started");
-    let settings = init_settings();
+    let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
@@ -182,7 +183,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
-    let mut admin_chat_interval = interval(Duration::from_secs(5));
+    let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
 
@@ -214,7 +215,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<OrderResult>();
+        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
 
     // Channel to receive message notifications
     let (message_notification_tx, mut message_notification_rx) =
@@ -259,7 +260,7 @@ async fn main() -> Result<(), anyhow::Error> {
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
                     // Check if this is a dispute-related result before handling
-                    let is_dispute_related = matches!(&result, OrderResult::Info(msg)
+                    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
@@ -329,13 +330,11 @@ async fn main() -> Result<(), anyhow::Error> {
                     // Handle paste for invoice input
                     if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
                         if invoice_state.focused {
-                            // Filter out control characters (especially newlines) that could trigger unwanted actions
                             let filtered_text: String = pasted_text
                                 .chars()
                                 .filter(|c| !c.is_control() || *c == '\t')
                                 .collect();
                             invoice_state.invoice_input.push_str(&filtered_text);
-                            // Set flag to ignore Enter key immediately after paste
                             invoice_state.just_pasted = true;
                         }
                     }
@@ -344,15 +343,21 @@ async fn main() -> Result<(), anyhow::Error> {
                     | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
                     {
                         if key_state.focused {
-                            // Filter out control characters (especially newlines) that could trigger unwanted actions
                             let filtered_text: String = pasted_text
                                 .chars()
                                 .filter(|c| !c.is_control() || *c == '\t')
                                 .collect();
                             key_state.key_input.push_str(&filtered_text);
-                            // Set flag to ignore Enter key immediately after paste
                             key_state.just_pasted = true;
                         }
+                    }
+                    // Handle paste for observer shared key input
+                    if matches!(app.active_tab, Tab::Admin(AdminTab::Observer)) {
+                        let filtered_text: String = pasted_text
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .collect();
+                        app.observer_shared_key_input.push_str(&filtered_text);
                     }
                     continue;
                 }

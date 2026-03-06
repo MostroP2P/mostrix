@@ -6,7 +6,7 @@ use mostro_core::prelude::DisputeStatus;
 use nostr_sdk::prelude::*;
 
 use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::SETTINGS;
 
@@ -50,9 +50,9 @@ pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
     Some(Keys::new(secret))
 }
 
-/// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. trade pubkey).
-/// Rumor content is Mostro protocol format: JSON of (Message, Option<String>) with
-/// Message::Dm(SendDm, TextMessage(...)) so mostro-cli and mostro daemon can parse it.
+/// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. shared key pubkey).
+/// The inner content is a simple text note, not Mostro protocol format, as this is
+/// used for admin chat messages which are plain text communications.
 async fn build_custom_wrap_event(
     sender: &Keys,
     recipient_pubkey: &PublicKey,
@@ -145,7 +145,7 @@ pub async fn unwrap_giftwrap_with_shared_key(
 
 /// Fetch gift wrap events addressed to a specific shared key's public key,
 /// decrypt each with the shared key, and return (content, timestamp, sender_pubkey).
-async fn fetch_gift_wraps_for_shared_key(
+pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
 ) -> Result<Vec<(String, i64, PublicKey)>> {
@@ -268,6 +268,67 @@ pub async fn fetch_admin_chat_updates(
         .collect();
 
     Ok(updates)
+}
+
+/// Fetch chat messages for the Observer tab using a pasted shared key hex.
+///
+/// Converts the hex to `Keys`, fetches gift wraps from the last 7 days,
+/// decrypts them, assigns Buyer/Seller/Admin roles by pubkey order, and
+/// returns `DisputeChatMessage` items ready for display.
+pub async fn fetch_observer_chat(
+    client: &Client,
+    shared_key_hex: &str,
+    admin_pubkey: Option<&PublicKey>,
+) -> Result<Vec<DisputeChatMessage>> {
+    use std::collections::HashMap;
+
+    use crate::ui::helpers::try_parse_attachment_message;
+
+    let shared_keys = keys_from_shared_hex(shared_key_hex)
+        .ok_or_else(|| anyhow::anyhow!("Invalid shared key hex"))?;
+
+    let raw = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
+
+    // Map pubkeys to roles: admin (if known) → Admin, first unknown → Buyer, second → Seller
+    let mut role_map: HashMap<PublicKey, ChatSender> = HashMap::new();
+    if let Some(apk) = admin_pubkey {
+        role_map.insert(*apk, ChatSender::Admin);
+    }
+
+    for (_, _, pk) in &raw {
+        if role_map.contains_key(pk) {
+            continue;
+        }
+        let has_buyer = role_map.values().any(|s| *s == ChatSender::Buyer);
+        let has_seller = role_map.values().any(|s| *s == ChatSender::Seller);
+        if !has_buyer {
+            role_map.insert(*pk, ChatSender::Buyer);
+        } else if !has_seller {
+            role_map.insert(*pk, ChatSender::Seller);
+        } else {
+            role_map.insert(*pk, ChatSender::Admin);
+        }
+    }
+
+    let mut messages = Vec::with_capacity(raw.len());
+    for (content, ts, pk) in raw {
+        let sender = role_map.get(&pk).copied().unwrap_or(ChatSender::Admin);
+
+        let (msg_content, attachment) = match try_parse_attachment_message(&content) {
+            Some((att, display)) => (display, Some(att)),
+            None => (content, None),
+        };
+
+        messages.push(DisputeChatMessage {
+            sender,
+            content: msg_content,
+            timestamp: ts,
+            target_party: None,
+            attachment,
+        });
+    }
+
+    Ok(messages)
 }
 
 #[cfg(test)]

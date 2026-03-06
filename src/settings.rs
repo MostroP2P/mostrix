@@ -37,15 +37,30 @@ impl Default for Settings {
     }
 }
 
-/// Constructs (or copies) the configuration file and loads it
-pub fn init_settings() -> &'static Settings {
-    SETTINGS.get_or_init(|| init_or_load_settings_from_disk().expect("Error loading settings.toml"))
+/// Constructs (or copies) the configuration file and loads it.
+/// Returns a reference to the global `SETTINGS`, initializing it on first use.
+pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
+    if let Some(settings) = SETTINGS.get() {
+        return Ok(settings);
+    }
+
+    let settings = init_or_load_settings_from_disk()?;
+
+    // It's fine if another thread initialized SETTINGS first; in that case we just reuse it.
+    if SETTINGS.set(settings).is_err() {
+        // SETTINGS was already set between the get() above and set() here.
+        // Safe to unwrap because we know some value is now present.
+        return Ok(SETTINGS.get().expect("SETTINGS should be initialized"));
+    }
+
+    Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
 }
 
 /// Internal helper: ensure settings file exists and load it from disk
 fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
     // HOME and package name at compile time
-    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
     let hidden_dir = home_dir.join(format!(".{package_name}"));
     let hidden_file = hidden_dir.join("settings.toml");
@@ -83,7 +98,8 @@ pub fn load_settings_from_disk() -> Result<Settings, anyhow::Error> {
 
 /// Save settings to file
 pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
-    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
     let hidden_file = home_dir
         .join(format!(".{package_name}"))

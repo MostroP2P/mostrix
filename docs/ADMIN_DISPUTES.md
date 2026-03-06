@@ -47,8 +47,8 @@ The interface is divided into three main sections:
    - Shows "No disputes in progress" when empty
 
 2. **Main Area (80%)**:
-   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (`Shift+C: View Finalized | ↑↓: Select Dispute`). The footer is always visible to provide navigation guidance.
-   - **Header (8 lines)**: Comprehensive dispute information
+   - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (filter + `↑↓: Select Dispute | Ctrl+H: Help`). The footer is width-aware and always includes Ctrl+H for the help popup.
+   - **Header (7 lines)**: Comprehensive dispute information
      - Dispute ID, Type, Status
      - Creation date and timestamps
      - Initiator role (Buyer or Seller with pubkey)
@@ -67,7 +67,7 @@ The interface is divided into three main sections:
      - Grows automatically based on content
      - Yellow bold border when focused
      - Text wrapping with word boundaries
-   - **Footer (1 line)**: Context-sensitive keyboard shortcuts
+   - **Footer (1–2 lines)**: Context-sensitive keyboard shortcuts. The footer is **width-aware**: on very narrow terminals it shows only **Ctrl+H: Help**; on medium width it shows essential keys plus Ctrl+H; on wide terminals it can render on two lines with the full list. All variants include **Ctrl+H: Help** to open the context-aware shortcuts popup.
 
 #### Dispute Management Features
 
@@ -89,10 +89,62 @@ The interface is divided into three main sections:
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
 - **Backspace**: Delete characters (when input enabled)
+- **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
 
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 
-### 3. Settings Tab
+### 3. Observer Tab
+
+**Status**: ✅ **Implemented – Relay-based chat inspection**
+
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching NIP-59 gift-wrap messages from Nostr relays. A party involved in a dispute provides the admin with their shared key (64-char hex) out-of-band so the admin can view the full conversation and decide who is right.
+
+#### Observer Workflow
+
+1. **Acquire the shared key**:
+   - During a dispute, one of the parties provides the admin with their **shared key** as a 64-character hex string (32-byte ECDH secret derived between the two trade pubkeys).
+2. **Open Observer tab**:
+   - Switch to Admin mode and navigate to the **Observer** tab.
+3. **Paste shared key**:
+   - In the "Shared key (64-char hex)" input, paste the key provided by the user. The input supports bracketed paste mode for seamless pasting.
+4. **Fetch and view chat**:
+   - Press **Enter** to:
+     - Validate the shared key (non-empty, valid hex).
+     - Derive `Keys` from the shared key hex (via `keys_from_shared_hex` in `chat_utils.rs`).
+     - Fetch all `Kind::GiftWrap` events addressed to the shared key's public key from the last 7 days (reuses `fetch_gift_wraps_for_shared_key`).
+     - Decrypt each event using the shared key (standard NIP-59 or simplified Mostro-chat format).
+     - Map sender public keys to roles: known admin pubkey = Admin, first unknown pubkey = Buyer, second unknown pubkey = Seller.
+     - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
+   - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
+5. **Save attachments**:
+   - Press **Ctrl+S** to open a save-attachment popup listing all file/image attachments found in the observer chat. Select with **Up/Down**, save with **Enter**, cancel with **Esc**. Files are saved to `~/.mostrix/downloads/observer_<key_prefix>_<filename>`.
+
+#### Observer Keyboard Shortcuts
+
+- **Enter**: Fetch chat from relays using the current shared key.
+- **Ctrl+C**: Clear shared key input, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
+- **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
+- **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
+
+When validation or fetching fails (empty key, invalid hex, no messages found, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the input and retry.
+
+#### Observer State (AppState)
+
+- `observer_shared_key_input: String` -- current shared key input.
+- `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages.
+- `observer_loading: bool` -- indicates an async fetch is in progress.
+- `observer_error: Option<String>` -- inline error message.
+- `UiMode::ObserverSaveAttachmentPopup(usize)` -- active when the save-attachment popup is open for observer messages.
+
+The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fetch_observer_chat`. Results are sent back to the main event loop through the `order_result_tx` channel using the `OperationResult::ObserverChatLoaded` and `OperationResult::ObserverChatError` variants.
+
+When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
+
+> **Note**: Observer fetches messages from Nostr relays using the shared key. It reuses the same gift-wrap fetch infrastructure as the admin chat system (`fetch_gift_wraps_for_shared_key` in `chat_utils.rs`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+
+**Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
+
+### 4. Settings Tab
 
 **Status**: ✅ **Fully Implemented and Working**
 
@@ -615,7 +667,10 @@ pub struct AdminChatLastSeen {
 
 // Stored in AppState
 pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>,
-pub admin_chat_list_state: ratatui::widgets::ListState,
+pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
+pub admin_chat_selected_message_idx: Option<usize>,
+pub admin_chat_line_starts: Vec<usize>,
+pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
 pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
 ```
 
@@ -625,7 +680,10 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - **Display**: Attachment messages appear in the chat with an icon (🖼 Image or 📎 File), filename, and "(key provided)" when the sender included a decryption key. The chat block title shows a file count when non-zero (e.g. "Chat with Buyer (12 messages, 2 file(s))"). A transient yellow toast notifies when a new attachment is received; it clears after 8 seconds or on any key press.
 - **Persistence**: Transcript files under `~/.mostrix/<dispute_id>.txt` store a placeholder line for attachments (e.g. `[Image: name - Ctrl+S to save]`); file bytes are not stored on disk until the admin saves.
-- **Save (Ctrl+S)**: With an attachment message selected, press **Ctrl+S** to download the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypt with ChaCha20-Poly1305 when the key was provided, and write to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the same result popup used for other operations.
+- **Save (Ctrl+S)**:
+  - From the dispute chat, press **Ctrl+S** to open a **Save attachment** popup. The popup lists all file/image attachments in the current dispute for the active party (Buyer or Seller). If there are no attachments, Ctrl+S does nothing.
+  - **In the popup**: Use **↑/↓** to select an attachment, **Enter** to save the selected one, **Esc** to cancel. The popup shows one line per attachment (🖼 image or 📎 file + filename) and a footer hint: "↑↓ Select, Enter Save, Esc Cancel".
+  - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared operation result popup. When a party later provides the corresponding shared key, the admin can use the **Observer** tab to fetch and view the full chat from relays, including any attachments.
 - **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).
@@ -682,7 +740,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
-- **Ctrl+S**: Save selected file/image attachment to disk (when the selected message is an attachment)
+- **Ctrl+S**: Open save-attachment popup (when the current dispute/party has attachments). In the popup: **↑/↓** select attachment, **Enter** save selected to disk, **Esc** cancel.
 - **Backspace**: Delete characters from input (when input enabled)
 - **Up/Down**: Select different dispute in sidebar
 
@@ -691,7 +749,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Color differentiation**: Buyer (Green) and Seller (Magenta) messages clearly distinguished
 - **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Magenta for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
-- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state; shows "Ctrl+S: Save file" when the selected message is an attachment
+- **Dynamic footer**: Shows different shortcuts based on input focus and enabled state; shows "Ctrl+S: Save file" when the current dispute/party has attachments (opens the save-attachment list popup)
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
 - **Context preservation**: Each dispute maintains its own complete message history
 - **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
@@ -724,7 +782,8 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, scrollbar, attachment toast, block title file count, footer hint
 - `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
-- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key, Ctrl+S save attachment
+- `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key, Ctrl+S open save-attachment popup and popup key handling (Up/Down/Enter/Esc)
+- `src/ui/save_attachment_popup.rs` - Save attachment popup rendering (centered list, selection highlight, footer hint)
 - `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing, attachment parsing/placeholder, list styling
 - `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`

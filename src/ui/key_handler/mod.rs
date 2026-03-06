@@ -12,8 +12,9 @@ mod user_handlers;
 mod validation;
 
 use crate::ui::{
-    helpers::{get_selected_chat_message, is_dispute_finalized},
-    AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserTab,
+    helpers::{get_visible_attachment_messages, is_dispute_finalized},
+    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter, OperationResult, Tab,
+    TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
@@ -29,7 +30,7 @@ pub struct EnterKeyContext<'a> {
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
     pub mostro_pubkey: PublicKey,
-    pub order_result_tx: &'a UnboundedSender<crate::ui::OrderResult>,
+    pub order_result_tx: &'a UnboundedSender<OperationResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
@@ -153,10 +154,10 @@ pub fn handle_key_event(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
-    order_result_tx: &UnboundedSender<crate::ui::OrderResult>,
+    order_result_tx: &UnboundedSender<OperationResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
-    save_attachment_tx: Option<&UnboundedSender<(String, crate::ui::ChatAttachment)>>,
+    save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
     let code = key_event.code;
@@ -164,70 +165,191 @@ pub fn handle_key_event(
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
 
-    // Ctrl+S: save selected attachment in admin dispute chat
-    if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
-        if let (Tab::Admin(AdminTab::DisputesInProgress), Some(tx)) =
-            (app.active_tab, save_attachment_tx)
+    // Help popup (Ctrl+H): close on Esc, Enter, or Ctrl+H; restore previous mode so input state is preserved
+    if let UiMode::HelpPopup(_, ref previous_mode) = &app.mode {
+        if (key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h'))
+            || code == KeyCode::Esc
+            || code == KeyCode::Enter
         {
+            app.mode = (**previous_mode).clone();
+            return Some(true);
+        }
+        return Some(true); // consume all other keys while help is open
+    }
+
+    // Save attachment popup: Up/Down to select, Enter to save, Esc to cancel
+    if matches!(app.mode, UiMode::SaveAttachmentPopup(_)) {
+        let dispute_id_key = app
+            .admin_disputes_in_progress
+            .get(app.selected_in_progress_idx)
+            .map(|d| d.dispute_id.clone());
+        let list_len = dispute_id_key
+            .as_ref()
+            .map(|id| get_visible_attachment_messages(app, id).len())
+            .unwrap_or(0);
+        let selected_idx = match &app.mode {
+            UiMode::SaveAttachmentPopup(i) => *i,
+            _ => 0,
+        };
+        match code {
+            KeyCode::Esc => {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                return Some(true);
+            }
+            KeyCode::Up => {
+                if selected_idx > 0 {
+                    if let UiMode::SaveAttachmentPopup(ref mut idx) = app.mode {
+                        *idx = selected_idx - 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Down => {
+                if list_len > 0 && selected_idx + 1 < list_len {
+                    if let UiMode::SaveAttachmentPopup(ref mut idx) = app.mode {
+                        *idx = selected_idx + 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                if let (Some(tx), Some(dispute), Some(id)) = (
+                    save_attachment_tx,
+                    app.admin_disputes_in_progress
+                        .get(app.selected_in_progress_idx),
+                    dispute_id_key.as_ref(),
+                ) {
+                    let list = get_visible_attachment_messages(app, id);
+                    if let Some(msg) = list.get(selected_idx) {
+                        if let Some(att) = &msg.attachment {
+                            let mut attachment = att.clone();
+                            if attachment.decryption_key.is_none() {
+                                if let (Some(admin_keys), Some(pk_str)) = (
+                                    admin_chat_keys,
+                                    match msg.sender {
+                                        ChatSender::Buyer => dispute.buyer_pubkey.as_deref(),
+                                        ChatSender::Seller => dispute.seller_pubkey.as_deref(),
+                                        ChatSender::Admin => None,
+                                    },
+                                ) {
+                                    if let Ok(sender_pk) = PublicKey::parse(pk_str) {
+                                        if let Ok(shared) = crate::util::blossom::derive_shared_key(
+                                            admin_keys, &sender_pk,
+                                        ) {
+                                            attachment.decryption_key = Some(shared.to_vec());
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send((dispute.dispute_id.clone(), attachment));
+                        }
+                    }
+                }
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                return Some(true);
+            }
+            _ => return Some(true), // consume other keys while popup is open
+        }
+    }
+
+    // Observer save attachment popup: Up/Down to select, Enter to save, Esc to cancel
+    if let UiMode::ObserverSaveAttachmentPopup(selected_idx) = app.mode {
+        let list_len = app
+            .observer_messages
+            .iter()
+            .filter(|m| m.attachment.is_some())
+            .count();
+        match code {
+            KeyCode::Esc => {
+                app.mode = UiMode::AdminMode(AdminMode::Normal);
+                return Some(true);
+            }
+            KeyCode::Up => {
+                if selected_idx > 0 {
+                    app.mode = UiMode::ObserverSaveAttachmentPopup(selected_idx - 1);
+                }
+                return Some(true);
+            }
+            KeyCode::Down => {
+                if list_len > 0 && selected_idx + 1 < list_len {
+                    app.mode = UiMode::ObserverSaveAttachmentPopup(selected_idx + 1);
+                }
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                let attachments: Vec<&crate::ui::ChatAttachment> = app
+                    .observer_messages
+                    .iter()
+                    .filter_map(|m| m.attachment.as_ref())
+                    .collect();
+                if let Some(att) = attachments.get(selected_idx) {
+                    if let Some(tx) = save_attachment_tx {
+                        let key_prefix: String =
+                            app.observer_shared_key_input.chars().take(8).collect();
+                        let id = format!("observer_{}", key_prefix);
+
+                        // For Observer mode (pure P2P chats), attachment JSON often omits a `key`
+                        // and expects decryption using the same shared key used for messages.
+                        // If no explicit decryption_key was provided, derive it from the pasted
+                        // shared key hex so the saved file is decrypted instead of left encrypted.
+                        let mut att_clone = (*att).clone();
+                        if att_clone.decryption_key.is_none() {
+                            if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
+                                &app.observer_shared_key_input,
+                            ) {
+                                att_clone.decryption_key =
+                                    Some(keys.secret_key().secret_bytes().to_vec());
+                            }
+                        }
+
+                        let _ = tx.send((id, att_clone));
+                    }
+                }
+                app.mode = UiMode::AdminMode(AdminMode::Normal);
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
+    }
+
+    // Ctrl+H: open context-aware help popup when in normal/managing-dispute mode (store current mode to restore on close)
+    if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h') {
+        let can_open = matches!(
+            app.mode,
+            UiMode::Normal
+                | UiMode::UserMode(UserMode::Normal)
+                | UiMode::AdminMode(AdminMode::Normal)
+                | UiMode::AdminMode(AdminMode::ManagingDispute)
+        );
+        if can_open {
+            let previous = app.mode.clone();
+            app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
+            return Some(true);
+        }
+    }
+
+    // Ctrl+S: open save attachment popup (list of attachments) or do nothing if none
+    if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
+        if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Some(dispute) = app
                     .admin_disputes_in_progress
                     .get(app.selected_in_progress_idx)
                 {
-                    let dispute_id_key = dispute.dispute_id.clone();
-                    if let Some(msg) = get_selected_chat_message(app, &dispute_id_key) {
-                        if let Some(att) = &msg.attachment {
-                            let mut attachment = att.clone();
-                            // If no key in message, derive shared key from our private key + sender pubkey
-                            if attachment.decryption_key.is_none() {
-                                if let (Some(admin_keys), Some(pk_str)) = (
-                                    admin_chat_keys,
-                                    match msg.sender {
-                                        crate::ui::ChatSender::Buyer => {
-                                            dispute.buyer_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Seller => {
-                                            dispute.seller_pubkey.as_deref()
-                                        }
-                                        crate::ui::ChatSender::Admin => None,
-                                    },
-                                ) {
-                                    match PublicKey::parse(pk_str) {
-                                        Ok(sender_pk) => {
-                                            match crate::util::blossom::derive_shared_key(
-                                                admin_keys, &sender_pk,
-                                            ) {
-                                                Ok(shared) => {
-                                                    attachment.decryption_key =
-                                                        Some(shared.to_vec());
-                                                }
-                                                Err(e) => {
-                                                    log::warn!(
-                                                        "Failed to derive Blossom shared key for dispute {} from sender {:?}: {}",
-                                                        dispute.dispute_id,
-                                                        msg.sender,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "Failed to parse sender pubkey '{}' for Blossom attachment in dispute {} from sender {:?}: {}",
-                                                pk_str,
-                                                dispute.dispute_id,
-                                                msg.sender,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = tx.send((dispute_id_key, attachment));
-                            return Some(true);
-                        }
+                    let list = get_visible_attachment_messages(app, &dispute.dispute_id);
+                    if !list.is_empty() {
+                        app.mode = UiMode::SaveAttachmentPopup(0);
+                        return Some(true);
                     }
                 }
+            }
+        }
+        // Observer tab: open save attachment popup for observer messages
+        if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+            let has_attachments = app.observer_messages.iter().any(|m| m.attachment.is_some());
+            if has_attachments {
+                app.mode = UiMode::ObserverSaveAttachmentPopup(0);
+                return Some(true);
             }
         }
     }
@@ -303,8 +425,8 @@ pub fn handle_key_event(
         if has_shift && (code == KeyCode::Char('c') || code == KeyCode::Char('C')) {
             // Toggle filter between InProgress and Finalized
             app.dispute_filter = match app.dispute_filter {
-                crate::ui::DisputeFilter::InProgress => crate::ui::DisputeFilter::Finalized,
-                crate::ui::DisputeFilter::Finalized => crate::ui::DisputeFilter::InProgress,
+                DisputeFilter::InProgress => DisputeFilter::Finalized,
+                DisputeFilter::Finalized => DisputeFilter::InProgress,
             };
             // Reset selection index when switching filters
             app.selected_in_progress_idx = 0;
@@ -326,6 +448,29 @@ pub fn handle_key_event(
     // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
     if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
         return Some(result);
+    }
+
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the shared key input.
+    // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
+    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        if !matches!(app.mode, UiMode::OperationResult(_)) {
+            let is_ctrl = key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+            if !is_ctrl {
+                match code {
+                    KeyCode::Char(c) => {
+                        app.observer_shared_key_input.push(c);
+                        return Some(true);
+                    }
+                    KeyCode::Backspace => {
+                        app.observer_shared_key_input.pop();
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     match code {
@@ -368,7 +513,7 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
-            // Handle chat message navigation when input is disabled
+            // Handle chat message navigation when input is disabled (Disputes in Progress)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                     if !app.admin_chat_input_enabled {
@@ -384,6 +529,22 @@ pub fn handle_key_event(
                     }
                 }
             }
+
+            // Observer tab: use Up/Down to scroll the chat vertically
+            if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                match code {
+                    KeyCode::Up => {
+                        app.observer_scrollview_state.scroll_up();
+                        return Some(true);
+                    }
+                    KeyCode::Down => {
+                        app.observer_scrollview_state.scroll_down();
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+
             handle_navigation(code, app, orders, disputes);
             Some(true)
         }
@@ -402,6 +563,22 @@ pub fn handle_key_event(
                     }
                 }
             }
+
+            // Observer tab: PageUp/PageDown scroll the observer chat
+            if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                match code {
+                    KeyCode::PageUp => {
+                        app.observer_scrollview_state.scroll_page_up();
+                        return Some(true);
+                    }
+                    KeyCode::PageDown => {
+                        app.observer_scrollview_state.scroll_page_down();
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -471,6 +648,17 @@ pub fn handle_key_event(
             }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
+            // In Observer tab, Ctrl+C clears inputs and decrypted content
+            if let (Tab::Admin(AdminTab::Observer), true) = (
+                app.active_tab,
+                key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL),
+            ) {
+                app.clear_observer_secrets();
+                return Some(true);
+            }
+
             // Handle copy invoice for PayInvoice notifications
             if let UiMode::NewMessageNotification(
                 ref notification,
@@ -485,7 +673,8 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
-            // Chat input is handled at the top of this function (takes priority)
+            // Observer tab input is handled early in handle_key_event
+            // Chat input is handled at the top (takes priority)
             // This handles form inputs and other character entry
             handle_char_input(code, app, validate_range_amount);
             if code == KeyCode::Backspace {

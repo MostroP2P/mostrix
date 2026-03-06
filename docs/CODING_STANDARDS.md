@@ -21,6 +21,26 @@ This document outlines the coding standards and best practices for the Mostrix p
   - Protocol logic in `src/util/order_utils/`
   - Database operations in `src/util/db_utils.rs`
 
+### 6. Import Usage Rule
+
+**Always import from the crate root at the top of the file; never use full crate paths in the body of the code.**
+
+- At the top of each Rust file, use `use crate::...` to bring needed modules, types, or functions into scope.
+- **Do not** reference full module paths (e.g., `crate::ui::DisputeChatMessage`) inside function bodies or code blocks—bring them in with `use` statements instead.
+- This improves readability and keeps imports consistent.
+
+**Example (GOOD):**
+```rust
+use crate::ui::DisputeChatMessage;
+
+fn foo(msg: &DisputeChatMessage) { /* ... */ }
+```
+
+**Example (BAD):**
+```rust
+fn foo(msg: &crate::ui::DisputeChatMessage) { /* ... */ }
+```
+
 **Example**: Instead of duplicating key derivation logic, use `User::derive_trade_keys()`.
 
 ### 2. Avoid Code Duplication (DRY Principle)
@@ -82,7 +102,7 @@ This document outlines the coding standards and best practices for the Mostrix p
 **Example**:
 
 ```rust
-pub async fn send_new_order(...) -> Result<OrderResult> {
+pub async fn send_new_order(...) -> Result<OperationResult> {
     let trade_keys = user.derive_trade_keys(next_idx)?; // Propagate error
     // ...
 }
@@ -182,7 +202,7 @@ cargo clippy --all-targets --all-features  # Lint code
 ## Naming Conventions
 
 - **Functions**: `snake_case` (e.g., `send_new_order`, `parse_dm_events`)
-- **Types/Structs**: `PascalCase` (e.g., `AppState`, `UiMode`, `OrderResult`)
+- **Types/Structs**: `PascalCase` (e.g., `AppState`, `UiMode`, `OperationResult`)
 - **Constants**: `UPPER_SNAKE_CASE` (e.g., `FETCH_EVENTS_TIMEOUT`)
 - **Modules**: `snake_case` (e.g., `order_utils`, `dm_utils`)
 

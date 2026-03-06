@@ -5,8 +5,12 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::{
-    AdminMode, AdminTab, AppState, ChatParty, Tab, TakeOrderState, UiMode, UserMode, UserRole,
-    UserTab,
+    order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
+    MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
+};
+// User handlers moved to user_handlers.rs
+use crate::ui::key_handler::user_handlers::{
+    handle_enter_creating_order, handle_enter_taking_order,
 };
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
@@ -24,6 +28,11 @@ use crate::ui::key_handler::validation::{
 // Admin handlers moved to admin_handlers.rs
 use crate::ui::key_handler::admin_handlers::{
     execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+};
+
+// Message handlers moved to message_handlers.rs
+use crate::ui::key_handler::message_handlers::{
+    handle_enter_message_notification, handle_enter_viewing_message,
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -60,12 +69,29 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
-        UiMode::OrderResult(_) => {
-            // Close result popup
-            // If we're on Settings tab, stay there; otherwise return to first tab
-            if !matches!(
+        UiMode::HelpPopup(..) => {
+            // Close help popup (mode restored in key_handler/mod.rs)
+            true
+        }
+        UiMode::SaveAttachmentPopup(_) => {
+            // Up/Down/Enter/Esc handled in key_handler/mod.rs
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::ObserverSaveAttachmentPopup(_) => {
+            // Handled in key_handler/mod.rs
+            app.mode = default_mode;
+            true
+        }
+        UiMode::OperationResult(_) => {
+            // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
+            if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            } else if !matches!(
                 app.active_tab,
-                Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
+                Tab::Admin(AdminTab::Settings)
+                    | Tab::User(UserTab::Settings)
+                    | Tab::Admin(AdminTab::Observer)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
@@ -273,7 +299,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -297,7 +323,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -332,7 +358,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OrderResult(crate::ui::OrderResult::Error(e));
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
                 }
             }
         }
@@ -415,9 +441,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             let action = inner_message_kind.action.clone();
             if matches!(action, Action::AddInvoice | Action::PayInvoice) {
                 // Show invoice/payment popup for actionable messages
-                let notification = crate::ui::order_message_to_notification(msg);
+                let notification = order_message_to_notification(msg);
                 let action = notification.action.clone();
-                let invoice_state = crate::ui::InvoiceInputState {
+                let invoice_state = InvoiceInputState {
                     invoice_input: String::new(),
                     focused: matches!(action, Action::AddInvoice),
                     just_pasted: false,
@@ -427,8 +453,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
             } else {
                 // Show simple message view popup for other message types
-                let notification = crate::ui::order_message_to_notification(msg);
-                let view_state = crate::ui::MessageViewState {
+                let notification = order_message_to_notification(msg);
+                let view_state = MessageViewState {
                     message_content: notification.message_preview,
                     order_id: notification.order_id,
                     action: notification.action,
@@ -437,6 +463,52 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::ViewingMessage(view_state);
             }
         }
+    } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        // Validate and trigger async fetch for observer chat via shared key
+        let key_str = app.observer_shared_key_input.trim().to_string();
+        if key_str.is_empty() {
+            let msg = "Shared key is required".to_string();
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            return;
+        }
+
+        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+            app.observer_error = Some(msg.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            return;
+        }
+
+        // Clear previous results and set loading state
+        for msg in &mut app.observer_messages {
+            zeroize::Zeroize::zeroize(&mut msg.content);
+        }
+        app.observer_messages.clear();
+        app.observer_error = None;
+        app.observer_loading = true;
+
+        // Spawn async fetch via the order_result channel
+        let client = ctx.client.clone();
+        let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
+        let tx = ctx.order_result_tx.clone();
+
+        tokio::spawn(async move {
+            match crate::util::chat_utils::fetch_observer_chat(
+                &client,
+                &key_str,
+                admin_pubkey.as_ref(),
+            )
+            .await
+            {
+                Ok(messages) => {
+                    let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
+                }
+                Err(e) => {
+                    let _ = tx.send(OperationResult::ObserverChatError(e.to_string()));
+                }
+            }
+        });
     } else if matches!(
         app.active_tab,
         Tab::Admin(AdminTab::Exit) | Tab::User(UserTab::Exit)
@@ -479,13 +551,3 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         }
     }
 }
-
-// User handlers moved to user_handlers.rs
-use crate::ui::key_handler::user_handlers::{
-    handle_enter_creating_order, handle_enter_taking_order,
-};
-
-// Message handlers moved to message_handlers.rs
-use crate::ui::key_handler::message_handlers::{
-    handle_enter_message_notification, handle_enter_viewing_message,
-};
