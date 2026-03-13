@@ -65,7 +65,7 @@ relays = [
 log_level = "info" 
 
 # Fiat currency filter (optional, ISO codes)
-currencies = ["VES", "ARS", "USD"]
+currencies_filters = ["VES", "ARS", "USD"]
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
@@ -100,7 +100,7 @@ pow = 0
   - Recommended values: `"info"` for normal use, `"debug"` or `"trace"` for troubleshooting.
   - Has no effect on what fiat currencies are available.
 
-- **`currencies`**  
+- **`currencies_filters`**  
   - Optional list of fiat currency **filters** (by ISO code) used by Mostrix when listing orders.  
   - If the list is **empty**, all currencies published by the Mostro instance are shown.  
   - If non-empty (e.g. `["USD"]` or `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
@@ -122,6 +122,7 @@ pow = 0
   - Lightning node details (alias, pubkey, version, networks, URIs).
   - The list of **accepted fiat currencies** as published by the Mostro instance.
 - The status bar’s **Currencies** line is also derived from this event; if the instance omits `fiat_currencies_accepted`, Mostrix treats it as “all currencies accepted” and displays `All (from Mostro instance)`.
+- Press **Enter** while focused on the **Mostro Info** tab to refresh the instance info from the configured relays using the current Mostro pubkey in `settings.toml`.
 
 ### Admin features
 

@@ -12,8 +12,10 @@ use crate::ui::{
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
+use crate::util::fetch_mostro_instance_info;
 use mostro_core::prelude::*;
 use nostr_sdk::Client;
+use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -92,6 +94,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)
                     | Tab::Admin(AdminTab::Observer)
+                    | Tab::User(UserTab::MostroInfo)
+                    | Tab::Admin(AdminTab::MostroInfo)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
@@ -399,8 +403,63 @@ fn handle_enter_settings_mode(
 }
 
 fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
-    // Show take order popup when Enter is pressed in Orders tab (user mode only)
-    if let Tab::User(UserTab::Orders) = app.active_tab {
+    // Refresh Mostro instance info when Enter is pressed in the Mostro Info tab
+    if matches!(
+        app.active_tab,
+        Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
+    ) {
+        // Use the latest Mostro pubkey from settings (reflects changes from Settings tab)
+        let mostro_pubkey_str = match crate::settings::load_settings_from_disk() {
+            Ok(s) => s.mostro_pubkey,
+            Err(e) => {
+                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    "Failed to load settings for Mostro info refresh: {}",
+                    e
+                )));
+                return;
+            }
+        };
+
+        let parsed_pubkey = match nostr_sdk::prelude::PublicKey::from_str(&mostro_pubkey_str) {
+            Ok(pk) => pk,
+            Err(e) => {
+                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    "Invalid Mostro pubkey in settings.toml: {}",
+                    e
+                )));
+                return;
+            }
+        };
+
+        // Perform a blocking fetch for simplicity; this runs the async helper
+        // in a blocking section so we can update AppState directly.
+        let client = ctx.client.clone();
+        let refresh_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { fetch_mostro_instance_info(&client, parsed_pubkey).await })
+        });
+
+        match refresh_result {
+            Ok(Some(info)) => {
+                app.mostro_info = Some(info);
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Mostro instance info refreshed from relays.".to_string(),
+                ));
+            }
+            Ok(None) => {
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "No Mostro instance info event found for the current pubkey.".to_string(),
+                ));
+            }
+            Err(e) => {
+                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    "Failed to refresh Mostro instance info: {}",
+                    e
+                )));
+            }
+        }
+    } else if let Tab::User(UserTab::Orders) = app.active_tab {
+        // Show take order popup when Enter is pressed in Orders tab (user mode only)
         let orders_lock = ctx.orders.lock().unwrap();
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
@@ -417,7 +476,6 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
         let disputes_lock = ctx.disputes.lock().unwrap();
         // Filter to only get "initiated" disputes
-        use std::str::FromStr;
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
             .iter()
             .enumerate()

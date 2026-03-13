@@ -149,7 +149,6 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
 /// - kind 38385 (Mostro instance status)
 /// - author = Mostro pubkey
 /// - `d` tag / identifier = Mostro pubkey
-/// - `y=mostro`, `z=info`
 pub async fn fetch_mostro_instance_info(
     client: &Client,
     mostro_pubkey: PublicKey,

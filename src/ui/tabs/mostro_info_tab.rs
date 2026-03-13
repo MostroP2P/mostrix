@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::util::MostroInstanceInfo;
@@ -29,7 +29,8 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
         Style::default()
             .fg(PRIMARY_COLOR)
             .add_modifier(Modifier::BOLD),
-    )]));
+    )]))
+    .wrap(Wrap { trim: true });
     f.render_widget(header_text, chunks[0]);
 
     match &app.mostro_info {
@@ -38,10 +39,11 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
                 Span::raw("No Mostro instance info has been loaded yet."),
                 Span::raw(" "),
                 Span::styled(
-                    "Switch to this tab after startup to refresh automatically, or implement a manual refresh key later.",
+                    "This view shows the latest Mostro instance info fetched at startup; restart Mostrix to refresh or add a manual refresh keybinding in a future update.",
                     Style::default().add_modifier(Modifier::ITALIC),
                 ),
-            ]));
+            ]))
+            .wrap(Wrap { trim: true });
             f.render_widget(message, chunks[1]);
         }
         Some(info) => {
@@ -52,7 +54,7 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
 
 fn render_info_details(f: &mut ratatui::Frame, area: Rect, info: &MostroInstanceInfo) {
     let lines = build_info_lines(info);
-    let paragraph = Paragraph::new(lines).block(
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true }).block(
         Block::default()
             .borders(Borders::NONE)
             .style(Style::default().bg(BACKGROUND_COLOR)),
@@ -80,6 +82,21 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     push_opt_i64(&mut lines, "Min order amount (sats)", info.min_order_amount);
     push_opt_u64(&mut lines, "Expiration (hours)", info.expiration_hours);
     push_opt_u64(&mut lines, "Expiration (seconds)", info.expiration_seconds);
+    push_opt_u64(
+        &mut lines,
+        "Hold invoice expiration window (seconds)",
+        info.hold_invoice_expiration_window,
+    );
+    push_opt_u32(
+        &mut lines,
+        "Hold invoice CLTV delta (blocks)",
+        info.hold_invoice_cltv_delta,
+    );
+    push_opt_u64(
+        &mut lines,
+        "Invoice expiration window (seconds)",
+        info.invoice_expiration_window,
+    );
     push_opt_u32(
         &mut lines,
         "Max orders per response",
@@ -127,6 +144,12 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     } else {
         push_list(&mut lines, "Accepted", &info.fiat_currencies_accepted);
     }
+
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "Hint: press Enter in this tab to refresh Mostro instance info from relays.",
+        Style::default().add_modifier(Modifier::ITALIC),
+    )));
 
     lines
 }

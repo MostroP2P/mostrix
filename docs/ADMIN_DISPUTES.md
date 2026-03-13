@@ -823,11 +823,11 @@ Admins (and users) can configure **local currency filters** to focus on specific
 
 #### Currency Filter Features
 
-- **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR, ARS) into the `currencies` array in `settings.toml`.
+- **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR, ARS) into the `currencies_filters` array in `settings.toml`.
   - Codes are validated (non-empty, max 10 characters) and uppercased.
   - When **non-empty**, background order fetching only keeps orders whose `fiat_code` is in this list.
 - **Clear Currency Filters**: Removes all currency filters
-  - Clears the `currencies` array in `settings.toml`
+  - Clears the `currencies_filters` array in `settings.toml`
   - An **empty** list means “no filter”: all currencies from the Mostro instance are shown.
 - **Dynamic Filtering**: Currency filters are applied on each periodic fetch; changes in `settings.toml` take effect without restarting.
 - **Status Bar Display**: The status bar’s currency line still shows currencies coming from the Mostro instance status event; filters only control **which orders are visible**, not which currencies the instance supports.
