@@ -115,7 +115,7 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     push_list(&mut lines, "Chains", &info.lnd_chains);
     push_list(&mut lines, "Networks", &info.lnd_networks);
     for uri in &info.lnd_uris {
-        push_kv(&mut lines, "URI", &uri);
+        push_kv(&mut lines, "URI", uri);
     }
 
     lines.push(Line::default());
