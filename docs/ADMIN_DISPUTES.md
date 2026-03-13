@@ -154,15 +154,15 @@ The Settings tab provides comprehensive configuration options for both User and 
 
 1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
 2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
-3. **Add Currency Filter** *(legacy / deprecated)*: Historically added fiat currency codes (e.g., USD, EUR) to filter orders. Since fiat currencies are now sourced from the Mostro instance status event (`fiat_currencies_accepted` tag), these local filters are ignored by order fetching and kept only for backwards compatibility.
-4. **Clear Currency Filters** *(legacy)*: Clears the `currencies` array in `settings.toml`. This no longer changes which fiat currencies are available in the UI.
+3. **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR) to the `currencies_filters` array in `settings.toml` (the key `currencies` is also accepted for backwards compatibility). The fetch scheduler in Mostrix reloads `currencies_filters` on each tick and uses it to filter which orders are visible: only orders whose fiat code is in this list are shown. The *list of available* fiat currencies is still defined by the Mostro instance via the `fiat_currencies_accepted` tag in its status event; the filter in `settings.toml` only narrows which of those are displayed. Same behaviour in Admin mode.
+4. **Clear Currency Filters**: Clears the `currencies_filters` (or `currencies`) array in `settings.toml`. An empty list means no filter: all orders from the Mostro instance are shown again. The scheduler picks up the change on the next tick.
 
 #### Admin Mode Options
 
 1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
 2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
-3. **Add Currency Filter** *(legacy / deprecated)*: Same legacy behaviour as in user mode; writes to `settings.toml` but does not affect which fiat currencies are available.
-4. **Clear Currency Filters** *(legacy)*: Clears legacy filters; no longer affects which currencies Mostrix uses.
+3. **Add Currency Filter**: Same as in User mode: adds codes to `currencies_filters` in `settings.toml`; the scheduler uses this to filter visible orders. Mostro’s `fiat_currencies_accepted` defines which currencies the instance supports; Mostrix uses `currencies_filters` only to restrict which orders are shown.
+4. **Clear Currency Filters**: Clears `currencies_filters` in `settings.toml`; the scheduler then shows all orders (no currency filter) on the next fetch.
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 

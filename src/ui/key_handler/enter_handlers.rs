@@ -408,35 +408,12 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         app.active_tab,
         Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
     ) {
-        // Use the latest Mostro pubkey from settings (reflects changes from Settings tab)
-        let mostro_pubkey_str = match crate::settings::load_settings_from_disk() {
-            Ok(s) => s.mostro_pubkey,
-            Err(e) => {
-                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
-                    "Failed to load settings for Mostro info refresh: {}",
-                    e
-                )));
-                return;
-            }
-        };
-
-        let parsed_pubkey = match nostr_sdk::prelude::PublicKey::from_str(&mostro_pubkey_str) {
-            Ok(pk) => pk,
-            Err(e) => {
-                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
-                    "Invalid Mostro pubkey in settings.toml: {}",
-                    e
-                )));
-                return;
-            }
-        };
-
-        // Perform a blocking fetch for simplicity; this runs the async helper
-        // in a blocking section so we can update AppState directly.
+        // Use the runtime Mostro pubkey from ctx so refresh matches what the app is using.
         let client = ctx.client.clone();
+        let mostro_pubkey = ctx.mostro_pubkey;
         let refresh_result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(async move { fetch_mostro_instance_info(&client, parsed_pubkey).await })
+                .block_on(async move { fetch_mostro_instance_info(&client, mostro_pubkey).await })
         });
 
         match refresh_result {
@@ -447,11 +424,13 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 ));
             }
             Ok(None) => {
+                app.mostro_info = None;
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "No Mostro instance info event found for the current pubkey.".to_string(),
                 ));
             }
             Err(e) => {
+                app.mostro_info = None;
                 app.mode = UiMode::OperationResult(OperationResult::Error(format!(
                     "Failed to refresh Mostro instance info: {}",
                     e

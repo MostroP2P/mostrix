@@ -34,7 +34,7 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
                 ),
             ]))
             .wrap(Wrap { trim: true });
-            f.render_widget(message, chunks[1]);
+            f.render_widget(message, chunks[0]);
         }
         Some(info) => {
             render_info_details(f, chunks[0], info);
