@@ -57,8 +57,8 @@ pub fn save_currency_to_settings(currency_string: &str) {
     save_settings_with(
         |s| {
             let currency_upper = currency_string.trim().to_uppercase();
-            if !s.currencies.contains(&currency_upper) {
-                s.currencies.push(currency_upper);
+            if !s.currencies_filters.contains(&currency_upper) {
+                s.currencies_filters.push(currency_upper);
             }
         },
         "Failed to save currency to settings",
@@ -70,7 +70,7 @@ pub fn save_currency_to_settings(currency_string: &str) {
 pub fn clear_currency_filters() {
     save_settings_with(
         |s| {
-            s.currencies.clear();
+            s.currencies_filters.clear();
         },
         "Failed to clear currency filters",
         "All currency filters cleared",

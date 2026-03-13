@@ -15,7 +15,8 @@ use crate::ui::{
     OperationResult,
 };
 use crate::util::{
-    handle_message_notification, handle_order_result, listen_for_order_messages,
+    fetch_mostro_instance_info, handle_message_notification, handle_order_result,
+    listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
     spawn_save_attachment,
 };
@@ -186,6 +187,19 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
+
+    // Fetch initial Mostro instance info for the current Mostro pubkey.
+    match fetch_mostro_instance_info(&client, mostro_pubkey).await {
+        Ok(Some(info)) => {
+            app.mostro_info = Some(info);
+        }
+        Ok(None) => {
+            log::info!("No Mostro instance info event found for current Mostro pubkey");
+        }
+        Err(e) => {
+            log::warn!("Failed to fetch Mostro instance info: {}", e);
+        }
+    }
 
     // Load all admin disputes from database if admin mode
     // (The filter toggle will show InProgress or Finalized based on user selection)
@@ -444,19 +458,29 @@ async fn main() -> Result<(), anyhow::Error> {
         expire_attachment_toast(&mut app);
 
         // Status bar text - 3 separate lines
-        // Reload settings from disk so newly added relays and currencies are reflected immediately.
+        // Reload settings from disk so newly added relays are reflected immediately.
         let current_settings =
             crate::settings::load_settings_from_disk().unwrap_or_else(|_| settings.clone());
         let relays_str = current_settings.relays.join(" - ");
-        let currencies_str = if current_settings.currencies.is_empty() {
-            "All".to_string()
-        } else {
-            current_settings.currencies.join(", ")
+        // Mostro instance currencies string
+        let mostro_instance_currencies = match app.mostro_info.as_ref() {
+            Some(info) if !info.fiat_currencies_accepted.is_empty() => {
+                info.fiat_currencies_accepted.join(", ")
+            }
+            _ => "All (from Mostro instance)".to_string(),
+        };
+        // Currencies filters string
+        let currencies_filters_str = match current_settings.currencies_filters.is_empty() {
+            true => "All currencies are accepted".to_string(),
+            false => current_settings.currencies_filters.join(", "),
         };
         let status_lines = vec![
             format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
             format!("🔗 Relays: {}", relays_str),
-            format!("💱 Currencies: {}", currencies_str),
+            format!(
+                "💱 Currencies: {} - Filters: {}",
+                mostro_instance_currencies, currencies_filters_str
+            ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
     }

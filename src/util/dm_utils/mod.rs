@@ -227,7 +227,7 @@ pub async fn listen_for_order_messages(
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
 ) {
-    let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     // Get user key from db
     let user = match User::get(&pool).await {
         Ok(u) => u,

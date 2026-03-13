@@ -45,6 +45,9 @@ pub fn ui_draw(
                 app.selected_message_idx,
             )
         }
+        (Tab::User(UserTab::MostroInfo), UserRole::User) => {
+            tabs::mostro_info_tab::render_mostro_info_tab(f, content_area, app)
+        }
         (Tab::User(UserTab::Settings), UserRole::User) => tabs::settings_tab::render_settings_tab(
             f,
             content_area,
@@ -71,6 +74,9 @@ pub fn ui_draw(
         }
         (Tab::Admin(AdminTab::Observer), UserRole::Admin) => {
             tabs::observer_tab::render_observer_tab(f, content_area, app)
+        }
+        (Tab::Admin(AdminTab::MostroInfo), UserRole::Admin) => {
+            tabs::mostro_info_tab::render_mostro_info_tab(f, content_area, app)
         }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
             tabs::settings_tab::render_settings_tab(

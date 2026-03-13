@@ -8,6 +8,7 @@ pub enum UserTab {
     Orders,
     MyTrades,
     Messages,
+    MostroInfo,
     Settings,
     CreateNewOrder,
     Exit,
@@ -22,6 +23,7 @@ impl Display for UserTab {
                 UserTab::Orders => "Orders",
                 UserTab::MyTrades => "My Trades",
                 UserTab::Messages => "Messages",
+                UserTab::MostroInfo => "Mostro Info",
                 UserTab::Settings => "Settings",
                 UserTab::CreateNewOrder => "Create New Order",
                 UserTab::Exit => "Exit",
@@ -36,9 +38,10 @@ impl UserTab {
             0 => UserTab::Orders,
             1 => UserTab::MyTrades,
             2 => UserTab::Messages,
-            3 => UserTab::CreateNewOrder,
-            4 => UserTab::Settings,
-            5 => UserTab::Exit,
+            3 => UserTab::MostroInfo,
+            4 => UserTab::CreateNewOrder,
+            5 => UserTab::Settings,
+            6 => UserTab::Exit,
             _ => panic!("Invalid user tab index: {}", index),
         }
     }
@@ -48,14 +51,15 @@ impl UserTab {
             UserTab::Orders => 0,
             UserTab::MyTrades => 1,
             UserTab::Messages => 2,
-            UserTab::CreateNewOrder => 3,
-            UserTab::Settings => 4,
-            UserTab::Exit => 5,
+            UserTab::MostroInfo => 3,
+            UserTab::CreateNewOrder => 4,
+            UserTab::Settings => 5,
+            UserTab::Exit => 6,
         }
     }
 
     pub fn count() -> usize {
-        6
+        7
     }
 
     pub fn first() -> Self {
@@ -71,7 +75,8 @@ impl UserTab {
             UserTab::Orders => UserTab::Orders,
             UserTab::MyTrades => UserTab::Orders,
             UserTab::Messages => UserTab::MyTrades,
-            UserTab::CreateNewOrder => UserTab::Messages,
+            UserTab::MostroInfo => UserTab::Messages,
+            UserTab::CreateNewOrder => UserTab::MostroInfo,
             UserTab::Settings => UserTab::CreateNewOrder,
             UserTab::Exit => UserTab::Settings,
         }
@@ -81,7 +86,8 @@ impl UserTab {
         match self {
             UserTab::Orders => UserTab::MyTrades,
             UserTab::MyTrades => UserTab::Messages,
-            UserTab::Messages => UserTab::CreateNewOrder,
+            UserTab::Messages => UserTab::MostroInfo,
+            UserTab::MostroInfo => UserTab::CreateNewOrder,
             UserTab::CreateNewOrder => UserTab::Settings,
             UserTab::Settings => UserTab::Exit,
             UserTab::Exit => UserTab::Exit,
@@ -94,6 +100,7 @@ pub enum AdminTab {
     DisputesPending,
     DisputesInProgress,
     Observer,
+    MostroInfo,
     Settings,
     Exit,
 }
@@ -107,6 +114,7 @@ impl Display for AdminTab {
                 AdminTab::DisputesPending => "Disputes Pending",
                 AdminTab::DisputesInProgress => "Disputes Management",
                 AdminTab::Observer => "Observer",
+                AdminTab::MostroInfo => "Mostro Info",
                 AdminTab::Settings => "Settings",
                 AdminTab::Exit => "Exit",
             }
@@ -120,8 +128,9 @@ impl AdminTab {
             0 => AdminTab::DisputesPending,
             1 => AdminTab::DisputesInProgress,
             2 => AdminTab::Observer,
-            3 => AdminTab::Settings,
-            4 => AdminTab::Exit,
+            3 => AdminTab::MostroInfo,
+            4 => AdminTab::Settings,
+            5 => AdminTab::Exit,
             _ => panic!("Invalid admin tab index: {}", index),
         }
     }
@@ -131,13 +140,14 @@ impl AdminTab {
             AdminTab::DisputesPending => 0,
             AdminTab::DisputesInProgress => 1,
             AdminTab::Observer => 2,
-            AdminTab::Settings => 3,
-            AdminTab::Exit => 4,
+            AdminTab::MostroInfo => 3,
+            AdminTab::Settings => 4,
+            AdminTab::Exit => 5,
         }
     }
 
     pub fn count() -> usize {
-        5
+        6
     }
 
     pub fn first() -> Self {
@@ -153,7 +163,8 @@ impl AdminTab {
             AdminTab::DisputesPending => AdminTab::DisputesPending,
             AdminTab::DisputesInProgress => AdminTab::DisputesPending,
             AdminTab::Observer => AdminTab::DisputesInProgress,
-            AdminTab::Settings => AdminTab::Observer,
+            AdminTab::MostroInfo => AdminTab::Observer,
+            AdminTab::Settings => AdminTab::MostroInfo,
             AdminTab::Exit => AdminTab::Settings,
         }
     }
@@ -162,7 +173,8 @@ impl AdminTab {
         match self {
             AdminTab::DisputesPending => AdminTab::DisputesInProgress,
             AdminTab::DisputesInProgress => AdminTab::Observer,
-            AdminTab::Observer => AdminTab::Settings,
+            AdminTab::Observer => AdminTab::MostroInfo,
+            AdminTab::MostroInfo => AdminTab::Settings,
             AdminTab::Settings => AdminTab::Exit,
             AdminTab::Exit => AdminTab::Exit,
         }

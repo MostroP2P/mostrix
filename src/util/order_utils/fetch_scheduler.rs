@@ -52,16 +52,13 @@ pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchS
         let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(10));
         loop {
             refresh_interval.tick().await;
-            // Reload currencies from settings dynamically on each fetch
+
+            // Reload currency filters from settings on each fetch.
+            // An empty list means "no filter" (show all currencies).
             let currencies = crate::settings::load_settings_from_disk()
                 .ok()
-                .and_then(|s| {
-                    if s.currencies.is_empty() {
-                        None
-                    } else {
-                        Some(s.currencies)
-                    }
-                });
+                .map(|s| s.currencies_filters)
+                .filter(|list| !list.is_empty());
 
             if let Ok(fetched_orders) = get_orders(
                 &client_for_orders,

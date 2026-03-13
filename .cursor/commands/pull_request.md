@@ -20,6 +20,7 @@ Create a well-structured pull request with proper description, labels, and revie
    - Add appropriate labels
    - Assign reviewers
    - Link related issues
+   - Do not push pr until i read the comment and reviewed it!
 
 ## PR Template
 - [ ] Feature A

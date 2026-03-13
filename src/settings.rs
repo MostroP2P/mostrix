@@ -12,7 +12,7 @@ pub struct Settings {
     pub admin_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
-    pub currencies: Vec<String>,
+    pub currencies_filters: Vec<String>,
     pub pow: u8,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
@@ -30,7 +30,7 @@ impl Default for Settings {
             admin_privkey: String::new(),
             relays: Vec::new(),
             log_level: "info".to_string(),
-            currencies: Vec::new(),
+            currencies_filters: Vec::new(),
             pow: 0,
             user_mode: "user".to_string(),
         }

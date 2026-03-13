@@ -5,7 +5,7 @@ admin_privkey=""
 # Relays to connect to
 relays = ["wss://relay.mostro.network"]
 log_level = "info"
-currencies = ["VES", "ARS", "USD"]
+currencies_filters = ["VES", "ARS", "USD"]
 nsec_privkey='nsec1_privkey_format'
 user_mode = "user"
 pow = 0
