@@ -1,6 +1,8 @@
+use crate::settings::load_settings_from_disk;
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use nostr_sdk::prelude::*;
+use std::str::FromStr;
 
 /// Nostr kind for Mostro instance status events.
 pub const MOSTRO_INSTANCE_INFO_KIND: u16 = 38385;
@@ -171,6 +173,18 @@ pub async fn fetch_mostro_instance_info(
 
     let info = mostro_info_from_tags(event.tags.clone())?;
     Ok(Some(info))
+}
+
+/// Convenience helper: load the latest settings from disk, parse the configured
+/// Mostro pubkey, and fetch instance info for that pubkey from the relays.
+pub async fn fetch_mostro_instance_info_from_settings(
+    client: &Client,
+) -> Result<Option<MostroInstanceInfo>> {
+    let settings =
+        load_settings_from_disk().map_err(|e| anyhow!("Failed to load settings: {}", e))?;
+    let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
+        .map_err(|e| anyhow!("Invalid Mostro pubkey in settings: {}", e))?;
+    fetch_mostro_instance_info(client, mostro_pubkey).await
 }
 
 #[cfg(test)]

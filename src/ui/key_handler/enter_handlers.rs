@@ -9,11 +9,14 @@ use crate::ui::{
     MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
+use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
 use crate::util::fetch_mostro_instance_info;
+use anyhow::anyhow;
 use mostro_core::prelude::*;
+use nostr_sdk::prelude::PublicKey;
 use nostr_sdk::Client;
 use std::str::FromStr;
 
@@ -315,6 +318,26 @@ fn handle_enter_settings_mode(
                 save_mostro_pubkey_to_settings,
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
+
+            // If the selected button is YES, immediately refresh Mostro instance info so
+            // the Mostro Info tab reflects the new pubkey without extra key presses.
+            if selected_button {
+                let client_clone = client.clone();
+                let refresh_result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        crate::util::fetch_mostro_instance_info_from_settings(&client_clone).await
+                    })
+                });
+
+                if let Ok(maybe_info) = refresh_result {
+                    app.mostro_info = maybe_info;
+                } else if let Err(e) = refresh_result {
+                    log::warn!(
+                        "Failed to refresh Mostro instance info after pubkey Enter: {}",
+                        e
+                    );
+                }
+            }
         }
         UiMode::AddRelay(key_state) => {
             // Validate relay URL format before proceeding to confirmation
@@ -408,12 +431,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         app.active_tab,
         Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
     ) {
-        // Use the runtime Mostro pubkey from ctx so refresh matches what the app is using.
+        // Reload settings so we always use the latest saved Mostro pubkey
+        // (the user may have just updated it in the Settings tab).
         let client = ctx.client.clone();
-        let mostro_pubkey = ctx.mostro_pubkey;
         let refresh_result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { fetch_mostro_instance_info(&client, mostro_pubkey).await })
+            tokio::runtime::Handle::current().block_on(async move {
+                let settings = load_settings_from_disk()
+                    .map_err(|e| anyhow!("Failed to load settings: {}", e))?;
+                let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
+                    .map_err(|e| anyhow!("Invalid Mostro pubkey in settings: {}", e))?;
+                fetch_mostro_instance_info(&client, mostro_pubkey).await
+            })
         });
 
         match refresh_result {
