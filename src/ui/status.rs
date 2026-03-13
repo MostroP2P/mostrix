@@ -1,7 +1,7 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -22,11 +22,8 @@ pub fn render_status_bar(
         .as_millis();
     let blink_on = (now / 500).is_multiple_of(2);
 
-    // Split area into lines
-    let constraints: Vec<Constraint> = (0..lines.len()).map(|_| Constraint::Length(1)).collect();
-    let chunks = Layout::new(Direction::Vertical, constraints).split(area);
-
-    // Render each line
+    // Build styled lines for the status bar
+    let mut styled_lines: Vec<Line> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         let mut spans = vec![Span::styled(
             line.to_string(),
@@ -47,11 +44,16 @@ pub fn render_status_bar(
             spans.push(Span::styled(indicator_text, indicator_style));
         }
 
-        let bar = Paragraph::new(Line::from(spans)).block(
+        styled_lines.push(Line::from(spans));
+    }
+
+    // Render all status lines as a single wrapping paragraph so long text can flow
+    let bar = Paragraph::new(styled_lines)
+        .wrap(Wrap { trim: true })
+        .block(
             Block::default()
                 .borders(Borders::NONE)
                 .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
         );
-        f.render_widget(bar, chunks[idx]);
-    }
+    f.render_widget(bar, area);
 }

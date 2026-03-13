@@ -18,20 +18,10 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(3), // header
-            Constraint::Min(0),    // details
+            Constraint::Min(0), // details
         ],
     )
     .split(inner);
-
-    let header_text = Paragraph::new(Line::from(vec![Span::styled(
-        "Mostro instance status (kind 38385)",
-        Style::default()
-            .fg(PRIMARY_COLOR)
-            .add_modifier(Modifier::BOLD),
-    )]))
-    .wrap(Wrap { trim: true });
-    f.render_widget(header_text, chunks[0]);
 
     match &app.mostro_info {
         None => {
@@ -47,7 +37,7 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
             f.render_widget(message, chunks[1]);
         }
         Some(info) => {
-            render_info_details(f, chunks[1], info);
+            render_info_details(f, chunks[0], info);
         }
     }
 }
