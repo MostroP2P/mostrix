@@ -29,7 +29,7 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
                 Span::raw("No Mostro instance info has been loaded yet."),
                 Span::raw(" "),
                 Span::styled(
-                    "This view shows the latest Mostro instance info fetched at startup; restart Mostrix to refresh or add a manual refresh keybinding in a future update.",
+                    "Press Enter in this tab to fetch the latest Mostro instance info from relays, or change the Mostro pubkey in Settings to auto-refresh.",
                     Style::default().add_modifier(Modifier::ITALIC),
                 ),
             ]))

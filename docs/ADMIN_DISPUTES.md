@@ -819,7 +819,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 **Status**: ✅ **Implemented (as a view filter)**
 
-Admins (and users) can configure **local currency filters** to focus on specific fiat currencies when viewing orders. The **set of available currencies** still comes from the Mostro **instance status** event’s `fiat_currencies_accepted` tag ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)), but the `currencies` field in `settings.toml` is used as a **filter** over those orders.
+Admins (and users) can configure **local currency filters** to focus on specific fiat currencies when viewing orders. The **set of available currencies** still comes from the Mostro **instance status** event’s `fiat_currencies_accepted` tag ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)), but the `currencies_filters` field in `settings.toml` (with the legacy key `currencies` still accepted for backwards compatibility) is used as a **filter** over those orders.
 
 #### Currency Filter Features
 
@@ -842,8 +842,8 @@ pub fn save_currency_to_settings(currency_string: &str) {
     save_settings_with(
         |s| {
             let currency_upper = currency_string.trim().to_uppercase();
-            if !s.currencies.contains(&currency_upper) {
-                s.currencies.push(currency_upper);
+            if !s.currencies_filters.contains(&currency_upper) {
+                s.currencies_filters.push(currency_upper);
             }
         },
         "Failed to save currency to settings",
@@ -855,7 +855,7 @@ pub fn save_currency_to_settings(currency_string: &str) {
 pub fn clear_currency_filters() {
     save_settings_with(
         |s| {
-            s.currencies.clear();
+            s.currencies_filters.clear();
         },
         "Failed to clear currency filters",
         "All currency filters cleared",
