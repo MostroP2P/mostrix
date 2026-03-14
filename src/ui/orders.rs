@@ -36,6 +36,16 @@ pub enum OperationResult {
     ObserverChatError(String),
 }
 
+/// Result of an async Mostro instance info fetch (sent from key handlers to main loop).
+#[derive(Clone, Debug)]
+pub enum MostroInfoFetchResult {
+    Ok {
+        info: Box<Option<crate::util::MostroInstanceInfo>>,
+        message: String,
+    },
+    Err(String),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
     pub kind: String,            // buy | sell

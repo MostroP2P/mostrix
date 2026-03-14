@@ -12,7 +12,7 @@ use crate::ui::helpers::{
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
-    OperationResult,
+    MostroInfoFetchResult, OperationResult,
 };
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
@@ -243,6 +243,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let (save_attachment_tx, mut save_attachment_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
 
+    // Channel to receive Mostro instance info fetch results (fetch runs in spawned tasks)
+    let (mostro_info_tx, mut mostro_info_rx) =
+        tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
+
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
         admin_keys
@@ -325,6 +329,24 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
+            mostro_info_result = mostro_info_rx.recv() => {
+                if let Some(res) = mostro_info_result {
+                    match res {
+                        MostroInfoFetchResult::Ok { info, message } => {
+                            app.mostro_info = *info;
+                            app.mode = crate::ui::UiMode::OperationResult(
+                                crate::ui::OperationResult::Info(message),
+                            );
+                        }
+                        MostroInfoFetchResult::Err(e) => {
+                            app.mostro_info = None;
+                            app.mode = crate::ui::UiMode::OperationResult(
+                                crate::ui::OperationResult::Error(e),
+                            );
+                        }
+                    }
+                }
+            }
             maybe_event = events.next() => {
                 // Handle errors in event stream
                 let event = match maybe_event {
@@ -388,6 +410,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &client,
                         mostro_pubkey,
                         &order_result_tx,
+                        &mostro_info_tx,
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),

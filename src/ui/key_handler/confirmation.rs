@@ -147,8 +147,8 @@ pub fn handle_confirm_key(
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
 
-            // Immediately refresh Mostro instance info using the new pubkey we just confirmed
-            // (no disk round-trip).
+            // Spawn task to refresh Mostro instance info using the new pubkey (no disk round-trip);
+            // UI stays responsive.
             let new_pubkey = match PublicKey::from_str(&key_string) {
                 Ok(pk) => pk,
                 Err(e) => {
@@ -158,26 +158,27 @@ pub fn handle_confirm_key(
                 }
             };
             let client = ctx.client.clone();
-            let refresh_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async move { fetch_mostro_instance_info(&client, new_pubkey).await })
+            let tx = ctx.mostro_info_tx.clone();
+            tokio::spawn(async move {
+                let result = fetch_mostro_instance_info(&client, new_pubkey).await;
+                let res = match result {
+                    Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
+                        info: Box::new(info),
+                        message: "Mostro instance info updated.".to_string(),
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to refresh Mostro instance info after pubkey change: {}",
+                            e
+                        );
+                        crate::ui::MostroInfoFetchResult::Err(e.to_string())
+                    }
+                };
+                let _ = tx.send(res);
             });
-
-            match refresh_result {
-                Ok(Some(info)) => {
-                    app.mostro_info = Some(info);
-                }
-                Ok(None) => {
-                    app.mostro_info = None;
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to refresh Mostro instance info after pubkey change: {}",
-                        e
-                    );
-                    app.mostro_info = None;
-                }
-            }
+            app.mode = crate::ui::UiMode::OperationResult(crate::ui::OperationResult::Info(
+                "Fetching Mostro instance info...".to_string(),
+            ));
             true
         }
         UiMode::ConfirmRelay(relay_string, _) => {

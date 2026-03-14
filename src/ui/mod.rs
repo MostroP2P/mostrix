@@ -36,7 +36,7 @@ pub use state::{
     apply_kind_color, order_message_to_notification, AdminChatLastSeen, AdminChatUpdate, AdminTab,
     AppState, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender, DisputeChatMessage,
     DisputeFilter, FormState, InvoiceInputState, KeyInputState, MessageNotification,
-    MessageViewState, OperationResult, OrderMessage, Tab, TakeOrderState, UiMode, UserRole,
-    UserTab,
+    MessageViewState, MostroInfoFetchResult, OperationResult, OrderMessage, Tab, TakeOrderState,
+    UiMode, UserRole, UserTab,
 };
 pub use user_state::UserMode;
