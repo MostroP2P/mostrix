@@ -40,9 +40,25 @@ pub const HELP_DP_SELECT_DISPUTE: &str = "↑↓: Select dispute";
 
 // Help popup lines (Observer)
 pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Load chat for shared key";
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
 pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+Shift+V: Paste shared key";
 #[cfg(target_os = "windows")]
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste shared key";
+#[cfg(target_os = "macos")]
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste shared key";
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "windows",
+    target_os = "macos"
+)))]
 pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste shared key";
 pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
 pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
