@@ -33,3 +33,25 @@ reqwest = { version = "0.13.2", default-features = false, features = ["native-tl
 chacha20poly1305 = "0.10"
 tui-scrollview = "0.6"
 zeroize = "1.8"
+
+[package.metadata.release]
+# (Default: true) Set to false to prevent automatically running `cargo publish`.
+publish = false
+# (Default: true) Set to false to prevent automatically pushing commits and tags to the Git remote.
+push = true
+# (Default: true) Run `cargo test` before release? Highly recommended.
+verify = true
+# (Default: true) Create a Git tag for the release (e.g., v0.2.1)? You usually want this.
+tag = true
+# (Default: false) Sign the release commit with GPG?
+sign-commit = true
+# (Default: false) Sign the release tag with GPG?
+sign-tag = true
+# Use 'allow-branch' if you release from other branches. Check defaults if needed.
+allow-branch = ["main"]
+# Generate CHANGELOG.md before creating the release tag (only during actual release, not dry-run)
+pre-release-hook = [
+  "sh",
+  "-c",
+  "cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings && if [ -n \"${GITHUB_TOKEN:-}\" ]; then GITHUB_TOKEN=\"$GITHUB_TOKEN\" git cliff --unreleased --github-repo MostroP2P/mostrix -o CHANGELOG.md --tag {{version}}; else git cliff --unreleased -o CHANGELOG.md --tag {{version}}; fi && if [ \"$DRY_RUN\" != \"true\" ]; then git diff --quiet CHANGELOG.md || (git add CHANGELOG.md && git commit -m \"Update CHANGELOG for version {{version}}\"); else echo \"DRY RUN: Skip git add and commit\"; fi",
+]
