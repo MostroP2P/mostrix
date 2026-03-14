@@ -1,40 +1,53 @@
 # Cross-compilation configuration for mostrix
 # https://github.com/cross-rs/cross/wiki/Configuration
+#
+# Cross 0.2.5+ requires embedded Dockerfiles instead of pre-build arrays.
+# Each target extends the base cross image with OpenSSL dev packages.
 
 # x86_64 Linux (musl)
 [target.x86_64-unknown-linux-musl]
-pre-build = [
-    "dpkg --add-architecture amd64",
-    "apt-get update",
-    "apt-get install -y libssl-dev:amd64 pkg-config"
-]
+dockerfile = """
+FROM $CROSS_BASE_IMAGE
+RUN dpkg --add-architecture amd64 && \\
+    apt-get update && \\
+    apt-get install -y libssl-dev:amd64 pkg-config && \\
+    rm -rf /var/lib/apt/lists/*
+"""
 
 # ARM64 Linux (musl)
 [target.aarch64-unknown-linux-musl]
-pre-build = [
-    "dpkg --add-architecture arm64",
-    "apt-get update",
-    "apt-get install -y libssl-dev:arm64 pkg-config"
-]
+dockerfile = """
+FROM $CROSS_BASE_IMAGE
+RUN dpkg --add-architecture arm64 && \\
+    apt-get update && \\
+    apt-get install -y libssl-dev:arm64 pkg-config && \\
+    rm -rf /var/lib/apt/lists/*
+"""
 
-# ARMv7 Linux (gnueabi)
+# ARMv7 Linux (gnueabi) - uses armhf (hard-float ABI)
 [target.armv7-unknown-linux-gnueabi]
-pre-build = [
-    "dpkg --add-architecture armhf",
-    "apt-get update",
-    "apt-get install -y libssl-dev:armhf pkg-config"
-]
+dockerfile = """
+FROM $CROSS_BASE_IMAGE
+RUN dpkg --add-architecture armhf && \\
+    apt-get update && \\
+    apt-get install -y libssl-dev:armhf pkg-config && \\
+    rm -rf /var/lib/apt/lists/*
+"""
 
-# x86_64 Windows (mingw)
+# x86_64 Windows (mingw) - no multi-arch, install native packages
 [target.x86_64-pc-windows-gnu]
-pre-build = [
-    "apt-get update",
-    "apt-get install -y pkg-config libssl-dev"
-]
+dockerfile = """
+FROM $CROSS_BASE_IMAGE
+RUN apt-get update && \\
+    apt-get install -y pkg-config libssl-dev && \\
+    rm -rf /var/lib/apt/lists/*
+"""
 
-# x86_64 FreeBSD
+# x86_64 FreeBSD - no multi-arch, install native packages
 [target.x86_64-unknown-freebsd]
-pre-build = [
-    "apt-get update",
-    "apt-get install -y pkg-config libssl-dev"
-]
+dockerfile = """
+FROM $CROSS_BASE_IMAGE
+RUN apt-get update && \\
+    apt-get install -y pkg-config libssl-dev && \\
+    rm -rf /var/lib/apt/lists/*
+"""
