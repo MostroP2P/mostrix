@@ -9,13 +9,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Generate changelog (runs once)
+  # Read changelog (generated locally by cargo-release pre-hook)
   changelog:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
-      content: ${{ steps.changelog.outputs.content }}
+      content: ${{ steps.read-changelog.outputs.content }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,20 +23,17 @@ jobs:
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ensure all tags are present
-        run: git fetch --tags --force --prune
-
-      - name: Generate changelog
-        uses: orhun/git-cliff-action@v4
-        id: changelog
-        with:
-          config: cliff.toml
-          # Use the latest tag vs previous tag automatically
-          args: --latest --strip header --output CHANGELOG.md
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REF: ${{ github.ref }}
+      - name: Read changelog from committed file
+        id: read-changelog
+        run: |
+          if [ ! -f CHANGELOG.md ]; then
+            echo "Warning: CHANGELOG.md not found, using empty changelog"
+            echo "content=" >> $GITHUB_OUTPUT
+          else
+            echo "content<<EOF" >> $GITHUB_OUTPUT
+            cat CHANGELOG.md >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
 
   # Test the code
   test:
