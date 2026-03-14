@@ -7,9 +7,14 @@ pub mod util;
 use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
+    apply_admin_chat_updates, apply_user_chat_updates, expire_attachment_toast,
+    recover_admin_chat_from_files,
 };
 use crate::ui::key_handler::handle_key_event;
+use crate::ui::chat_bootstrap::{
+    apply_user_trade_orders_state, load_user_trade_orders, seed_admin_chat_last_seen,
+    seed_user_trade_chat_state,
+};
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
     MostroInfoFetchResult, OperationResult,
@@ -17,7 +22,9 @@ use crate::ui::{
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
     listen_for_order_messages,
-    order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
+    order_utils::{
+        spawn_admin_chat_fetch, spawn_user_chat_fetch, start_fetch_scheduler, FetchSchedulerResult,
+    },
     spawn_save_attachment,
 };
 use crossterm::event::EventStream;
@@ -72,31 +79,6 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
-}
-
-/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
-/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
-fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
-    let disputes = app.admin_disputes_in_progress.clone();
-
-    for dispute in &disputes {
-        if dispute.buyer_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Buyer),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.buyer_chat_last_seen,
-                },
-            );
-        }
-        if dispute.seller_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Seller),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.seller_chat_last_seen,
-                },
-            );
-        }
-    }
 }
 
 /// Validates the range amount input against min/max limits
@@ -190,6 +172,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
     let mut admin_chat_interval = interval(Duration::from_secs(2));
+    let mut user_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
     // Seed currencies filter cache from settings so UI-side filtering does not
@@ -235,6 +218,11 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     }
 
+    // Load user trade orders and recover transcript files when in user mode.
+    if app.user_role == UserRole::User {
+        seed_user_trade_chat_state(&mut app, &pool).await;
+    }
+
     // Channel to receive order results from async tasks
     let (order_result_tx, mut order_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<OperationResult>();
@@ -246,6 +234,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // Channel to receive admin chat fetch results (fetch runs in spawned task)
     let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
         tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+    // Channel to receive user chat fetch results (fetch runs in spawned task)
+    let (user_chat_updates_tx, mut user_chat_updates_rx) = tokio::sync::mpsc::unbounded_channel::<
+        Result<Vec<crate::ui::UserChatUpdate>, anyhow::Error>,
+    >();
 
     // Channel to trigger save of selected attachment (Ctrl+S in dispute chat)
     let (save_attachment_tx, mut save_attachment_rx) =
@@ -273,6 +265,7 @@ async fn main() -> Result<(), anyhow::Error> {
         listen_for_order_messages(
             client_for_messages,
             pool_for_messages,
+            mostro_pubkey,
             active_order_trade_indices_clone,
             messages_clone,
             message_notification_tx_clone,
@@ -351,6 +344,20 @@ async fn main() -> Result<(), anyhow::Error> {
                             app.mode = crate::ui::UiMode::OperationResult(
                                 crate::ui::OperationResult::Error(e),
                             );
+                        }
+                    }
+                }
+            }
+            user_chat_result = user_chat_updates_rx.recv() => {
+                if let Some(result) = user_chat_result {
+                    match result {
+                        Ok(updates) => {
+                            if let Err(e) = apply_user_chat_updates(&mut app, updates, &pool).await {
+                                log::warn!("Failed to apply user chat updates: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to fetch user chat updates: {}", e);
                         }
                     }
                 }
@@ -452,6 +459,25 @@ async fn main() -> Result<(), anyhow::Error> {
                         app.admin_chat_last_seen.clone(),
                         admin_chat_updates_tx.clone(),
                     );
+                }
+            }
+            _ = user_chat_interval.tick(), if app.user_role == UserRole::User => {
+                match load_user_trade_orders(&pool).await {
+                    Ok(orders) => {
+                        apply_user_trade_orders_state(&mut app, &orders, false);
+                        if app.selected_my_trade_idx >= app.my_trade_orders.len() {
+                            app.selected_my_trade_idx = app.my_trade_orders.len().saturating_sub(1);
+                        }
+                        spawn_user_chat_fetch(
+                            client.clone(),
+                            orders,
+                            app.user_chat_last_seen.clone(),
+                            user_chat_updates_tx.clone(),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to refresh user trade orders: {}", e);
+                    }
                 }
             }
         }

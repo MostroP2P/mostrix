@@ -74,7 +74,7 @@ Mostrix supports two distinct roles, each with its own set of tabs and workflows
 Focused on trading and order management.
 
 - **Orders**: View the global order book.
-- **My Trades**: Manage active trades.
+- **My Trades**: Manage active trades and user-to-user shared-key chat.
 - **Messages**: Direct messages for trade coordination.
 - **Settings**: Local configuration.
 - **Create New Order**: Form for publishing new orders.
@@ -202,6 +202,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` notification uses the `arboard` crate to copy the invoice. On Linux, it uses the `SetExtLinux::wait()` method to properly wait until the clipboard is overwritten, ensuring reliable clipboard handling without arbitrary delays.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
+- **MyTrades chat input**: `handle_user_chat_input` handles direct user chat typing in `UserTab::MyTrades` while `UserMode::ManagingTradeChat` is active.
 
 ## UI Components
 
@@ -250,6 +251,8 @@ pub enum ChatSender {
     Admin,
     Buyer,
     Seller,
+    User,
+    Counterparty,
 }
 
 pub struct DisputeChatMessage {
@@ -260,7 +263,7 @@ pub struct DisputeChatMessage {
 }
 
 pub struct AdminChatLastSeen {
-    pub last_seen_timestamp: Option<u64>, // Last seen message timestamp for incremental fetches
+    pub last_seen_timestamp: Option<i64>, // Last seen message timestamp for incremental fetches
 }
 ```
 
@@ -268,6 +271,8 @@ pub struct AdminChatLastSeen {
 
 - `AppState.admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by dispute ID.
 - `AppState.admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>` keyed by (dispute_id, party).
+- `AppState.user_trade_chats: HashMap<String, Vec<DisputeChatMessage>>` keyed by order ID (`MyTrades`).
+- `AppState.user_chat_last_seen: HashMap<String, UserChatLastSeen>` keyed by order ID.
 
 #### UI Features
 
@@ -337,6 +342,21 @@ The key handler processes input in this order:
     - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id` so that:
       - Background NIP‑59 fetches only request **newer** events (7-day rolling window).
       - Chat resumes from where it left off without replaying the full history.
+
+#### User MyTrades Chat (P2P Shared Key)
+
+- `UserTab::MyTrades` mirrors the dispute-chat UX:
+  - Left sidebar: active local orders.
+  - Right panel: order/counterparty header + large chatbox + message input.
+- Shared key model:
+  - Uses `orders.shared_key_hex` (`ECDH(trade_sk, counterparty_pubkey)`).
+  - Uses `orders.chat_last_seen` as incremental fetch cursor.
+- Fetch/apply lifecycle:
+  - Background polling calls `spawn_user_chat_fetch` + `fetch_user_chat_updates`.
+  - Incoming updates are applied via `apply_user_chat_updates`.
+- Recovery:
+  - Per-order transcripts are persisted in `~/.mostrix/<order_id>.txt`.
+  - Startup restore is done through `recover_user_chat_from_files`.
 
 #### Exit Confirmation
 

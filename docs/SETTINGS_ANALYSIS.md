@@ -208,7 +208,7 @@ pub fn render_settings_tab(...) { ... }
 
 **Status**: **COMPLIANT**
 
-- **Arc<Mutex<T>>**: Used appropriately for shared mutable state
+- **`Arc<Mutex<T>>`**: Used appropriately for shared mutable state
 - **Settings loading**: Uses `load_settings_from_disk()` to ensure latest state
 - **Single source of truth**: `AppState` remains the main UI state
 
@@ -242,12 +242,12 @@ pub fn render_settings_tab(...) { ... }
 
 ### Medium Priority - ✅ COMPLETED
 
-2. **Enhanced documentation** ✅
+1. **Enhanced documentation** ✅
    - Added doc comments to all new public functions
    - Documented `render_settings_tab` with responsive layout behavior
    - Documented extracted handler functions
 
-3. **UI/UX Improvements** ✅
+2. **UI/UX Improvements** ✅
    - Settings tab moved to last position in user mode
    - Single arrow key navigation from order form to Settings
    - Responsive layout for narrow terminals

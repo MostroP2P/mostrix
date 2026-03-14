@@ -53,13 +53,15 @@ For existing databases, Mostrix automatically runs migrations to add new columns
 - **Safe**: Migrations check for column existence before attempting to add them.
 - **Error-aware**: Non-column-related errors (connection issues, table missing, etc.) are properly propagated rather than triggering incorrect migrations.
 
-Recent migrations for the `admin_disputes` table add the following fields:
+Recent migrations add fields for both admin and user chat persistence:
 
 - **`initiator_info` / `counterpart_info`**: JSON-encoded user info for each party.
 - **`fiat_code`**: Fiat currency code for the disputed order.
 - **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
 - **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental NIP‑59 fetches and chat restore at startup.
 - **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded per‑dispute shared keys derived between the admin key and each party’s trade pubkey, used as the identity for the shared‑keys admin chat system.
+- **`orders.shared_key_hex`**: Hex‑encoded buyer/seller shared key derived from `ECDH(trade_sk, counterparty_pubkey)` for `MyTrades` P2P chat.
+- **`orders.chat_last_seen`**: Per-order last processed timestamp used for incremental user chat fetch.
 
 **Source**: `src/db.rs:113`
 
@@ -68,17 +70,19 @@ Recent migrations for the `admin_disputes` table add the following fields:
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
     // Check if columns exist by attempting to query them and checking for specific SQLite errors
-    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+    async fn check_column_exists(
+        pool: &SqlitePool,
+        table_name: &str,
+        column_name: &str,
+    ) -> Result<bool> {
         // ...
     }
 
     // Check if columns exist
-    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
-    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
-    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
-    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
-    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
-    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
+    let has_initiator_info = check_column_exists(pool, "admin_disputes", "initiator_info").await?;
+    // ... additional admin_disputes checks ...
+    let has_order_shared_key_hex = check_column_exists(pool, "orders", "shared_key_hex").await?;
+    let has_order_chat_last_seen = check_column_exists(pool, "orders", "chat_last_seen").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -185,6 +189,8 @@ CREATE TABLE IF NOT EXISTS orders (
     premium INTEGER NOT NULL,
     trade_keys TEXT,
     counterparty_pubkey TEXT,
+    shared_key_hex TEXT,
+    chat_last_seen INTEGER,
     is_mine INTEGER NOT NULL,
     buyer_invoice TEXT,
     request_id INTEGER,
@@ -211,6 +217,8 @@ CREATE TABLE IF NOT EXISTS orders (
 | `premium` | `INTEGER` | Premium amount in satoshis. |
 | `trade_keys` | `TEXT` | **Critical**: The trade keys (secret key in hex) for this order. Used to decrypt messages and sign actions for this specific trade. |
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
+| `shared_key_hex` | `TEXT` | Hex‑encoded ECDH shared key for buyer/seller P2P chat in `MyTrades`. |
+| `chat_last_seen` | `INTEGER` | Last processed timestamp for this order’s user chat (incremental fetch cursor). |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Indicates if this order was created by the local user. |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
@@ -400,6 +408,17 @@ Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on
     - Re-derives trade keys for each order.
     - Queries Nostr relays for recent messages.
     - Reconstructs the current state from the latest messages.
+
+- **User Chat (`MyTrades`)**:
+  - Per-order P2P chat transcripts are also stored as text files:
+
+    ```text
+    ~/.mostrix/<order_id>.txt
+    ```
+
+  - `recover_user_chat_from_files` rebuilds in-memory user chat on startup.
+  - Incremental cursors are persisted in `orders.chat_last_seen`.
+  - Shared-key identity for fetch/send is persisted in `orders.shared_key_hex`.
 
 - **Admin Chat (Disputes in Progress)**:
   - Per‑dispute chat transcripts are stored as human‑readable text files:

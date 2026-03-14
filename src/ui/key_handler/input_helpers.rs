@@ -94,6 +94,28 @@ pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> S
     dispute_id_key
 }
 
+/// Prepare user chat message for optimistic local render in `MyTrades`.
+pub fn prepare_user_chat_message(order_id_key: &str, app: &mut AppState) -> String {
+    let order_id_key = order_id_key.to_string();
+    let message_content = app.user_chat_input.trim().to_string();
+    let timestamp = chrono::Utc::now().timestamp();
+
+    let msg = DisputeChatMessage {
+        sender: ChatSender::User,
+        content: message_content,
+        timestamp,
+        target_party: None,
+        attachment: None,
+    };
+
+    app.user_trade_chats
+        .entry(order_id_key.clone())
+        .or_default()
+        .push(msg.clone());
+    save_chat_message(&order_id_key, &msg);
+    order_id_key
+}
+
 /// Send an admin chat message using the per-dispute shared key.
 ///
 /// Looks up the stored `shared_key_hex` for the given party, rebuilds the
@@ -141,6 +163,53 @@ pub fn send_admin_chat_message_via_shared_key(
         .await
         {
             log::error!("Failed to send admin chat message: {}", e);
+        }
+    });
+}
+
+/// Send a user chat message using the per-order shared key.
+pub fn send_user_chat_message_via_shared_key(
+    order_id_key: &str,
+    shared_key_hex: Option<&str>,
+    message_content: &str,
+    client: &Client,
+    sender_trade_keys: Option<&Keys>,
+) {
+    let Some(user_trade_keys) = sender_trade_keys else {
+        log::warn!(
+            "User trade keys not available; cannot send message for order {}",
+            order_id_key
+        );
+        return;
+    };
+
+    let Some(hex) = shared_key_hex else {
+        log::warn!(
+            "Missing shared key for order {} when sending chat message",
+            order_id_key
+        );
+        return;
+    };
+
+    let Some(shared_keys) = crate::util::chat_utils::keys_from_shared_hex(hex) else {
+        log::warn!("Invalid shared key hex for order {}", order_id_key);
+        return;
+    };
+
+    let client = client.clone();
+    let user_trade_keys = user_trade_keys.clone();
+    let message_content = message_content.trim().to_string();
+
+    tokio::spawn(async move {
+        if let Err(e) = crate::util::chat_utils::send_chat_message_via_shared_key(
+            &client,
+            &user_trade_keys,
+            &shared_keys,
+            &message_content,
+        )
+        .await
+        {
+            log::error!("Failed to send user chat message: {}", e);
         }
     });
 }

@@ -30,6 +30,8 @@ pub enum ChatSender {
     Admin,
     Buyer,
     Seller,
+    User,
+    Counterparty,
 }
 
 /// Type of file attachment (Mostro Mobile image_encrypted / file_encrypted).
@@ -75,6 +77,21 @@ pub struct AdminChatLastSeen {
 pub struct AdminChatUpdate {
     pub dispute_id: String,
     pub party: ChatParty,
+    /// (content, timestamp, sender_pubkey)
+    pub messages: Vec<(String, i64, PublicKey)>,
+}
+
+/// Per-order last-seen timestamp for user P2P chat.
+#[derive(Clone, Debug)]
+pub struct UserChatLastSeen {
+    /// Last seen timestamp (inner/canonical unix seconds) for messages in this order chat.
+    pub last_seen_timestamp: Option<i64>,
+}
+
+/// Result of polling for user P2P chat messages for a single order.
+#[derive(Clone, Debug)]
+pub struct UserChatUpdate {
+    pub order_id: String,
     /// (content, timestamp, sender_pubkey)
     pub messages: Vec<(String, i64, PublicKey)>,
 }

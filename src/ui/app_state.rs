@@ -3,11 +3,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mostro_core::prelude::Action;
+use nostr_sdk::prelude::PublicKey;
 use zeroize::Zeroize;
 
-use crate::models::AdminDispute;
+use crate::models::{AdminDispute, Order};
 use crate::ui::admin_state::AdminMode;
-use crate::ui::chat::{AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeFilter};
+use crate::ui::chat::{
+    AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeFilter, UserChatLastSeen,
+};
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
     InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
@@ -63,6 +66,17 @@ pub struct AppState {
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     /// Cached last-seen timestamps per (dispute_id, party) for admin chat.
     pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
+    pub selected_my_trade_idx: usize, // Selected order in My Trades sidebar
+    pub my_trade_orders: Vec<Order>,  // Cached user trade orders for My Trades tab
+    pub user_chat_input: String,      // Current message being typed by user
+    pub user_chat_input_enabled: bool, // Whether user chat input is enabled (toggle with Shift+I)
+    pub user_trade_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per order ID
+    pub user_chat_scrollview_state: tui_scrollview::ScrollViewState,
+    pub user_chat_selected_message_idx: Option<usize>,
+    pub user_chat_line_starts: Vec<usize>,
+    pub user_chat_scroll_tracker: Option<(String, usize)>, // (order_id, visible_count)
+    pub user_chat_last_seen: HashMap<String, UserChatLastSeen>,
+    pub user_trade_keys_by_order: HashMap<String, PublicKey>, // order_id -> our trade pubkey
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -109,6 +123,17 @@ impl AppState {
             admin_chat_line_starts: Vec::new(),
             admin_chat_scroll_tracker: None,
             admin_chat_last_seen: HashMap::new(),
+            selected_my_trade_idx: 0,
+            my_trade_orders: Vec::new(),
+            user_chat_input: String::new(),
+            user_chat_input_enabled: true,
+            user_trade_chats: HashMap::new(),
+            user_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
+            user_chat_selected_message_idx: None,
+            user_chat_line_starts: Vec::new(),
+            user_chat_scroll_tracker: None,
+            user_chat_last_seen: HashMap::new(),
+            user_trade_keys_by_order: HashMap::new(),
             selected_settings_option: 0,
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),

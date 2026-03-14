@@ -8,6 +8,7 @@ pub mod admin_state;
 pub(crate) mod app_state;
 pub(crate) mod chat;
 pub mod constants;
+pub mod chat_bootstrap;
 pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;
 pub mod draw;
@@ -37,6 +38,6 @@ pub use state::{
     AppState, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender, DisputeChatMessage,
     DisputeFilter, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, MostroInfoFetchResult, OperationResult, OrderMessage, Tab, TakeOrderState,
-    UiMode, UserRole, UserTab,
+    UiMode, UserChatLastSeen, UserChatUpdate, UserRole, UserTab,
 };
 pub use user_state::UserMode;

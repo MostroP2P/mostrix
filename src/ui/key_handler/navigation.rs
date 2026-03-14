@@ -35,6 +35,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
+        | UiMode::UserMode(UserMode::ManagingTradeChat)
         | UiMode::AdminMode(AdminMode::Normal)
         | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             let prev_tab = app.active_tab;
@@ -84,6 +85,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
+        | UiMode::UserMode(UserMode::ManagingTradeChat)
         | UiMode::AdminMode(AdminMode::Normal)
         | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             let prev_tab = app.active_tab;
@@ -140,6 +142,7 @@ fn handle_up_key(
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
+        | UiMode::UserMode(UserMode::ManagingTradeChat)
         | UiMode::AdminMode(AdminMode::Normal)
         | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             if let Tab::User(UserTab::Orders) = app.active_tab {
@@ -187,6 +190,10 @@ fn handle_up_key(
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;
                     }
+                }
+            } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
+                if !app.my_trade_orders.is_empty() && app.selected_my_trade_idx > 0 {
+                    app.selected_my_trade_idx -= 1;
                 }
             } else if matches!(
                 app.active_tab,
@@ -246,6 +253,7 @@ fn handle_down_key(
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
+        | UiMode::UserMode(UserMode::ManagingTradeChat)
         | UiMode::AdminMode(AdminMode::Normal) => {
             if let Tab::User(UserTab::Orders) = app.active_tab {
                 let orders_len = orders.lock().unwrap().len();
@@ -295,6 +303,12 @@ fn handle_down_key(
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;
                     }
+                }
+            } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
+                if !app.my_trade_orders.is_empty()
+                    && app.selected_my_trade_idx < app.my_trade_orders.len().saturating_sub(1)
+                {
+                    app.selected_my_trade_idx += 1;
                 }
             } else if matches!(
                 app.active_tab,
@@ -391,6 +405,17 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
         if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
             app.mode = UiMode::AdminMode(AdminMode::Normal);
         }
+    }
+
+    // Set mode to ManagingTradeChat when switching to MyTrades
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        if !matches!(prev_tab, Tab::User(UserTab::MyTrades)) {
+            app.mode = UiMode::UserMode(UserMode::ManagingTradeChat);
+        }
+    } else if matches!(prev_tab, Tab::User(UserTab::MyTrades))
+        && matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+    {
+        app.mode = UiMode::UserMode(UserMode::Normal);
     }
 
     // Clear transient observer state when leaving Observer tab

@@ -110,6 +110,8 @@ pub struct Order {
     pub premium: i64,
     pub trade_keys: Option<String>,
     pub counterparty_pubkey: Option<String>,
+    pub shared_key_hex: Option<String>,
+    pub chat_last_seen: Option<i64>,
     pub is_mine: Option<bool>,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
@@ -144,6 +146,8 @@ impl Order {
             premium: order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
+            shared_key_hex: None,
+            chat_last_seen: None,
             is_mine: Some(true),
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
@@ -179,8 +183,9 @@ impl Order {
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
             fiat_code, fiat_amount, payment_method, premium, is_mine,
-            trade_keys, counterparty_pubkey, buyer_invoice, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            trade_keys, counterparty_pubkey, shared_key_hex, chat_last_seen,
+            buyer_invoice, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -196,6 +201,8 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.shared_key_hex)
+        .bind(self.chat_last_seen)
         .bind(&self.buyer_invoice)
         .bind(self.created_at)
         .bind(self.expires_at)
@@ -210,7 +217,8 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, buyer_invoice = ?,
+                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, shared_key_hex = ?,
+                chat_last_seen = ?, buyer_invoice = ?,
                 created_at = ?, expires_at = ?
             WHERE id = ?
             "#,
@@ -227,6 +235,8 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.shared_key_hex)
+        .bind(self.chat_last_seen)
         .bind(&self.buyer_invoice)
         .bind(self.created_at)
         .bind(self.expires_at)
@@ -252,6 +262,59 @@ impl Order {
         }
 
         Ok(order)
+    }
+
+    /// Returns user-owned orders that have a valid order id and trade keys.
+    ///
+    /// This list backs the `MyTrades` chat sidebar.
+    pub async fn get_user_trade_orders(pool: &SqlitePool) -> Result<Vec<Order>> {
+        let orders = sqlx::query_as::<_, Order>(
+            r#"
+            SELECT * FROM orders
+            WHERE is_mine = 1
+              AND id IS NOT NULL
+              AND trade_keys IS NOT NULL
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(orders)
+    }
+
+    /// Update counterparty pubkey for an order. When both trade keys and counterparty
+    /// pubkey are available, also derives and stores shared key hex.
+    pub async fn update_counterparty_pubkey(
+        pool: &SqlitePool,
+        order_id: &str,
+        counterparty_pubkey: &str,
+    ) -> Result<()> {
+        let mut order = Self::get_by_id(pool, order_id).await?;
+        order.counterparty_pubkey = Some(counterparty_pubkey.to_string());
+
+        order.shared_key_hex = order
+            .trade_keys
+            .as_deref()
+            .and_then(|trade_hex| Keys::parse(trade_hex).ok())
+            .and_then(|trade_keys| {
+                crate::util::chat_utils::derive_shared_key_hex(
+                    Some(&trade_keys),
+                    order.counterparty_pubkey.as_deref(),
+                )
+            });
+
+        order.update_db(pool).await?;
+        Ok(())
+    }
+
+    /// Persist per-order last-seen timestamp for user chat incremental fetching.
+    pub async fn update_chat_last_seen(pool: &SqlitePool, order_id: &str, ts: i64) -> Result<u64> {
+        let result = sqlx::query("UPDATE orders SET chat_last_seen = ? WHERE id = ?")
+            .bind(ts)
+            .bind(order_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 }
 

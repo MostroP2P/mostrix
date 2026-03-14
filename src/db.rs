@@ -46,6 +46,8 @@ pub async fn init_db() -> Result<SqlitePool> {
                 premium INTEGER NOT NULL,
                 trade_keys TEXT,
                 counterparty_pubkey TEXT,
+                shared_key_hex TEXT,
+                chat_last_seen INTEGER,
                 is_mine INTEGER NOT NULL,
                 buyer_invoice TEXT,
                 request_id INTEGER,
@@ -116,10 +118,14 @@ pub async fn init_db() -> Result<SqlitePool> {
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
     // Check if columns exist by attempting to query them and checking for specific SQLite errors
-    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+    async fn check_column_exists(
+        pool: &SqlitePool,
+        table_name: &str,
+        column_name: &str,
+    ) -> Result<bool> {
         let result = sqlx::query(&format!(
-            "SELECT {} FROM admin_disputes LIMIT 1",
-            column_name
+            "SELECT {} FROM {} LIMIT 1",
+            column_name, table_name
         ))
         .fetch_optional(pool)
         .await;
@@ -142,14 +148,21 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     }
 
     // Check if columns exist
-    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
-    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
-    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
-    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
-    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
-    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
-    let has_buyer_shared_key_hex = check_column_exists(pool, "buyer_shared_key_hex").await?;
-    let has_seller_shared_key_hex = check_column_exists(pool, "seller_shared_key_hex").await?;
+    let has_initiator_info = check_column_exists(pool, "admin_disputes", "initiator_info").await?;
+    let has_counterpart_info =
+        check_column_exists(pool, "admin_disputes", "counterpart_info").await?;
+    let has_fiat_code = check_column_exists(pool, "admin_disputes", "fiat_code").await?;
+    let has_dispute_id = check_column_exists(pool, "admin_disputes", "dispute_id").await?;
+    let has_buyer_chat_last_seen =
+        check_column_exists(pool, "admin_disputes", "buyer_chat_last_seen").await?;
+    let has_seller_chat_last_seen =
+        check_column_exists(pool, "admin_disputes", "seller_chat_last_seen").await?;
+    let has_buyer_shared_key_hex =
+        check_column_exists(pool, "admin_disputes", "buyer_shared_key_hex").await?;
+    let has_seller_shared_key_hex =
+        check_column_exists(pool, "admin_disputes", "seller_shared_key_hex").await?;
+    let has_order_shared_key_hex = check_column_exists(pool, "orders", "shared_key_hex").await?;
+    let has_order_chat_last_seen = check_column_exists(pool, "orders", "chat_last_seen").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -160,6 +173,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_seller_chat_last_seen
         || !has_buyer_shared_key_hex
         || !has_seller_shared_key_hex
+        || !has_order_shared_key_hex
+        || !has_order_chat_last_seen
     {
         log::info!("Running migration: Adding missing columns to admin_disputes table");
 
@@ -250,6 +265,26 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             sqlx::query(
                 r#"
                 ALTER TABLE admin_disputes ADD COLUMN seller_shared_key_hex TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_order_shared_key_hex {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN shared_key_hex TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_order_chat_last_seen {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN chat_last_seen INTEGER;
                 "#,
             )
             .execute(&mut *tx)

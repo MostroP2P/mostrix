@@ -22,6 +22,8 @@ pub async fn create_test_db() -> Result<SqlitePool> {
             premium INTEGER NOT NULL,
             trade_keys TEXT,
             counterparty_pubkey TEXT,
+            shared_key_hex TEXT,
+            chat_last_seen INTEGER,
             is_mine INTEGER NOT NULL,
             buyer_invoice TEXT,
             request_id INTEGER,

@@ -11,11 +11,12 @@ pub use order_ch_mng::handle_order_result;
 use anyhow::Result;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
+use nostr_sdk::serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crate::models::User;
+use crate::models::{Order, User};
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
@@ -222,6 +223,7 @@ pub async fn parse_dm_events(
 pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
+    mostro_pubkey: PublicKey,
     active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
     messages: Arc<Mutex<Vec<OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
@@ -396,7 +398,82 @@ pub async fn listen_for_order_messages(
 
                 // Send notification (ignore errors if channel is closed)
                 let _ = message_notification_tx.send(notification);
+
+                // Release lock before async DB update
+                drop(messages_lock);
+
+                // Keep per-order counterparty pubkey up-to-date:
+                // 1) Prefer explicit peer pubkey in payload when present.
+                // 2) Fallback to sender pubkey if this event is not from Mostro.
+                let order_id_str = order_id.to_string();
+                if let Some(peer_pk) = extract_peer_pubkey_from_message(&message) {
+                    let pool_for_update = pool.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = Order::update_counterparty_pubkey(
+                            &pool_for_update,
+                            &order_id_str,
+                            &peer_pk,
+                        )
+                        .await
+                        {
+                            log::warn!(
+                                "Failed to persist peer pubkey from payload for order {}: {}",
+                                order_id_str,
+                                e
+                            );
+                        }
+                    });
+                } else if sender != mostro_pubkey {
+                    let sender_pk = sender.to_string();
+                    let pool_for_update = pool.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = Order::update_counterparty_pubkey(
+                            &pool_for_update,
+                            &order_id_str,
+                            &sender_pk,
+                        )
+                        .await
+                        {
+                            log::warn!(
+                                "Failed to persist sender pubkey as counterparty for order {}: {}",
+                                order_id_str,
+                                e
+                            );
+                        }
+                    });
+                }
             }
         }
     }
+}
+
+/// Try to extract `peer.pubkey` from a Mostro message payload.
+///
+/// This is intentionally shape-tolerant to handle protocol action variations.
+fn extract_peer_pubkey_from_message(message: &Message) -> Option<String> {
+    fn walk(value: &Value) -> Option<String> {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::Object(peer_obj)) = map.get("peer") {
+                    if let Some(Value::String(pk)) = peer_obj.get("pubkey") {
+                        return Some(pk.clone());
+                    }
+                }
+                for v in map.values() {
+                    if let Some(found) = walk(v) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().find_map(walk),
+            _ => None,
+        }
+    }
+
+    message
+        .as_json()
+        .ok()
+        .and_then(|json| nostr_sdk::serde_json::from_str::<Value>(&json).ok())
+        .and_then(|value| walk(&value))
 }

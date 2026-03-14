@@ -277,6 +277,7 @@ sequenceDiagram
 pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
+    mostro_pubkey: PublicKey,
     active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
     messages: Arc<Mutex<Vec<crate::ui::OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
@@ -285,7 +286,7 @@ pub async fn listen_for_order_messages(
 ```
 
 This task:
-1. **Runs every 5 seconds** (`refresh_interval`)
+1. **Runs every 2 seconds** (`refresh_interval`)
 2. **Iterates through active orders** (stored in `active_order_trade_indices`)
 3. **Re-derives trade keys** for each active order
 4. **Fetches recent Gift Wrap events** directed to those trade public keys
@@ -455,7 +456,7 @@ If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged
 
 When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys**.
 
-- **Trigger**: Every 5 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin`.
+- **Trigger**: Every 2 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin`.
 - **Shared keys**: For each `AdminDispute` in `InProgress` state, the database may hold `buyer_shared_key_hex` / `seller_shared_key_hex`. At runtime these are converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
 - **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, the current disputes, `admin_chat_last_seen`, and the channel to send results.
 - **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) ensures that only one admin chat fetch runs concurrently. If a previous fetch is still running, subsequent ticks are skipped until the flag is cleared.
@@ -470,7 +471,22 @@ When the user is in **Admin** mode, the main event loop runs a periodic admin ch
   - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.
 - **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. From the dispute chat, the admin presses **Ctrl+S** to open a **Save attachment** popup listing all attachments for the current dispute/party; they select one with ↑/↓ and press Enter to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
-This avoids overlapping relay queries and duplicate work when the 5‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
+This avoids overlapping relay queries and duplicate work when the 2‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
+
+## User MyTrades Chat Fetch (Single-Flight, Shared-Key Based)
+
+User mode now has a parallel background pipeline for P2P chat in `UserTab::MyTrades`:
+
+- **Trigger**: Every 2 seconds (`user_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::User`.
+- **Order source**: `Order::get_user_trade_orders` loads active local orders and chat metadata.
+- **Shared keys**: Each order may store `orders.shared_key_hex` (derived from `ECDH(trade_sk, counterparty_pubkey)`).
+- **Entry point**: `spawn_user_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs`.
+- **Fetch work**: `fetch_user_chat_updates` retrieves `GiftWrap` events addressed to the shared-key pubkey, decrypts via the shared key, and filters using `orders.chat_last_seen`.
+- **Application**: The main loop applies updates via `apply_user_chat_updates`, which updates:
+  - `AppState.user_trade_chats`
+  - `AppState.user_chat_last_seen`
+  - persisted cursor `orders.chat_last_seen`
+- **Recovery**: `recover_user_chat_from_files` restores transcripts from `~/.mostrix/<order_id>.txt` at startup.
 
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.

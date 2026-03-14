@@ -3,6 +3,80 @@ use crate::ui::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Generic count helper: returns how many messages satisfy `is_visible`.
+pub fn count_visible_messages<T>(messages: &[T], is_visible: impl Fn(&T) -> bool) -> usize {
+    messages.iter().filter(|msg| is_visible(msg)).count()
+}
+
+/// Generic selection navigation for chat-like lists.
+///
+/// Returns true if navigation occurred, false otherwise.
+pub fn navigate_selected_index(
+    selected_idx: &mut Option<usize>,
+    line_starts: &[usize],
+    scroll_state: &mut tui_scrollview::ScrollViewState,
+    visible_count: usize,
+    direction: crossterm::event::KeyCode,
+) -> bool {
+    if visible_count == 0 {
+        return false;
+    }
+
+    let current = selected_idx.unwrap_or(visible_count.saturating_sub(1));
+    let new_selection = match direction {
+        crossterm::event::KeyCode::Up => current.saturating_sub(1),
+        crossterm::event::KeyCode::Down => (current + 1).min(visible_count.saturating_sub(1)),
+        _ => return false,
+    };
+
+    *selected_idx = Some(new_selection);
+
+    // Sync scroll position only when line_starts belongs to this visible list.
+    if line_starts.len() == visible_count {
+        if let Some(&line_start) = line_starts.get(new_selection) {
+            scroll_state.set_offset(ratatui::layout::Position::new(0, line_start as u16));
+        }
+    }
+    true
+}
+
+/// Generic page scroll helper.
+///
+/// Returns true if scrolling occurred, false otherwise.
+pub fn scroll_selected_pages(
+    scroll_state: &mut tui_scrollview::ScrollViewState,
+    direction: crossterm::event::KeyCode,
+) -> bool {
+    match direction {
+        crossterm::event::KeyCode::PageUp => {
+            scroll_state.scroll_page_up();
+            true
+        }
+        crossterm::event::KeyCode::PageDown => {
+            scroll_state.scroll_page_down();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Generic jump-to-bottom helper.
+///
+/// Returns true if the jump occurred, false otherwise.
+pub fn jump_to_bottom(
+    selected_idx: &mut Option<usize>,
+    scroll_state: &mut tui_scrollview::ScrollViewState,
+    visible_count: usize,
+) -> bool {
+    if visible_count == 0 {
+        return false;
+    }
+
+    scroll_state.scroll_to_bottom();
+    *selected_idx = Some(visible_count.saturating_sub(1));
+    true
+}
+
 /// Filter messages by active chat party and return the count of visible messages.
 ///
 /// Uses the same visibility logic as the chat scrollview and get_selected_chat_message
@@ -11,10 +85,9 @@ pub fn get_visible_message_count(
     messages: &[crate::ui::DisputeChatMessage],
     active_chat_party: ChatParty,
 ) -> usize {
-    messages
-        .iter()
-        .filter(|msg| message_visible_for_party(msg, active_chat_party))
-        .count()
+    count_visible_messages(messages, |msg| {
+        message_visible_for_party(msg, active_chat_party)
+    })
 }
 
 /// Get the visible message count for a dispute's chat.
@@ -45,38 +118,13 @@ pub fn navigate_chat_messages(
     direction: crossterm::event::KeyCode,
 ) -> bool {
     let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
-    if visible_count == 0 {
-        return false;
-    }
-
-    let current = app
-        .admin_chat_selected_message_idx
-        .unwrap_or(visible_count.saturating_sub(1));
-
-    let new_selection = match direction {
-        crossterm::event::KeyCode::Up => {
-            if current > 0 {
-                current - 1
-            } else {
-                0
-            }
-        }
-        crossterm::event::KeyCode::Down => (current + 1).min(visible_count.saturating_sub(1)),
-        _ => return false,
-    };
-
-    app.admin_chat_selected_message_idx = Some(new_selection);
-
-    // Sync scroll position so the selected message is in view. Only use line_starts when they
-    // match the current visible count (same dispute/party and layout from last render);
-    // otherwise skip and the next render will have fresh line_starts.
-    if app.admin_chat_line_starts.len() == visible_count {
-        if let Some(&line_start) = app.admin_chat_line_starts.get(new_selection) {
-            app.admin_chat_scrollview_state
-                .set_offset(ratatui::layout::Position::new(0, line_start as u16));
-        }
-    }
-    true
+    navigate_selected_index(
+        &mut app.admin_chat_selected_message_idx,
+        &app.admin_chat_line_starts,
+        &mut app.admin_chat_scrollview_state,
+        visible_count,
+        direction,
+    )
 }
 
 /// Scroll chat messages (PageUp/PageDown).
@@ -87,17 +135,7 @@ pub fn scroll_chat_messages(
     _dispute_id_key: &str,
     direction: crossterm::event::KeyCode,
 ) -> bool {
-    match direction {
-        crossterm::event::KeyCode::PageUp => {
-            app.admin_chat_scrollview_state.scroll_page_up();
-            true
-        }
-        crossterm::event::KeyCode::PageDown => {
-            app.admin_chat_scrollview_state.scroll_page_down();
-            true
-        }
-        _ => false,
-    }
+    scroll_selected_pages(&mut app.admin_chat_scrollview_state, direction)
 }
 
 /// Jump to the bottom of the chat (latest messages).
@@ -105,13 +143,11 @@ pub fn scroll_chat_messages(
 /// Returns true if the jump occurred, false otherwise.
 pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
     let visible_count = get_dispute_visible_message_count(app, dispute_id_key);
-    if visible_count == 0 {
-        return false;
-    }
-
-    app.admin_chat_scrollview_state.scroll_to_bottom();
-    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
-    true
+    jump_to_bottom(
+        &mut app.admin_chat_selected_message_idx,
+        &mut app.admin_chat_scrollview_state,
+        visible_count,
+    )
 }
 
 /// Finalization popup button index: 0 = Pay Buyer, 1 = Refund Seller, 2 = Exit.

@@ -3,6 +3,7 @@ use crate::ui::{FormState, TakeOrderState};
 #[derive(Clone, Debug)]
 pub enum UserMode {
     Normal,
+    ManagingTradeChat,
     CreatingOrder(FormState),
     ConfirmingOrder(FormState),       // Confirmation popup
     TakingOrder(TakeOrderState),      // Taking an order from the list

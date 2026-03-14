@@ -90,6 +90,40 @@ fn handle_admin_chat_input(
     None
 }
 
+/// Check if we're in user MyTrades chat input mode and handle character input.
+fn handle_user_chat_input(
+    app: &mut AppState,
+    code: KeyCode,
+    key_event: &crossterm::event::KeyEvent,
+) -> Option<bool> {
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        if matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+            && app.user_chat_input_enabled
+        {
+            // Don't treat Shift+I as input (used to toggle input)
+            if (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+                && key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+            {
+                return None;
+            }
+            match code {
+                KeyCode::Char(c) => {
+                    app.user_chat_input.push(c);
+                    return Some(true);
+                }
+                KeyCode::Backspace => {
+                    app.user_chat_input.pop();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Handle clipboard copy for invoice
 fn handle_clipboard_copy(invoice: String) -> bool {
     let copy_result = {
@@ -232,6 +266,7 @@ pub fn handle_key_event(
                                         ChatSender::Buyer => dispute.buyer_pubkey.as_deref(),
                                         ChatSender::Seller => dispute.seller_pubkey.as_deref(),
                                         ChatSender::Admin => None,
+                                        ChatSender::User | ChatSender::Counterparty => None,
                                     },
                                 ) {
                                     if let Ok(sender_pk) = PublicKey::parse(pk_str) {
@@ -320,6 +355,7 @@ pub fn handle_key_event(
             app.mode,
             UiMode::Normal
                 | UiMode::UserMode(UserMode::Normal)
+                | UiMode::UserMode(UserMode::ManagingTradeChat)
                 | UiMode::AdminMode(AdminMode::Normal)
                 | UiMode::AdminMode(AdminMode::ManagingDispute)
         );
@@ -445,10 +481,27 @@ pub fn handle_key_event(
         }
     }
 
+    // MyTrades: Handle Shift+I to toggle chat input enabled/disabled
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        if has_shift
+            && (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+            && matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+        {
+            app.user_chat_input_enabled = !app.user_chat_input_enabled;
+            return Some(true);
+        }
+    }
+
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
     // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
     if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
+        return Some(result);
+    }
+    if let Some(result) = handle_user_chat_input(app, code, &key_event) {
         return Some(result);
     }
 
@@ -531,6 +584,28 @@ pub fn handle_key_event(
                     }
                 }
             }
+            // Handle MyTrades chat message navigation when input is disabled
+            if matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+                && matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+                && !app.user_chat_input_enabled
+            {
+                let visible_count = app
+                    .my_trade_orders
+                    .get(app.selected_my_trade_idx)
+                    .and_then(|o| o.id.as_ref())
+                    .and_then(|order_id| app.user_trade_chats.get(order_id))
+                    .map(|msgs| msgs.len())
+                    .unwrap_or(0);
+                if chat_helpers::navigate_selected_index(
+                    &mut app.user_chat_selected_message_idx,
+                    &app.user_chat_line_starts,
+                    &mut app.user_chat_scrollview_state,
+                    visible_count,
+                    code,
+                ) {
+                    return Some(true);
+                }
+            }
 
             // Observer tab: use Up/Down to scroll the chat vertically
             if let Tab::Admin(AdminTab::Observer) = app.active_tab {
@@ -564,6 +639,13 @@ pub fn handle_key_event(
                         }
                     }
                 }
+            }
+            // MyTrades: PageUp/PageDown scroll chat
+            if matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+                && matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+                && chat_helpers::scroll_selected_pages(&mut app.user_chat_scrollview_state, code)
+            {
+                return Some(true);
             }
 
             // Observer tab: PageUp/PageDown scroll the observer chat
@@ -618,6 +700,24 @@ pub fn handle_key_event(
                             return Some(true);
                         }
                     }
+                }
+            }
+            if matches!(app.mode, UiMode::UserMode(UserMode::ManagingTradeChat))
+                && matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+            {
+                let visible_count = app
+                    .my_trade_orders
+                    .get(app.selected_my_trade_idx)
+                    .and_then(|o| o.id.as_ref())
+                    .and_then(|order_id| app.user_trade_chats.get(order_id))
+                    .map(|msgs| msgs.len())
+                    .unwrap_or(0);
+                if chat_helpers::jump_to_bottom(
+                    &mut app.user_chat_selected_message_idx,
+                    &mut app.user_chat_scrollview_state,
+                    visible_count,
+                ) {
+                    return Some(true);
                 }
             }
             Some(true)

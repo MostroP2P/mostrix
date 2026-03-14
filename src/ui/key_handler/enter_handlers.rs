@@ -2,7 +2,8 @@ use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
 use crate::ui::key_handler::input_helpers::{
-    prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
+    prepare_admin_chat_message, prepare_user_chat_message, send_admin_chat_message_via_shared_key,
+    send_user_chat_message_via_shared_key,
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
@@ -54,6 +55,46 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::UserMode(UserMode::CreatingOrder(ref form)) => {
             handle_enter_creating_order(app, form);
+            true
+        }
+        UiMode::UserMode(UserMode::ManagingTradeChat) => {
+            if matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+                && !app.user_chat_input.trim().is_empty()
+                && app.user_chat_input_enabled
+            {
+                if let Some(order) = app.my_trade_orders.get(app.selected_my_trade_idx) {
+                    let order_id = order.id.clone();
+                    let shared_key_hex = order.shared_key_hex.clone();
+                    let sender_trade_keys = order
+                        .trade_keys
+                        .as_deref()
+                        .and_then(|hex| nostr_sdk::prelude::Keys::parse(hex).ok());
+                    if let Some(order_id) = order_id.as_ref() {
+                        let _ = prepare_user_chat_message(order_id, app);
+                        send_user_chat_message_via_shared_key(
+                            order_id,
+                            shared_key_hex.as_deref(),
+                            &app.user_chat_input,
+                            ctx.client,
+                            sender_trade_keys.as_ref(),
+                        );
+                        // Keep selection near latest
+                        let visible_count = app
+                            .user_trade_chats
+                            .get(order_id)
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        if visible_count > 0 {
+                            app.user_chat_scrollview_state.scroll_to_bottom();
+                            app.user_chat_selected_message_idx =
+                                Some(visible_count.saturating_sub(1));
+                        }
+                    }
+                }
+                app.user_chat_input.clear();
+                app.user_chat_input_enabled = true;
+            }
+            app.mode = UiMode::UserMode(UserMode::ManagingTradeChat);
             true
         }
         UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {

@@ -7,9 +7,9 @@ use nostr_sdk::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{interval_at, Duration, Instant};
 
-use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
-use crate::util::chat_utils::fetch_admin_chat_updates;
+use crate::models::{AdminDispute, Order};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, UserChatLastSeen, UserChatUpdate};
+use crate::util::chat_utils::{fetch_admin_chat_updates, fetch_user_chat_updates};
 
 use super::{get_disputes, get_orders};
 
@@ -112,6 +112,26 @@ pub fn spawn_admin_chat_fetch(
     }
     tokio::spawn(async move {
         let result = fetch_admin_chat_updates(&client, &disputes, &admin_chat_last_seen).await;
+        CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
+        let _ = tx.send(result);
+    });
+}
+
+/// Spawns a one-off background task to fetch user chat updates.
+pub fn spawn_user_chat_fetch(
+    client: Client,
+    orders: Vec<Order>,
+    user_chat_last_seen: HashMap<String, UserChatLastSeen>,
+    tx: UnboundedSender<Result<Vec<UserChatUpdate>, anyhow::Error>>,
+) {
+    if CHAT_MESSAGES_SEMAPHORE
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let result = fetch_user_chat_updates(&client, &orders, &user_chat_last_seen).await;
         CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
         let _ = tx.send(result);
     });

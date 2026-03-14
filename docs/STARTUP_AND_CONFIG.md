@@ -193,7 +193,7 @@ pub struct Settings {
 }
 ```
 
-### Fields:
+### Fields
 - **`mostro_pubkey`**: The public key of the Mostro instance to interact with.
 - **`nsec_privkey`**: The user's Nostr private key (nsec format).
 - **`admin_privkey`**: The admin's private key, required for solving disputes when in admin mode.

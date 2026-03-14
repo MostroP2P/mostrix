@@ -5,8 +5,11 @@ use anyhow::Result;
 use mostro_core::prelude::DisputeStatus;
 use nostr_sdk::prelude::*;
 
-use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
+use crate::models::{AdminDispute, Order};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage,
+    UserChatLastSeen, UserChatUpdate,
+};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::SETTINGS;
 
@@ -106,17 +109,30 @@ pub async fn send_admin_chat_message_via_shared_key(
     shared_keys: &Keys,
     content: &str,
 ) -> Result<()> {
+    send_chat_message_via_shared_key(client, admin_keys, shared_keys, content).await
+}
+
+/// Send a P2P chat message via an already-derived shared key.
+///
+/// The event is gift-wrapped and addressed to the shared key pubkey, following
+/// Mostro's simplified NIP-59 chat model.
+pub async fn send_chat_message_via_shared_key(
+    client: &Client,
+    sender_keys: &Keys,
+    shared_keys: &Keys,
+    content: &str,
+) -> Result<()> {
     let content = content.trim();
     if content.is_empty() {
-        return Err(anyhow::anyhow!("Cannot send empty admin chat message"));
+        return Err(anyhow::anyhow!("Cannot send empty chat message"));
     }
     let recipient_pubkey = shared_keys.public_key();
-    let event = build_custom_wrap_event(admin_keys, &recipient_pubkey, content).await?;
+    let event = build_custom_wrap_event(sender_keys, &recipient_pubkey, content).await?;
     // Send the event to the relay
     client
         .send_event(&event)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to send admin chat event: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to send chat event: {e}"))?;
     Ok(())
 }
 
@@ -265,6 +281,57 @@ pub async fn fetch_admin_chat_updates(
             party,
             messages,
         })
+        .collect();
+
+    Ok(updates)
+}
+
+/// Fetch user chat updates for active orders using per-order shared keys.
+///
+/// For each order with `shared_key_hex`, this rebuilds shared `Keys`, fetches
+/// gift wraps addressed to that shared pubkey, and applies `last_seen_timestamp`
+/// filtering. Messages are grouped per order in `UserChatUpdate`.
+pub async fn fetch_user_chat_updates(
+    client: &Client,
+    orders: &[Order],
+    user_chat_last_seen: &HashMap<String, UserChatLastSeen>,
+) -> Result<Vec<UserChatUpdate>, anyhow::Error> {
+    let mut by_order: HashMap<String, Vec<(String, i64, PublicKey)>> = HashMap::new();
+
+    for order in orders {
+        let Some(order_id) = order.id.as_deref() else {
+            continue;
+        };
+        let Some(shared_key_hex) = order.shared_key_hex.as_deref() else {
+            continue;
+        };
+        let Some(shared_keys) = keys_from_shared_hex(shared_key_hex) else {
+            continue;
+        };
+
+        let last_seen = user_chat_last_seen
+            .get(order_id)
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+        let Ok(messages) = fetch_gift_wraps_for_shared_key(client, &shared_keys).await else {
+            continue;
+        };
+
+        for (content, ts, sender_pubkey) in messages {
+            if ts < last_seen {
+                continue;
+            }
+            by_order
+                .entry(order_id.to_string())
+                .or_default()
+                .push((content, ts, sender_pubkey));
+        }
+    }
+
+    let updates = by_order
+        .into_iter()
+        .filter(|(_, msgs)| !msgs.is_empty())
+        .map(|(order_id, messages)| UserChatUpdate { order_id, messages })
         .collect();
 
     Ok(updates)

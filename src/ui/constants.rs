@@ -80,6 +80,10 @@ pub const HELP_ORDERS_SELECT: &str = "↑↓: Select order";
 
 // Help popup lines (My Trades)
 pub const HELP_MY_TRADES_NAV: &str = "↑↓: Navigate (when available)";
+pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send chat message";
+pub const HELP_MY_TRADES_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable chat input";
+pub const HELP_MY_TRADES_SCROLL: &str = "PgUp/PgDn: Scroll chat";
+pub const HELP_MY_TRADES_END: &str = "End: Jump to bottom";
 
 // Help popup lines (Messages)
 pub const HELP_MSG_ENTER_OPEN: &str = "Enter: Open selected message";
@@ -108,3 +112,5 @@ pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
 pub const FOOTER_NAV_CHAT: &str = "↑↓: Navigate Chat";
 pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
+pub const FOOTER_SHIFT_I_INPUT_TOGGLE: &str = "Shift+I: Toggle Input";
+pub const FOOTER_UP_DOWN_SELECT_TRADE: &str = "↑↓: Select Trade";

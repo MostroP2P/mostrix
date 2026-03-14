@@ -38,7 +38,7 @@ pub fn ui_draw(
             app,
         ),
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
-            tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
+            tabs::my_trades_tab::render_my_trades_tab(f, content_area, app)
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
             let messages = app.messages.lock().unwrap();

@@ -120,7 +120,13 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
         ),
         Tab::User(UserTab::MyTrades) => (
             HELP_TITLE_MY_TRADES.to_string(),
-            vec![HELP_MY_TRADES_NAV.to_string()],
+            vec![
+                HELP_MY_TRADES_NAV.to_string(),
+                HELP_MY_TRADES_ENTER_SEND.to_string(),
+                HELP_MY_TRADES_SHIFT_I_INPUT.to_string(),
+                HELP_MY_TRADES_SCROLL.to_string(),
+                HELP_MY_TRADES_END.to_string(),
+            ],
         ),
         Tab::User(UserTab::Messages) => (
             HELP_TITLE_MESSAGES.to_string(),

@@ -1,4 +1,4 @@
-use crate::models::AdminDispute;
+use crate::models::{AdminDispute, Order};
 use chrono::DateTime;
 use mostro_core::prelude::UserInfo;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -19,7 +19,7 @@ use nostr_sdk::serde_json::{from_str as json_from_str, Value};
 
 use super::{
     AdminChatLastSeen, AdminChatUpdate, AppState, ChatAttachment, ChatAttachmentType, ChatParty,
-    ChatSender, DisputeChatMessage, PRIMARY_COLOR,
+    ChatSender, DisputeChatMessage, UserChatLastSeen, UserChatUpdate, PRIMARY_COLOR,
 };
 
 /// Toast expiry duration for attachment notification.
@@ -463,6 +463,112 @@ pub async fn apply_admin_chat_updates(
     Ok(())
 }
 
+/// Apply fetched user chat updates back into UI state and persist last_seen timestamps.
+pub async fn apply_user_chat_updates(
+    app: &mut AppState,
+    updates: Vec<UserChatUpdate>,
+    pool: &sqlx::SqlitePool,
+) -> Result<(), anyhow::Error> {
+    for update in updates {
+        let order_id = update.order_id.clone();
+        let messages_vec = app.user_trade_chats.entry(order_id.clone()).or_default();
+
+        let mut max_ts = app
+            .user_chat_last_seen
+            .get(&order_id)
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+
+        let my_pubkey = app.user_trade_keys_by_order.get(&order_id).copied();
+
+        for (content, ts, sender_pubkey) in update.messages {
+            let sender = if Some(sender_pubkey) == my_pubkey {
+                ChatSender::User
+            } else {
+                ChatSender::Counterparty
+            };
+
+            let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
+                Some((attachment, display)) => (display, Some(attachment)),
+                None => (content.clone(), None),
+            };
+
+            let is_duplicate = messages_vec
+                .iter()
+                .any(|m| m.timestamp == ts && m.sender == sender && m.content == msg_content);
+            if is_duplicate {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                continue;
+            }
+
+            let msg = DisputeChatMessage {
+                sender,
+                content: msg_content,
+                timestamp: ts,
+                target_party: None,
+                attachment: attachment_opt,
+            };
+            save_chat_message(&order_id, &msg);
+            messages_vec.push(msg);
+            if ts > max_ts {
+                max_ts = ts;
+            }
+        }
+
+        let entry = app
+            .user_chat_last_seen
+            .entry(order_id.clone())
+            .or_insert_with(|| UserChatLastSeen {
+                last_seen_timestamp: None,
+            });
+        if max_ts > entry.last_seen_timestamp.unwrap_or(0) {
+            entry.last_seen_timestamp = Some(max_ts);
+        }
+
+        if max_ts > 0 {
+            Order::update_chat_last_seen(pool, &order_id, max_ts).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Recover user chat transcript files and seed in-memory chats + last_seen timestamps.
+pub fn recover_user_chat_from_files(
+    orders: &[Order],
+    user_trade_chats: &mut HashMap<String, Vec<DisputeChatMessage>>,
+    user_chat_last_seen: &mut HashMap<String, UserChatLastSeen>,
+) {
+    for order in orders {
+        let Some(order_id) = order.id.as_deref() else {
+            continue;
+        };
+
+        let msgs = load_chat_from_file(order_id).unwrap_or_default();
+        if msgs.is_empty() {
+            if let Some(ts) = order.chat_last_seen {
+                user_chat_last_seen.insert(
+                    order_id.to_string(),
+                    UserChatLastSeen {
+                        last_seen_timestamp: Some(ts),
+                    },
+                );
+            }
+            continue;
+        }
+
+        let max_ts = msgs.iter().map(|m| m.timestamp).max();
+        user_trade_chats.insert(order_id.to_string(), msgs);
+        user_chat_last_seen.insert(
+            order_id.to_string(),
+            UserChatLastSeen {
+                last_seen_timestamp: max_ts.or(order.chat_last_seen),
+            },
+        );
+    }
+}
+
 /// Saves a chat message to a text file in ~/.mostrix/dispute_id.txt
 /// Creates the directory and file if they don't exist, appends if they do.
 /// Idempotent: skips append if the last message in the file already matches (avoids duplicates when refetching from relay).
@@ -527,6 +633,8 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         (ChatSender::Admin, None) => "Admin",
         (ChatSender::Buyer, _) => "Buyer",
         (ChatSender::Seller, _) => "Seller",
+        (ChatSender::User, _) => "You",
+        (ChatSender::Counterparty, _) => "Peer",
     };
     let formatted_message = format!(
         "{} - {} - {}\n{}\n\n",
@@ -604,6 +712,7 @@ pub fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: Ch
         ChatSender::Admin => msg.target_party.is_none_or(|p| p == active_chat_party),
         ChatSender::Buyer => active_chat_party == ChatParty::Buyer,
         ChatSender::Seller => active_chat_party == ChatParty::Seller,
+        ChatSender::User | ChatSender::Counterparty => false,
     }
 }
 
@@ -671,6 +780,8 @@ fn format_message_lines(
         ChatSender::Admin => ("Admin", Color::Cyan, false),
         ChatSender::Buyer => ("Buyer", Color::Green, true),
         ChatSender::Seller => ("Seller", Color::Magenta, false),
+        ChatSender::User => ("You", Color::Green, true),
+        ChatSender::Counterparty => ("Peer", Color::Magenta, false),
     };
     let content_color = msg
         .attachment
