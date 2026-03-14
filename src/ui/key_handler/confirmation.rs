@@ -10,7 +10,9 @@ use crate::ui::key_handler::settings::{
     clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
-use crate::util::fetch_mostro_instance_info_from_settings;
+use crate::util::fetch_mostro_instance_info;
+use nostr_sdk::prelude::PublicKey;
+use std::str::FromStr;
 
 /// Helper: Transition from input mode to confirmation mode
 pub fn handle_input_to_confirmation<F>(
@@ -145,13 +147,20 @@ pub fn handle_confirm_key(
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
 
-            // Immediately refresh Mostro instance info using the newly saved pubkey so the
-            // Mostro Info tab is up-to-date without requiring an extra Enter press.
+            // Immediately refresh Mostro instance info using the new pubkey we just confirmed
+            // (no disk round-trip).
+            let new_pubkey = match PublicKey::from_str(&key_string) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    log::error!("Invalid pubkey after confirmation: {}", e);
+                    app.mostro_info = None;
+                    return true;
+                }
+            };
             let client = ctx.client.clone();
             let refresh_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    fetch_mostro_instance_info_from_settings(&client).await
-                })
+                tokio::runtime::Handle::current()
+                    .block_on(async move { fetch_mostro_instance_info(&client, new_pubkey).await })
             });
 
             match refresh_result {

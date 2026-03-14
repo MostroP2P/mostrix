@@ -319,13 +319,20 @@ fn handle_enter_settings_mode(
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
 
-            // If the selected button is YES, immediately refresh Mostro instance info so
-            // the Mostro Info tab reflects the new pubkey without extra key presses.
+            // If the selected button is YES, immediately refresh Mostro instance info using
+            // the new pubkey we just confirmed (no disk round-trip).
             if selected_button {
+                let new_pubkey = match PublicKey::from_str(&key_string) {
+                    Ok(pk) => pk,
+                    Err(e) => {
+                        log::error!("Invalid pubkey after confirmation: {}", e);
+                        return false;
+                    }
+                };
                 let client_clone = client.clone();
                 let refresh_result = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async move {
-                        crate::util::fetch_mostro_instance_info_from_settings(&client_clone).await
+                        fetch_mostro_instance_info(&client_clone, new_pubkey).await
                     })
                 });
 
