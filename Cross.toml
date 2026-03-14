@@ -1,11 +1,40 @@
 # Cross-compilation configuration for mostrix
 # https://github.com/cross-rs/cross/wiki/Configuration
 
-[build]
-# Install OpenSSL development headers for all targets
-# Required by reqwest with native-tls feature
+# x86_64 Linux (musl)
+[target.x86_64-unknown-linux-musl]
 pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "dpkg --add-architecture amd64",
     "apt-get update",
-    "apt-get install -y libssl-dev:$CROSS_DEB_ARCH pkg-config"
+    "apt-get install -y libssl-dev:amd64 pkg-config"
+]
+
+# ARM64 Linux (musl)
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install -y libssl-dev:arm64 pkg-config"
+]
+
+# ARMv7 Linux (gnueabi)
+[target.armv7-unknown-linux-gnueabi]
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update",
+    "apt-get install -y libssl-dev:armhf pkg-config"
+]
+
+# x86_64 Windows (mingw)
+[target.x86_64-pc-windows-gnu]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y pkg-config libssl-dev"
+]
+
+# x86_64 FreeBSD
+[target.x86_64-unknown-freebsd]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y pkg-config libssl-dev"
 ]
