@@ -133,6 +133,11 @@ use crate::ui::ui_draw;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    // Set rustls crypto provider once (required when both ring and aws-lc-rs are in the dependency tree)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("rustls default crypto provider");
+
     log::info!("MostriX started");
     let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;

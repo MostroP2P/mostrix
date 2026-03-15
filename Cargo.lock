@@ -2106,6 +2106,7 @@ dependencies = [
  "nostr-sdk",
  "ratatui",
  "reqwest",
+ "rustls",
  "serde",
  "sqlx",
  "tokio",
