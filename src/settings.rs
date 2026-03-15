@@ -12,7 +12,6 @@ pub struct Settings {
     pub admin_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
-    #[serde(alias = "currencies")]
     pub currencies_filter: Vec<String>,
     pub pow: u8,
     #[serde(default = "default_user_mode")]
