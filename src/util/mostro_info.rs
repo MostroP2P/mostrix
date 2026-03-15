@@ -222,6 +222,7 @@ pub async fn fetch_mostro_instance_info_from_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr_sdk::prelude::{Tag, Tags};
 
     #[test]
     fn split_csv_trims_and_ignores_empty_values() {
@@ -246,4 +247,57 @@ mod tests {
         assert_eq!(MostroInstanceInfo::parse_f64("0.006"), Some(0.006));
         assert_eq!(MostroInstanceInfo::parse_f64("NaN?"), None);
     }
+
+    #[test]
+    fn parse_handles_empty_tags() {
+        let tags = Tags::new();
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.fiat_currencies_accepted, Vec::<String>::new());
+        assert!(result.mostro_version.is_none());
+        assert!(result.max_order_amount.is_none());
+    }
+
+    #[test]
+    fn parse_handles_malformed_tags() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["max_order_amount", "not-a-number"]).unwrap());
+        tags.push(Tag::parse(["min_order_amount", "nope"]).unwrap());
+        tags.push(Tag::parse(["fee", "invalid"]).unwrap());
+        tags.push(Tag::parse(["expiration_hours"]).unwrap()); // missing value
+        tags.push(Tag::parse(["unknown_tag", "ignored"]).unwrap());
+
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert!(result.max_order_amount.is_none());
+        assert!(result.min_order_amount.is_none());
+        assert!(result.fee.is_none());
+        assert!(result.expiration_hours.is_none());
+        assert_eq!(result.fiat_currencies_accepted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_empty_fiat_currencies_returns_empty_list() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["fiat_currencies_accepted", ""]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.fiat_currencies_accepted, Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_valid_tags_roundtrip() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["mostro_version", "0.1.0"]).unwrap());
+        tags.push(Tag::parse(["max_order_amount", "1000000"]).unwrap());
+        tags.push(Tag::parse(["fiat_currencies_accepted", "USD,EUR"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.mostro_version.as_deref(), Some("0.1.0"));
+        assert_eq!(result.max_order_amount, Some(1_000_000));
+        assert_eq!(result.fiat_currencies_accepted, vec!["USD", "EUR"]);
+    }
+
+    // Fetch tests would require a mock or test double for nostr_sdk::Client
+    // (e.g. a trait + impl for production and a mock that returns empty events
+    // or simulates timeout). Not implemented here to avoid refactoring the public API.
+    // Intended behavior:
+    // - fetch_returns_none_when_no_event_exists: client returns []; assert Ok(None)
+    // - fetch_handles_network_timeout: client returns/timeouts with error; assert Err
 }

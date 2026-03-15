@@ -159,3 +159,23 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_alias_loads_old_currencies_field() {
+        let toml = r#"
+            mostro_pubkey = "npub1test"
+            nsec_privkey = "nsec1test"
+            admin_privkey = "nsec1admin"
+            relays = ["wss://relay.example.com"]
+            log_level = "info"
+            currencies = ["USD", "EUR"]
+            pow = 0
+        "#;
+        let settings: Settings = toml::from_str(toml).unwrap();
+        assert_eq!(settings.currencies_filters, vec!["USD", "EUR"]);
+    }
+}
