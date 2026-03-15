@@ -114,7 +114,7 @@ jobs:
           name: artifact-${{ matrix.target }}
           path: artifacts/*
 
-  # Create release with all artifacts
+  # Create release with all artifacts (Linux, Windows, FreeBSD from cross)
   release:
     runs-on: ubuntu-latest
     needs: [changelog, build]
