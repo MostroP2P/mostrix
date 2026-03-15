@@ -1,10 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::util::MostroInstanceInfo;
+use crate::util::{format_instance_info_age, MostroInstanceInfo};
 
 pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let block = Block::default()
@@ -55,6 +55,23 @@ fn render_info_details(f: &mut ratatui::Frame, area: Rect, info: &MostroInstance
 
 fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+
+    if let Some(ts) = &info.last_updated {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Last updated: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format_instance_info_age(ts)),
+        ]));
+        if info.is_stale() {
+            lines.push(Line::from(Span::styled(
+                "⚠ This data is older than 7 days and may be outdated",
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        lines.push(Line::default());
+    }
 
     // Mostro daemon section
     lines.push(section_title("Mostro daemon"));

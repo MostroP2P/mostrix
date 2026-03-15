@@ -7,11 +7,41 @@ use std::str::FromStr;
 /// Nostr kind for Mostro instance status events.
 pub const MOSTRO_INSTANCE_INFO_KIND: u16 = 38385;
 
+/// Age in seconds after which instance info is considered stale (7 days).
+const INSTANCE_INFO_STALE_SECS: u64 = 604_800;
+
+/// Returns true if the instance info event is older than 7 days.
+pub fn is_instance_info_stale(event: &Event) -> bool {
+    let age_seconds = Timestamp::now()
+        .as_u64()
+        .saturating_sub(event.created_at.as_u64());
+    age_seconds > INSTANCE_INFO_STALE_SECS
+}
+
+/// Human-readable age string for a timestamp (e.g. "2 hours ago", "5 days ago").
+pub fn format_instance_info_age(ts: &Timestamp) -> String {
+    let age_secs = Timestamp::now().as_u64().saturating_sub(ts.as_u64());
+    if age_secs < 60 {
+        "just now".to_string()
+    } else if age_secs < 3600 {
+        let m = age_secs / 60;
+        format!("{} minute{} ago", m, if m == 1 { "" } else { "s" })
+    } else if age_secs < 86400 {
+        let h = age_secs / 3600;
+        format!("{} hour{} ago", h, if h == 1 { "" } else { "s" })
+    } else {
+        let d = age_secs / 86400;
+        format!("{} day{} ago", d, if d == 1 { "" } else { "s" })
+    }
+}
+
 /// Structured representation of a Mostro instance info event (kind 38385).
 ///
 /// All fields are optional because different instances may omit some tags.
 #[derive(Clone, Debug, Default)]
 pub struct MostroInstanceInfo {
+    /// When the instance info event was created (set by fetch, not from tags).
+    pub last_updated: Option<Timestamp>,
     pub mostro_version: Option<String>,
     pub mostro_commit_hash: Option<String>,
     pub max_order_amount: Option<i64>,
@@ -35,6 +65,15 @@ pub struct MostroInstanceInfo {
 }
 
 impl MostroInstanceInfo {
+    /// Returns true if this info has a last_updated timestamp older than 7 days.
+    pub fn is_stale(&self) -> bool {
+        self.last_updated
+            .map(|t| {
+                let age_seconds = Timestamp::now().as_u64().saturating_sub(t.as_u64());
+                age_seconds > INSTANCE_INFO_STALE_SECS
+            })
+            .unwrap_or(true)
+    }
     fn parse_i64(value: &str) -> Option<i64> {
         value.parse::<i64>().ok()
     }
@@ -171,7 +210,18 @@ pub async fn fetch_mostro_instance_info(
         None => return Ok(None),
     };
 
-    let info = mostro_info_from_tags(event.tags.clone())?;
+    if is_instance_info_stale(event) {
+        let age_seconds = Timestamp::now()
+            .as_u64()
+            .saturating_sub(event.created_at.as_u64());
+        log::warn!(
+            "Mostro instance info is stale (published {} seconds ago)",
+            age_seconds
+        );
+    }
+
+    let mut info = mostro_info_from_tags(event.tags.clone())?;
+    info.last_updated = Some(event.created_at);
     Ok(Some(info))
 }
 

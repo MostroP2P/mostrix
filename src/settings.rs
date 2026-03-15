@@ -57,6 +57,48 @@ pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
     Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
 }
 
+/// Validates currencies config: exits with a clear error if the deprecated
+/// `currencies` field is used or both `currencies` and `currencies_filters` are present.
+/// Only considers non-comment lines (key before any `#`).
+fn validate_currencies_config(settings_path: &PathBuf) -> Result<(), anyhow::Error> {
+    let config_str = match fs::read_to_string(settings_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    let mut has_old = false;
+    let mut has_new = false;
+    for line in config_str.lines() {
+        let before_comment = line.split('#').next().unwrap_or(line).trim();
+        if before_comment.is_empty() {
+            continue;
+        }
+        if before_comment.starts_with("currencies_filters =")
+            || before_comment.starts_with("currencies_filters=")
+        {
+            has_new = true;
+        } else if before_comment.starts_with("currencies =") || before_comment.starts_with("currencies=")
+        {
+            has_old = true;
+        }
+    }
+
+    let path_display = settings_path.display();
+    if has_old && !has_new {
+        anyhow::bail!(
+            "Deprecated field 'currencies' in {}. Please rename to 'currencies_filters' and run again. See README 'Upgrading from v0.x'.",
+            path_display
+        );
+    }
+    if has_old && has_new {
+        anyhow::bail!(
+            "Both 'currencies' and 'currencies_filters' are set in {}. Remove 'currencies' and keep only 'currencies_filters', then run again.",
+            path_display
+        );
+    }
+    Ok(())
+}
+
 /// Internal helper: ensure settings file exists and load it from disk
 fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
     // HOME and package name at compile time
@@ -81,6 +123,8 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         fs::copy(&default_file, &hidden_file)
             .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
     }
+
+    validate_currencies_config(&hidden_file)?;
 
     // Use the `config` crate to deserialize to the Settings struct
     let cfg = config::Config::builder()

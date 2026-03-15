@@ -124,6 +124,21 @@ pow = 0
 - The status bar’s **Currencies** line is also derived from this event; if the instance omits `fiat_currencies_accepted`, Mostrix treats it as “all currencies accepted” and displays `All (from Mostro instance)`.
 - Press **Enter** while focused on the **Mostro Info** tab to refresh the instance info from the configured relays using the current Mostro pubkey in `settings.toml`.
 
+#### Upgrading from v0.x
+
+**Breaking change:** The `currencies` field in `settings.toml` has been renamed to `currencies_filters` for clarity.
+
+- Old configs still work (backward compatibility via field alias).
+- **Recommended:** Manually rename `currencies =` to `currencies_filters =` in your `~/.mostrix/settings.toml`.
+- If you have both fields, `currencies_filters` takes precedence.
+
+Example migration:
+
+```diff
+- currencies = ["USD", "EUR"]
++ currencies_filters = ["USD", "EUR"]
+```
+
 ### Admin features
 
 When `user_mode = "admin"` and `admin_privkey` is set in `settings.toml`, Mostrix shows admin tabs and allows dispute resolution.
