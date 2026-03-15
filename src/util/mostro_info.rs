@@ -10,14 +10,6 @@ pub const MOSTRO_INSTANCE_INFO_KIND: u16 = 38385;
 /// Age in seconds after which instance info is considered stale (7 days).
 const INSTANCE_INFO_STALE_SECS: u64 = 604_800;
 
-/// Returns true if the instance info event is older than 7 days.
-pub fn is_instance_info_stale(event: &Event) -> bool {
-    let age_seconds = Timestamp::now()
-        .as_u64()
-        .saturating_sub(event.created_at.as_u64());
-    age_seconds > INSTANCE_INFO_STALE_SECS
-}
-
 /// Human-readable age string for a timestamp (e.g. "2 hours ago", "5 days ago").
 pub fn format_instance_info_age(ts: &Timestamp) -> String {
     let age_secs = Timestamp::now().as_u64().saturating_sub(ts.as_u64());
@@ -209,16 +201,6 @@ pub async fn fetch_mostro_instance_info(
         Some(ev) => ev,
         None => return Ok(None),
     };
-
-    if is_instance_info_stale(event) {
-        let age_seconds = Timestamp::now()
-            .as_u64()
-            .saturating_sub(event.created_at.as_u64());
-        log::warn!(
-            "Mostro instance info is stale (published {} seconds ago)",
-            age_seconds
-        );
-    }
 
     let mut info = mostro_info_from_tags(event.tags.clone())?;
     info.last_updated = Some(event.created_at);
