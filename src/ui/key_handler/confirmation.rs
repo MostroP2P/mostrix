@@ -209,6 +209,7 @@ pub fn handle_confirm_key(
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
                 UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
             };
+            // Persist to settings.toml.
             app.mode = handle_confirmation_enter(
                 true, // 'y' key means YES
                 &currency_string,
@@ -216,6 +217,11 @@ pub fn handle_confirm_key(
                 save_currency_to_settings,
                 |input| UiMode::AddCurrency(create_key_input_state(input)),
             );
+            // Update in-memory cache so UI-side filtering takes effect immediately.
+            let upper = currency_string.trim().to_uppercase();
+            if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
+                app.currencies_filter.push(upper);
+            }
             true
         }
         UiMode::ConfirmClearCurrencies(_) => {
@@ -225,6 +231,8 @@ pub fn handle_confirm_key(
             };
             // YES selected - clear currency filters
             clear_currency_filters();
+            // Clear in-memory cache as well.
+            app.currencies_filter.clear();
             app.mode = default_mode;
             true
         }

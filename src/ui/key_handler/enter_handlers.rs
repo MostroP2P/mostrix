@@ -401,19 +401,22 @@ fn handle_enter_settings_mode(
             }
         }
         UiMode::ConfirmCurrency(currency_string, selected_button) => {
-            app.mode = handle_confirmation_enter(
-                selected_button,
-                &currency_string,
-                default_mode,
-                save_currency_to_settings,
-                |input| UiMode::AddCurrency(create_key_input_state(input)),
-            );
+            if selected_button {
+                // Persist to settings and update in-memory cache.
+                save_currency_to_settings(&currency_string);
+                let upper = currency_string.trim().to_uppercase();
+                if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
+                    app.currencies_filter.push(upper);
+                }
+            }
+            app.mode = default_mode;
         }
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
-                // YES selected - clear currency filters
+                // YES selected - clear currency filters (both on disk and in cache)
                 use crate::ui::key_handler::settings::clear_currency_filters;
                 clear_currency_filters();
+                app.currencies_filter.clear();
             }
             app.mode = default_mode;
         }

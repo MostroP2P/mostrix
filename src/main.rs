@@ -187,6 +187,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
+    // Seed currencies filter cache from settings so UI-side filtering does not
+    // need to hit the filesystem on every render.
+    app.currencies_filter = settings.currencies_filter.clone();
 
     // Fetch initial Mostro instance info for the current Mostro pubkey.
     match fetch_mostro_instance_info(&client, mostro_pubkey).await {
@@ -493,16 +496,16 @@ async fn main() -> Result<(), anyhow::Error> {
             _ => "All (from Mostro instance)".to_string(),
         };
         // Currencies filters string
-        let currencies_filters_str = match current_settings.currencies_filters.is_empty() {
+        let currencies_filter_str = match current_settings.currencies_filter.is_empty() {
             true => "All currencies are accepted".to_string(),
-            false => current_settings.currencies_filters.join(", "),
+            false => current_settings.currencies_filter.join(", "),
         };
         let status_lines = vec![
             format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
             format!("🔗 Relays: {}", relays_str),
             format!(
                 "💱 Currencies: {} - Filters: {}",
-                mostro_instance_currencies, currencies_filters_str
+                mostro_instance_currencies, currencies_filter_str
             ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;

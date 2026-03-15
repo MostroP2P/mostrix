@@ -65,7 +65,7 @@ relays = [
 log_level = "info" 
 
 # Fiat currency filter (optional, ISO codes)
-currencies_filters = ["VES", "ARS", "USD"]
+currencies_filter = ["VES", "ARS", "USD"]
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
@@ -100,8 +100,8 @@ pow = 0
   - Recommended values: `"info"` for normal use, `"debug"` or `"trace"` for troubleshooting.
   - Has no effect on what fiat currencies are available.
 
-- **`currencies_filters`**  
-  - Optional list of fiat currency **filters** (by ISO code) used by Mostrix when listing orders.  
+- **`currencies_filter`**  
+  - Optional list of fiat currency **filter** (by ISO code) used by Mostrix when listing orders.  
   - If the list is **empty**, all currencies published by the Mostro instance are shown.  
   - If non-empty (e.g. `["USD"]` or `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 
@@ -126,17 +126,17 @@ pow = 0
 
 #### Upgrading from v0.x
 
-**Breaking change:** The `currencies` field in `settings.toml` has been renamed to `currencies_filters` for clarity.
+**Breaking change:** The `currencies` field in `settings.toml` has been renamed to `currencies_filter` for clarity.
 
 - Old configs still work (backward compatibility via field alias).
-- **Recommended:** Manually rename `currencies =` to `currencies_filters =` in your `~/.mostrix/settings.toml`.
-- If you have both fields, `currencies_filters` takes precedence.
+- **Recommended:** Manually rename `currencies =` to `currencies_filter =` in your `~/.mostrix/settings.toml`.
+- If you have both fields, `currencies_filter` takes precedence.
 
 Example migration:
 
 ```diff
 - currencies = ["USD", "EUR"]
-+ currencies_filters = ["USD", "EUR"]
++ currencies_filter = ["USD", "EUR"]
 ```
 
 ### Admin features
