@@ -164,7 +164,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_alias_loads_old_currencies_field() {
+    fn settings_rejects_deprecated_currencies_field() {
         let toml = r#"
             mostro_pubkey = "npub1test"
             nsec_privkey = "nsec1test"
@@ -174,7 +174,9 @@ mod tests {
             currencies = ["USD", "EUR"]
             pow = 0
         "#;
-        let settings: Settings = toml::from_str(toml).unwrap();
-        assert_eq!(settings.currencies_filter, vec!["USD", "EUR"]);
+        // Direct deserialization (bypassing validate_currencies_config) should now fail
+        // because the Settings struct no longer has a serde alias for `currencies`.
+        let result: Result<Settings, _> = toml::from_str(toml);
+        assert!(result.is_err());
     }
 }
