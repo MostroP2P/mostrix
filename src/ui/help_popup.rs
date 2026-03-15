@@ -126,6 +126,10 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_MESSAGES.to_string(),
             vec![HELP_MSG_ENTER_OPEN.to_string(), HELP_MSG_SELECT.to_string()],
         ),
+        Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo) => (
+            "Mostro instance info".to_string(),
+            vec!["View Mostro daemon status and accepted fiat currencies.".to_string()],
+        ),
         Tab::User(UserTab::CreateNewOrder) => (
             HELP_TITLE_CREATE_NEW_ORDER.to_string(),
             vec![

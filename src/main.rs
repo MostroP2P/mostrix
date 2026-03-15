@@ -12,10 +12,11 @@ use crate::ui::helpers::{
 use crate::ui::key_handler::handle_key_event;
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
-    OperationResult,
+    MostroInfoFetchResult, OperationResult,
 };
 use crate::util::{
-    handle_message_notification, handle_order_result, listen_for_order_messages,
+    fetch_mostro_instance_info, handle_message_notification, handle_order_result,
+    listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
     spawn_save_attachment,
 };
@@ -186,6 +187,22 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
+    // Seed currencies filter cache from settings so UI-side filtering does not
+    // need to hit the filesystem on every render.
+    app.currencies_filter = settings.currencies_filter.clone();
+
+    // Fetch initial Mostro instance info for the current Mostro pubkey.
+    match fetch_mostro_instance_info(&client, mostro_pubkey).await {
+        Ok(Some(info)) => {
+            app.mostro_info = Some(info);
+        }
+        Ok(None) => {
+            log::info!("No Mostro instance info event found for current Mostro pubkey");
+        }
+        Err(e) => {
+            log::warn!("Failed to fetch Mostro instance info: {}", e);
+        }
+    }
 
     // Load all admin disputes from database if admin mode
     // (The filter toggle will show InProgress or Finalized based on user selection)
@@ -228,6 +245,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // Channel to trigger save of selected attachment (Ctrl+S in dispute chat)
     let (save_attachment_tx, mut save_attachment_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
+
+    // Channel to receive Mostro instance info fetch results (fetch runs in spawned tasks)
+    let (mostro_info_tx, mut mostro_info_rx) =
+        tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
@@ -311,6 +332,24 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
+            mostro_info_result = mostro_info_rx.recv() => {
+                if let Some(res) = mostro_info_result {
+                    match res {
+                        MostroInfoFetchResult::Ok { info, message } => {
+                            app.mostro_info = *info;
+                            app.mode = crate::ui::UiMode::OperationResult(
+                                crate::ui::OperationResult::Info(message),
+                            );
+                        }
+                        MostroInfoFetchResult::Err(e) => {
+                            app.mostro_info = None;
+                            app.mode = crate::ui::UiMode::OperationResult(
+                                crate::ui::OperationResult::Error(e),
+                            );
+                        }
+                    }
+                }
+            }
             maybe_event = events.next() => {
                 // Handle errors in event stream
                 let event = match maybe_event {
@@ -374,6 +413,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &client,
                         mostro_pubkey,
                         &order_result_tx,
+                        &mostro_info_tx,
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),
@@ -444,19 +484,29 @@ async fn main() -> Result<(), anyhow::Error> {
         expire_attachment_toast(&mut app);
 
         // Status bar text - 3 separate lines
-        // Reload settings from disk so newly added relays and currencies are reflected immediately.
+        // Reload settings from disk so newly added relays are reflected immediately.
         let current_settings =
             crate::settings::load_settings_from_disk().unwrap_or_else(|_| settings.clone());
         let relays_str = current_settings.relays.join(" - ");
-        let currencies_str = if current_settings.currencies.is_empty() {
-            "All".to_string()
-        } else {
-            current_settings.currencies.join(", ")
+        // Mostro instance currencies string
+        let mostro_instance_currencies = match app.mostro_info.as_ref() {
+            Some(info) if !info.fiat_currencies_accepted.is_empty() => {
+                info.fiat_currencies_accepted.join(", ")
+            }
+            _ => "All (from Mostro instance)".to_string(),
+        };
+        // Currencies filters string
+        let currencies_filter_str = match current_settings.currencies_filter.is_empty() {
+            true => "All currencies are accepted".to_string(),
+            false => current_settings.currencies_filter.join(", "),
         };
         let status_lines = vec![
             format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
             format!("🔗 Relays: {}", relays_str),
-            format!("💱 Currencies: {}", currencies_str),
+            format!(
+                "💱 Currencies: {} - Filters: {}",
+                mostro_instance_currencies, currencies_filter_str
+            ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
     }

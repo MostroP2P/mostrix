@@ -13,8 +13,8 @@ mod validation;
 
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
-    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter, OperationResult, Tab,
-    TakeOrderState, UiMode, UserMode, UserTab,
+    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
+    MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
@@ -31,6 +31,7 @@ pub struct EnterKeyContext<'a> {
     pub client: &'a Client,
     pub mostro_pubkey: PublicKey,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
+    pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
@@ -155,6 +156,7 @@ pub fn handle_key_event(
     client: &Client,
     mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<OperationResult>,
+    mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
     save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
@@ -593,6 +595,7 @@ pub fn handle_key_event(
                 client,
                 mostro_pubkey,
                 order_result_tx,
+                mostro_info_tx,
                 admin_chat_keys,
             };
             let should_continue = handle_enter_key(app, &ctx);
@@ -628,6 +631,7 @@ pub fn handle_key_event(
                 client,
                 mostro_pubkey,
                 order_result_tx,
+                mostro_info_tx,
                 admin_chat_keys,
             };
             let should_continue = handle_confirm_key(app, &ctx);

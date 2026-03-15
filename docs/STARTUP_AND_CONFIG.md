@@ -178,15 +178,15 @@ The TUI uses `ratatui` with the `crossterm` backend.
 The `Settings` struct defines all available configuration options.
 
 **Source**: `src/settings.rs:8`
-```8:18:src/settings.rs
-#[derive(Debug, Deserialize, Serialize)]
+```8:19:src/settings.rs
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
     pub mostro_pubkey: String,
     pub nsec_privkey: String,
     pub admin_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
-    pub currencies: Vec<String>,
+    pub currencies_filter: Vec<String>,
     pub pow: u8,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
@@ -199,7 +199,9 @@ pub struct Settings {
 - **`admin_privkey`**: The admin's private key, required for solving disputes when in admin mode.
 - **`relays`**: A list of Nostr relay URLs to connect to.
 - **`log_level`**: The verbosity of logging (e.g., "debug", "info", "warn", "error").
-- **`currencies`**: A list of fiat currencies the user is interested in.
+- **`currencies_filter`**: Optional list of fiat currency **filters** (ISO codes).  
+  - When empty, all currencies published by the Mostro instance are shown.  
+  - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 - **`pow`**: Proof-of-work difficulty requirement for publishing events.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
 

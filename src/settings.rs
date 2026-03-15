@@ -12,7 +12,7 @@ pub struct Settings {
     pub admin_privkey: String,
     pub relays: Vec<String>,
     pub log_level: String,
-    pub currencies: Vec<String>,
+    pub currencies_filter: Vec<String>,
     pub pow: u8,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
@@ -30,7 +30,7 @@ impl Default for Settings {
             admin_privkey: String::new(),
             relays: Vec::new(),
             log_level: "info".to_string(),
-            currencies: Vec::new(),
+            currencies_filter: Vec::new(),
             pow: 0,
             user_mode: "user".to_string(),
         }
@@ -54,6 +54,49 @@ pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
     }
 
     Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
+}
+
+/// Validates currencies config: exits with a clear error if the deprecated
+/// `currencies` field is used or both `currencies` and `currencies_filter` are present.
+/// Only considers non-comment lines (key before any `#`).
+fn validate_currencies_config(settings_path: &PathBuf) -> Result<(), anyhow::Error> {
+    let config_str = match fs::read_to_string(settings_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    let mut has_old = false;
+    let mut has_new = false;
+    for line in config_str.lines() {
+        let before_comment = line.split('#').next().unwrap_or(line).trim();
+        if before_comment.is_empty() {
+            continue;
+        }
+        if before_comment.starts_with("currencies_filter =")
+            || before_comment.starts_with("currencies_filter=")
+        {
+            has_new = true;
+        } else if before_comment.starts_with("currencies =")
+            || before_comment.starts_with("currencies=")
+        {
+            has_old = true;
+        }
+    }
+
+    let path_display = settings_path.display();
+    if has_old && !has_new {
+        anyhow::bail!(
+            "Deprecated field 'currencies' in {}. Please rename to 'currencies_filter' and run again. See README 'Upgrading from v0.x'.",
+            path_display
+        );
+    }
+    if has_old && has_new {
+        anyhow::bail!(
+            "Both 'currencies' and 'currencies_filter' are set in {}. Remove 'currencies' and keep only 'currencies_filter', then run again.",
+            path_display
+        );
+    }
+    Ok(())
 }
 
 /// Internal helper: ensure settings file exists and load it from disk
@@ -80,6 +123,8 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         fs::copy(&default_file, &hidden_file)
             .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
     }
+
+    validate_currencies_config(&hidden_file)?;
 
     // Use the `config` crate to deserialize to the Settings struct
     let cfg = config::Config::builder()
@@ -112,4 +157,26 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
         .map_err(|e| anyhow::anyhow!("Failed to write settings file: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_rejects_deprecated_currencies_field() {
+        let toml = r#"
+            mostro_pubkey = "npub1test"
+            nsec_privkey = "nsec1test"
+            admin_privkey = "nsec1admin"
+            relays = ["wss://relay.example.com"]
+            log_level = "info"
+            currencies = ["USD", "EUR"]
+            pow = 0
+        "#;
+        // Direct deserialization (bypassing validate_currencies_config) should now fail
+        // because the Settings struct no longer has a serde alias for `currencies`.
+        let result: Result<Settings, _> = toml::from_str(toml);
+        assert!(result.is_err());
+    }
 }

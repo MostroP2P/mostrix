@@ -9,11 +9,14 @@ use crate::ui::{
     MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
+use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
+use crate::util::fetch_mostro_instance_info;
 use mostro_core::prelude::*;
-use nostr_sdk::Client;
+use nostr_sdk::prelude::PublicKey;
+use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -92,6 +95,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)
                     | Tab::Admin(AdminTab::Observer)
+                    | Tab::User(UserTab::MostroInfo)
+                    | Tab::Admin(AdminTab::MostroInfo)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
@@ -129,8 +134,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
         | UiMode::ConfirmExit(_) => {
-            let should_continue =
-                handle_enter_settings_mode(app, current_mode, default_mode, ctx.client);
+            let should_continue = handle_enter_settings_mode(app, current_mode, default_mode, ctx);
             if !should_continue {
                 return false; // Exit application
             }
@@ -285,7 +289,7 @@ fn handle_enter_settings_mode(
     app: &mut AppState,
     mode: UiMode,
     default_mode: UiMode,
-    client: &Client,
+    ctx: &super::EnterKeyContext<'_>,
 ) -> bool {
     match mode {
         UiMode::AddMostroPubkey(key_state) => {
@@ -311,6 +315,40 @@ fn handle_enter_settings_mode(
                 save_mostro_pubkey_to_settings,
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
+
+            // If the selected button is YES, spawn a task to refresh Mostro instance info
+            // using the new pubkey (no disk round-trip); UI stays responsive.
+            if selected_button {
+                let new_pubkey = match PublicKey::from_str(&key_string) {
+                    Ok(pk) => pk,
+                    Err(e) => {
+                        log::error!("Invalid pubkey after confirmation: {}", e);
+                        return false;
+                    }
+                };
+                let client_clone = ctx.client.clone();
+                let tx = ctx.mostro_info_tx.clone();
+                tokio::spawn(async move {
+                    let result = fetch_mostro_instance_info(&client_clone, new_pubkey).await;
+                    let res = match result {
+                        Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
+                            info: Box::new(info),
+                            message: "Mostro instance info updated.".to_string(),
+                        },
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to refresh Mostro instance info after pubkey Enter: {}",
+                                e
+                            );
+                            crate::ui::MostroInfoFetchResult::Err(e.to_string())
+                        }
+                    };
+                    let _ = tx.send(res);
+                });
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Fetching Mostro instance info...".to_string(),
+                ));
+            }
         }
         UiMode::AddRelay(key_state) => {
             // Validate relay URL format before proceeding to confirmation
@@ -339,7 +377,7 @@ fn handle_enter_settings_mode(
             // If YES was selected, also add the relay to the running Nostr client
             if selected_button {
                 let relay_to_add = relay_string.clone();
-                let client_clone = client.clone();
+                let client_clone = ctx.client.clone();
                 tokio::spawn(async move {
                     if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
                         log::error!("Failed to add relay at runtime: {}", e);
@@ -363,19 +401,22 @@ fn handle_enter_settings_mode(
             }
         }
         UiMode::ConfirmCurrency(currency_string, selected_button) => {
-            app.mode = handle_confirmation_enter(
-                selected_button,
-                &currency_string,
-                default_mode,
-                save_currency_to_settings,
-                |input| UiMode::AddCurrency(create_key_input_state(input)),
-            );
+            if selected_button {
+                // Persist to settings and update in-memory cache.
+                save_currency_to_settings(&currency_string);
+                let upper = currency_string.trim().to_uppercase();
+                if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
+                    app.currencies_filter.push(upper);
+                }
+            }
+            app.mode = default_mode;
         }
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
-                // YES selected - clear currency filters
+                // YES selected - clear currency filters (both on disk and in cache)
                 use crate::ui::key_handler::settings::clear_currency_filters;
                 clear_currency_filters();
+                app.currencies_filter.clear();
             }
             app.mode = default_mode;
         }
@@ -399,8 +440,57 @@ fn handle_enter_settings_mode(
 }
 
 fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
-    // Show take order popup when Enter is pressed in Orders tab (user mode only)
-    if let Tab::User(UserTab::Orders) = app.active_tab {
+    // Refresh Mostro instance info when Enter is pressed in the Mostro Info tab (spawn, no UI freeze)
+    if matches!(
+        app.active_tab,
+        Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
+    ) {
+        let client = ctx.client.clone();
+        let tx = ctx.mostro_info_tx.clone();
+        tokio::spawn(async move {
+            let settings = match load_settings_from_disk() {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
+                        "Failed to load settings: {}",
+                        e
+                    )));
+                    return;
+                }
+            };
+            let mostro_pubkey = match PublicKey::from_str(&settings.mostro_pubkey) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
+                        "Invalid Mostro pubkey in settings: {}",
+                        e
+                    )));
+                    return;
+                }
+            };
+            let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
+            let res = match result {
+                Ok(Some(info)) => crate::ui::MostroInfoFetchResult::Ok {
+                    info: Box::new(Some(info)),
+                    message: "Mostro instance info refreshed from relays.".to_string(),
+                },
+                Ok(None) => crate::ui::MostroInfoFetchResult::Ok {
+                    info: Box::new(None),
+                    message: "No Mostro instance info event found for the current pubkey."
+                        .to_string(),
+                },
+                Err(e) => crate::ui::MostroInfoFetchResult::Err(format!(
+                    "Failed to refresh Mostro instance info: {}",
+                    e
+                )),
+            };
+            let _ = tx.send(res);
+        });
+        app.mode = UiMode::OperationResult(OperationResult::Info(
+            "Fetching Mostro instance info...".to_string(),
+        ));
+    } else if let Tab::User(UserTab::Orders) = app.active_tab {
+        // Show take order popup when Enter is pressed in Orders tab (user mode only)
         let orders_lock = ctx.orders.lock().unwrap();
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
@@ -417,7 +507,6 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
         let disputes_lock = ctx.disputes.lock().unwrap();
         // Filter to only get "initiated" disputes
-        use std::str::FromStr;
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
             .iter()
             .enumerate()

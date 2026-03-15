@@ -7,13 +7,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::ui::{apply_kind_color, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     selected_order_idx: usize,
+    app: &AppState,
 ) {
     let orders_lock = orders.lock().unwrap();
 
@@ -30,6 +31,28 @@ pub fn render_orders_tab(
         );
         f.render_widget(paragraph, area);
     } else {
+        // Build a case-insensitive set of currencies from the cached filter.
+        let currency_filter: Option<std::collections::HashSet<String>> =
+            if app.currencies_filter.is_empty() {
+                None
+            } else {
+                Some(
+                    app.currencies_filter
+                        .iter()
+                        .map(|c| c.to_uppercase())
+                        .collect::<std::collections::HashSet<String>>(),
+                )
+            };
+
+        let order_passes_filter = |order: &SmallOrder| -> bool {
+            if let Some(ref filter_set) = currency_filter {
+                let fiat_upper = order.fiat_code.to_uppercase();
+                filter_set.contains(&fiat_upper)
+            } else {
+                true
+            }
+        };
+
         let header_cells = vec![
             Cell::from("📈 Kind").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("🆔 Order Id").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -45,7 +68,11 @@ pub fn render_orders_tab(
         let rows: Vec<Row> = orders_lock
             .iter()
             .enumerate()
-            .map(|(i, order)| {
+            .filter_map(|(i, order)| {
+                if !order_passes_filter(order) {
+                    return None;
+                }
+
                 let kind_cell = if let Some(k) = &order.kind {
                     Cell::from(k.to_string()).style(apply_kind_color(k))
                 } else {
@@ -104,12 +131,11 @@ pub fn render_orders_tab(
                     date_cell,
                 ]);
 
-                if i == selected_order_idx {
-                    // Highlight the selected row.
+                Some(if i == selected_order_idx {
                     row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
                 } else {
                     row
-                }
+                })
             })
             .collect();
 

@@ -10,6 +10,9 @@ use crate::ui::key_handler::settings::{
     clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
+use crate::util::fetch_mostro_instance_info;
+use nostr_sdk::prelude::PublicKey;
+use std::str::FromStr;
 
 /// Helper: Transition from input mode to confirmation mode
 pub fn handle_input_to_confirmation<F>(
@@ -143,6 +146,39 @@ pub fn handle_confirm_key(
                 save_mostro_pubkey_to_settings,
                 |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
             );
+
+            // Spawn task to refresh Mostro instance info using the new pubkey (no disk round-trip);
+            // UI stays responsive.
+            let new_pubkey = match PublicKey::from_str(&key_string) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    log::error!("Invalid pubkey after confirmation: {}", e);
+                    app.mostro_info = None;
+                    return true;
+                }
+            };
+            let client = ctx.client.clone();
+            let tx = ctx.mostro_info_tx.clone();
+            tokio::spawn(async move {
+                let result = fetch_mostro_instance_info(&client, new_pubkey).await;
+                let res = match result {
+                    Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
+                        info: Box::new(info),
+                        message: "Mostro instance info updated.".to_string(),
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to refresh Mostro instance info after pubkey change: {}",
+                            e
+                        );
+                        crate::ui::MostroInfoFetchResult::Err(e.to_string())
+                    }
+                };
+                let _ = tx.send(res);
+            });
+            app.mode = crate::ui::UiMode::OperationResult(crate::ui::OperationResult::Info(
+                "Fetching Mostro instance info...".to_string(),
+            ));
             true
         }
         UiMode::ConfirmRelay(relay_string, _) => {
@@ -173,6 +209,7 @@ pub fn handle_confirm_key(
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
                 UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
             };
+            // Persist to settings.toml.
             app.mode = handle_confirmation_enter(
                 true, // 'y' key means YES
                 &currency_string,
@@ -180,6 +217,11 @@ pub fn handle_confirm_key(
                 save_currency_to_settings,
                 |input| UiMode::AddCurrency(create_key_input_state(input)),
             );
+            // Update in-memory cache so UI-side filtering takes effect immediately.
+            let upper = currency_string.trim().to_uppercase();
+            if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
+                app.currencies_filter.push(upper);
+            }
             true
         }
         UiMode::ConfirmClearCurrencies(_) => {
@@ -189,6 +231,8 @@ pub fn handle_confirm_key(
             };
             // YES selected - clear currency filters
             clear_currency_filters();
+            // Clear in-memory cache as well.
+            app.currencies_filter.clear();
             app.mode = default_mode;
             true
         }

@@ -64,8 +64,8 @@ relays = [
 # Not managed from tui at the moment
 log_level = "info" 
 
-# Fiat currencies you want to see / use (ISO codes)
-currencies = ["VES", "ARS", "USD"]
+# Fiat currency filter (optional, ISO codes)
+currencies_filter = ["VES", "ARS", "USD"]
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
@@ -98,10 +98,12 @@ pow = 0
 - **`log_level`**  
   - Controls how verbose logging is; values map to Rust log levels.  
   - Recommended values: `"info"` for normal use, `"debug"` or `"trace"` for troubleshooting.
+  - Has no effect on what fiat currencies are available.
 
-- **`currencies`**  
-  - List of fiat currencies (by ISO code) you are interested in trading/seeing in the UI.  
-  - You can customize this to only show relevant markets, e.g. `["USD", "EUR"]` or leave it empty to clear all filters.
+- **`currencies_filter`**  
+  - Optional list of fiat currency **filter** (by ISO code) used by Mostrix when listing orders.  
+  - If the list is **empty**, all currencies published by the Mostro instance are shown.  
+  - If non-empty (e.g. `["USD"]` or `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 
 - **`user_mode`**  
   - `"user"` (default): normal user interface and actions.  
@@ -110,6 +112,34 @@ pow = 0
 - **`pow`**  
   - Required proof-of-work difficulty for Nostr events created by Mostrix.  
   - `0` disables additional PoW; higher values increase CPU cost per event but can help with relay anti-spam policies.
+
+#### Fiat currencies and Mostro instance info
+
+- **Available fiat currencies** are **not configured in `settings.toml`**.  
+- Instead, Mostrix reads them from the Mostro instance status event (`kind` 38385, tag `fiat_currencies_accepted`) as described in the Mostro protocol docs ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)).  
+- The new **“Mostro Info”** tab (available in both User and Admin modes) shows:
+  - Mostro daemon version, commit hash, limits, fee and PoW configuration.
+  - Lightning node details (alias, pubkey, version, networks, URIs).
+  - The list of **accepted fiat currencies** as published by the Mostro instance.
+- The status bar’s **Currencies** line is also derived from this event; if the instance omits `fiat_currencies_accepted`, Mostrix treats it as “all currencies accepted” and displays `All (from Mostro instance)`.
+- Press **Enter** while focused on the **Mostro Info** tab to refresh the instance info from the configured relays using the current Mostro pubkey in `settings.toml`.
+
+#### Upgrading from v0.x
+
+**Breaking change:** The `currencies` field in `settings.toml` has been renamed to `currencies_filter` for clarity.
+
+- **Required:** Manually rename `currencies =` to `currencies_filter =` in your `~/.mostrix/settings.toml` before running.
+- On first run with an old config that still uses `currencies`, Mostrix will exit with a clear error message and instructions.
+- This is a breaking change — manual migration is mandatory.
+
+Example migration:
+
+```diff
+- currencies = ["USD", "EUR"]
++ currencies_filter = ["USD", "EUR"]
+```
+
+**Note:** Mostrix will not start if the old `currencies` field is present. You must rename it to `currencies_filter` in your `settings.toml`.*** End Patch`"]}>>();
 
 ### Admin features
 

@@ -14,6 +14,7 @@ use crate::ui::orders::{
     OrderMessage,
 };
 use crate::ui::user_state::UserMode;
+use crate::util::MostroInstanceInfo;
 
 #[derive(Clone, Debug)]
 pub enum UiMode {
@@ -84,6 +85,10 @@ pub struct AppState {
     pub observer_loading: bool,
     /// Observer mode: last error message (if any).
     pub observer_error: Option<String>,
+    /// Cached copy of currencies filter from settings (used for UI-side filtering).
+    pub currencies_filter: Vec<String>,
+    /// Cached Mostro instance info (kind 38385 event), if available.
+    pub mostro_info: Option<MostroInstanceInfo>,
 }
 
 impl AppState {
@@ -119,6 +124,8 @@ impl AppState {
             observer_scroll_tracker: None,
             observer_loading: false,
             observer_error: None,
+            currencies_filter: Vec::new(),
+            mostro_info: None,
         }
     }
 

@@ -1,11 +1,17 @@
+# Settings for Mostrix
+
 # Mostro pubkey, it can be hex or npub
 mostro_pubkey = "mostro_pubkey_hex_format"
 # Admin private key - leave empty for user mode
-admin_privkey=""
+admin_privkey = ""
 # Relays to connect to
 relays = ["wss://relay.mostro.network"]
 log_level = "info"
-currencies = ["VES", "ARS", "USD"]
-nsec_privkey='nsec1_privkey_format'
+# Visually filter currencies to show in the UI
+currencies_filter = ["VES", "ARS", "USD"]
+# Nostr private key in nsec format
+nsec_privkey = 'nsec1_privkey_format'
+# User mode: "user" or "admin"
 user_mode = "user"
+# Proof-of-work difficulty
 pow = 0

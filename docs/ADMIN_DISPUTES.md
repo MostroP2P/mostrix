@@ -154,15 +154,15 @@ The Settings tab provides comprehensive configuration options for both User and 
 
 1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
 2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
-3. **Add Currency Filter**: Add a fiat currency code (e.g., USD, EUR) to filter orders displayed. When one or more currencies are configured, only orders matching those fiat codes are shown. Filters are applied in real-time.
-4. **Clear Currency Filters**: Remove all currency filters to show orders for all currencies. This clears the `currencies` array in `settings.toml`.
+3. **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR) to the `currencies_filter` array in `settings.toml`. The fetch scheduler in Mostrix reloads `currencies_filter` on each tick and uses it to filter which orders are visible: only orders whose fiat code is in this list are shown. The *list of available* fiat currencies is still defined by the Mostro instance via the `fiat_currencies_accepted` tag in its status event; the filter in `settings.toml` only narrows which of those are displayed. Same behaviour in Admin mode.
+4. **Clear Currency Filters**: Clears the `currencies_filter` array in `settings.toml`. An empty list means no filter: all orders from the Mostro instance are shown again. The scheduler picks up the change on the next tick.
 
 #### Admin Mode Options
 
 1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
 2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
-3. **Add Currency Filter**: Add a fiat currency code (e.g., USD, EUR) to filter orders displayed. Filters are applied in real-time.
-4. **Clear Currency Filters**: Remove all currency filters to show orders for all currencies.
+3. **Add Currency Filter**: Same as in User mode: adds codes to `currencies_filter` in `settings.toml`; the scheduler uses this to filter visible orders. Mostro’s `fiat_currencies_accepted` defines which currencies the instance supports; Mostrix uses `currencies_filter` only to restrict which orders are shown.
+4. **Clear Currency Filters**: Clears `currencies_filter` in `settings.toml`; the scheduler then shows all orders (no currency filter) on the next fetch.
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
 
@@ -817,21 +817,20 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 ### Currency Filter Management
 
-**Status**: ✅ **Fully Implemented**
+**Status**: ✅ **Implemented (as a view filter)**
 
-Currency filters allow admins (and users) to focus on specific fiat currencies when viewing orders. This is particularly useful for admins monitoring disputes in specific markets.
+Admins (and users) can configure **local currency filters** to focus on specific fiat currencies when viewing orders. The **set of available currencies** still comes from the Mostro **instance status** event’s `fiat_currencies_accepted` tag ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)), but the `currencies_filter` field in `settings.toml` is used as a **filter** over those orders.
 
 #### Currency Filter Features
 
-- **Add Currency Filter**: Add fiat currency codes (e.g., USD, EUR, ARS) to filter orders
-  - Currency codes are validated (non-empty, max 10 characters)
-  - Filters are applied in real-time to order fetching
-  - Multiple currencies can be added to show orders for any of them
-- **Clear Currency Filters**: Remove all currency filters with a single action
-  - Clears the `currencies` array in `settings.toml`
-  - Can also be cleared by manually editing `settings.toml` and setting `currencies = []`
-- **Dynamic Filtering**: Currency filters are applied immediately without restart
-- **Status Bar Display**: Active currency filters are displayed in the status bar
+- **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR, ARS) into the `currencies_filter` array in `settings.toml`.
+  - Codes are validated (non-empty, max 10 characters) and uppercased.
+  - When **non-empty**, background order fetching only keeps orders whose `fiat_code` is in this list.
+- **Clear Currency Filters**: Removes all currency filters
+  - Clears the `currencies_filter` array in `settings.toml`
+  - An **empty** list means “no filter”: all currencies from the Mostro instance are shown.
+- **Dynamic Filtering**: Currency filters are applied on each periodic fetch; changes in `settings.toml` take effect without restarting.
+- **Status Bar Display**: The status bar’s currency line still shows currencies coming from the Mostro instance status event; filters only control **which orders are visible**, not which currencies the instance supports.
 
 #### Currency Filter Implementation
 
@@ -843,8 +842,8 @@ pub fn save_currency_to_settings(currency_string: &str) {
     save_settings_with(
         |s| {
             let currency_upper = currency_string.trim().to_uppercase();
-            if !s.currencies.contains(&currency_upper) {
-                s.currencies.push(currency_upper);
+            if !s.currencies_filter.contains(&currency_upper) {
+                s.currencies_filter.push(currency_upper);
             }
         },
         "Failed to save currency to settings",
@@ -856,7 +855,7 @@ pub fn save_currency_to_settings(currency_string: &str) {
 pub fn clear_currency_filters() {
     save_settings_with(
         |s| {
-            s.currencies.clear();
+            s.currencies_filter.clear();
         },
         "Failed to clear currency filters",
         "All currency filters cleared",

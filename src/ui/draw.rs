@@ -30,9 +30,13 @@ pub fn ui_draw(
     // Render content based on active tab and role
     let content_area = chunks[1];
     match (&app.active_tab, app.user_role) {
-        (Tab::User(UserTab::Orders), UserRole::User) => {
-            tabs::orders_tab::render_orders_tab(f, content_area, orders, app.selected_order_idx)
-        }
+        (Tab::User(UserTab::Orders), UserRole::User) => tabs::orders_tab::render_orders_tab(
+            f,
+            content_area,
+            orders,
+            app.selected_order_idx,
+            app,
+        ),
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
             tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
         }
@@ -44,6 +48,9 @@ pub fn ui_draw(
                 &messages,
                 app.selected_message_idx,
             )
+        }
+        (Tab::User(UserTab::MostroInfo), UserRole::User) => {
+            tabs::mostro_info_tab::render_mostro_info_tab(f, content_area, app)
         }
         (Tab::User(UserTab::Settings), UserRole::User) => tabs::settings_tab::render_settings_tab(
             f,
@@ -71,6 +78,9 @@ pub fn ui_draw(
         }
         (Tab::Admin(AdminTab::Observer), UserRole::Admin) => {
             tabs::observer_tab::render_observer_tab(f, content_area, app)
+        }
+        (Tab::Admin(AdminTab::MostroInfo), UserRole::Admin) => {
+            tabs::mostro_info_tab::render_mostro_info_tab(f, content_area, app)
         }
         (Tab::Admin(AdminTab::Settings), UserRole::Admin) => {
             tabs::settings_tab::render_settings_tab(
