@@ -128,9 +128,9 @@ pow = 0
 
 **Breaking change:** The `currencies` field in `settings.toml` has been renamed to `currencies_filter` for clarity.
 
-- Old configs still work (backward compatibility via field alias).
-- **Recommended:** Manually rename `currencies =` to `currencies_filter =` in your `~/.mostrix/settings.toml`.
-- If you have both fields, `currencies_filter` takes precedence.
+- **Required:** Manually rename `currencies =` to `currencies_filter =` in your `~/.mostrix/settings.toml` before running.
+- On first run with an old config that still uses `currencies`, Mostrix will exit with a clear error message and instructions.
+- This is a breaking change — manual migration is mandatory.
 
 Example migration:
 
@@ -138,6 +138,8 @@ Example migration:
 - currencies = ["USD", "EUR"]
 + currencies_filter = ["USD", "EUR"]
 ```
+
+**Note:** Mostrix will not start if the old `currencies` field is present. You must rename it to `currencies_filter` in your `settings.toml`.*** End Patch`"]}>>();
 
 ### Admin features
 
