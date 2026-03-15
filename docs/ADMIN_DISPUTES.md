@@ -154,8 +154,8 @@ The Settings tab provides comprehensive configuration options for both User and 
 
 1. **Change Mostro Pubkey**: Update the Mostro instance pubkey used by the client (hex format, 64 characters).
 2. **Add Nostr Relay**: Add a new Nostr relay to the relay list (must start with `wss://`). Relays are added to the running client immediately.
-3. **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR) to the `currencies_filter` array in `settings.toml` (the key `currencies` is also accepted for backwards compatibility). The fetch scheduler in Mostrix reloads `currencies_filter` on each tick and uses it to filter which orders are visible: only orders whose fiat code is in this list are shown. The *list of available* fiat currencies is still defined by the Mostro instance via the `fiat_currencies_accepted` tag in its status event; the filter in `settings.toml` only narrows which of those are displayed. Same behaviour in Admin mode.
-4. **Clear Currency Filters**: Clears the `currencies_filter` (or `currencies`) array in `settings.toml`. An empty list means no filter: all orders from the Mostro instance are shown again. The scheduler picks up the change on the next tick.
+3. **Add Currency Filter**: Adds fiat currency codes (e.g., USD, EUR) to the `currencies_filter` array in `settings.toml`. The fetch scheduler in Mostrix reloads `currencies_filter` on each tick and uses it to filter which orders are visible: only orders whose fiat code is in this list are shown. The *list of available* fiat currencies is still defined by the Mostro instance via the `fiat_currencies_accepted` tag in its status event; the filter in `settings.toml` only narrows which of those are displayed. Same behaviour in Admin mode.
+4. **Clear Currency Filters**: Clears the `currencies_filter` array in `settings.toml`. An empty list means no filter: all orders from the Mostro instance are shown again. The scheduler picks up the change on the next tick.
 
 #### Admin Mode Options
 
@@ -819,7 +819,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 **Status**: ✅ **Implemented (as a view filter)**
 
-Admins (and users) can configure **local currency filters** to focus on specific fiat currencies when viewing orders. The **set of available currencies** still comes from the Mostro **instance status** event’s `fiat_currencies_accepted` tag ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)), but the `currencies_filter` field in `settings.toml` (with the legacy key `currencies` still accepted for backwards compatibility) is used as a **filter** over those orders.
+Admins (and users) can configure **local currency filters** to focus on specific fiat currencies when viewing orders. The **set of available currencies** still comes from the Mostro **instance status** event’s `fiat_currencies_accepted` tag ([Mostro Instance Status](https://mostro.network/protocol/other_events.html#mostro-instance-status-1)), but the `currencies_filter` field in `settings.toml` is used as a **filter** over those orders.
 
 #### Currency Filter Features
 
