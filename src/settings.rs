@@ -77,7 +77,8 @@ fn validate_currencies_config(settings_path: &PathBuf) -> Result<(), anyhow::Err
             || before_comment.starts_with("currencies_filters=")
         {
             has_new = true;
-        } else if before_comment.starts_with("currencies =") || before_comment.starts_with("currencies=")
+        } else if before_comment.starts_with("currencies =")
+            || before_comment.starts_with("currencies=")
         {
             has_old = true;
         }
