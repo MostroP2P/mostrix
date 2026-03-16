@@ -56,3 +56,11 @@ pre-release-hook = [
   "-c",
   "cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings && if [ -n \"${GITHUB_TOKEN:-}\" ]; then GITHUB_TOKEN=\"$GITHUB_TOKEN\" git cliff --unreleased --github-repo MostroP2P/mostrix -o CHANGELOG.md --tag {{version}}; else git cliff --unreleased -o CHANGELOG.md --tag {{version}}; fi && if [ \"$DRY_RUN\" != \"true\" ]; then git diff --quiet CHANGELOG.md || (git add CHANGELOG.md && git commit -m \"Update CHANGELOG for version {{version}}\"); else echo \"DRY RUN: Skip git add and commit\"; fi",
 ]
+
+# Security fixes for Dependabot alerts
+# Force updated versions of vulnerable transitive dependencies
+[dependencies.quinn-proto]
+version = "0.11.14"
+
+[dependencies.aws-lc-sys]
+version = "0.38.0"
