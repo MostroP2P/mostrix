@@ -1,6 +1,9 @@
+# build
 /target
 *log
+# ide
 .cursorrules
 .cursor/
 .vscode/
-.cursor/commands
+
+

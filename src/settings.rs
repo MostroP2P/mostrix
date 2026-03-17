@@ -1,9 +1,10 @@
 use crate::SETTINGS;
 use serde::{Deserialize, Serialize};
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, path::PathBuf};
+
+/// Embedded default `settings.toml` used to bootstrap configuration on first run.
+/// This is generated at compile time from the repository root `settings.toml`.
+const DEFAULT_SETTINGS_TOML: &str = include_str!("../settings.toml");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
@@ -108,9 +109,6 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
     let hidden_dir = home_dir.join(format!(".{package_name}"));
     let hidden_file = hidden_dir.join("settings.toml");
 
-    // Path to the settings.toml included in the repo (next to Cargo.toml)
-    let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
-
     // Create ~/.mostrix if it doesn't exist
     if !hidden_dir.exists() {
         fs::create_dir(&hidden_dir).map_err(|e| {
@@ -118,10 +116,11 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         })?;
     }
 
-    // Copy settings.toml if it isn't already in ~/.mostrix
+    // Write default settings.toml if it isn't already in ~/.mostrix
     if !hidden_file.exists() {
-        fs::copy(&default_file, &hidden_file)
-            .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
+        fs::write(&hidden_file, DEFAULT_SETTINGS_TOML)
+            .map_err(|e| anyhow::anyhow!("Could not write default settings.toml: {}", e))?;
+        println!("Default settings.toml written to {}", hidden_file.display());
     }
 
     validate_currencies_config(&hidden_file)?;
@@ -132,8 +131,25 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         .build()
         .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
 
-    cfg.try_deserialize::<Settings>()
-        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
+    let settings: Settings = cfg
+        .try_deserialize()
+        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))?;
+
+    // Detect first-launch / placeholder configuration and exit with a clear message
+    // instead of trying to run with invalid keys.
+    if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+        || settings.nsec_privkey == "nsec1_privkey_format"
+    {
+        let path_display = hidden_file.display();
+        anyhow::bail!(
+            "Default settings.toml has been created at {}.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+            path_display
+        );
+    }
+
+    Ok(settings)
 }
 
 /// Public helper: reload current settings from disk (reflects all previous saves)
