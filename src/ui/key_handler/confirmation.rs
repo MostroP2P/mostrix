@@ -1,10 +1,8 @@
-use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
-use crate::SETTINGS;
-
 use crate::ui::key_handler::admin_handlers::{
     execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
+use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 
 use crate::ui::key_handler::settings::{
     clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
@@ -80,47 +78,14 @@ pub fn handle_confirm_key(
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
     match std::mem::replace(&mut app.mode, default_mode.clone()) {
-        UiMode::UserMode(UserMode::ConfirmingOrder(form)) => {
-            // User confirmed, send the order
-            let form_clone = form.clone();
-            app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
-
-            // Spawn async task to send order
-            let pool_clone = ctx.pool.clone();
-            let client_clone = ctx.client.clone();
-            let mostro_pubkey = ctx.mostro_pubkey;
-            let result_tx = ctx.order_result_tx.clone();
-
-            tokio::spawn(async move {
-                let settings = match SETTINGS.get() {
-                    Some(s) => s,
-                    None => {
-                        let error_msg =
-                            "Settings not initialized. Please restart the application.".to_string();
-                        log::error!("{}", error_msg);
-                        let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
-                        return;
-                    }
-                };
-                match crate::util::send_new_order(
-                    &pool_clone,
-                    &client_clone,
-                    settings,
-                    mostro_pubkey,
-                    &form_clone,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let _ = result_tx.send(result);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to send order: {}", e);
-                        let _ = result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
-                    }
-                }
+        UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) => {
+            // ConfirmingOrder is now handled via Enter with YES/NO buttons.
+            // Keep mode unchanged; fallback returns false so the caller can decide.
+            app.mode = UiMode::UserMode(UserMode::ConfirmingOrder {
+                form,
+                selected_button: true,
             });
-            true
+            false
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             // User confirmed taking the order (same as Enter key)
@@ -288,7 +253,7 @@ pub fn handle_cancel_key(app: &mut AppState) {
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
-    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
+    if let UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) = &app.mode {
         // User cancelled, go back to form
         app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     } else if let UiMode::UserMode(UserMode::TakingOrder(_)) = &app.mode {

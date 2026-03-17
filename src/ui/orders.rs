@@ -61,6 +61,21 @@ pub struct FormState {
     pub use_range: bool,         // whether to use fiat range
 }
 
+impl FormState {
+    /// Create a default order form used when entering the Create New Order tab.
+    pub fn new_default_form() -> Self {
+        Self {
+            kind: "buy".to_string(),
+            fiat_code: "USD".to_string(),
+            amount: "0".to_string(),
+            premium: "0".to_string(),
+            expiration_days: "1".to_string(),
+            focused: 1,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TakeOrderState {
     pub order: SmallOrder,

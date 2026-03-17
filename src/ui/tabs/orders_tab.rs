@@ -115,8 +115,9 @@ pub fn render_orders_tab(
                 let payment_method_cell = Cell::from(order.payment_method.clone());
 
                 let date = DateTime::from_timestamp(order.created_at.unwrap_or(0), 0);
+                // Convert UTC timestamp to local time for display
                 let date_cell = Cell::from(
-                    date.map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    date.map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 

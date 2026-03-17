@@ -56,9 +56,55 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             handle_enter_creating_order(app, form);
             true
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
-            // Enter acts as Yes in confirmation - handled by 'y' key
-            app.mode = default_mode;
+        UiMode::UserMode(UserMode::ConfirmingOrder {
+            form,
+            selected_button,
+        }) => {
+            if selected_button {
+                // YES selected - send the order (similar to handle_confirm_key)
+                let form_clone = form.clone();
+                app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
+
+                let pool_clone = ctx.pool.clone();
+                let client_clone = ctx.client.clone();
+                let mostro_pubkey = ctx.mostro_pubkey;
+                let result_tx = ctx.order_result_tx.clone();
+
+                tokio::spawn(async move {
+                    let settings = match crate::SETTINGS.get() {
+                        Some(s) => s,
+                        None => {
+                            let error_msg =
+                                "Settings not initialized. Please restart the application."
+                                    .to_string();
+                            log::error!("{}", error_msg);
+                            let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
+                            return;
+                        }
+                    };
+                    match crate::util::send_new_order(
+                        &pool_clone,
+                        &client_clone,
+                        settings,
+                        mostro_pubkey,
+                        &form_clone,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            let _ = result_tx.send(result);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to send order: {}", e);
+                            let _ =
+                                result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
+                        }
+                    }
+                });
+            } else {
+                // NO selected - go back to form
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
+            }
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {

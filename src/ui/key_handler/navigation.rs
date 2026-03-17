@@ -33,6 +33,14 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Leave form mode
             app.mode = UiMode::UserMode(UserMode::Normal);
         }
+        // In order confirmation popup, Left should only move the selection to YES,
+        // not switch tabs.
+        UiMode::UserMode(UserMode::ConfirmingOrder {
+            ref mut selected_button,
+            ..
+        }) => {
+            *selected_button = true;
+        }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal)
@@ -40,6 +48,11 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             let prev_tab = app.active_tab;
             app.active_tab = app.active_tab.prev(app.user_role);
             handle_tab_switch(app, prev_tab);
+            // Auto-initialize form when switching to Create New Order tab (user mode only)
+            if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
+                let form = FormState::new_default_form();
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+            }
         }
         UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
             // Switch to YES button (left side)
@@ -82,6 +95,14 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Leave form mode
             app.mode = UiMode::UserMode(UserMode::Normal);
         }
+        // In order confirmation popup, Right should only move the selection to NO,
+        // not switch tabs.
+        UiMode::UserMode(UserMode::ConfirmingOrder {
+            ref mut selected_button,
+            ..
+        }) => {
+            *selected_button = false;
+        }
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal)
@@ -91,15 +112,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             handle_tab_switch(app, prev_tab);
             // Auto-initialize form when switching to Create New Order tab (user mode only)
             if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-                let form = FormState {
-                    kind: "buy".to_string(),
-                    fiat_code: "USD".to_string(),
-                    amount: "0".to_string(),
-                    premium: "0".to_string(),
-                    expiration_days: "1".to_string(),
-                    focused: 1,
-                    ..Default::default()
-                };
+                let form = FormState::new_default_form();
                 app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
             }
         }
@@ -205,7 +218,7 @@ fn handle_up_key(
                 }
             }
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(_))
+        UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
@@ -331,7 +344,7 @@ fn handle_down_key(
                 }
             }
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(_))
+        UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
