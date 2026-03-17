@@ -622,21 +622,8 @@ pub fn handle_key_event(
             }
             Some(true)
         }
-        // 'q' key removed - use Exit tab instead
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let ctx = EnterKeyContext {
-                orders,
-                disputes,
-                pool,
-                client,
-                mostro_pubkey,
-                order_result_tx,
-                mostro_info_tx,
-                admin_chat_keys,
-            };
-            let should_continue = handle_confirm_key(app, &ctx);
-            Some(should_continue)
-        }
+        // 'q' key removed - use Exit tab instead.
+        // For confirmations, prefer using Enter on the focused button instead of 'y'/'n'.
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
             Some(true)
