@@ -117,9 +117,29 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
     }
 
     // Write default settings.toml if it isn't already in ~/.mostrix
-    if !hidden_file.exists() {
-        fs::write(&hidden_file, DEFAULT_SETTINGS_TOML)
-            .map_err(|e| anyhow::anyhow!("Could not write default settings.toml: {}", e))?;
+    let created_default = !hidden_file.exists();
+    if created_default {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&hidden_file)
+                .map_err(|e| anyhow::anyhow!("Could not write default settings.toml: {}", e))?;
+            file.write_all(DEFAULT_SETTINGS_TOML.as_bytes())
+                .map_err(|e| anyhow::anyhow!("Could not write default settings.toml: {}", e))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::write(&hidden_file, DEFAULT_SETTINGS_TOML)
+                .map_err(|e| anyhow::anyhow!("Could not write default settings.toml: {}", e))?;
+        }
+
         println!("Default settings.toml written to {}", hidden_file.display());
     }
 
@@ -141,12 +161,21 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         || settings.nsec_privkey == "nsec1_privkey_format"
     {
         let path_display = hidden_file.display();
-        anyhow::bail!(
-            "Default settings.toml has been created at {}.\n\
+        if created_default {
+            anyhow::bail!(
+                "Default settings.toml has been created at {}.\n\
 Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
 with your real keys before running Mostrix again.",
-            path_display
-        );
+                path_display
+            );
+        } else {
+            anyhow::bail!(
+                "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                path_display
+            );
+        }
     }
 
     Ok(settings)
