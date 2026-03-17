@@ -1,3 +1,4 @@
+use crate::ui::orders::FormField;
 use crate::ui::{AppState, TakeOrderState, UiMode, UserMode};
 use crossterm::event::KeyCode;
 
@@ -10,14 +11,14 @@ pub fn handle_char_input(
     match code {
         KeyCode::Char(' ') => {
             if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-                if form.focused == 0 {
+                if form.focused == FormField::OrderType {
                     // Toggle buy/sell
                     form.kind = if form.kind.to_lowercase() == "buy" {
                         "sell".to_string()
                     } else {
                         "buy".to_string()
                     };
-                } else if form.focused == 3 {
+                } else if form.focused == FormField::FiatAmount {
                     // Toggle range mode
                     form.use_range = !form.use_range;
                 }
@@ -25,18 +26,18 @@ pub fn handle_char_input(
         }
         KeyCode::Char(c) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-                if form.focused == 0 {
+                if form.focused == FormField::OrderType {
                     // ignore typing on toggle field
                 } else {
                     let target = match form.focused {
-                        1 => &mut form.fiat_code,
-                        2 => &mut form.amount,
-                        3 => &mut form.fiat_amount,
-                        4 if form.use_range => &mut form.fiat_amount_max,
-                        5 => &mut form.payment_method,
-                        6 => &mut form.premium,
-                        7 => &mut form.invoice,
-                        8 => &mut form.expiration_days,
+                        FormField::Currency => &mut form.fiat_code,
+                        FormField::AmountSats => &mut form.amount,
+                        FormField::FiatAmount => &mut form.fiat_amount,
+                        FormField::FiatAmountMax if form.use_range => &mut form.fiat_amount_max,
+                        FormField::PaymentMethod => &mut form.payment_method,
+                        FormField::Premium => &mut form.premium,
+                        FormField::Invoice => &mut form.invoice,
+                        FormField::ExpirationDays => &mut form.expiration_days,
                         _ => unreachable!(),
                     };
                     target.push(c);
@@ -60,18 +61,18 @@ pub fn handle_char_input(
 /// Handle backspace for forms
 pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut TakeOrderState)) {
     if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-        if form.focused == 0 {
+        if form.focused == FormField::OrderType {
             // ignore
         } else {
             let target = match form.focused {
-                1 => &mut form.fiat_code,
-                2 => &mut form.amount,
-                3 => &mut form.fiat_amount,
-                4 if form.use_range => &mut form.fiat_amount_max,
-                5 => &mut form.payment_method,
-                6 => &mut form.premium,
-                7 => &mut form.invoice,
-                8 => &mut form.expiration_days,
+                FormField::Currency => &mut form.fiat_code,
+                FormField::AmountSats => &mut form.amount,
+                FormField::FiatAmount => &mut form.fiat_amount,
+                FormField::FiatAmountMax if form.use_range => &mut form.fiat_amount_max,
+                FormField::PaymentMethod => &mut form.payment_method,
+                FormField::Premium => &mut form.premium,
+                FormField::Invoice => &mut form.invoice,
+                FormField::ExpirationDays => &mut form.expiration_days,
                 _ => unreachable!(),
             };
             target.pop();

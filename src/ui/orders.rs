@@ -46,6 +46,64 @@ pub enum MostroInfoFetchResult {
     Err(String),
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub enum FormField {
+    #[default]
+    OrderType,
+    Currency,
+    AmountSats,
+    FiatAmount,
+    FiatAmountMax,
+    PaymentMethod,
+    Premium,
+    Invoice,
+    ExpirationDays,
+}
+
+impl FormField {
+    pub fn next(self, use_range: bool) -> Self {
+        use FormField::*;
+        match self {
+            OrderType => Currency,
+            Currency => AmountSats,
+            AmountSats => FiatAmount,
+            FiatAmount => {
+                if use_range {
+                    FiatAmountMax
+                } else {
+                    PaymentMethod
+                }
+            }
+            FiatAmountMax => PaymentMethod,
+            PaymentMethod => Premium,
+            Premium => Invoice,
+            Invoice => ExpirationDays,
+            ExpirationDays => OrderType,
+        }
+    }
+
+    pub fn prev(self, use_range: bool) -> Self {
+        use FormField::*;
+        match self {
+            OrderType => ExpirationDays,
+            Currency => OrderType,
+            AmountSats => Currency,
+            FiatAmount => AmountSats,
+            FiatAmountMax => FiatAmount,
+            PaymentMethod => {
+                if use_range {
+                    FiatAmountMax
+                } else {
+                    FiatAmount
+                }
+            }
+            Premium => PaymentMethod,
+            Invoice => Premium,
+            ExpirationDays => Invoice,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
     pub kind: String,            // buy | sell
@@ -57,7 +115,7 @@ pub struct FormState {
     pub premium: String,         // premium percentage
     pub invoice: String,         // optional invoice
     pub expiration_days: String, // expiration days (0 for no expiration)
-    pub focused: usize,          // field index
+    pub focused: FormField,      // which field is focused
     pub use_range: bool,         // whether to use fiat range
 }
 
@@ -70,7 +128,7 @@ impl FormState {
             amount: "0".to_string(),
             premium: "0".to_string(),
             expiration_days: "1".to_string(),
-            focused: 1,
+            focused: FormField::Currency,
             ..Default::default()
         }
     }

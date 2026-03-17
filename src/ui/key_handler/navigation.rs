@@ -210,13 +210,7 @@ fn handle_up_key(
             }
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
-            if form.focused > 0 {
-                form.focused -= 1;
-                // Skip field 4 if not using range (go from 5 to 3)
-                if form.focused == 4 && !form.use_range {
-                    form.focused = 3;
-                }
-            }
+            form.focused = form.focused.prev(form.use_range);
         }
         UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
@@ -325,13 +319,7 @@ fn handle_down_key(
             }
         }
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
-            if form.focused < 8 {
-                form.focused += 1;
-                // Skip field 4 if not using range (go from 3 to 5)
-                if form.focused == 4 && !form.use_range {
-                    form.focused = 5;
-                }
-            }
+            form.focused = form.focused.next(form.use_range);
         }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Navigate within disputes in progress list
@@ -424,11 +412,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-                form.focused = (form.focused + 1) % 9;
-                // Skip field 4 if not using range
-                if form.focused == 4 && !form.use_range {
-                    form.focused = 5;
-                }
+                form.focused = form.focused.next(form.use_range);
             }
         }
         KeyCode::BackTab => {
@@ -440,15 +424,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-                form.focused = if form.focused == 0 {
-                    8
-                } else {
-                    form.focused - 1
-                };
-                // Skip field 4 if not using range
-                if form.focused == 4 && !form.use_range {
-                    form.focused = 3;
-                }
+                form.focused = form.focused.prev(form.use_range);
             }
         }
         _ => {}

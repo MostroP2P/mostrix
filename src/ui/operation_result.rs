@@ -120,10 +120,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
                 Style::default().fg(Color::DarkGray),
             )]));
 
-            let content_height: u16 = lines
-                .len()
-                .try_into()
-                .unwrap_or(inner.height);
+            let content_height: u16 = lines.len().try_into().unwrap_or(inner.height);
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             let vertical_chunks = Layout::new(
                 Direction::Vertical,
