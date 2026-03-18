@@ -126,6 +126,30 @@ fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
         Ok(settings)
     }
 
+    // Portable install probe: `settings.toml` next to the executable.
+    // If present, load it read-only and reuse the same placeholder validation.
+    let executable_settings_path: Option<PathBuf> = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
+    if let Some(path) = &executable_settings_path {
+        if path.exists() {
+            let settings = load_settings_from_path(path)?;
+            if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                || settings.nsec_privkey == "nsec1_privkey_format"
+            {
+                let path_display = path.display();
+                anyhow::bail!(
+                    "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                    path_display
+                );
+            }
+
+            return Ok(settings);
+        }
+    }
+
     // Case B: legacy ~/.mostrix/settings.toml exists -> load with the old placeholder guard.
     if hidden_file.exists() {
         let settings = load_settings_from_path(&hidden_file)?;
@@ -184,23 +208,80 @@ with your real keys before running Mostrix again.",
 
     #[cfg(unix)]
     {
+        use std::io::ErrorKind;
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
-        let mut file = fs::OpenOptions::new()
+        let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&hidden_file)
-            .map_err(|e| anyhow::anyhow!("Could not write generated settings.toml: {}", e))?;
-        file.write_all(toml_string.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Could not write generated settings.toml: {}", e))?;
+            .open(&hidden_file);
+
+        match file {
+            Ok(mut file) => {
+                file.write_all(toml_string.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!("Could not write generated settings.toml: {}", e)
+                })?;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Another process won the race and created the file.
+                // Load the persisted settings and apply the placeholder guard.
+                let settings = load_settings_from_path(&hidden_file)?;
+                if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                    || settings.nsec_privkey == "nsec1_privkey_format"
+                {
+                    let path_display = hidden_file.display();
+                    anyhow::bail!(
+                        "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                        path_display
+                    );
+                }
+                return Ok(settings);
+            }
+            Err(e) => {
+                anyhow::bail!("Could not write generated settings.toml: {}", e);
+            }
+        }
     }
 
     #[cfg(not(unix))]
     {
-        fs::write(&hidden_file, toml_string)
-            .map_err(|e| anyhow::anyhow!("Could not write generated settings.toml: {}", e))?;
+        use std::io::ErrorKind;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&hidden_file);
+
+        match file {
+            Ok(mut file) => {
+                file.write_all(toml_string.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!("Could not write generated settings.toml: {}", e)
+                })?;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Another process won the race and created the file.
+                // Load the persisted settings and apply the placeholder guard.
+                let settings = load_settings_from_path(&hidden_file)?;
+                if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                    || settings.nsec_privkey == "nsec1_privkey_format"
+                {
+                    let path_display = hidden_file.display();
+                    anyhow::bail!(
+                        "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                        path_display
+                    );
+                }
+                return Ok(settings);
+            }
+            Err(e) => {
+                anyhow::bail!("Could not write generated settings.toml: {}", e);
+            }
+        }
     }
 
     println!(
