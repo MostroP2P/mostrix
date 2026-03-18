@@ -176,6 +176,8 @@ pub struct InvoiceInputState {
     pub focused: bool,
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
+    /// Vertical scroll offset for long invoice display (PayInvoice popup).
+    pub scroll_y: u16,
 }
 
 /// State for handling key input (pubkey or privkey) in admin settings

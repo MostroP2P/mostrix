@@ -29,6 +29,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 lightning-invoice = { version = "0.34.0", features = ["std"] }
 lnurl-rs = { version = "0.9.0", default-features = false, features = ["ureq"] }
 arboard = "3.3"
+libc = "0.2"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "http2"] }
 rustls = { version = "0.23", features = ["ring"] }
 chacha20poly1305 = "0.10"

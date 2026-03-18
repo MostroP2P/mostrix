@@ -583,11 +583,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     focused: matches!(action, Action::AddInvoice),
                     just_pasted: false,
                     copied_to_clipboard: false,
+                    scroll_y: 0,
                 };
 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
-            } else {
-                // Show simple message view popup for other message types
+            } else if matches!(
+                action,
+                Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+            ) {
+                // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
                 let view_state = MessageViewState {
                     message_content: notification.message_preview,
@@ -596,6 +600,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            } else {
+                // Non-actionable messages: show info popup (no "send" semantics).
+                let notification = order_message_to_notification(msg);
+                app.mode =
+                    UiMode::OperationResult(OperationResult::Info(notification.message_preview));
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {

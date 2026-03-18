@@ -2099,6 +2099,7 @@ dependencies = [
  "dirs",
  "fern",
  "futures",
+ "libc",
  "lightning-invoice",
  "lnurl-rs",
  "log",

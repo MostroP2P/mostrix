@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::models::User;
 use crate::ui::{MessageNotification, OrderMessage};
+use crate::util::db_utils::update_order_status;
+use crate::util::order_utils::map_action_to_status;
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -293,9 +295,6 @@ pub async fn listen_for_order_messages(
             // Index 1 in the tuple is the timestamp
             let latest_message = parsed_messages.into_iter().max_by_key(|msg| msg.1);
 
-            // Check if we have new messages
-            let mut messages_lock = messages.lock().unwrap();
-
             if let Some((message, timestamp, sender)) = latest_message {
                 // Only add if it's a new message
                 let inner_kind = message.get_inner_message_kind();
@@ -322,6 +321,29 @@ pub async fn listen_for_order_messages(
                     }
                     _ => (None, None),
                 };
+
+                // Persist status transitions when Mostro sends an Order payload that
+                // corresponds to a clear lifecycle step. Do this before locking the
+                // messages vector to avoid holding a mutex guard across .await.
+                if let Some(Payload::Order(ref order_payload)) = inner_kind.payload {
+                    if let (Some(order_id), Some(status)) = (
+                        order_payload.id,
+                        map_action_to_status(&action, order_payload),
+                    ) {
+                        let order_id_str = order_id.to_string();
+                        if let Err(e) = update_order_status(&pool, &order_id_str, status).await {
+                            log::warn!(
+                                "Failed to update status for order {} from DM action {:?}: {}",
+                                order_id_str,
+                                action,
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Check if we have new messages
+                let mut messages_lock = messages.lock().unwrap();
                 // Check if this is a new message for this order_id
                 // Find the latest message for this order_id (if any exists)
                 let existing_message = messages_lock
@@ -345,9 +367,24 @@ pub async fn listen_for_order_messages(
                     }
                 };
 
-                if is_new_message {
+                // Only show PayInvoice popup/notification when an invoice is actually present.
+                // Mostro can send a "pay-invoice" message containing peer reputation first,
+                // followed by the real PaymentRequest with the invoice.
+                let is_actionable_notification = match &action {
+                    Action::PayInvoice => invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+                    Action::AddInvoice => true,
+                    _ => true,
+                };
+
+                if is_new_message && is_actionable_notification {
                     let mut pending_notifications = pending_notifications.lock().unwrap();
                     *pending_notifications += 1;
+                }
+
+                // If this is a peer/reputation-only PayInvoice (no invoice), don't store it in the
+                // messages list; otherwise the Messages tab can later show an empty PayInvoice popup.
+                if matches!(action, Action::PayInvoice) && !is_actionable_notification {
+                    continue;
                 }
 
                 let order_message = crate::ui::OrderMessage {
@@ -389,13 +426,15 @@ pub async fn listen_for_order_messages(
                     order_id: Some(*order_id),
                     message_preview: action_str.to_string(),
                     timestamp,
-                    action,
+                    action: action.clone(),
                     sat_amount,
                     invoice,
                 };
 
-                // Send notification (ignore errors if channel is closed)
-                let _ = message_notification_tx.send(notification);
+                if is_actionable_notification {
+                    // Send notification (ignore errors if channel is closed)
+                    let _ = message_notification_tx.send(notification);
+                }
             }
         }
     }
