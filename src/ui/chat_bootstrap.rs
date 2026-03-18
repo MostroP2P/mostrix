@@ -1,8 +1,8 @@
 use nostr_sdk::prelude::Keys;
 
 use crate::models::Order;
-use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 use crate::ui::helpers::recover_user_chat_from_files;
+use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 
 /// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
 /// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
@@ -48,7 +48,7 @@ pub async fn seed_user_trade_chat_state(app: &mut AppState, pool: &sqlx::SqliteP
 
 /// Load active user trade orders from the database.
 pub async fn load_user_trade_orders(pool: &sqlx::SqlitePool) -> Result<Vec<Order>, anyhow::Error> {
-    Ok(Order::get_user_trade_orders(pool).await?)
+    Order::get_user_trade_orders(pool).await
 }
 
 /// Apply user trade orders into runtime chat state.
@@ -76,7 +76,8 @@ pub fn apply_user_trade_orders_state(
                 });
         }
 
-        if let (Some(order_id), Some(trade_hex)) = (order.id.as_deref(), order.trade_keys.as_deref())
+        if let (Some(order_id), Some(trade_hex)) =
+            (order.id.as_deref(), order.trade_keys.as_deref())
         {
             if let Ok(keys) = Keys::parse(trade_hex) {
                 app.user_trade_keys_by_order

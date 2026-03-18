@@ -6,18 +6,17 @@ pub mod util;
 
 use crate::models::AdminDispute;
 use crate::settings::{init_settings, Settings};
+use crate::ui::chat_bootstrap::{
+    apply_user_trade_orders_state, load_user_trade_orders, seed_admin_chat_last_seen,
+    seed_user_trade_chat_state,
+};
 use crate::ui::helpers::{
     apply_admin_chat_updates, apply_user_chat_updates, expire_attachment_toast,
     recover_admin_chat_from_files,
 };
 use crate::ui::key_handler::handle_key_event;
-use crate::ui::chat_bootstrap::{
-    apply_user_trade_orders_state, load_user_trade_orders, seed_admin_chat_last_seen,
-    seed_user_trade_chat_state,
-};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
-    MostroInfoFetchResult, OperationResult,
+    AdminChatUpdate, ChatAttachment, MessageNotification, MostroInfoFetchResult, OperationResult,
 };
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
