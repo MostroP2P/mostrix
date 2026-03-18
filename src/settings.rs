@@ -1,9 +1,11 @@
 use crate::SETTINGS;
+use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, path::PathBuf};
+
+/// Embedded default `settings.toml` used to bootstrap configuration on first run.
+/// This is generated at compile time from the repository root `settings.toml`.
+const DEFAULT_SETTINGS_TOML: &str = include_str!("../settings.toml");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
@@ -101,39 +103,195 @@ fn validate_currencies_config(settings_path: &PathBuf) -> Result<(), anyhow::Err
 
 /// Internal helper: ensure settings file exists and load it from disk
 fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
-    // HOME and package name at compile time
+    // Legacy location: ~/.mostrix/settings.toml (kept for backwards compatibility).
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
     let hidden_dir = home_dir.join(format!(".{package_name}"));
     let hidden_file = hidden_dir.join("settings.toml");
 
-    // Path to the settings.toml included in the repo (next to Cargo.toml)
-    let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
+    // Helper: load a settings file from the given path.
+    fn load_settings_from_path(path: &PathBuf) -> Result<Settings, anyhow::Error> {
+        validate_currencies_config(path)?;
 
-    // Create ~/.mostrix if it doesn't exist
+        let cfg = config::Config::builder()
+            .add_source(config::File::from(path.as_path()))
+            .build()
+            .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
+
+        let settings: Settings = cfg
+            .try_deserialize()
+            .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))?;
+
+        Ok(settings)
+    }
+
+    // Portable install probe: `settings.toml` next to the executable.
+    // If present, load it read-only and reuse the same placeholder validation.
+    let executable_settings_path: Option<PathBuf> = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
+    if let Some(path) = &executable_settings_path {
+        if path.exists() {
+            let settings = load_settings_from_path(path)?;
+            if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                || settings.nsec_privkey == "nsec1_privkey_format"
+            {
+                let path_display = path.display();
+                anyhow::bail!(
+                    "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                    path_display
+                );
+            }
+
+            return Ok(settings);
+        }
+    }
+
+    // Case B: legacy ~/.mostrix/settings.toml exists -> load with the old placeholder guard.
+    if hidden_file.exists() {
+        let settings = load_settings_from_path(&hidden_file)?;
+
+        if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+            || settings.nsec_privkey == "nsec1_privkey_format"
+        {
+            let path_display = hidden_file.display();
+            anyhow::bail!(
+                "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                path_display
+            );
+        }
+
+        return Ok(settings);
+    }
+
+    // Case C: Truly first run: no config anywhere.
+    // Auto-generate in HOME/.mostrix with sensible defaults as per
+    // https://github.com/MostroP2P/mostrix/issues/40.
     if !hidden_dir.exists() {
-        fs::create_dir(&hidden_dir).map_err(|e| {
+        fs::create_dir_all(&hidden_dir).map_err(|e| {
             anyhow::anyhow!("The configuration directory could not be created: {}", e)
         })?;
     }
 
-    // Copy settings.toml if it isn't already in ~/.mostrix
-    if !hidden_file.exists() {
-        fs::copy(&default_file, &hidden_file)
-            .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
+    // Start from the embedded default template, then override fields.
+    let mut settings: Settings = toml::from_str(DEFAULT_SETTINGS_TOML)
+        .map_err(|e| anyhow::anyhow!("Embedded DEFAULT_SETTINGS_TOML is malformed: {}", e))?;
+
+    // Generate a fresh Nostr keypair for the user.
+    let keys = Keys::generate();
+    let sk = keys.secret_key();
+    let nsec = sk
+        .to_bech32()
+        .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr secret key: {}", e))?;
+    let npub = keys
+        .public_key()
+        .to_bech32()
+        .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr public key: {}", e))?;
+
+    // Apply sensible defaults from the issue.
+    settings.nsec_privkey = nsec;
+    settings.relays = vec!["wss://relay.mostro.network".to_string()];
+    settings.user_mode = "user".to_string();
+    settings.pow = 0;
+    settings.currencies_filter = Vec::new();
+    settings.mostro_pubkey =
+        "82fa8cb978b43c79b2156585bac2c022276a21d2aead6d9f7c575c005be88390".to_string();
+
+    // Serialize to TOML.
+    let toml_string = toml::to_string_pretty(&settings)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize generated settings: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::io::ErrorKind;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&hidden_file);
+
+        match file {
+            Ok(mut file) => {
+                file.write_all(toml_string.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!("Could not write generated settings.toml: {}", e)
+                })?;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Another process won the race and created the file.
+                // Load the persisted settings and apply the placeholder guard.
+                let settings = load_settings_from_path(&hidden_file)?;
+                if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                    || settings.nsec_privkey == "nsec1_privkey_format"
+                {
+                    let path_display = hidden_file.display();
+                    anyhow::bail!(
+                        "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                        path_display
+                    );
+                }
+                return Ok(settings);
+            }
+            Err(e) => {
+                anyhow::bail!("Could not write generated settings.toml: {}", e);
+            }
+        }
     }
 
-    validate_currencies_config(&hidden_file)?;
+    #[cfg(not(unix))]
+    {
+        use std::io::ErrorKind;
+        use std::io::Write;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&hidden_file);
 
-    // Use the `config` crate to deserialize to the Settings struct
-    let cfg = config::Config::builder()
-        .add_source(config::File::from(hidden_file.as_path()))
-        .build()
-        .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
+        match file {
+            Ok(mut file) => {
+                file.write_all(toml_string.as_bytes()).map_err(|e| {
+                    anyhow::anyhow!("Could not write generated settings.toml: {}", e)
+                })?;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Another process won the race and created the file.
+                // Load the persisted settings and apply the placeholder guard.
+                let settings = load_settings_from_path(&hidden_file)?;
+                if settings.mostro_pubkey == "mostro_pubkey_hex_format"
+                    || settings.nsec_privkey == "nsec1_privkey_format"
+                {
+                    let path_display = hidden_file.display();
+                    anyhow::bail!(
+                        "Default settings.toml already exists at {} but still contains placeholder values.\n\
+Please edit this file and replace placeholder values (mostro_pubkey, nsec_privkey, etc.) \
+with your real keys before running Mostrix again.",
+                        path_display
+                    );
+                }
+                return Ok(settings);
+            }
+            Err(e) => {
+                anyhow::bail!("Could not write generated settings.toml: {}", e);
+            }
+        }
+    }
 
-    cfg.try_deserialize::<Settings>()
-        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
+    println!(
+        "First run: generated settings.toml at {}.\nYour Nostr public key (npub) is: {}",
+        hidden_file.display(),
+        npub
+    );
+
+    Ok(settings)
 }
 
 /// Public helper: reload current settings from disk (reflects all previous saves)
