@@ -249,8 +249,8 @@ with your real keys before running Mostrix again.",
 
     #[cfg(not(unix))]
     {
-        use std::io::Write;
         use std::io::ErrorKind;
+        use std::io::Write;
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
