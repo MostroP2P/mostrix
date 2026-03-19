@@ -32,24 +32,42 @@ $ cd mostrix
 
 Mostrix is configured via a TOML file called `settings.toml`.
 
-- On **first run**, Mostrix:
-  - Creates a directory `~/.mostrix/` (or the equivalent in your home directory).
-  - Copies the `settings.toml` from the project root into `~/.mostrix/settings.toml`.
-- On **subsequent runs**, Mostrix only reads and writes **`~/.mostrix/settings.toml`**.
+#### First Run (Zero-Config)
 
-This means:
+On **first run**, if no configuration exists, Mostrix **auto-generates** a working `~/.mostrix/settings.toml` with sensible defaults:
 
-- **Before the first run**: edit the `settings.toml` that lives next to `Cargo.toml`.
-- **After the first run**: edit `~/.mostrix/settings.toml` (changes to the project-root file will no longer be used).
+- **Fresh Nostr keypair**: A new `nsec` private key is generated automatically
+- **Default relay**: `wss://relay.mostro.network`
+- **User mode**: `user` (normal trading mode)
+- **Official Mostro pubkey**: Pre-configured to connect to the official Mostro instance
+- **No PoW**: `pow = 0` (disabled)
+- **All currencies**: `currencies_filter = []` (shows all available currencies)
+
+The generated `npub` (public key) is printed to stdout so you can record your identity.
+
+#### Configuration Priority
+
+Mostrix looks for settings in this order:
+
+1. **`~/.mostrix/settings.toml`** — User config directory (created on first run)
+2. **`settings.toml` next to the executable** — Portable mode (read-only, useful for USB installs)
+3. **Auto-generate** — If neither exists, creates `~/.mostrix/settings.toml` with defaults
+
+On **subsequent runs**, Mostrix only reads and writes **`~/.mostrix/settings.toml`**.
+
+#### File Permissions
+
+On Unix systems, the generated `settings.toml` is created with `0600` permissions (readable/writable only by the owner) to protect your private key.
 
 #### Example `settings.toml`
 
 ```toml
-# Mostro pubkey, hex format - only a placeholder replace with yours
+# Mostro pubkey, hex format - official Mostro instance
 mostro_pubkey = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
 
 # Nostr user private key (nsec format, KEEP THIS SECRET)
-nsec_privkey = "nsec1zpmjgd00jckr90zpa0wjhjldgrwy0p6cg3m2m4qcqh5fsx3c786q3c5ksu"
+# Auto-generated on first run if not provided
+nsec_privkey = "nsec1..."
 
 # Admin private key - leave empty for normal user mode
 admin_privkey = ""
@@ -57,7 +75,6 @@ admin_privkey = ""
 # Nostr relays to connect to
 relays = [
   "wss://relay.mostro.network",
-  "wss://damus.relay.io",
 ]
 
 # Log verbosity level: "trace", "debug", "info", "warn", "error"
@@ -65,7 +82,8 @@ relays = [
 log_level = "info" 
 
 # Fiat currency filter (optional, ISO codes)
-currencies_filter = ["VES", "ARS", "USD"]
+# Empty list = show all currencies from Mostro instance
+currencies_filter = []
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
@@ -74,6 +92,8 @@ user_mode = "user"
 # Not managed from tui at the moment
 pow = 0
 ```
+
+> **Note**: On first run, Mostrix generates a complete `settings.toml` with a fresh keypair. The example above shows the default values used.
 
 #### Field explanations
 
@@ -168,6 +188,7 @@ $ cargo run
 - [x] Create 12 words seed for user runing first time
 - [x] Use sqlite (sqlx)
 - [x] Create settings.toml
+- [x] Auto-generate settings.toml with sensible defaults on first run ([#40](https://github.com/MostroP2P/mostrix/issues/40))
 - [x] Create Settings tab
 - [x] [Implement keys management](https://mostro.network/protocol/key_management.html)
 - [ ] List own orders
