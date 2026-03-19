@@ -200,7 +200,8 @@ with your real keys before running Mostrix again.",
     settings.pow = 0;
     settings.currencies_filter = Vec::new();
     settings.mostro_pubkey =
-        "82fa8cb978b43c79b2156585bac2c022276a21d2aead6d9f7c575c005be88390".to_string();
+        "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390".to_string();
+         
 
     // Serialize to TOML.
     let toml_string = toml::to_string_pretty(&settings)

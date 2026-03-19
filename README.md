@@ -46,7 +46,7 @@ This means:
 
 ```toml
 # Mostro pubkey, hex format - only a placeholder replace with yours
-mostro_pubkey = "82fa8cb978b43c79b2156585bac2c022276a21d2aead6d9f7c575c005be88390"
+mostro_pubkey = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
 
 # Nostr user private key (nsec format, KEEP THIS SECRET)
 nsec_privkey = "nsec1zpmjgd00jckr90zpa0wjhjldgrwy0p6cg3m2m4qcqh5fsx3c786q3c5ksu"
