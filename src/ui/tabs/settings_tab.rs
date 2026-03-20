@@ -6,10 +6,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Number of settings options for Admin role
-pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 7; // + Generate New Keys
+pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 8; // + View Seed Words + Generate New Keys
 
 /// Number of settings options for User role
-pub const USER_SETTINGS_OPTIONS_COUNT: usize = 5; // + Generate New Keys
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = 6; // + View Seed Words + Generate New Keys
 
 /// Render the Settings tab UI
 ///
@@ -67,6 +67,7 @@ pub fn render_settings_tab(
             "Add Nostr Relay",
             "Add Currency Filter",
             "Clear Currency Filters",
+            "View Seed Words",
             "Add Dispute Solver",
             "Change Admin Key",
             "Generate New Keys",
@@ -77,6 +78,7 @@ pub fn render_settings_tab(
             "Add Nostr Relay",
             "Add Currency Filter",
             "Clear Currency Filters",
+            "View Seed Words",
             "Generate New Keys",
         ]
     };

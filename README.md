@@ -32,12 +32,11 @@ $ cd mostrix
 
 Mostrix is configured via a TOML file called `settings.toml`.
 
-- File precedence rule: if a colocated **`settings.toml`** exists next to the executable, Mostrix reads that file first; otherwise it reads **`~/.mostrix/settings.toml`**.
+- File precedence rule: if a colocated **`settings.toml`** exists next to the executable, Mostrix reads **and updates** that file; otherwise it reads and updates **`~/.mostrix/settings.toml`**.
 - On **first run** (when neither file exists), Mostrix:
   - Creates `~/.mostrix/` (or equivalent in your home directory).
   - Bootstraps `~/.mostrix/settings.toml` from embedded defaults, then derives `nsec_privkey` from the database identity key (index 0) so DB and settings stay consistent.
   - Shows the **Backup New Keys** popup so you can save the generated 12-word mnemonic.
-- Settings updates currently persist to **`~/.mostrix/settings.toml`**.
 
 For portable installs, a colocated `settings.toml` must not contain placeholder values (Mostrix refuses to start if placeholders are still present).
 

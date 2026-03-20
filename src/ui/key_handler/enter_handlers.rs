@@ -10,8 +10,8 @@ use crate::ui::{
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
-    spawn_key_rotation_task, spawn_refresh_mostro_info_from_settings_task,
-    spawn_refresh_mostro_info_task,
+    spawn_key_rotation_task, spawn_load_seed_words_task,
+    spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
 };
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
@@ -661,18 +661,32 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::ConfirmClearCurrencies(true);
             }
             4 if app.user_role == UserRole::User => {
+                // View current seed words (User)
+                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Loading seed words...".to_string(),
+                ));
+            }
+            5 if app.user_role == UserRole::User => {
                 // Generate new keys for current role (user)
                 app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }
             4 if app.user_role == UserRole::Admin => {
+                // View current seed words (Admin mode still uses user identity seed)
+                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Loading seed words...".to_string(),
+                ));
+            }
+            5 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
             }
-            5 if app.user_role == UserRole::Admin => {
+            6 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
             }
-            6 if app.user_role == UserRole::Admin => {
+            7 if app.user_role == UserRole::Admin => {
                 // Generate new keys for current role (admin)
                 app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }

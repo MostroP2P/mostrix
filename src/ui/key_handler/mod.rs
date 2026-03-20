@@ -34,11 +34,13 @@ pub struct EnterKeyContext<'a> {
     pub mostro_pubkey: PublicKey,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
     pub key_rotation_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
+    pub seed_words_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
 // Re-export public functions
+pub use async_tasks::{create_app_channels, AppChannels};
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
@@ -160,6 +162,7 @@ pub fn handle_key_event(
     mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<OperationResult>,
     key_rotation_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
+    seed_words_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
@@ -601,6 +604,7 @@ pub fn handle_key_event(
                 mostro_pubkey,
                 order_result_tx,
                 key_rotation_tx,
+                seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };
@@ -638,6 +642,7 @@ pub fn handle_key_event(
                 mostro_pubkey,
                 order_result_tx,
                 key_rotation_tx,
+                seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };

@@ -1,12 +1,67 @@
+use crate::models::User;
 use crate::settings::load_settings_from_disk;
-use crate::ui::{MostroInfoFetchResult, OperationResult, TakeOrderState};
+use crate::ui::{
+    AdminChatUpdate, ChatAttachment, MessageNotification, MostroInfoFetchResult, OperationResult,
+    TakeOrderState,
+};
 use crate::util::fetch_mostro_instance_info;
 use crate::SETTINGS;
 use nostr_sdk::prelude::{Client, PublicKey};
 use sqlx::SqlitePool;
 use std::str::FromStr;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use zeroize::Zeroizing;
+
+pub struct AppChannels {
+    pub order_result_tx: UnboundedSender<OperationResult>,
+    pub order_result_rx: UnboundedReceiver<OperationResult>,
+    pub key_rotation_tx: UnboundedSender<Result<Zeroizing<String>, String>>,
+    pub key_rotation_rx: UnboundedReceiver<Result<Zeroizing<String>, String>>,
+    pub seed_words_tx: UnboundedSender<Result<Zeroizing<String>, String>>,
+    pub seed_words_rx: UnboundedReceiver<Result<Zeroizing<String>, String>>,
+    pub message_notification_tx: UnboundedSender<MessageNotification>,
+    pub message_notification_rx: UnboundedReceiver<MessageNotification>,
+    pub admin_chat_updates_tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    pub admin_chat_updates_rx: UnboundedReceiver<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    pub save_attachment_tx: UnboundedSender<(String, ChatAttachment)>,
+    pub save_attachment_rx: UnboundedReceiver<(String, ChatAttachment)>,
+    pub mostro_info_tx: UnboundedSender<MostroInfoFetchResult>,
+    pub mostro_info_rx: UnboundedReceiver<MostroInfoFetchResult>,
+}
+
+pub fn create_app_channels() -> AppChannels {
+    let (order_result_tx, order_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
+    let (key_rotation_tx, key_rotation_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Zeroizing<String>, String>>();
+    let (seed_words_tx, seed_words_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Zeroizing<String>, String>>();
+    let (message_notification_tx, message_notification_rx) =
+        tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
+    let (admin_chat_updates_tx, admin_chat_updates_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+    let (save_attachment_tx, save_attachment_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
+    let (mostro_info_tx, mostro_info_rx) =
+        tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
+
+    AppChannels {
+        order_result_tx,
+        order_result_rx,
+        key_rotation_tx,
+        key_rotation_rx,
+        seed_words_tx,
+        seed_words_rx,
+        message_notification_tx,
+        message_notification_rx,
+        admin_chat_updates_tx,
+        admin_chat_updates_rx,
+        save_attachment_tx,
+        save_attachment_rx,
+        mostro_info_tx,
+        mostro_info_rx,
+    }
+}
 
 pub fn spawn_send_new_order_task(
     pool: SqlitePool,
@@ -187,6 +242,25 @@ pub fn spawn_key_rotation_task(
             Err(e) => {
                 log::error!("Failed to persist key rotation before backup popup: {}", e);
                 let _ = rotation_tx.send(Err(format!("Failed to save new keys: {}", e)));
+            }
+        }
+    });
+}
+
+pub fn spawn_load_seed_words_task(
+    pool: SqlitePool,
+    tx: UnboundedSender<Result<Zeroizing<String>, String>>,
+) {
+    tokio::spawn(async move {
+        match User::get(&pool).await {
+            Ok(user) => {
+                let _ = tx.send(Ok(Zeroizing::new(user.mnemonic)));
+            }
+            Err(e) => {
+                let _ = tx.send(Err(format!(
+                    "Failed to load seed words from database: {}",
+                    e
+                )));
             }
         }
     });

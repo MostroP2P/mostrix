@@ -10,11 +10,8 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
 };
-use crate::ui::key_handler::handle_key_event;
-use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
-    MostroInfoFetchResult, OperationResult,
-};
+use crate::ui::key_handler::{create_app_channels, handle_key_event, AppChannels};
+use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
     listen_for_order_messages,
@@ -277,28 +274,22 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     }
 
-    // Channel to receive order results from async tasks
-    let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
-    // Channel to complete key-rotation flow without blocking UI.
-    let (key_rotation_tx, mut key_rotation_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Zeroizing<String>, String>>();
-
-    // Channel to receive message notifications
-    let (message_notification_tx, mut message_notification_rx) =
-        tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
-
-    // Channel to receive admin chat fetch results (fetch runs in spawned task)
-    let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
-
-    // Channel to trigger save of selected attachment (Ctrl+S in dispute chat)
-    let (save_attachment_tx, mut save_attachment_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
-
-    // Channel to receive Mostro instance info fetch results (fetch runs in spawned tasks)
-    let (mostro_info_tx, mut mostro_info_rx) =
-        tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
+    let AppChannels {
+        order_result_tx,
+        mut order_result_rx,
+        key_rotation_tx,
+        mut key_rotation_rx,
+        seed_words_tx,
+        mut seed_words_rx,
+        message_notification_tx,
+        mut message_notification_rx,
+        admin_chat_updates_tx,
+        mut admin_chat_updates_rx,
+        save_attachment_tx,
+        mut save_attachment_rx,
+        mostro_info_tx,
+        mut mostro_info_rx,
+    } = create_app_channels();
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
@@ -361,6 +352,19 @@ async fn main() -> Result<(), anyhow::Error> {
                     match res {
                         Ok(mnemonic) => {
                             app.backup_requires_restart = true;
+                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                        }
+                        Err(error_msg) => {
+                            app.mode = UiMode::OperationResult(OperationResult::Error(error_msg));
+                        }
+                    }
+                }
+            }
+            seed_words_result = seed_words_rx.recv() => {
+                if let Some(res) = seed_words_result {
+                    match res {
+                        Ok(mnemonic) => {
+                            app.backup_requires_restart = false;
                             app.mode = UiMode::BackupNewKeys(mnemonic);
                         }
                         Err(error_msg) => {
@@ -477,6 +481,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         mostro_pubkey,
                         &order_result_tx,
                         &key_rotation_tx,
+                        &seed_words_tx,
                         &mostro_info_tx,
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),

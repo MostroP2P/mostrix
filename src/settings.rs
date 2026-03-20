@@ -1,4 +1,4 @@
-use crate::{ui::constants::MOSTRO_STAGING_PUBKEY, SETTINGS};
+use crate::SETTINGS;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf};
@@ -6,6 +6,8 @@ use std::{env, fs, path::PathBuf};
 /// Embedded default `settings.toml` used to bootstrap configuration on first run.
 /// This is generated at compile time from the repository root `settings.toml`.
 const DEFAULT_SETTINGS_TOML: &str = include_str!("../settings.toml");
+pub const MOSTRO_STAGING_PUBKEY: &str =
+    "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
@@ -203,28 +205,17 @@ with your real keys before running Mostrix again.",
 
     // On first launch, derive the user `nsec` from the database identity/index-0 key
     // (generated from the mnemonic stored in `users`), so DB keys and settings match.
-    let (nsec, _npub) =
-        if let Some(identity) = identity_keys {
-            let sk = identity.secret_key();
-            let nsec = sk.to_bech32().map_err(|e| {
-                anyhow::anyhow!("Failed to encode identity Nostr secret key: {}", e)
-            })?;
-            let npub = identity.public_key().to_bech32().map_err(|e| {
-                anyhow::anyhow!("Failed to encode identity Nostr public key: {}", e)
-            })?;
-            (nsec, npub)
-        } else {
-            // Fallback: preserve older behavior if identity keys aren't provided.
-            let keys = Keys::generate();
-            let sk = keys.secret_key();
-            let nsec = sk.to_bech32().map_err(|e| {
-                anyhow::anyhow!("Failed to encode generated Nostr secret key: {}", e)
-            })?;
-            let npub = keys.public_key().to_bech32().map_err(|e| {
-                anyhow::anyhow!("Failed to encode generated Nostr public key: {}", e)
-            })?;
-            (nsec, npub)
-        };
+    let nsec = if let Some(identity) = identity_keys {
+        let sk = identity.secret_key();
+        sk.to_bech32()
+            .map_err(|e| anyhow::anyhow!("Failed to encode identity Nostr secret key: {}", e))?
+    } else {
+        // Fallback: preserve older behavior if identity keys aren't provided.
+        let keys = Keys::generate();
+        let sk = keys.secret_key();
+        sk.to_bech32()
+            .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr secret key: {}", e))?
+    };
 
     // Apply sensible defaults from the issue.
     settings.nsec_privkey = nsec;
@@ -330,14 +321,20 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
-    let hidden_file = home_dir
+    let hidden_file_path = home_dir
         .join(format!(".{package_name}"))
         .join("settings.toml");
+    let executable_file_path = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
+    let target_settings_file = executable_file_path
+        .filter(|p| p.exists())
+        .unwrap_or(hidden_file_path);
 
     let toml_string = toml::to_string_pretty(settings)
         .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
 
-    fs::write(&hidden_file, toml_string)
+    fs::write(&target_settings_file, toml_string)
         .map_err(|e| anyhow::anyhow!("Failed to write settings file: {}", e))?;
 
     Ok(())
