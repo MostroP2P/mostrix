@@ -4,6 +4,7 @@ use mostro_core::prelude::*;
 use nip06::FromMnemonic;
 use nostr_sdk::prelude::*;
 use sqlx::sqlite::SqlitePool;
+use sqlx::Sqlite;
 
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct User {
@@ -14,6 +15,17 @@ pub struct User {
 }
 
 impl User {
+    pub fn from_mnemonic(mnemonic: String) -> Result<Self> {
+        let mut user = User::default();
+        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
+        let i0_keys =
+            Keys::from_mnemonic_advanced(&mnemonic, None, Some(account), Some(0), Some(0))?;
+        user.i0_pubkey = i0_keys.public_key().to_string();
+        user.created_at = Utc::now().timestamp();
+        user.mnemonic = mnemonic;
+        Ok(user)
+    }
+
     pub async fn new(mnemonic: String, pool: &SqlitePool) -> Result<Self> {
         let mut user = User::default();
         let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
@@ -74,17 +86,21 @@ impl User {
     /// This wraps DELETE + INSERT in one SQL transaction so failures do not leave
     /// the users table empty.
     pub async fn replace_all_atomic(mnemonic: String, pool: &SqlitePool) -> Result<Self> {
-        let mut user = User::default();
-        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
-        let i0_keys =
-            Keys::from_mnemonic_advanced(&mnemonic, None, Some(account), Some(0), Some(0))?;
-        user.i0_pubkey = i0_keys.public_key().to_string();
-        user.created_at = Utc::now().timestamp();
-        user.mnemonic = mnemonic;
+        let user = User::from_mnemonic(mnemonic)?;
 
         let mut tx = pool.begin().await?;
+        Self::replace_all_in_tx(&user, &mut tx).await?;
+        tx.commit().await?;
+
+        Ok(user)
+    }
+
+    pub async fn replace_all_in_tx(
+        user: &User,
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+    ) -> Result<()> {
         sqlx::query(r#"DELETE FROM users"#)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         sqlx::query(
             r#"
@@ -95,11 +111,9 @@ impl User {
         .bind(&user.i0_pubkey)
         .bind(&user.mnemonic)
         .bind(user.created_at)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        tx.commit().await?;
-
-        Ok(user)
+        Ok(())
     }
 
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
