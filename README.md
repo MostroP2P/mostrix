@@ -45,11 +45,12 @@ For portable installs, you can also place a `settings.toml` next to the executab
 #### Example `settings.toml`
 
 ```toml
-# Mostro pubkey, hex format - only a placeholder replace with yours
+# Mostro pubkey, hex format - official Mostro instance
 mostro_pubkey = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
 
 # Nostr user private key (nsec format, KEEP THIS SECRET)
-nsec_privkey = "nsec1zpmjgd00jckr90zpa0wjhjldgrwy0p6cg3m2m4qcqh5fsx3c786q3c5ksu"
+# Auto-generated on first run if not provided
+nsec_privkey = "nsec1..."
 
 # Admin private key - leave empty for normal user mode
 admin_privkey = ""
@@ -57,7 +58,6 @@ admin_privkey = ""
 # Nostr relays to connect to
 relays = [
   "wss://relay.mostro.network",
-  "wss://damus.relay.io",
 ]
 
 # Log verbosity level: "trace", "debug", "info", "warn", "error"
@@ -65,7 +65,8 @@ relays = [
 log_level = "info" 
 
 # Fiat currency filter (optional, ISO codes)
-currencies_filter = ["VES", "ARS", "USD"]
+# Empty list = show all currencies from Mostro instance
+currencies_filter = []
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
@@ -74,6 +75,8 @@ user_mode = "user"
 # Not managed from tui at the moment
 pow = 0
 ```
+
+> **Note**: On first run, Mostrix generates a complete `settings.toml` with a fresh keypair. The example above shows the default values used.
 
 #### Field explanations
 
@@ -170,6 +173,7 @@ $ cargo run
 - [x] Create 12 words seed for user runing first time
 - [x] Use sqlite (sqlx)
 - [x] Create settings.toml
+- [x] Auto-generate settings.toml with sensible defaults on first run ([#40](https://github.com/MostroP2P/mostrix/issues/40))
 - [x] Create Settings tab
 - [x] [Implement keys management](https://mostro.network/protocol/key_management.html)
 - [ ] List own orders
