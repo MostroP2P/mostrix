@@ -81,10 +81,21 @@ pub(crate) fn execute_take_order_action(
     // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
     // TODO: Add invoice input for buy orders
     let invoice = None;
+    let runtime_settings = match crate::settings::load_settings_from_disk() {
+        Ok(s) => s,
+        Err(e) => {
+            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(format!(
+                "Failed to load settings for taking order: {}",
+                e
+            )));
+            return false;
+        }
+    };
 
     spawn_take_order_task(
         pool.clone(),
         client.clone(),
+        runtime_settings,
         mostro_pubkey,
         take_state_clone,
         amount,

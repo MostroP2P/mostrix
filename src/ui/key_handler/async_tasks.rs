@@ -1,11 +1,11 @@
 use crate::models::User;
 use crate::settings::load_settings_from_disk;
+use crate::settings::Settings;
 use crate::ui::{
     AdminChatUpdate, ChatAttachment, MessageNotification, MostroInfoFetchResult, OperationResult,
     TakeOrderState,
 };
 use crate::util::fetch_mostro_instance_info;
-use crate::SETTINGS;
 use nostr_sdk::prelude::{Client, PublicKey};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -66,23 +66,13 @@ pub fn create_app_channels() -> AppChannels {
 pub fn spawn_send_new_order_task(
     pool: SqlitePool,
     client: Client,
+    settings: Settings,
     mostro_pubkey: PublicKey,
     form: crate::ui::FormState,
     result_tx: UnboundedSender<OperationResult>,
 ) {
     tokio::spawn(async move {
-        let settings = match SETTINGS.get() {
-            Some(s) => s,
-            None => {
-                let error_msg =
-                    "Settings not initialized. Please restart the application.".to_string();
-                log::error!("{}", error_msg);
-                let _ = result_tx.send(OperationResult::Error(error_msg));
-                return;
-            }
-        };
-
-        match crate::util::send_new_order(&pool, &client, settings, mostro_pubkey, &form).await {
+        match crate::util::send_new_order(&pool, &client, &settings, mostro_pubkey, &form).await {
             Ok(result) => {
                 let _ = result_tx.send(result);
             }
@@ -97,6 +87,7 @@ pub fn spawn_send_new_order_task(
 pub fn spawn_take_order_task(
     pool: SqlitePool,
     client: Client,
+    settings: Settings,
     mostro_pubkey: PublicKey,
     take_state: TakeOrderState,
     amount: Option<i64>,
@@ -104,20 +95,10 @@ pub fn spawn_take_order_task(
     result_tx: UnboundedSender<OperationResult>,
 ) {
     tokio::spawn(async move {
-        let settings = match SETTINGS.get() {
-            Some(s) => s,
-            None => {
-                let error_msg =
-                    "Settings not initialized. Please restart the application.".to_string();
-                log::error!("{}", error_msg);
-                let _ = result_tx.send(OperationResult::Error(error_msg));
-                return;
-            }
-        };
         match crate::util::take_order(
             &pool,
             &client,
-            settings,
+            &settings,
             mostro_pubkey,
             &take_state.order,
             amount,
