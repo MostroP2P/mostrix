@@ -39,14 +39,17 @@ pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
 /// # Returns
 ///
 /// Returns `FetchSchedulerResult` containing shared state for orders and disputes
-pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchSchedulerResult {
+pub fn start_fetch_scheduler(
+    client: Client,
+    current_mostro_pubkey: Arc<Mutex<PublicKey>>,
+) -> FetchSchedulerResult {
     let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
     let disputes: Arc<Mutex<Vec<Dispute>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Spawn task to periodically fetch orders
     let orders_clone = Arc::clone(&orders);
     let client_for_orders = client.clone();
-    let mostro_pubkey_for_orders = mostro_pubkey;
+    let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey);
     tokio::spawn(async move {
         // Periodically refresh orders list (immediate first fetch, then every 10 seconds)
         let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(5));
@@ -58,6 +61,17 @@ pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchS
                 .ok()
                 .map(|s| s.currencies_filter)
                 .filter(|list| !list.is_empty());
+
+            let mostro_pubkey_for_orders = match current_mostro_pubkey_for_orders.lock() {
+                Ok(pk) => *pk,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to lock current_mostro_pubkey for orders fetch: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
 
             if let Ok(fetched_orders) = get_orders(
                 &client_for_orders,
@@ -77,12 +91,22 @@ pub fn start_fetch_scheduler(client: Client, mostro_pubkey: PublicKey) -> FetchS
     // Spawn task to periodically fetch disputes
     let disputes_clone = Arc::clone(&disputes);
     let client_for_disputes = client.clone();
-    let mostro_pubkey_for_disputes = mostro_pubkey;
+    let current_mostro_pubkey_for_disputes = Arc::clone(&current_mostro_pubkey);
     tokio::spawn(async move {
         // Periodically refresh disputes list (immediate first fetch, then every 10 seconds)
         let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(5));
         loop {
             refresh_interval.tick().await;
+            let mostro_pubkey_for_disputes = match current_mostro_pubkey_for_disputes.lock() {
+                Ok(pk) => *pk,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to lock current_mostro_pubkey for disputes fetch: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
             if let Ok(fetched_disputes) =
                 get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
             {

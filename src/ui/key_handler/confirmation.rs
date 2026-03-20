@@ -129,6 +129,11 @@ pub fn handle_confirm_key(
                     return true;
                 }
             };
+            if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
+                *active_pubkey = new_pubkey;
+            } else {
+                log::warn!("Failed to update runtime Mostro pubkey after confirmation");
+            }
             spawn_refresh_mostro_info_task(
                 ctx.client.clone(),
                 new_pubkey,

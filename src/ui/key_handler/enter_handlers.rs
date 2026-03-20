@@ -409,6 +409,11 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 };
+                if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
+                    *active_pubkey = new_pubkey;
+                } else {
+                    log::warn!("Failed to update runtime Mostro pubkey after Enter confirmation");
+                }
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
                     new_pubkey,

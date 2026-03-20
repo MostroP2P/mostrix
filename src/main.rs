@@ -187,10 +187,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
+    let current_mostro_pubkey = Arc::new(std::sync::Mutex::new(mostro_pubkey));
 
     // Start background tasks to fetch orders and disputes
     let FetchSchedulerResult { orders, disputes } =
-        start_fetch_scheduler(client.clone(), mostro_pubkey);
+        start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey));
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -479,6 +480,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &pool,
                         &client,
                         mostro_pubkey,
+                        &current_mostro_pubkey,
                         &order_result_tx,
                         &key_rotation_tx,
                         &seed_words_tx,
@@ -513,6 +515,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                                         Ok(new_mostro_pubkey) => {
                                                             client = new_client;
                                                             mostro_pubkey = new_mostro_pubkey;
+                                                            if let Ok(mut active_pubkey) =
+                                                                current_mostro_pubkey.lock()
+                                                            {
+                                                                *active_pubkey = new_mostro_pubkey;
+                                                            } else {
+                                                                log::warn!(
+                                                                    "Failed to update shared Mostro pubkey during key reload"
+                                                                );
+                                                            }
                                                             app.currencies_filter = latest_settings.currencies_filter.clone();
                                                             clear_runtime_session_state(&mut app);
 
