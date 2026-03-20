@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -87,7 +87,6 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
     f.render_widget(
         Paragraph::new(mnemonic_lines)
             .alignment(ratatui::layout::Alignment::Center)
-            .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::White)),
         chunks[3],
     );

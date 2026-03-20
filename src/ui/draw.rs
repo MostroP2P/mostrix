@@ -145,7 +145,7 @@ pub fn ui_draw(
         );
     }
     if let UiMode::BackupNewKeys(mnemonic) = &app.mode {
-        generate_keys_popup::render_backup_new_keys(f, mnemonic);
+        generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str());
     }
 
     // Help popup (Ctrl+H)

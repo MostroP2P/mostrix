@@ -9,11 +9,13 @@ use crate::ui::{
     MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
-use crate::settings::load_settings_from_disk;
+use crate::ui::key_handler::async_tasks::{
+    spawn_key_rotation_task, spawn_refresh_mostro_info_from_settings_task,
+    spawn_refresh_mostro_info_task,
+};
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
-use crate::util::fetch_mostro_instance_info;
 use bip39::Mnemonic;
 use mostro_core::prelude::*;
 use nostr_sdk::nips::nip06::FromMnemonic;
@@ -21,7 +23,6 @@ use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use std::str::FromStr;
 
-use crate::models::User;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
@@ -194,47 +195,33 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
 
             let is_user_mode = matches!(app.user_role, UserRole::User);
 
-            // Persist changes in background to keep UI responsive.
-            let pool_clone = ctx.pool.clone();
-            let mnemonic_clone = mnemonic.clone();
-            let derived_nsec_clone = derived_nsec.clone();
-            tokio::spawn(async move {
-                if is_user_mode {
-                    if let Err(e) = User::delete_all(&pool_clone).await {
-                        log::error!("Failed to delete old user row: {}", e);
-                    }
-                    if let Err(e) = User::new(mnemonic_clone.clone(), &pool_clone).await {
-                        log::error!("Failed to create new user row: {}", e);
-                    }
-                }
+            // Persist rotation asynchronously to avoid UI blocking; backup popup
+            // will be shown only after successful commit via key_rotation_rx in main.
+            spawn_key_rotation_task(
+                ctx.pool.clone(),
+                is_user_mode,
+                mnemonic.clone(),
+                derived_nsec,
+                ctx.key_rotation_tx.clone(),
+            );
 
-                match crate::settings::load_settings_from_disk() {
-                    Ok(mut s) => {
-                        if is_user_mode {
-                            s.nsec_privkey = derived_nsec_clone;
-                        } else {
-                            s.admin_privkey = derived_nsec_clone;
-                        }
-                        if let Err(e) = crate::settings::save_settings(&s) {
-                            log::error!("Failed to update settings.toml: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Failed to load settings.toml during key regeneration: {}",
-                            e
-                        );
-                    }
-                }
-            });
-
-            app.mode = UiMode::BackupNewKeys(mnemonic);
+            app.mode =
+                UiMode::OperationResult(OperationResult::Info("Saving new keys...".to_string()));
             true
         }
         UiMode::BackupNewKeys(_) => {
-            // Close mnemonic backup popup
-            app.mode = default_mode;
-            true
+            if app.backup_requires_restart {
+                // Trigger in-process runtime reload handled by main loop.
+                app.pending_key_reload = true;
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Reloading keys and resetting active session...".to_string(),
+                ));
+                true
+            } else {
+                // First-launch backup flow: no runtime key swap happened.
+                app.mode = default_mode;
+                true
+            }
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
             if selected_button {
@@ -422,25 +409,11 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 };
-                let client_clone = ctx.client.clone();
-                let tx = ctx.mostro_info_tx.clone();
-                tokio::spawn(async move {
-                    let result = fetch_mostro_instance_info(&client_clone, new_pubkey).await;
-                    let res = match result {
-                        Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
-                            info: Box::new(info),
-                            message: "Mostro instance info updated.".to_string(),
-                        },
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to refresh Mostro instance info after pubkey Enter: {}",
-                                e
-                            );
-                            crate::ui::MostroInfoFetchResult::Err(e.to_string())
-                        }
-                    };
-                    let _ = tx.send(res);
-                });
+                spawn_refresh_mostro_info_task(
+                    ctx.client.clone(),
+                    new_pubkey,
+                    ctx.mostro_info_tx.clone(),
+                );
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Fetching Mostro instance info...".to_string(),
                 ));
@@ -541,47 +514,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         app.active_tab,
         Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
     ) {
-        let client = ctx.client.clone();
-        let tx = ctx.mostro_info_tx.clone();
-        tokio::spawn(async move {
-            let settings = match load_settings_from_disk() {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
-                        "Failed to load settings: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-            let mostro_pubkey = match PublicKey::from_str(&settings.mostro_pubkey) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
-                        "Invalid Mostro pubkey in settings: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-            let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
-            let res = match result {
-                Ok(Some(info)) => crate::ui::MostroInfoFetchResult::Ok {
-                    info: Box::new(Some(info)),
-                    message: "Mostro instance info refreshed from relays.".to_string(),
-                },
-                Ok(None) => crate::ui::MostroInfoFetchResult::Ok {
-                    info: Box::new(None),
-                    message: "No Mostro instance info event found for the current pubkey."
-                        .to_string(),
-                },
-                Err(e) => crate::ui::MostroInfoFetchResult::Err(format!(
-                    "Failed to refresh Mostro instance info: {}",
-                    e
-                )),
-            };
-            let _ = tx.send(res);
-        });
+        spawn_refresh_mostro_info_from_settings_task(
+            ctx.client.clone(),
+            ctx.mostro_info_tx.clone(),
+        );
         app.mode = UiMode::OperationResult(OperationResult::Info(
             "Fetching Mostro instance info...".to_string(),
         ));

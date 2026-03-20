@@ -1,4 +1,5 @@
 mod admin_handlers;
+mod async_tasks;
 mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
@@ -22,6 +23,7 @@ use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
+use zeroize::Zeroizing;
 
 /// Context passed to Enter and confirmation handlers to avoid too many arguments.
 pub struct EnterKeyContext<'a> {
@@ -31,6 +33,7 @@ pub struct EnterKeyContext<'a> {
     pub client: &'a Client,
     pub mostro_pubkey: PublicKey,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
+    pub key_rotation_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
@@ -156,6 +159,7 @@ pub fn handle_key_event(
     client: &Client,
     mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<OperationResult>,
+    key_rotation_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
@@ -596,6 +600,7 @@ pub fn handle_key_event(
                 client,
                 mostro_pubkey,
                 order_result_tx,
+                key_rotation_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };
@@ -632,6 +637,7 @@ pub fn handle_key_event(
                 client,
                 mostro_pubkey,
                 order_result_tx,
+                key_rotation_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };

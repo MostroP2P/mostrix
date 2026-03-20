@@ -69,6 +69,39 @@ impl User {
         Ok(())
     }
 
+    /// Atomically replace the single local user row with a new mnemonic-derived identity.
+    ///
+    /// This wraps DELETE + INSERT in one SQL transaction so failures do not leave
+    /// the users table empty.
+    pub async fn replace_all_atomic(mnemonic: String, pool: &SqlitePool) -> Result<Self> {
+        let mut user = User::default();
+        let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
+        let i0_keys =
+            Keys::from_mnemonic_advanced(&mnemonic, None, Some(account), Some(0), Some(0))?;
+        user.i0_pubkey = i0_keys.public_key().to_string();
+        user.created_at = Utc::now().timestamp();
+        user.mnemonic = mnemonic;
+
+        let mut tx = pool.begin().await?;
+        sqlx::query(r#"DELETE FROM users"#)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+                  INSERT INTO users (i0_pubkey, mnemonic, created_at)
+                  VALUES (?, ?, ?)
+                "#,
+        )
+        .bind(&user.i0_pubkey)
+        .bind(&user.mnemonic)
+        .bind(user.created_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(user)
+    }
+
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
         sqlx::query(
             r#"UPDATE users SET last_trade_index = ? WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,
