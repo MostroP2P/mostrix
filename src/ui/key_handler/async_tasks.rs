@@ -88,6 +88,7 @@ pub fn spawn_send_new_order_task(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_take_order_task(
     pool: SqlitePool,
     client: Client,
