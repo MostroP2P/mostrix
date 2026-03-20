@@ -56,23 +56,34 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    // Render mnemonic as a single line (space-separated words).
-    // Important: disable wrapping to avoid any clipping artefacts.
-    let mnemonic_lines = mnemonic.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Render mnemonic in multiple rows to avoid clipping on long 12-word seeds.
+    // Default grouping: 6 words per row (2 rows for standard 12-word mnemonics).
+    let words: Vec<&str> = mnemonic.split_whitespace().collect();
+    let words_per_row = 6usize;
+    let mnemonic_rows: Vec<String> = words
+        .chunks(words_per_row)
+        .map(|chunk| chunk.join(" "))
+        .collect();
+    let mnemonic_rows_count = mnemonic_rows.len().max(1) as u16;
+    let mnemonic_text = if mnemonic_rows.is_empty() {
+        mnemonic.to_string()
+    } else {
+        mnemonic_rows.join("\n")
+    };
 
     let comment_text =
         "Write down these 12 words and keep them safe.\nYou will need them to restore keys.";
 
-    // Fixed layout: 2 lines comment, 1 line mnemonic, 1 line help.
+    // Dynamic layout: mnemonic area grows with row count to keep all words visible.
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(2), // top padding
-            Constraint::Length(2), // comment (2 lines)
-            Constraint::Length(2), // spacer
-            Constraint::Length(2), // mnemonic (single line)
-            Constraint::Min(0),    // remaining spacing
-            Constraint::Length(1), // help
+            Constraint::Length(2),                   // top padding
+            Constraint::Length(2),                   // comment (2 lines)
+            Constraint::Length(2),                   // spacer
+            Constraint::Length(mnemonic_rows_count), // mnemonic rows
+            Constraint::Min(0),                      // remaining spacing
+            Constraint::Length(1),                   // help
         ],
     )
     .split(inner);
@@ -85,7 +96,7 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
     );
 
     f.render_widget(
-        Paragraph::new(mnemonic_lines)
+        Paragraph::new(mnemonic_text)
             .alignment(ratatui::layout::Alignment::Center)
             .style(Style::default().fg(Color::White)),
         chunks[3],
