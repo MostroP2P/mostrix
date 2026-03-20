@@ -5,6 +5,7 @@ pub mod ui;
 pub mod util;
 
 use crate::models::AdminDispute;
+use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
@@ -139,8 +140,15 @@ async fn main() -> Result<(), anyhow::Error> {
         .expect("rustls default crypto provider");
 
     log::info!("MostriX started");
-    let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;
+    // Derive the user's `nsec` from the DB identity/index-0 key (mnemonic-backed),
+    // so DB keys and settings stay in sync on first launch.
+    let identity_keys = User::get_identity_keys(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Error deriving identity keys: {}", e))?;
+    let init = init_settings(Some(identity_keys))
+        .map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
+    let settings = init.settings;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
     enable_raw_mode()?;
@@ -192,6 +200,13 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
+    // On first launch, ensure the new user can immediately back up the 12 words.
+    // Do NOT force switching into Settings tab; show the overlay on the normal initial tab.
+    if init.did_generate_new_settings_file {
+        if let Ok(user) = User::get(&pool).await {
+            app.mode = UiMode::BackupNewKeys(user.mnemonic);
+        }
+    }
     // Seed currencies filter cache from settings so UI-side filtering does not
     // need to hit the filesystem on every render.
     app.currencies_filter = settings.currencies_filter.clone();

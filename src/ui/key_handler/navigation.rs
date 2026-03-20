@@ -232,6 +232,8 @@ fn handle_up_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmGenerateNewKeys(_)
+        | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -358,6 +360,8 @@ fn handle_down_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmGenerateNewKeys(_)
+        | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }

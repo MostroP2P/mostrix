@@ -34,13 +34,13 @@ Mostrix is configured via a TOML file called `settings.toml`.
 
 - On **first run**, Mostrix:
   - Creates a directory `~/.mostrix/` (or the equivalent in your home directory).
-  - Copies the `settings.toml` from the project root into `~/.mostrix/settings.toml`.
+  - Bootstraps `~/.mostrix/settings.toml` from embedded defaults, then derives `nsec_privkey` from the database identity key (index 0) so DB and settings stay consistent.
+  - Shows the **Backup New Keys** popup so you can save the generated 12-word mnemonic.
 - On **subsequent runs**, Mostrix only reads and writes **`~/.mostrix/settings.toml`**.
 
-This means:
+After the first run, edit `~/.mostrix/settings.toml` directly.
 
-- **Before the first run**: edit the `settings.toml` that lives next to `Cargo.toml`.
-- **After the first run**: edit `~/.mostrix/settings.toml` (changes to the project-root file will no longer be used).
+For portable installs, you can also place a `settings.toml` next to the executable, but it must not contain placeholder values (Mostrix refuses to start if placeholders are still present).
 
 #### Example `settings.toml`
 
@@ -82,14 +82,16 @@ pow = 0
   - Accepts hex format. Use the key of the Mostro deployment you trust.
 
 - **`nsec_privkey`**  
-  - Your **Nostr private key** in `nsec…` format.  
-  - Used to sign all Nostr events (orders, messages, etc.).  
+  - Your **Nostr private key** in `nsec…` format.
+  - In normal user mode, Mostrix derives this automatically on first run from the DB identity mnemonic and keeps it in sync with the SQLite database.
+  - When you use **Settings → Generate New Keys**, Mostrix rotates this value and shows the backup mnemonic popup.
   - **Treat this like a password** – do not share or commit it to Git.
 
 - **`admin_privkey`**  
   - Private key used when running Mostrix in **admin mode**.  
   - Needed for admin-only flows (e.g., dispute resolution for admins).  
   - Leave it empty if you are a normal user.
+  - When you use **Settings → Generate New Keys** in Admin mode, Mostrix rotates this value and shows the backup mnemonic popup.
 
 - **`relays`**  
   - List of Nostr relay URLs (WebSocket endpoints) that Mostrix will connect to.  

@@ -113,6 +113,16 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::ConfirmGenerateNewKeys(_) => {
+            // Cancel warning, return to normal mode
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::BackupNewKeys(_) => {
+            // Close mnemonic backup popup
+            app.mode = default_mode.clone();
+            true
+        }
         UiMode::ConfirmExit(_) => {
             // Cancel exit - return to normal mode
             app.mode = default_mode.clone();

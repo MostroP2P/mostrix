@@ -51,14 +51,15 @@ pub fn render_admin_key_confirm_with_message(
     .split(popup);
 
     // Confirmation message
+    // This popup has a fixed 2-row message area. Rendering the message
+    // with wrapping can create extra visual lines and bleed outside the frame.
     let message = custom_message.unwrap_or("Do you want to save this key in settings file?");
+    let message_lines: Vec<Line> = message
+        .lines()
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
+        .collect();
     f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            message,
-            Style::default().fg(Color::White),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center)
-        .wrap(ratatui::widgets::Wrap { trim: true }),
+        Paragraph::new(message_lines).alignment(ratatui::layout::Alignment::Center),
         chunks[1],
     );
 

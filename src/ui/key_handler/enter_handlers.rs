@@ -14,10 +14,14 @@ use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
 use crate::util::fetch_mostro_instance_info;
+use bip39::Mnemonic;
 use mostro_core::prelude::*;
-use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::nips::nip06::FromMnemonic;
+use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::ToBech32;
 use std::str::FromStr;
 
+use crate::models::User;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
@@ -27,6 +31,24 @@ use crate::ui::key_handler::settings::{
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
 };
+
+fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
+    Mnemonic::generate(12)
+        .map(|m| m.to_string())
+        .map_err(|e| e.to_string())
+}
+
+fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<String, String> {
+    let account: u32 = mostro_core::prelude::NOSTR_ORDER_EVENT_KIND as u32;
+    let identity_keys =
+        Keys::from_mnemonic_advanced(mnemonic, None, Some(account), Some(0), Some(0))
+            .map_err(|e| e.to_string())?;
+
+    identity_keys
+        .secret_key()
+        .to_bech32()
+        .map_err(|e| e.to_string())
+}
 
 // Admin handlers moved to admin_handlers.rs
 use crate::ui::key_handler::admin_handlers::{
@@ -138,6 +160,80 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             if !should_continue {
                 return false; // Exit application
             }
+            true
+        }
+        UiMode::ConfirmGenerateNewKeys(selected_button) => {
+            if !selected_button {
+                // NO: just close warning popup.
+                app.mode = default_mode;
+                return true;
+            }
+
+            // YES: generate mnemonic + derived key, persist in background, then show backup popup.
+            let mnemonic = match generate_mnemonic_12_words() {
+                Ok(m) => m,
+                Err(e) => {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        "Failed to generate mnemonic: {}",
+                        e
+                    )));
+                    return true;
+                }
+            };
+
+            let derived_nsec = match derive_identity_nsec_from_mnemonic(&mnemonic) {
+                Ok(nsec) => nsec,
+                Err(e) => {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        "Failed to derive nsec from mnemonic: {}",
+                        e
+                    )));
+                    return true;
+                }
+            };
+
+            let is_user_mode = matches!(app.user_role, UserRole::User);
+
+            // Persist changes in background to keep UI responsive.
+            let pool_clone = ctx.pool.clone();
+            let mnemonic_clone = mnemonic.clone();
+            let derived_nsec_clone = derived_nsec.clone();
+            tokio::spawn(async move {
+                if is_user_mode {
+                    if let Err(e) = User::delete_all(&pool_clone).await {
+                        log::error!("Failed to delete old user row: {}", e);
+                    }
+                    if let Err(e) = User::new(mnemonic_clone.clone(), &pool_clone).await {
+                        log::error!("Failed to create new user row: {}", e);
+                    }
+                }
+
+                match crate::settings::load_settings_from_disk() {
+                    Ok(mut s) => {
+                        if is_user_mode {
+                            s.nsec_privkey = derived_nsec_clone;
+                        } else {
+                            s.admin_privkey = derived_nsec_clone;
+                        }
+                        if let Err(e) = crate::settings::save_settings(&s) {
+                            log::error!("Failed to update settings.toml: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to load settings.toml during key regeneration: {}",
+                            e
+                        );
+                    }
+                }
+            });
+
+            app.mode = UiMode::BackupNewKeys(mnemonic);
+            true
+        }
+        UiMode::BackupNewKeys(_) => {
+            // Close mnemonic backup popup
+            app.mode = default_mode;
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
@@ -628,6 +724,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 // Clear Currency Filters (Common for both roles) - show confirmation
                 app.mode = UiMode::ConfirmClearCurrencies(true);
             }
+            4 if app.user_role == UserRole::User => {
+                // Generate new keys for current role (user)
+                app.mode = UiMode::ConfirmGenerateNewKeys(true);
+            }
             4 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
@@ -635,6 +735,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             5 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            }
+            6 if app.user_role == UserRole::Admin => {
+                // Generate new keys for current role (admin)
+                app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }
             _ => {}
         }

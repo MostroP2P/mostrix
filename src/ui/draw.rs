@@ -136,6 +136,18 @@ pub fn ui_draw(
         operation_result::render_operation_result(f, result);
     }
 
+    // Generate new keys flow popups
+    if let UiMode::ConfirmGenerateNewKeys(selected_button) = &app.mode {
+        generate_keys_popup::render_confirm_generate_new_keys(
+            f,
+            app.user_role == UserRole::Admin,
+            *selected_button,
+        );
+    }
+    if let UiMode::BackupNewKeys(mnemonic) = &app.mode {
+        generate_keys_popup::render_backup_new_keys(f, mnemonic);
+    }
+
     // Help popup (Ctrl+H)
     if let UiMode::HelpPopup(tab, _) = &app.mode {
         help_popup::render_help_popup(f, app, *tab);

@@ -64,6 +64,11 @@ impl User {
         Ok(user)
     }
 
+    pub async fn delete_all(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(r#"DELETE FROM users"#).execute(pool).await?;
+        Ok(())
+    }
+
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
         sqlx::query(
             r#"UPDATE users SET last_trade_index = ? WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,

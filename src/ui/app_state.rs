@@ -37,6 +37,10 @@ pub enum UiMode {
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
     ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
+    // Generate new keys flow (Settings tab)
+    ConfirmGenerateNewKeys(bool), // (selected_button: true=Yes, false=No)
+    BackupNewKeys(String),        // mnemonic words
+
     // User-specific modes
     UserMode(UserMode),
 

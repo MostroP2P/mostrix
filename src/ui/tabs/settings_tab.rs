@@ -6,10 +6,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Number of settings options for Admin role
-pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 6; // Change Mostro Pubkey, Add Nostr Relay, Add Currency Filter, Clear Currency Filters, Add Dispute Solver, Change Admin Key
+pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 7; // + Generate New Keys
 
 /// Number of settings options for User role
-pub const USER_SETTINGS_OPTIONS_COUNT: usize = 4; // Change Mostro Pubkey, Add Nostr Relay, Add Currency Filter, Clear Currency Filters
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = 5; // + Generate New Keys
 
 /// Render the Settings tab UI
 ///
@@ -69,6 +69,7 @@ pub fn render_settings_tab(
             "Clear Currency Filters",
             "Add Dispute Solver",
             "Change Admin Key",
+            "Generate New Keys",
         ]
     } else {
         vec![
@@ -76,6 +77,7 @@ pub fn render_settings_tab(
             "Add Nostr Relay",
             "Add Currency Filter",
             "Clear Currency Filters",
+            "Generate New Keys",
         ]
     };
 
