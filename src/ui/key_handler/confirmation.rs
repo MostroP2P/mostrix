@@ -85,24 +85,7 @@ pub fn handle_confirm_key(
             // User confirmed, send the order
             let form_clone = form.clone();
             app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
-            let runtime_settings = match crate::settings::load_settings_from_disk() {
-                Ok(s) => s,
-                Err(e) => {
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(format!(
-                        "Failed to load settings for order creation: {}",
-                        e
-                    )));
-                    return true;
-                }
-            };
-            spawn_send_new_order_task(
-                ctx.pool.clone(),
-                ctx.client.clone(),
-                runtime_settings,
-                ctx.mostro_pubkey,
-                form_clone,
-                ctx.order_result_tx.clone(),
-            );
+            spawn_send_new_order_task(ctx, form_clone);
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
@@ -233,14 +216,7 @@ pub fn handle_confirm_key(
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
             // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
             // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
-            execute_take_dispute_action(
-                app,
-                dispute_id,
-                ctx.client,
-                ctx.mostro_pubkey,
-                ctx.pool,
-                ctx.order_result_tx,
-            );
+            execute_take_dispute_action(app, dispute_id, ctx);
             true
         }
         mode => {

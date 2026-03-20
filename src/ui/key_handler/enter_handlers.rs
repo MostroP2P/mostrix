@@ -226,14 +226,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
             if selected_button {
                 // YES selected - take the dispute
-                execute_take_dispute_action(
-                    app,
-                    dispute_id,
-                    ctx.client,
-                    ctx.mostro_pubkey,
-                    ctx.pool,
-                    ctx.order_result_tx,
-                );
+                execute_take_dispute_action(app, dispute_id, ctx);
             } else {
                 // NO selected - go back to normal mode
                 app.mode = default_mode;
@@ -340,15 +333,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }) => {
             if selected_button {
                 // YES selected - execute the finalization action
-                execute_finalize_dispute_action(
-                    app,
-                    dispute_id,
-                    ctx.client,
-                    ctx.mostro_pubkey,
-                    ctx.pool,
-                    ctx.order_result_tx,
-                    is_settle,
-                );
+                execute_finalize_dispute_action(app, dispute_id, ctx, is_settle);
             } else {
                 // NO selected - go back to finalization popup
                 app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {

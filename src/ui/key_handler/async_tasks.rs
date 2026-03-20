@@ -1,20 +1,149 @@
 use crate::models::User;
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
+use crate::ui::key_handler::EnterKeyContext;
+use crate::ui::FormState;
 use crate::ui::{
-    AdminChatUpdate, ChatAttachment, MessageNotification, MostroInfoFetchResult, OperationResult,
-    TakeOrderState,
+    AdminChatUpdate, AppState, ChatAttachment, MessageNotification, MostroInfoFetchResult,
+    OperationResult, TakeOrderState, UiMode,
 };
 use crate::util::fetch_mostro_instance_info;
-use nostr_sdk::prelude::{Client, PublicKey};
+use crate::util::listen_for_order_messages;
+use crate::util::order_utils::spawn_fetch_scheduler_loops;
+use mostro_core::prelude::{Dispute, SmallOrder};
+use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::{
     env, fs,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
+
+fn clear_runtime_session_state(app: &mut AppState) {
+    if let Ok(mut messages) = app.messages.lock() {
+        messages.clear();
+    }
+    if let Ok(mut active) = app.active_order_trade_indices.lock() {
+        active.clear();
+    }
+    if let Ok(mut pending) = app.pending_notifications.lock() {
+        *pending = 0;
+    }
+    app.selected_message_idx = 0;
+}
+
+/// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
+/// (`pending_key_reload`). Updates `app` and shared runtime state on success; sets an error
+/// [`OperationResult`] on failure.
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_pending_key_reload(
+    app: &mut AppState,
+    client: &mut Client,
+    mostro_pubkey: &mut PublicKey,
+    current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
+    pool: &SqlitePool,
+    message_listener_handle: &mut JoinHandle<()>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    orders: Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: Arc<Mutex<Vec<Dispute>>>,
+    order_fetch_task: &mut JoinHandle<()>,
+    dispute_fetch_task: &mut JoinHandle<()>,
+) {
+    match load_settings_from_disk() {
+        Ok(latest_settings) => match latest_settings.nsec_privkey.parse::<Keys>() {
+            Ok(new_identity_keys) => {
+                let new_client = Client::new(new_identity_keys);
+                let mut reload_error: Option<String> = None;
+                for relay in &latest_settings.relays {
+                    if let Err(e) = new_client.add_relay(relay).await {
+                        reload_error =
+                            Some(format!("Failed to add relay during key reload: {}", e));
+                        break;
+                    }
+                }
+                if let Some(err) = reload_error {
+                    app.pending_key_reload = false;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(err));
+                } else if let Ok(new_mostro_pubkey) =
+                    PublicKey::from_str(&latest_settings.mostro_pubkey)
+                {
+                    message_listener_handle.abort();
+                    new_client.connect().await;
+
+                    *client = new_client;
+                    *mostro_pubkey = new_mostro_pubkey;
+                    if let Ok(mut active_pubkey) = current_mostro_pubkey.lock() {
+                        *active_pubkey = new_mostro_pubkey;
+                    } else {
+                        log::warn!("Failed to update shared Mostro pubkey during key reload");
+                    }
+                    app.currencies_filter = latest_settings.currencies_filter.clone();
+                    clear_runtime_session_state(app);
+
+                    order_fetch_task.abort();
+                    dispute_fetch_task.abort();
+                    let (o, d) = spawn_fetch_scheduler_loops(
+                        client.clone(),
+                        Arc::clone(current_mostro_pubkey),
+                        Arc::clone(&orders),
+                        Arc::clone(&disputes),
+                    );
+                    *order_fetch_task = o;
+                    *dispute_fetch_task = d;
+
+                    let client_for_messages = client.clone();
+                    let pool_for_messages = pool.clone();
+                    let active_order_trade_indices_clone =
+                        Arc::clone(&app.active_order_trade_indices);
+                    let messages_clone = Arc::clone(&app.messages);
+                    let message_notification_tx_clone = message_notification_tx.clone();
+                    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+                    *message_listener_handle = tokio::spawn(async move {
+                        listen_for_order_messages(
+                            client_for_messages,
+                            pool_for_messages,
+                            active_order_trade_indices_clone,
+                            messages_clone,
+                            message_notification_tx_clone,
+                            pending_notifications_clone,
+                        )
+                        .await;
+                    });
+
+                    app.backup_requires_restart = false;
+                    app.pending_key_reload = false;
+                    app.mode = UiMode::OperationResult(OperationResult::Info(
+                        "Keys reloaded. Active session state has been reset.".to_string(),
+                    ));
+                } else {
+                    app.pending_key_reload = false;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        "Invalid Mostro pubkey after key reload: {}",
+                        latest_settings.mostro_pubkey
+                    )));
+                }
+            }
+            Err(e) => {
+                app.pending_key_reload = false;
+                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    "Invalid identity key after reload: {}",
+                    e
+                )));
+            }
+        },
+        Err(e) => {
+            app.pending_key_reload = false;
+            app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                "Failed to load settings for key reload: {}",
+                e
+            )));
+        }
+    }
+}
 
 pub struct AppChannels {
     pub order_result_tx: UnboundedSender<OperationResult>,
@@ -67,22 +196,29 @@ pub fn create_app_channels() -> AppChannels {
     }
 }
 
-pub fn spawn_send_new_order_task(
-    pool: SqlitePool,
-    client: Client,
-    settings: Settings,
-    mostro_pubkey: PublicKey,
-    form: crate::ui::FormState,
-    result_tx: UnboundedSender<OperationResult>,
-) {
+pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
+    let pool = ctx.pool.clone();
+    let client = ctx.client.clone();
+    let order_result_tx = ctx.order_result_tx.clone();
+    let fallback_mostro_pubkey = ctx.mostro_pubkey;
+    let current_mostro_pubkey = Arc::clone(ctx.current_mostro_pubkey);
     tokio::spawn(async move {
-        match crate::util::send_new_order(&pool, &client, &settings, mostro_pubkey, &form).await {
+        let mostro_pubkey = match current_mostro_pubkey.lock() {
+            Ok(guard) => *guard,
+            Err(_) => {
+                log::warn!(
+                    "Failed to lock runtime Mostro pubkey; using settings snapshot (fallback)"
+                );
+                fallback_mostro_pubkey
+            }
+        };
+        match crate::util::send_new_order(&pool, &client, mostro_pubkey, form).await {
             Ok(result) => {
-                let _ = result_tx.send(result);
+                let _ = order_result_tx.send(result);
             }
             Err(e) => {
                 log::error!("Failed to send order: {}", e);
-                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+                let _ = order_result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
     });

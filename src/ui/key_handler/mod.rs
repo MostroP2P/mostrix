@@ -31,6 +31,7 @@ pub struct EnterKeyContext<'a> {
     pub disputes: &'a Arc<Mutex<Vec<Dispute>>>,
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
+    /// Settings snapshot; prefer locking `current_mostro_pubkey` for the live instance key.
     pub mostro_pubkey: PublicKey,
     pub current_mostro_pubkey: &'a Arc<Mutex<PublicKey>>,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
@@ -41,7 +42,7 @@ pub struct EnterKeyContext<'a> {
 }
 
 // Re-export public functions
-pub use async_tasks::{create_app_channels, AppChannels};
+pub use async_tasks::{apply_pending_key_reload, create_app_channels, AppChannels};
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;

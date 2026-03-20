@@ -10,7 +10,9 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
 };
-use crate::ui::key_handler::{create_app_channels, handle_key_event, AppChannels};
+use crate::ui::key_handler::{
+    apply_pending_key_reload, create_app_channels, handle_key_event, AppChannels,
+};
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
@@ -48,19 +50,6 @@ use zeroize::Zeroizing;
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserRole};
-
-fn clear_runtime_session_state(app: &mut AppState) {
-    if let Ok(mut messages) = app.messages.lock() {
-        messages.clear();
-    }
-    if let Ok(mut active) = app.active_order_trade_indices.lock() {
-        active.clear();
-    }
-    if let Ok(mut pending) = app.pending_notifications.lock() {
-        *pending = 0;
-    }
-    app.selected_message_idx = 0;
-}
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -190,8 +179,12 @@ async fn main() -> Result<(), anyhow::Error> {
     let current_mostro_pubkey = Arc::new(std::sync::Mutex::new(mostro_pubkey));
 
     // Start background tasks to fetch orders and disputes
-    let FetchSchedulerResult { orders, disputes } =
-        start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey));
+    let FetchSchedulerResult {
+        orders,
+        disputes,
+        mut order_task,
+        mut dispute_task,
+    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey));
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -491,103 +484,20 @@ async fn main() -> Result<(), anyhow::Error> {
                     ) {
                         Some(true) => {
                             if app.pending_key_reload {
-                                // Soft-reset runtime using the newly persisted keys and clear volatile state.
-                                match crate::settings::load_settings_from_disk() {
-                                    Ok(latest_settings) => {
-                                        match latest_settings.nsec_privkey.parse::<Keys>() {
-                                            Ok(new_identity_keys) => {
-                                                let new_client = Client::new(new_identity_keys);
-                                                let mut reload_error: Option<String> = None;
-                                                for relay in &latest_settings.relays {
-                                                    if let Err(e) = new_client.add_relay(relay).await {
-                                                        reload_error = Some(format!(
-                                                            "Failed to add relay during key reload: {}",
-                                                            e
-                                                        ));
-                                                        break;
-                                                    }
-                                                }
-                                                if let Some(err) = reload_error {
-                                                    app.pending_key_reload = false;
-                                                    app.mode = UiMode::OperationResult(
-                                                        OperationResult::Error(err),
-                                                    );
-                                                } else if let Ok(new_mostro_pubkey) =
-                                                    PublicKey::from_str(&latest_settings.mostro_pubkey)
-                                                {
-                                                    // New session is validated; now safely swap runtime.
-                                                    message_listener_handle.abort();
-                                                    new_client.connect().await;
-
-                                                    client = new_client;
-                                                    mostro_pubkey = new_mostro_pubkey;
-                                                    if let Ok(mut active_pubkey) =
-                                                        current_mostro_pubkey.lock()
-                                                    {
-                                                        *active_pubkey = new_mostro_pubkey;
-                                                    } else {
-                                                        log::warn!(
-                                                            "Failed to update shared Mostro pubkey during key reload"
-                                                        );
-                                                    }
-                                                    app.currencies_filter =
-                                                        latest_settings.currencies_filter.clone();
-                                                    clear_runtime_session_state(&mut app);
-
-                                                    let client_for_messages = client.clone();
-                                                    let pool_for_messages = pool.clone();
-                                                    let active_order_trade_indices_clone =
-                                                        Arc::clone(&app.active_order_trade_indices);
-                                                    let messages_clone = Arc::clone(&app.messages);
-                                                    let message_notification_tx_clone =
-                                                        message_notification_tx.clone();
-                                                    let pending_notifications_clone =
-                                                        Arc::clone(&app.pending_notifications);
-                                                    message_listener_handle = tokio::spawn(async move {
-                                                        listen_for_order_messages(
-                                                            client_for_messages,
-                                                            pool_for_messages,
-                                                            active_order_trade_indices_clone,
-                                                            messages_clone,
-                                                            message_notification_tx_clone,
-                                                            pending_notifications_clone,
-                                                        )
-                                                        .await;
-                                                    });
-
-                                                    app.backup_requires_restart = false;
-                                                    app.pending_key_reload = false;
-                                                    app.mode = UiMode::OperationResult(
-                                                        OperationResult::Info(
-                                                            "Keys reloaded. Active session state has been reset."
-                                                                .to_string(),
-                                                        ),
-                                                    );
-                                                } else {
-                                                    app.pending_key_reload = false;
-                                                    app.mode = UiMode::OperationResult(
-                                                        OperationResult::Error(format!(
-                                                            "Invalid Mostro pubkey after key reload: {}",
-                                                            latest_settings.mostro_pubkey
-                                                        )),
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => {
-                                                app.pending_key_reload = false;
-                                                app.mode = UiMode::OperationResult(OperationResult::Error(
-                                                    format!("Invalid identity key after reload: {}", e),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        app.pending_key_reload = false;
-                                        app.mode = UiMode::OperationResult(OperationResult::Error(
-                                            format!("Failed to load settings for key reload: {}", e),
-                                        ));
-                                    }
-                                }
+                                apply_pending_key_reload(
+                                    &mut app,
+                                    &mut client,
+                                    &mut mostro_pubkey,
+                                    &current_mostro_pubkey,
+                                    &pool,
+                                    &mut message_listener_handle,
+                                    &message_notification_tx,
+                                    Arc::clone(&orders),
+                                    Arc::clone(&disputes),
+                                    &mut order_task,
+                                    &mut dispute_task,
+                                )
+                                .await;
                             }
                             while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
                                 spawn_save_attachment(

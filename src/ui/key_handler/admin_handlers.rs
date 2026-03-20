@@ -1,8 +1,6 @@
+use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::{AdminMode, AppState, UiMode};
 use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
-use nostr_sdk::Client;
-use sqlx::SqlitePool;
-use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use crate::ui::key_handler::confirmation::{
@@ -20,19 +18,29 @@ use crate::util::order_utils::execute_take_dispute;
 pub(crate) fn execute_take_dispute_action(
     app: &mut AppState,
     dispute_id: Uuid,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<OperationResult>,
+    ctx: &EnterKeyContext<'_>,
 ) {
     app.mode = UiMode::AdminMode(AdminMode::WaitingTakeDispute(dispute_id));
 
+    let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
+        *active_pubkey
+    } else {
+        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        return;
+    };
     // Spawn async task to take dispute
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-    let pool_clone = pool.clone();
+    let client_clone = ctx.client.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
     tokio::spawn(async move {
-        match execute_take_dispute(&dispute_id, &client_clone, mostro_pubkey, &pool_clone).await {
+        match execute_take_dispute(
+            &dispute_id,
+            &client_clone,
+            current_mostro_pubkey,
+            &pool_clone,
+        )
+        .await
+        {
             Ok(_) => {
                 let _ = result_tx.send(OperationResult::Info(format!(
                     "✅ Dispute {} taken successfully!",
@@ -54,19 +62,26 @@ pub(crate) fn execute_take_dispute_action(
 pub(crate) fn execute_add_solver_action(
     app: &mut AppState,
     solver_pubkey: String,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    order_result_tx: &UnboundedSender<OperationResult>,
+    ctx: &EnterKeyContext<'_>,
 ) {
     // Stay on Settings tab after confirmation
     app.mode = UiMode::AdminMode(AdminMode::Normal);
 
     let solver_pubkey_clone = solver_pubkey.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
+    let client_clone = ctx.client.clone();
+    let result_tx = ctx.order_result_tx.clone();
+
+    let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
+        *active_pubkey
+    } else {
+        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        return;
+    };
 
     tokio::spawn(async move {
-        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, mostro_pubkey).await {
+        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, current_mostro_pubkey)
+            .await
+        {
             Ok(_) => {
                 let _ = result_tx.send(OperationResult::Info(
                     "Solver added successfully".to_string(),
@@ -87,23 +102,26 @@ pub(crate) fn execute_add_solver_action(
 pub(crate) fn execute_finalize_dispute_action(
     app: &mut AppState,
     dispute_id: Uuid,
-    client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
-    pool: &SqlitePool,
-    order_result_tx: &UnboundedSender<OperationResult>,
+    ctx: &EnterKeyContext<'_>,
     is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
 ) {
     app.mode = UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(dispute_id));
 
+    let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
+        *active_pubkey
+    } else {
+        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        return;
+    };
     // Spawn async task to finalize dispute
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-    let pool_clone = pool.clone();
+    let client_clone = ctx.client.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
     tokio::spawn(async move {
         match execute_finalize_dispute(
             &dispute_id,
             &client_clone,
-            mostro_pubkey,
+            current_mostro_pubkey,
             &pool_clone,
             is_settle,
         )
@@ -156,13 +174,7 @@ pub(crate) fn handle_enter_admin_mode(
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
             if selected_button {
                 // YES selected - send AddSolver message
-                execute_add_solver_action(
-                    app,
-                    solver_pubkey,
-                    ctx.client,
-                    ctx.mostro_pubkey,
-                    ctx.order_result_tx,
-                );
+                execute_add_solver_action(app, solver_pubkey, ctx);
             } else {
                 // NO selected - go back to input
                 app.mode =
