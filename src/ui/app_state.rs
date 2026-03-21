@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mostro_core::prelude::Action;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::models::AdminDispute;
 use crate::ui::admin_state::AdminMode;
@@ -16,7 +16,7 @@ use crate::ui::orders::{
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum UiMode {
     // Shared modes (available to both user and admin)
     Normal,
@@ -37,11 +37,54 @@ pub enum UiMode {
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
     ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
+    // Generate new keys flow (Settings tab)
+    ConfirmGenerateNewKeys(bool), // (selected_button: true=Yes, false=No)
+    BackupNewKeys(Zeroizing<String>), // mnemonic words (zeroized on drop)
+
     // User-specific modes
     UserMode(UserMode),
 
     // Admin-specific modes
     AdminMode(AdminMode),
+}
+
+impl Clone for UiMode {
+    fn clone(&self) -> Self {
+        match self {
+            UiMode::Normal => UiMode::Normal,
+            UiMode::ViewingMessage(view_state) => UiMode::ViewingMessage(view_state.clone()),
+            UiMode::NewMessageNotification(notification, action, invoice_state) => {
+                UiMode::NewMessageNotification(
+                    notification.clone(),
+                    action.clone(),
+                    invoice_state.clone(),
+                )
+            }
+            UiMode::OperationResult(result) => UiMode::OperationResult(result.clone()),
+            UiMode::HelpPopup(tab, previous_mode) => {
+                UiMode::HelpPopup(*tab, Box::new((**previous_mode).clone()))
+            }
+            UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
+            UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
+            UiMode::AddMostroPubkey(state) => UiMode::AddMostroPubkey(state.clone()),
+            UiMode::ConfirmMostroPubkey(key, selected) => {
+                UiMode::ConfirmMostroPubkey(key.clone(), *selected)
+            }
+            UiMode::AddRelay(state) => UiMode::AddRelay(state.clone()),
+            UiMode::ConfirmRelay(relay, selected) => UiMode::ConfirmRelay(relay.clone(), *selected),
+            UiMode::AddCurrency(state) => UiMode::AddCurrency(state.clone()),
+            UiMode::ConfirmCurrency(currency, selected) => {
+                UiMode::ConfirmCurrency(currency.clone(), *selected)
+            }
+            UiMode::ConfirmClearCurrencies(selected) => UiMode::ConfirmClearCurrencies(*selected),
+            UiMode::ConfirmExit(selected) => UiMode::ConfirmExit(*selected),
+            UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
+            // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.
+            UiMode::BackupNewKeys(_) => UiMode::BackupNewKeys(Zeroizing::new(String::new())),
+            UiMode::UserMode(mode) => UiMode::UserMode(mode.clone()),
+            UiMode::AdminMode(mode) => UiMode::AdminMode(mode.clone()),
+        }
+    }
 }
 
 pub struct AppState {
@@ -89,6 +132,12 @@ pub struct AppState {
     pub currencies_filter: Vec<String>,
     /// Cached Mostro instance info (kind 38385 event), if available.
     pub mostro_info: Option<MostroInstanceInfo>,
+    /// True only when BackupNewKeys was opened after runtime key rotation.
+    /// In that case, app must restart to reload in-memory keys safely.
+    pub backup_requires_restart: bool,
+    /// Set when the user dismisses BackupNewKeys after runtime rotation.
+    /// Main loop performs an in-process runtime reload and clears session state.
+    pub pending_key_reload: bool,
 }
 
 impl AppState {
@@ -126,6 +175,8 @@ impl AppState {
             observer_error: None,
             currencies_filter: Vec::new(),
             mostro_info: None,
+            backup_requires_restart: false,
+            pending_key_reload: false,
         }
     }
 

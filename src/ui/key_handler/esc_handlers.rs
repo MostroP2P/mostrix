@@ -113,6 +113,25 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::ConfirmGenerateNewKeys(_) => {
+            // Cancel warning, return to normal mode
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::BackupNewKeys(_) => {
+            if app.backup_requires_restart {
+                // Trigger in-process runtime reload handled by main loop.
+                app.pending_key_reload = true;
+                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Info(
+                    "Reloading keys and resetting active session...".to_string(),
+                ));
+                true
+            } else {
+                // First-launch backup flow: no runtime key swap happened.
+                app.mode = default_mode.clone();
+                true
+            }
+        }
         UiMode::ConfirmExit(_) => {
             // Cancel exit - return to normal mode
             app.mode = default_mode.clone();

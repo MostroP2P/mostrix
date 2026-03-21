@@ -1,8 +1,10 @@
 use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
-use crate::SETTINGS;
 
 use crate::ui::key_handler::admin_handlers::{
     execute_take_dispute_action, handle_enter_admin_mode,
+};
+use crate::ui::key_handler::async_tasks::{
+    spawn_add_relay_task, spawn_refresh_mostro_info_task, spawn_send_new_order_task,
 };
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
@@ -10,7 +12,6 @@ use crate::ui::key_handler::settings::{
     clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
-use crate::util::fetch_mostro_instance_info;
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
 
@@ -84,42 +85,7 @@ pub fn handle_confirm_key(
             // User confirmed, send the order
             let form_clone = form.clone();
             app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
-
-            // Spawn async task to send order
-            let pool_clone = ctx.pool.clone();
-            let client_clone = ctx.client.clone();
-            let mostro_pubkey = ctx.mostro_pubkey;
-            let result_tx = ctx.order_result_tx.clone();
-
-            tokio::spawn(async move {
-                let settings = match SETTINGS.get() {
-                    Some(s) => s,
-                    None => {
-                        let error_msg =
-                            "Settings not initialized. Please restart the application.".to_string();
-                        log::error!("{}", error_msg);
-                        let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
-                        return;
-                    }
-                };
-                match crate::util::send_new_order(
-                    &pool_clone,
-                    &client_clone,
-                    settings,
-                    mostro_pubkey,
-                    &form_clone,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let _ = result_tx.send(result);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to send order: {}", e);
-                        let _ = result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
-                    }
-                }
-            });
+            spawn_send_new_order_task(ctx, form_clone);
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
@@ -157,25 +123,16 @@ pub fn handle_confirm_key(
                     return true;
                 }
             };
-            let client = ctx.client.clone();
-            let tx = ctx.mostro_info_tx.clone();
-            tokio::spawn(async move {
-                let result = fetch_mostro_instance_info(&client, new_pubkey).await;
-                let res = match result {
-                    Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
-                        info: Box::new(info),
-                        message: "Mostro instance info updated.".to_string(),
-                    },
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to refresh Mostro instance info after pubkey change: {}",
-                            e
-                        );
-                        crate::ui::MostroInfoFetchResult::Err(e.to_string())
-                    }
-                };
-                let _ = tx.send(res);
-            });
+            if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
+                *active_pubkey = new_pubkey;
+            } else {
+                log::warn!("Failed to update runtime Mostro pubkey after confirmation");
+            }
+            spawn_refresh_mostro_info_task(
+                ctx.client.clone(),
+                new_pubkey,
+                ctx.mostro_info_tx.clone(),
+            );
             app.mode = crate::ui::UiMode::OperationResult(crate::ui::OperationResult::Info(
                 "Fetching Mostro instance info...".to_string(),
             ));
@@ -195,13 +152,7 @@ pub fn handle_confirm_key(
             );
 
             // Also add the new relay to the running Nostr client immediately
-            let relay_to_add = relay_string.clone();
-            let client_clone = ctx.client.clone();
-            tokio::spawn(async move {
-                if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
-                    log::error!("Failed to add relay at runtime: {}", e);
-                }
-            });
+            spawn_add_relay_task(ctx.client.clone(), relay_string.clone());
             true
         }
         UiMode::ConfirmCurrency(currency_string, _) => {
@@ -265,14 +216,7 @@ pub fn handle_confirm_key(
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {
             // 'y' key means YES - always take the dispute (same as Enter key with YES selected)
             // This mirrors ConfirmAddSolver behavior: forced-YES input always triggers the action
-            execute_take_dispute_action(
-                app,
-                dispute_id,
-                ctx.client,
-                ctx.mostro_pubkey,
-                ctx.pool,
-                ctx.order_result_tx,
-            );
+            execute_take_dispute_action(app, dispute_id, ctx);
             true
         }
         mode => {

@@ -4,129 +4,37 @@ This guide explains Mostrix’s boot sequence and configuration surfaces.
 
 ## Overview
 - Entry: `src/main.rs:98`
-- Initializes settings, database, logger, terminal (raw mode), shared state, Nostr client, and background tasks.
+- Initializes database, derives identity keys, initializes settings, then logger, terminal (raw mode), shared state, Nostr client, and background tasks.
 - Enters the main event loop to handle UI updates and user input.
 
 ## Initialization Sequence
 
-### 1. Settings Initialization
-Mostrix uses a centralized settings management in `src/settings.rs`.
-
-**Source**: `src/settings.rs:40`
-```rust
-pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
-    if let Some(settings) = SETTINGS.get() {
-        return Ok(settings);
-    }
-
-    let settings = init_or_load_settings_from_disk()?;
-
-    // It's fine if another thread initialized SETTINGS first; in that case we just reuse it.
-    if SETTINGS.set(settings).is_err() {
-        // SETTINGS was already set between the get() above and set() here.
-        // Safe to unwrap because we know some value is now present.
-        return Ok(SETTINGS.get().expect("SETTINGS should be initialized"));
-    }
-
-    Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
-}
-
-fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
-    // HOME and package name at compile time
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let package_name = env!("CARGO_PKG_NAME");
-    let hidden_dir = home_dir.join(format!(".{package_name}"));
-    let hidden_file = hidden_dir.join("settings.toml");
-
-    // Path to the settings.toml included in the repo (next to Cargo.toml)
-    let default_file: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("settings.toml");
-
-    // Create ~/.mostrix if it doesn't exist
-    if !hidden_dir.exists() {
-        fs::create_dir(&hidden_dir).map_err(|e| {
-            anyhow::anyhow!("The configuration directory could not be created: {}", e)
-        })?;
-    }
-
-    // Copy settings.toml if it isn't already in ~/.mostrix
-    if !hidden_file.exists() {
-        fs::copy(&default_file, &hidden_file)
-            .map_err(|e| anyhow::anyhow!("Could not copy default settings.toml: {}", e))?;
-    }
-
-    // Use the `config` crate to deserialize to the Settings struct
-    let cfg = config::Config::builder()
-        .add_source(config::File::from(hidden_file.as_path()))
-        .build()
-        .map_err(|e| anyhow::anyhow!("settings.toml malformed: {}", e))?;
-
-    cfg.try_deserialize::<Settings>()
-        .map_err(|e| anyhow::anyhow!("Error deserializing settings.toml: {}", e))
-}
-```
-- Creates `~/.mostrix/` directory if it doesn't exist.
-- Copies the default `settings.toml` from the project root if missing.
-- Loads configuration using the `config` crate.
-
-**Error Handling**: Startup failures in `init_settings()` are propagated as `anyhow::Error` (causing a clean process exit with an error message). If settings are accessed later at runtime before initialization (via the `SETTINGS` global), those failures are surfaced as user-friendly messages using `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users in both cases.
-
-### 2. Database Initialization
+### 1. Database Initialization
 The database is initialized at startup to ensure the schema is ready.
 
-**Source**: `src/db.rs:9`
-```9:79:src/db.rs
-pub async fn init_db() -> Result<SqlitePool> {
-    let pool: SqlitePool;
-    let name = env!("CARGO_PKG_NAME");
-    // ... path construction ...
-    if !app_dir.exists() {
-        std::fs::create_dir_all(&app_dir)?;
-    }
+**Source**: `src/db.rs`
 
-    if !Path::exists(Path::new(&db_path)) {
-        if let Err(res) = File::create(&db_path) {
-            println!("Error in creating db file: {}", res);
-            return Err(res.into());
-        }
-
-        pool = SqlitePool::connect(&db_url).await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS orders (
-                // ... schema ...
-            );
-            CREATE TABLE IF NOT EXISTS users (
-                // ... schema ...
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Check if a user exists, if not, create one
-        let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-            .fetch_one(&pool)
-            .await?;
-        if user_count.0 == 0 {
-            let mnemonic = Mnemonic::generate(12)?.to_string();
-            User::new(mnemonic, &pool).await?;
-        }
-    } else {
-        pool = SqlitePool::connect(&db_url).await?;
-
-        // Run migrations for existing databases
-        migrate_db(&pool).await?;
-    }
-
-    Ok(pool)
-}
-```
 - Creates the SQLite database file at `~/.mostrix/mostrix.db`.
-- Executes `CREATE TABLE` queries if it's a new database.
-- Generates a new BIP-39 mnemonic if no user exists in the `users` table.
-- Runs database migrations automatically for existing databases (adds new columns, updates schema as needed).
+- Ensures tables exist (`orders`, `users`).
+- If the `users` table is empty, `User::new()` generates a new 12-word BIP-39 mnemonic and persists it in the `users` table (this mnemonic is the root for user identity/trade key derivation).
+- For existing databases, runs migrations automatically to keep the schema up to date.
+
+### 2. Settings Initialization
+Mostrix uses centralized settings management in `src/settings.rs`.
+
+**Source**: `src/settings.rs`
+
+```rust
+pub fn init_settings(identity_keys: Option<Keys>)
+    -> Result<InitSettingsResult, anyhow::Error>
+```
+
+- On first run, `settings.toml` is generated from an embedded template compiled into the binary (rather than copying from the repo root).
+- If `identity_keys` is provided (derived from the DB identity/index-0 key), Mostrix derives the `nsec_privkey` for `settings.toml` so DB keys and settings keys match.
+- The returned `InitSettingsResult.did_generate_new_settings_file` indicates whether this process generated a brand-new `settings.toml`.
+- When `did_generate_new_settings_file` is `true`, `main.rs` shows the `BackupNewKeys` popup overlay immediately on the current initial tab, prompting the user to save the generated 12-word mnemonic.
+
+**Error Handling**: Startup failures in `init_settings()` are propagated as `anyhow::Error` (causing a clean process exit with an error message). If settings are accessed later at runtime before initialization (via the `SETTINGS` global), those failures are surfaced as user-friendly messages using `OperationResult::Error` instead of panicking. This ensures graceful degradation and clear feedback to users in both cases.
 
 ### 3. Logger Setup
 Logging is configured via `setup_logger` in `src/main.rs`.

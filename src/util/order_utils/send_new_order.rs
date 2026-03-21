@@ -6,20 +6,20 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::models::User;
-use crate::settings::Settings;
+use crate::ui::FormState;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::order_utils::helper::{
     create_order_result_from_form, create_order_result_success, handle_mostro_response,
 };
+use sqlx::SqlitePool;
 
 /// Send a new order to Mostro
 pub async fn send_new_order(
-    pool: &sqlx::sqlite::SqlitePool,
+    pool: &SqlitePool,
     client: &Client,
-    _settings: &Settings,
     mostro_pubkey: PublicKey,
-    form: &crate::ui::FormState,
+    form: FormState,
 ) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Parse form data
     let kind_str = if form.kind.trim().is_empty() {

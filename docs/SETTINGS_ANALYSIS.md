@@ -15,7 +15,13 @@ This document provides a comprehensive analysis of the Settings tab features imp
 - **Settings Persistence**: Relays are saved to `settings.toml` and persist across restarts
 - **Status Bar Display**: Active relays are displayed in the status bar
 
-### 3. Validation Enhancements
+### 3. Key Rotation (Generate New Keys)
+- **Generate New Keys**: Added an option in the Settings tab that rotates the relevant keys for the current role (User mode rotates `nsec_privkey`, Admin mode rotates `admin_privkey`).
+- **Safety UX**: Selecting the option shows a warning + confirmation flow, then a backup popup containing the newly generated 12-word mnemonic.
+- **Restart requirement**: After saving the mnemonic, Mostrix must be restarted so the app can use the rotated keys everywhere.
+- **First-launch behavior**: If Mostrix had to bootstrap a brand-new `settings.toml`, the backup popup is shown immediately as an overlay on the initial Orders/Disputes tab (no forced navigation to Settings).
+
+### 4. Validation Enhancements
 - **Mostro Pubkey Validation**: Changed from `npub` format to hex format validation
 - **Relay Validation**: Added validation to ensure relay URLs start with `wss://`
 - **Currency Validation**: Added validation for currency codes (non-empty, max 10 chars)

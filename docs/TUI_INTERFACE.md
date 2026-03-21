@@ -76,7 +76,7 @@ Focused on trading and order management.
 - **Orders**: View the global order book.
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration.
+- **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts.
 - **Create New Order**: Form for publishing new orders.
 
 ### Admin Role
@@ -100,7 +100,7 @@ Focused on dispute resolution and protocol management.
   - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
-  - Change Admin Key
+  - Generate New Keys (rotates the Admin keypair)
   - Manage relays and currency filters
 
 For detailed information about admin dispute resolution workflows, see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) and [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
@@ -166,6 +166,14 @@ if let UiMode::OperationResult(result) = &app.mode {
 - **Open**: When managing a dispute or viewing an observer chat, press **Ctrl+S** to open a centered popup listing all file/image attachments. In Disputes in Progress, attachments are scoped to the current dispute and active party (Buyer or Seller). In Observer mode, attachments are drawn from all observer messages. If there are no attachments, Ctrl+S does nothing.
 - **In popup**: **↑/↓** change selection, **Enter** saves the selected attachment to `~/.mostrix/downloads/`, **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
 - **Source**: `src/ui/save_attachment_popup.rs` (rendering for both dispute and observer popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`).
+
+Backup New Keys popup (first launch + key rotation):
+
+- **Purpose**: Displays the newly generated 12-word mnemonic so it can be backed up after **Generate New Keys**.
+- **Where it appears**:
+  - On key rotation: shown as an overlay popup.
+  - On very first launch: shown as an overlay on the initial Orders/Disputes tab (Mostrix does not force switching to the Settings tab).
+- **Reminder**: After saving the mnemonic, restart Mostrix so it uses the rotated keys everywhere.
 
 ### UI constants
 

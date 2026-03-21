@@ -1,4 +1,5 @@
 mod admin_handlers;
+mod async_tasks;
 mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
@@ -22,6 +23,7 @@ use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
+use zeroize::Zeroizing;
 
 /// Context passed to Enter and confirmation handlers to avoid too many arguments.
 pub struct EnterKeyContext<'a> {
@@ -29,13 +31,18 @@ pub struct EnterKeyContext<'a> {
     pub disputes: &'a Arc<Mutex<Vec<Dispute>>>,
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
+    /// Settings snapshot; prefer locking `current_mostro_pubkey` for the live instance key.
     pub mostro_pubkey: PublicKey,
+    pub current_mostro_pubkey: &'a Arc<Mutex<PublicKey>>,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
+    pub key_rotation_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
+    pub seed_words_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
     pub admin_chat_keys: Option<&'a Keys>,
 }
 
 // Re-export public functions
+pub use async_tasks::{apply_pending_key_reload, create_app_channels, AppChannels};
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
@@ -155,7 +162,10 @@ pub fn handle_key_event(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
+    current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
     order_result_tx: &UnboundedSender<OperationResult>,
+    key_rotation_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
+    seed_words_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
@@ -486,6 +496,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
@@ -594,7 +605,10 @@ pub fn handle_key_event(
                 pool,
                 client,
                 mostro_pubkey,
+                current_mostro_pubkey,
                 order_result_tx,
+                key_rotation_tx,
+                seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };
@@ -630,7 +644,10 @@ pub fn handle_key_event(
                 pool,
                 client,
                 mostro_pubkey,
+                current_mostro_pubkey,
                 order_result_tx,
+                key_rotation_tx,
+                seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
             };

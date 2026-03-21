@@ -6,6 +6,8 @@ use std::{env, fs, path::PathBuf};
 /// Embedded default `settings.toml` used to bootstrap configuration on first run.
 /// This is generated at compile time from the repository root `settings.toml`.
 const DEFAULT_SETTINGS_TOML: &str = include_str!("../settings.toml");
+pub const MOSTRO_STAGING_PUBKEY: &str =
+    "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
@@ -22,6 +24,13 @@ pub struct Settings {
 
 fn default_user_mode() -> String {
     "user".to_string()
+}
+
+pub struct InitSettingsResult {
+    pub settings: &'static Settings,
+    /// True when this process generated a brand-new `settings.toml` file
+    /// (i.e. "first launch" bootstrap), rather than loading an existing config.
+    pub did_generate_new_settings_file: bool,
 }
 
 impl Default for Settings {
@@ -41,21 +50,31 @@ impl Default for Settings {
 
 /// Constructs (or copies) the configuration file and loads it.
 /// Returns a reference to the global `SETTINGS`, initializing it on first use.
-pub fn init_settings() -> Result<&'static Settings, anyhow::Error> {
+pub fn init_settings(identity_keys: Option<Keys>) -> Result<InitSettingsResult, anyhow::Error> {
     if let Some(settings) = SETTINGS.get() {
-        return Ok(settings);
+        return Ok(InitSettingsResult {
+            settings,
+            did_generate_new_settings_file: false,
+        });
     }
 
-    let settings = init_or_load_settings_from_disk()?;
+    let (settings, did_generate_new_settings_file) =
+        init_or_load_settings_from_disk(identity_keys.as_ref())?;
 
     // It's fine if another thread initialized SETTINGS first; in that case we just reuse it.
     if SETTINGS.set(settings).is_err() {
         // SETTINGS was already set between the get() above and set() here.
         // Safe to unwrap because we know some value is now present.
-        return Ok(SETTINGS.get().expect("SETTINGS should be initialized"));
+        return Ok(InitSettingsResult {
+            settings: SETTINGS.get().expect("SETTINGS should be initialized"),
+            did_generate_new_settings_file: false,
+        });
     }
 
-    Ok(SETTINGS.get().expect("SETTINGS should be initialized"))
+    Ok(InitSettingsResult {
+        settings: SETTINGS.get().expect("SETTINGS should be initialized"),
+        did_generate_new_settings_file,
+    })
 }
 
 /// Validates currencies config: exits with a clear error if the deprecated
@@ -102,7 +121,9 @@ fn validate_currencies_config(settings_path: &PathBuf) -> Result<(), anyhow::Err
 }
 
 /// Internal helper: ensure settings file exists and load it from disk
-fn init_or_load_settings_from_disk() -> Result<Settings, anyhow::Error> {
+fn init_or_load_settings_from_disk(
+    identity_keys: Option<&Keys>,
+) -> Result<(Settings, bool), anyhow::Error> {
     // Legacy location: ~/.mostrix/settings.toml (kept for backwards compatibility).
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
@@ -146,7 +167,7 @@ with your real keys before running Mostrix again.",
                 );
             }
 
-            return Ok(settings);
+            return Ok((settings, false));
         }
     }
 
@@ -166,7 +187,7 @@ with your real keys before running Mostrix again.",
             );
         }
 
-        return Ok(settings);
+        return Ok((settings, false));
     }
 
     // Case C: Truly first run: no config anywhere.
@@ -182,16 +203,19 @@ with your real keys before running Mostrix again.",
     let mut settings: Settings = toml::from_str(DEFAULT_SETTINGS_TOML)
         .map_err(|e| anyhow::anyhow!("Embedded DEFAULT_SETTINGS_TOML is malformed: {}", e))?;
 
-    // Generate a fresh Nostr keypair for the user.
-    let keys = Keys::generate();
-    let sk = keys.secret_key();
-    let nsec = sk
-        .to_bech32()
-        .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr secret key: {}", e))?;
-    let npub = keys
-        .public_key()
-        .to_bech32()
-        .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr public key: {}", e))?;
+    // On first launch, derive the user `nsec` from the database identity/index-0 key
+    // (generated from the mnemonic stored in `users`), so DB keys and settings match.
+    let nsec = if let Some(identity) = identity_keys {
+        let sk = identity.secret_key();
+        sk.to_bech32()
+            .map_err(|e| anyhow::anyhow!("Failed to encode identity Nostr secret key: {}", e))?
+    } else {
+        // Fallback: preserve older behavior if identity keys aren't provided.
+        let keys = Keys::generate();
+        let sk = keys.secret_key();
+        sk.to_bech32()
+            .map_err(|e| anyhow::anyhow!("Failed to encode generated Nostr secret key: {}", e))?
+    };
 
     // Apply sensible defaults from the issue.
     settings.nsec_privkey = nsec;
@@ -199,8 +223,7 @@ with your real keys before running Mostrix again.",
     settings.user_mode = "user".to_string();
     settings.pow = 0;
     settings.currencies_filter = Vec::new();
-    settings.mostro_pubkey =
-        "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390".to_string();
+    settings.mostro_pubkey = MOSTRO_STAGING_PUBKEY.to_string();
 
     // Serialize to TOML.
     let toml_string = toml::to_string_pretty(&settings)
@@ -239,7 +262,7 @@ with your real keys before running Mostrix again.",
                         path_display
                     );
                 }
-                return Ok(settings);
+                return Ok((settings, false));
             }
             Err(e) => {
                 anyhow::bail!("Could not write generated settings.toml: {}", e);
@@ -277,7 +300,7 @@ with your real keys before running Mostrix again.",
                         path_display
                     );
                 }
-                return Ok(settings);
+                return Ok((settings, false));
             }
             Err(e) => {
                 anyhow::bail!("Could not write generated settings.toml: {}", e);
@@ -285,18 +308,12 @@ with your real keys before running Mostrix again.",
         }
     }
 
-    println!(
-        "First run: generated settings.toml at {}.\nYour Nostr public key (npub) is: {}",
-        hidden_file.display(),
-        npub
-    );
-
-    Ok(settings)
+    Ok((settings, true))
 }
 
 /// Public helper: reload current settings from disk (reflects all previous saves)
 pub fn load_settings_from_disk() -> Result<Settings, anyhow::Error> {
-    init_or_load_settings_from_disk()
+    Ok(init_or_load_settings_from_disk(None)?.0)
 }
 
 /// Save settings to file
@@ -304,14 +321,20 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
-    let hidden_file = home_dir
+    let hidden_file_path = home_dir
         .join(format!(".{package_name}"))
         .join("settings.toml");
+    let executable_file_path = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
+    let target_settings_file = executable_file_path
+        .filter(|p| p.exists())
+        .unwrap_or(hidden_file_path);
 
     let toml_string = toml::to_string_pretty(settings)
         .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
 
-    fs::write(&hidden_file, toml_string)
+    fs::write(&target_settings_file, toml_string)
         .map_err(|e| anyhow::anyhow!("Failed to write settings file: {}", e))?;
 
     Ok(())

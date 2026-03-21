@@ -32,32 +32,13 @@ $ cd mostrix
 
 Mostrix is configured via a TOML file called `settings.toml`.
 
-#### First Run (Zero-Config)
+- File precedence rule: if a colocated **`settings.toml`** exists next to the executable, Mostrix reads **and updates** that file; otherwise it reads and updates **`~/.mostrix/settings.toml`**.
+- On **first run** (when neither file exists), Mostrix:
+  - Creates `~/.mostrix/` (or equivalent in your home directory).
+  - Bootstraps `~/.mostrix/settings.toml` from embedded defaults, then derives `nsec_privkey` from the database identity key (index 0) so DB and settings stay consistent.
+  - Shows the **Backup New Keys** popup so you can save the generated 12-word mnemonic.
 
-On **first run**, if no configuration exists, Mostrix **auto-generates** a working `~/.mostrix/settings.toml` with sensible defaults:
-
-- **Fresh Nostr keypair**: A new `nsec` private key is generated automatically
-- **Default relay**: `wss://relay.mostro.network`
-- **User mode**: `user` (normal trading mode)
-- **Official Mostro pubkey**: Pre-configured to connect to the official Mostro instance
-- **No PoW**: `pow = 0` (disabled)
-- **All currencies**: `currencies_filter = []` (shows all available currencies)
-
-The generated `npub` (public key) is printed to stdout so you can record your identity.
-
-#### Configuration Priority
-
-Mostrix looks for settings in this order:
-
-1. **`~/.mostrix/settings.toml`** — User config directory (created on first run)
-2. **`settings.toml` next to the executable** — Portable mode (read-only, useful for USB installs)
-3. **Auto-generate** — If neither exists, creates `~/.mostrix/settings.toml` with defaults
-
-On **subsequent runs**, Mostrix only reads and writes **`~/.mostrix/settings.toml`**.
-
-#### File Permissions
-
-On Unix systems, the generated `settings.toml` is created with `0600` permissions (readable/writable only by the owner) to protect your private key.
+For portable installs, a colocated `settings.toml` must not contain placeholder values (Mostrix refuses to start if placeholders are still present).
 
 #### Example `settings.toml`
 
@@ -102,14 +83,16 @@ pow = 0
   - Accepts hex format. Use the key of the Mostro deployment you trust.
 
 - **`nsec_privkey`**  
-  - Your **Nostr private key** in `nsec…` format.  
-  - Used to sign all Nostr events (orders, messages, etc.).  
+  - Your **Nostr private key** in `nsec…` format.
+  - In normal user mode, Mostrix derives this automatically on first run from the DB identity mnemonic and keeps it in sync with the SQLite database.
+  - When you use **Settings → Generate New Keys**, Mostrix rotates this value and shows the backup mnemonic popup.
   - **Treat this like a password** – do not share or commit it to Git.
 
 - **`admin_privkey`**  
   - Private key used when running Mostrix in **admin mode**.  
   - Needed for admin-only flows (e.g., dispute resolution for admins).  
   - Leave it empty if you are a normal user.
+  - When you use **Settings → Generate New Keys** in Admin mode, Mostrix rotates this value and shows the backup mnemonic popup.
 
 - **`relays`**  
   - List of Nostr relay URLs (WebSocket endpoints) that Mostrix will connect to.  

@@ -9,13 +9,18 @@ use crate::ui::{
     MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
-use crate::settings::load_settings_from_disk;
+use crate::ui::key_handler::async_tasks::{
+    spawn_key_rotation_task, spawn_load_seed_words_task,
+    spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
+};
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
-use crate::util::fetch_mostro_instance_info;
+use bip39::Mnemonic;
 use mostro_core::prelude::*;
-use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::nips::nip06::FromMnemonic;
+use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::ToBech32;
 use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
@@ -27,6 +32,24 @@ use crate::ui::key_handler::settings::{
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
 };
+
+fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
+    Mnemonic::generate(12)
+        .map(|m| m.to_string())
+        .map_err(|e| e.to_string())
+}
+
+fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<String, String> {
+    let account: u32 = mostro_core::prelude::NOSTR_ORDER_EVENT_KIND as u32;
+    let identity_keys =
+        Keys::from_mnemonic_advanced(mnemonic, None, Some(account), Some(0), Some(0))
+            .map_err(|e| e.to_string())?;
+
+    identity_keys
+        .secret_key()
+        .to_bech32()
+        .map_err(|e| e.to_string())
+}
 
 // Admin handlers moved to admin_handlers.rs
 use crate::ui::key_handler::admin_handlers::{
@@ -140,17 +163,70 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
+        UiMode::ConfirmGenerateNewKeys(selected_button) => {
+            if !selected_button {
+                // NO: just close warning popup.
+                app.mode = default_mode;
+                return true;
+            }
+
+            // YES: generate mnemonic + derived key, persist in background, then show backup popup.
+            let mnemonic = match generate_mnemonic_12_words() {
+                Ok(m) => m,
+                Err(e) => {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        "Failed to generate mnemonic: {}",
+                        e
+                    )));
+                    return true;
+                }
+            };
+
+            let derived_nsec = match derive_identity_nsec_from_mnemonic(&mnemonic) {
+                Ok(nsec) => nsec,
+                Err(e) => {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        "Failed to derive nsec from mnemonic: {}",
+                        e
+                    )));
+                    return true;
+                }
+            };
+
+            let is_user_mode = matches!(app.user_role, UserRole::User);
+
+            // Persist rotation asynchronously to avoid UI blocking; backup popup
+            // will be shown only after successful commit via key_rotation_rx in main.
+            spawn_key_rotation_task(
+                ctx.pool.clone(),
+                is_user_mode,
+                mnemonic.clone(),
+                derived_nsec,
+                ctx.key_rotation_tx.clone(),
+            );
+
+            app.mode =
+                UiMode::OperationResult(OperationResult::Info("Saving new keys...".to_string()));
+            true
+        }
+        UiMode::BackupNewKeys(_) => {
+            if app.backup_requires_restart {
+                // Trigger in-process runtime reload handled by main loop.
+                app.pending_key_reload = true;
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Reloading keys and resetting active session...".to_string(),
+                ));
+                true
+            } else {
+                // First-launch backup flow: no runtime key swap happened.
+                app.mode = default_mode;
+                true
+            }
+        }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
             if selected_button {
                 // YES selected - take the dispute
-                execute_take_dispute_action(
-                    app,
-                    dispute_id,
-                    ctx.client,
-                    ctx.mostro_pubkey,
-                    ctx.pool,
-                    ctx.order_result_tx,
-                );
+                execute_take_dispute_action(app, dispute_id, ctx);
             } else {
                 // NO selected - go back to normal mode
                 app.mode = default_mode;
@@ -257,15 +333,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }) => {
             if selected_button {
                 // YES selected - execute the finalization action
-                execute_finalize_dispute_action(
-                    app,
-                    dispute_id,
-                    ctx.client,
-                    ctx.mostro_pubkey,
-                    ctx.pool,
-                    ctx.order_result_tx,
-                    is_settle,
-                );
+                execute_finalize_dispute_action(app, dispute_id, ctx, is_settle);
             } else {
                 // NO selected - go back to finalization popup
                 app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
@@ -326,25 +394,16 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 };
-                let client_clone = ctx.client.clone();
-                let tx = ctx.mostro_info_tx.clone();
-                tokio::spawn(async move {
-                    let result = fetch_mostro_instance_info(&client_clone, new_pubkey).await;
-                    let res = match result {
-                        Ok(info) => crate::ui::MostroInfoFetchResult::Ok {
-                            info: Box::new(info),
-                            message: "Mostro instance info updated.".to_string(),
-                        },
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to refresh Mostro instance info after pubkey Enter: {}",
-                                e
-                            );
-                            crate::ui::MostroInfoFetchResult::Err(e.to_string())
-                        }
-                    };
-                    let _ = tx.send(res);
-                });
+                if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
+                    *active_pubkey = new_pubkey;
+                } else {
+                    log::warn!("Failed to update runtime Mostro pubkey after Enter confirmation");
+                }
+                spawn_refresh_mostro_info_task(
+                    ctx.client.clone(),
+                    new_pubkey,
+                    ctx.mostro_info_tx.clone(),
+                );
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Fetching Mostro instance info...".to_string(),
                 ));
@@ -445,47 +504,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         app.active_tab,
         Tab::User(UserTab::MostroInfo) | Tab::Admin(AdminTab::MostroInfo)
     ) {
-        let client = ctx.client.clone();
-        let tx = ctx.mostro_info_tx.clone();
-        tokio::spawn(async move {
-            let settings = match load_settings_from_disk() {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
-                        "Failed to load settings: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-            let mostro_pubkey = match PublicKey::from_str(&settings.mostro_pubkey) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    let _ = tx.send(crate::ui::MostroInfoFetchResult::Err(format!(
-                        "Invalid Mostro pubkey in settings: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-            let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
-            let res = match result {
-                Ok(Some(info)) => crate::ui::MostroInfoFetchResult::Ok {
-                    info: Box::new(Some(info)),
-                    message: "Mostro instance info refreshed from relays.".to_string(),
-                },
-                Ok(None) => crate::ui::MostroInfoFetchResult::Ok {
-                    info: Box::new(None),
-                    message: "No Mostro instance info event found for the current pubkey."
-                        .to_string(),
-                },
-                Err(e) => crate::ui::MostroInfoFetchResult::Err(format!(
-                    "Failed to refresh Mostro instance info: {}",
-                    e
-                )),
-            };
-            let _ = tx.send(res);
-        });
+        spawn_refresh_mostro_info_from_settings_task(
+            ctx.client.clone(),
+            ctx.mostro_info_tx.clone(),
+        );
         app.mode = UiMode::OperationResult(OperationResult::Info(
             "Fetching Mostro instance info...".to_string(),
         ));
@@ -628,13 +650,35 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 // Clear Currency Filters (Common for both roles) - show confirmation
                 app.mode = UiMode::ConfirmClearCurrencies(true);
             }
+            4 if app.user_role == UserRole::User => {
+                // View current seed words (User)
+                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Loading seed words...".to_string(),
+                ));
+            }
+            5 if app.user_role == UserRole::User => {
+                // Generate new keys for current role (user)
+                app.mode = UiMode::ConfirmGenerateNewKeys(true);
+            }
             4 if app.user_role == UserRole::Admin => {
+                // View current seed words (Admin mode still uses user identity seed)
+                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Loading seed words...".to_string(),
+                ));
+            }
+            5 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
             }
-            5 if app.user_role == UserRole::Admin => {
+            6 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            }
+            7 if app.user_role == UserRole::Admin => {
+                // Generate new keys for current role (admin)
+                app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }
             _ => {}
         }

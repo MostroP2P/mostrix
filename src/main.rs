@@ -5,15 +5,15 @@ pub mod ui;
 pub mod util;
 
 use crate::models::AdminDispute;
+use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
 };
-use crate::ui::key_handler::handle_key_event;
-use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatParty, MessageNotification,
-    MostroInfoFetchResult, OperationResult,
+use crate::ui::key_handler::{
+    apply_pending_key_reload, create_app_channels, handle_key_event, AppChannels,
 };
+use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
     listen_for_order_messages,
@@ -25,6 +25,7 @@ use mostro_core::prelude::*;
 
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 
 use chrono::Local;
 use crossterm::execute;
@@ -43,6 +44,7 @@ use ratatui::Terminal;
 use std::io::stdout;
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
+use zeroize::Zeroizing;
 
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
@@ -139,8 +141,15 @@ async fn main() -> Result<(), anyhow::Error> {
         .expect("rustls default crypto provider");
 
     log::info!("MostriX started");
-    let settings = init_settings().map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
     let pool = db::init_db().await?;
+    // Derive the user's `nsec` from the DB identity/index-0 key (mnemonic-backed),
+    // so DB keys and settings stay in sync on first launch.
+    let identity_keys = User::get_identity_keys(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Error deriving identity keys: {}", e))?;
+    let init = init_settings(Some(identity_keys))
+        .map_err(|e| anyhow::anyhow!("Error loading settings: {}", e))?;
+    let settings = init.settings;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
     enable_raw_mode()?;
@@ -158,19 +167,24 @@ async fn main() -> Result<(), anyhow::Error> {
         .nsec_privkey
         .parse::<Keys>()
         .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
-    let client = Client::new(my_keys);
+    let mut client = Client::new(my_keys);
     // Add relays.
     for relay in &settings.relays {
         client.add_relay(relay).await?;
     }
     client.connect().await;
 
-    let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
+    let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
+    let current_mostro_pubkey = Arc::new(std::sync::Mutex::new(mostro_pubkey));
 
     // Start background tasks to fetch orders and disputes
-    let FetchSchedulerResult { orders, disputes } =
-        start_fetch_scheduler(client.clone(), mostro_pubkey);
+    let FetchSchedulerResult {
+        orders,
+        disputes,
+        mut order_task,
+        mut dispute_task,
+    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey));
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -192,6 +206,25 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut admin_chat_interval = interval(Duration::from_secs(2));
     let user_role = &settings.user_mode;
     let mut app = AppState::new(UserRole::from_str(user_role)?);
+    // On first launch, ensure the new user can immediately back up the 12 words.
+    // Do NOT force switching into Settings tab; show the overlay on the normal initial tab.
+    if init.did_generate_new_settings_file {
+        match User::get(&pool).await {
+            Ok(user) => {
+                app.backup_requires_restart = false;
+                app.mode = UiMode::BackupNewKeys(Zeroizing::new(user.mnemonic));
+            }
+            Err(e) => {
+                log::error!(
+                    "First-run backup flow: failed to load generated user mnemonic: {}",
+                    e
+                );
+                app.mode = UiMode::OperationResult(OperationResult::Error(
+                    "First-run setup completed, but mnemonic backup could not be loaded from the database. Please use Settings -> Generate New Keys and back up the new 12 words immediately.".to_string(),
+                ));
+            }
+        }
+    }
     // Seed currencies filter cache from settings so UI-side filtering does not
     // need to hit the filesystem on every render.
     app.currencies_filter = settings.currencies_filter.clone();
@@ -235,25 +268,22 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     }
 
-    // Channel to receive order results from async tasks
-    let (order_result_tx, mut order_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<OperationResult>();
-
-    // Channel to receive message notifications
-    let (message_notification_tx, mut message_notification_rx) =
-        tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
-
-    // Channel to receive admin chat fetch results (fetch runs in spawned task)
-    let (admin_chat_updates_tx, mut admin_chat_updates_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
-
-    // Channel to trigger save of selected attachment (Ctrl+S in dispute chat)
-    let (save_attachment_tx, mut save_attachment_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
-
-    // Channel to receive Mostro instance info fetch results (fetch runs in spawned tasks)
-    let (mostro_info_tx, mut mostro_info_rx) =
-        tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
+    let AppChannels {
+        order_result_tx,
+        mut order_result_rx,
+        key_rotation_tx,
+        mut key_rotation_rx,
+        seed_words_tx,
+        mut seed_words_rx,
+        message_notification_tx,
+        mut message_notification_rx,
+        admin_chat_updates_tx,
+        mut admin_chat_updates_rx,
+        save_attachment_tx,
+        mut save_attachment_rx,
+        mostro_info_tx,
+        mut mostro_info_rx,
+    } = create_app_channels();
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
@@ -269,7 +299,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
-    tokio::spawn(async move {
+    let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
         listen_for_order_messages(
             client_for_messages,
             pool_for_messages,
@@ -307,6 +337,32 @@ async fn main() -> Result<(), anyhow::Error> {
                             Err(e) => {
                                 log::warn!("Failed to refresh admin disputes: {}", e);
                             }
+                        }
+                    }
+                }
+            }
+            key_rotation_result = key_rotation_rx.recv() => {
+                if let Some(res) = key_rotation_result {
+                    match res {
+                        Ok(mnemonic) => {
+                            app.backup_requires_restart = true;
+                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                        }
+                        Err(error_msg) => {
+                            app.mode = UiMode::OperationResult(OperationResult::Error(error_msg));
+                        }
+                    }
+                }
+            }
+            seed_words_result = seed_words_rx.recv() => {
+                if let Some(res) = seed_words_result {
+                    match res {
+                        Ok(mnemonic) => {
+                            app.backup_requires_restart = false;
+                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                        }
+                        Err(error_msg) => {
+                            app.mode = UiMode::OperationResult(OperationResult::Error(error_msg));
                         }
                     }
                 }
@@ -417,13 +473,32 @@ async fn main() -> Result<(), anyhow::Error> {
                         &pool,
                         &client,
                         mostro_pubkey,
+                        &current_mostro_pubkey,
                         &order_result_tx,
+                        &key_rotation_tx,
+                        &seed_words_tx,
                         &mostro_info_tx,
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),
                     ) {
                         Some(true) => {
+                            if app.pending_key_reload {
+                                apply_pending_key_reload(
+                                    &mut app,
+                                    &mut client,
+                                    &mut mostro_pubkey,
+                                    &current_mostro_pubkey,
+                                    &pool,
+                                    &mut message_listener_handle,
+                                    &message_notification_tx,
+                                    Arc::clone(&orders),
+                                    Arc::clone(&disputes),
+                                    &mut order_task,
+                                    &mut dispute_task,
+                                )
+                                .await;
+                            }
                             while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
                                 spawn_save_attachment(
                                     dispute_id,

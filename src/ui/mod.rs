@@ -12,6 +12,7 @@ pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;
 pub mod draw;
 pub mod exit_confirm;
+pub mod generate_keys_popup;
 pub mod help_popup;
 pub mod helpers;
 pub mod key_handler;

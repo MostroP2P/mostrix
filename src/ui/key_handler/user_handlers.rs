@@ -1,5 +1,5 @@
+use crate::ui::key_handler::async_tasks::spawn_take_order_task;
 use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab};
-use crate::SETTINGS;
 use nostr_sdk::Client;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -81,43 +81,27 @@ pub(crate) fn execute_take_order_action(
     // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
     // TODO: Add invoice input for buy orders
     let invoice = None;
-
-    // Spawn async task to take order
-    let pool_clone = pool.clone();
-    let client_clone = client.clone();
-    let result_tx = order_result_tx.clone();
-
-    tokio::spawn(async move {
-        let settings = match SETTINGS.get() {
-            Some(s) => s,
-            None => {
-                let error_msg =
-                    "Settings not initialized. Please restart the application.".to_string();
-                log::error!("{}", error_msg);
-                let _ = result_tx.send(crate::ui::OperationResult::Error(error_msg));
-                return;
-            }
-        };
-        match crate::util::take_order(
-            &pool_clone,
-            &client_clone,
-            settings,
-            mostro_pubkey,
-            &take_state_clone.order,
-            amount,
-            invoice,
-        )
-        .await
-        {
-            Ok(result) => {
-                let _ = result_tx.send(result);
-            }
-            Err(e) => {
-                log::error!("Failed to take order: {}", e);
-                let _ = result_tx.send(crate::ui::OperationResult::Error(e.to_string()));
-            }
+    let runtime_settings = match crate::settings::load_settings_from_disk() {
+        Ok(s) => s,
+        Err(e) => {
+            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(format!(
+                "Failed to load settings for taking order: {}",
+                e
+            )));
+            return false;
         }
-    });
+    };
+
+    spawn_take_order_task(
+        pool.clone(),
+        client.clone(),
+        runtime_settings,
+        mostro_pubkey,
+        take_state_clone,
+        amount,
+        invoice,
+        order_result_tx.clone(),
+    );
 
     true
 }

@@ -4,7 +4,7 @@ Mostrix strictly follows the Mostro protocol's key management specifications to 
 
 ## Deterministic Derivation (NIP-06)
 
-Mostrix uses **BIP-39 mnemonics** and **NIP-06** for deterministic key derivation. All keys are derived from a single 12-word seed phrase generated upon the first startup.
+Mostrix uses **BIP-39 mnemonics** and **NIP-06** for deterministic key derivation. In normal user mode, the 12-word mnemonic is generated and stored in the SQLite `users` table on first startup, and `settings.toml` derives `nsec_privkey` from the corresponding identity key (index 0) so DB and settings keys stay in sync. Admin keys are configured separately via `admin_privkey` and can be rotated from the Settings tab.
 
 ### Derivation Path
 The project uses the standard Mostro derivation path:
@@ -13,6 +13,17 @@ The project uses the standard Mostro derivation path:
 Where `X` is the index:
 - **`X = 0`**: Identity Key.
 - **`X >= 1`**: Trade Keys.
+
+## Key Rotation and Backup Prompts
+
+The Settings tab includes a **Generate New Keys** option (User mode or Admin mode, depending on the current role).
+
+- **User mode**: Mostrix generates a new 12-word mnemonic, deletes/recreates the DB user identity, and updates `settings.toml`’s `nsec_privkey`.
+- **Admin mode**: Mostrix rotates the admin keypair and updates `settings.toml`’s `admin_privkey`.
+
+In both cases Mostrix shows a backup popup displaying the newly generated 12 words. The mnemonic must be saved, and Mostrix should be restarted after saving so all derived keys and in-memory state use the new values.
+
+On very first launch, when Mostrix must bootstrap a brand-new `settings.toml`, it also shows the backup popup as an overlay on the initial Orders/Disputes tab (it does not force switching to the Settings tab).
 
 ## Identity Key (Index 0)
 
@@ -101,7 +112,7 @@ The derivation logic for trade keys uses the `trade_index` as the child index in
 Maintaining the state of trade indices is **critical**. If the `trade_index` associated with an order is lost, the client will be unable to decrypt messages from Mostro or the counterparty for that specific trade.
 
 ### The `users` Table
-The local SQLite database stores the mnemonic and the latest index used.
+The local SQLite database stores the mnemonic and the latest index used. On first run, `settings.toml`’s `nsec_privkey` is derived from the DB identity key (index 0) corresponding to this mnemonic, so user identity remains deterministic across restarts.
 
 **Source**: `src/db.rs:55`
 ```55:60:src/db.rs
