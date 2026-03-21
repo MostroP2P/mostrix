@@ -217,8 +217,101 @@ pub async fn parse_dm_events(
     direct_messages
 }
 
-/// Continuously listen for messages on trade keys for active orders
-/// This function should be spawned as a background task
+/// Handle a single decoded trade DM for a given order/trade index.
+async fn handle_trade_dm_for_order(
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: &Arc<Mutex<usize>>,
+    message_notification_tx: &tokio::sync::mpsc::UnboundedSender<MessageNotification>,
+    order_id: uuid::Uuid,
+    trade_index: i64,
+    message: Message,
+    timestamp: i64,
+    sender: PublicKey,
+) {
+    let inner_kind = message.get_inner_message_kind();
+    let action = inner_kind.action.clone();
+
+    // Extract invoice and sat_amount from payload based on action type
+    let (sat_amount, invoice) = match &action {
+        Action::PayInvoice => match &inner_kind.payload {
+            Some(Payload::PaymentRequest(_, invoice, _)) => (None, Some(invoice.clone())),
+            _ => (None, None),
+        },
+        Action::AddInvoice => match &inner_kind.payload {
+            Some(Payload::Order(order)) => (Some(order.amount), None),
+            _ => (None, None),
+        },
+        _ => (None, None),
+    };
+
+    let mut messages_lock = messages.lock().unwrap();
+
+    // Find the latest message for this order_id (if any exists)
+    let existing_message = messages_lock
+        .iter()
+        .filter(|m| m.order_id == Some(order_id))
+        .max_by_key(|m| m.timestamp);
+
+    // Only increment pending notifications if this is a truly new message
+    let is_new_message = match existing_message {
+        None => true,
+        Some(existing) => {
+            let existing_action = existing.message.get_inner_message_kind().action.clone();
+            timestamp > existing.timestamp
+                || (timestamp == existing.timestamp && action != existing_action)
+        }
+    };
+
+    if is_new_message {
+        let mut pending_notifications = pending_notifications.lock().unwrap();
+        *pending_notifications += 1;
+    }
+
+    let order_message = crate::ui::OrderMessage {
+        message: message.clone(),
+        timestamp,
+        sender,
+        order_id: Some(order_id),
+        trade_index,
+        read: false,
+        sat_amount,
+        buyer_invoice: invoice.clone(),
+        auto_popup_shown: false,
+    };
+
+    messages_lock.push(order_message);
+    messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    messages_lock.dedup_by_key(|a| a.order_id.unwrap());
+
+    let action_str = match &action {
+        Action::AddInvoice => "Invoice Request",
+        Action::PayInvoice => "Payment Request",
+        Action::TakeSell => "Take Sell",
+        Action::TakeBuy => "Take Buy",
+        Action::FiatSent => "Fiat Sent",
+        Action::FiatSentOk => "Fiat Received",
+        Action::Release | Action::Released => "Release",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        Action::WaitingSellerToPay => "Waiting for Seller to Pay",
+        Action::Rate => "Rate Counterparty",
+        Action::RateReceived => "Rate Counterparty received",
+        _ => "New Message",
+    };
+
+    let notification = MessageNotification {
+        order_id: Some(order_id),
+        message_preview: action_str.to_string(),
+        timestamp,
+        action,
+        sat_amount,
+        invoice,
+    };
+
+    let _ = message_notification_tx.send(notification);
+}
+
+/// Continuously listen for messages on trade keys for active orders using subscriptions.
+/// This function should be spawned as a background task.
 pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
@@ -227,8 +320,7 @@ pub async fn listen_for_order_messages(
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
 ) {
-    let mut refresh_interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
-    // Get user key from db
+    // Get user key from db (for deriving trade keys)
     let user = match User::get(&pool).await {
         Ok(u) => u,
         Err(e) => {
@@ -237,165 +329,110 @@ pub async fn listen_for_order_messages(
         }
     };
 
+    let mut notifications = client.notifications();
+    let mut subscribed_pubkeys: HashSet<PublicKey> = HashSet::new();
+    let mut pubkey_to_order: HashMap<PublicKey, (uuid::Uuid, i64)> = HashMap::new();
+    let mut subscribe_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+
     loop {
-        refresh_interval.tick().await;
+        tokio::select! {
+            _ = subscribe_interval.tick() => {
+                // Snapshot active orders
+                let active_orders = {
+                    let indices = active_order_trade_indices.lock().unwrap();
+                    indices.clone()
+                };
 
-        // Get current active orders
-        let active_orders = {
-            let indices = active_order_trade_indices.lock().unwrap();
-            indices.clone()
-        };
-
-        if active_orders.is_empty() {
-            continue;
-        }
-
-        // For each active order, check for new messages
-        for (order_id, trade_index) in active_orders.iter() {
-            // Derive trade key for message decode
-            let trade_keys = match user.derive_trade_keys(*trade_index) {
-                Ok(k) => k,
-                Err(e) => {
-                    log::error!(
-                        "Failed to derive trade keys for index {}: {}",
-                        trade_index,
-                        e
-                    );
+                if active_orders.is_empty() {
                     continue;
                 }
-            };
 
-            // Fetch recent messages for this trade key
-            let filter_giftwrap = Filter::new()
-                .pubkey(trade_keys.public_key())
-                .kind(nostr_sdk::Kind::GiftWrap)
-                .limit(5);
-
-            let events = match client
-                .fetch_events(filter_giftwrap, FETCH_EVENTS_TIMEOUT)
-                .await
-            {
-                Ok(e) => e,
-                Err(e) => {
-                    log::warn!(
-                        "Failed to fetch giftwrap events for trade index {}: {}",
-                        trade_index,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            // Parse messages
-            let parsed_messages = parse_dm_events(events, &trade_keys, None).await;
-
-            // Get only the latest message (with the highest timestamp)
-            // Index 1 in the tuple is the timestamp
-            let latest_message = parsed_messages.into_iter().max_by_key(|msg| msg.1);
-
-            // Check if we have new messages
-            let mut messages_lock = messages.lock().unwrap();
-
-            if let Some((message, timestamp, sender)) = latest_message {
-                // Only add if it's a new message
-                let inner_kind = message.get_inner_message_kind();
-                let action = inner_kind.action.clone();
-                // Extract invoice and sat_amount from payload based on action type
-                // PayInvoice: PaymentRequest payload contains invoice
-                // AddInvoice: Order payload contains sat amount
-                let (sat_amount, invoice) = match &action {
-                    Action::PayInvoice => {
-                        // For PayInvoice, extract invoice from PaymentRequest payload
-                        match &inner_kind.payload {
-                            Some(Payload::PaymentRequest(_, invoice, _)) => {
-                                (None, Some(invoice.clone()))
-                            }
-                            _ => (None, None),
+                for (order_id, trade_index) in active_orders.iter() {
+                    let trade_keys = match user.derive_trade_keys(*trade_index) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            log::error!(
+                                "Failed to derive trade keys for index {}: {}",
+                                trade_index,
+                                e
+                            );
+                            continue;
                         }
-                    }
-                    Action::AddInvoice => {
-                        // For AddInvoice, extract sat amount from Order payload
-                        match &inner_kind.payload {
-                            Some(Payload::Order(order)) => (Some(order.amount), None),
-                            _ => (None, None),
+                    };
+
+                    let pubkey = trade_keys.public_key();
+                    if subscribed_pubkeys.insert(pubkey) {
+                        let filter = Filter::new()
+                            .pubkey(pubkey)
+                            .kind(nostr_sdk::Kind::GiftWrap)
+                            .limit(0);
+
+                        if let Err(e) = client.subscribe(filter, None).await {
+                            log::warn!(
+                                "Failed to subscribe for trade pubkey {} (index {}): {}",
+                                pubkey,
+                                trade_index,
+                                e
+                            );
+                            subscribed_pubkeys.remove(&pubkey);
+                            continue;
                         }
-                    }
-                    _ => (None, None),
-                };
-                // Check if this is a new message for this order_id
-                // Find the latest message for this order_id (if any exists)
-                let existing_message = messages_lock
-                    .iter()
-                    .filter(|m| m.order_id == Some(*order_id))
-                    .max_by_key(|m| m.timestamp);
 
-                // Only increment pending notifications if this is a truly new message
-                let is_new_message = match existing_message {
-                    None => {
-                        // No message exists for this order_id - this is new
-                        true
+                        pubkey_to_order.insert(pubkey, (*order_id, *trade_index));
                     }
-                    Some(existing) => {
-                        // Check if the new message is newer than what we already have
-                        // Also check action to avoid counting exact duplicates
-                        let existing_action =
-                            existing.message.get_inner_message_kind().action.clone();
-                        timestamp > existing.timestamp
-                            || (timestamp == existing.timestamp && action != existing_action)
-                    }
-                };
-
-                if is_new_message {
-                    let mut pending_notifications = pending_notifications.lock().unwrap();
-                    *pending_notifications += 1;
                 }
-
-                let order_message = crate::ui::OrderMessage {
-                    message: message.clone(),
-                    timestamp,
-                    sender,
-                    order_id: Some(*order_id),
-                    trade_index: *trade_index,
-                    read: false, // New messages are unread by default
-                    sat_amount,
-                    buyer_invoice: invoice.clone(),
-                    auto_popup_shown: false,
+            }
+            notification = notifications.recv() => {
+                let notification = match notification {
+                    Ok(n) => n,
+                    Err(e) => {
+                        log::warn!("Error receiving relay notification: {:?}", e);
+                        continue;
+                    }
                 };
 
-                // Add to messages list
-                messages_lock.push(order_message.clone());
-                // Sort by time
-                messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-                // Remove duplicates with dedup
-                messages_lock.dedup_by_key(|a| a.order_id.unwrap());
+                if let RelayPoolNotification::Event { event, .. } = notification {
+                    if event.kind != nostr_sdk::Kind::GiftWrap {
+                        continue;
+                    }
 
-                // Create notification
-                let action_str = match &action {
-                    Action::AddInvoice => "Invoice Request",
-                    Action::PayInvoice => "Payment Request",
-                    Action::TakeSell => "Take Sell",
-                    Action::TakeBuy => "Take Buy",
-                    Action::FiatSent => "Fiat Sent",
-                    Action::FiatSentOk => "Fiat Received",
-                    Action::Release | Action::Released => "Release",
-                    Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
-                    Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-                    Action::Rate => "Rate Counterparty",
-                    Action::RateReceived => "Rate Counterparty received",
-                    _ => "New Message",
-                };
+                    let pubkey = event.pubkey;
+                    let (order_id, trade_index) = match pubkey_to_order.get(&pubkey) {
+                        Some((id, idx)) => (*id, *idx),
+                        None => continue,
+                    };
 
-                let notification = MessageNotification {
-                    order_id: Some(*order_id),
-                    message_preview: action_str.to_string(),
-                    timestamp,
-                    action,
-                    sat_amount,
-                    invoice,
-                };
+                    // Derive trade keys again for decryption
+                    let trade_keys = match user.derive_trade_keys(trade_index) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            log::error!(
+                                "Failed to derive trade keys for index {} while handling DM: {}",
+                                trade_index,
+                                e
+                            );
+                            continue;
+                        }
+                    };
 
-                // Send notification (ignore errors if channel is closed)
-                let _ = message_notification_tx.send(notification);
+                    let mut events = Events::default();
+                    events.insert(*event);
+
+                    let parsed_messages = parse_dm_events(events, &trade_keys, None).await;
+                    for (message, timestamp, sender) in parsed_messages {
+                        handle_trade_dm_for_order(
+                            &messages,
+                            &pending_notifications,
+                            &message_notification_tx,
+                            order_id,
+                            trade_index,
+                            message,
+                            timestamp,
+                            sender,
+                        )
+                        .await;
+                    }
+                }
             }
         }
     }
