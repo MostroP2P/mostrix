@@ -13,6 +13,8 @@ use crate::util::order_utils::helper::{
     create_order_result_from_form, create_order_result_success, handle_mostro_response,
 };
 use sqlx::SqlitePool;
+use crate::util::OrderDmSubscriptionCmd;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Send a new order to Mostro
 pub async fn send_new_order(
@@ -20,6 +22,7 @@ pub async fn send_new_order(
     client: &Client,
     mostro_pubkey: PublicKey,
     form: FormState,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
 ) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Parse form data
     let kind_str = if form.kind.trim().is_empty() {
@@ -172,6 +175,14 @@ pub async fn send_new_order(
                                 {
                                     log::error!("Failed to save order to database: {}", e);
                                 }
+                                if let Some(tx) = dm_subscription_tx {
+                                    if let Some(order_id) = order.id {
+                                        let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                            order_id,
+                                            trade_index: next_idx,
+                                        });
+                                    }
+                                }
 
                                 Ok(create_order_result_success(order, next_idx))
                             } else {
@@ -210,6 +221,14 @@ pub async fn send_new_order(
                         save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await
                     {
                         log::error!("Failed to save order to database: {}", e);
+                    }
+                    if let Some(tx) = dm_subscription_tx {
+                        if let Some(order_id) = order.id {
+                            let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                order_id,
+                                trade_index: next_idx,
+                            });
+                        }
                     }
 
                     Ok(create_order_result_success(order, next_idx))

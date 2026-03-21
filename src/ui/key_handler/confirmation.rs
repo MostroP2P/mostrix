@@ -97,6 +97,7 @@ pub fn handle_confirm_key(
                 ctx.client,
                 ctx.mostro_pubkey,
                 ctx.order_result_tx,
+                ctx.dm_subscription_tx,
             );
             true
         }

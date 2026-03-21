@@ -17,6 +17,7 @@ use crate::ui::{
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
+use crate::util::OrderDmSubscriptionCmd;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
@@ -39,6 +40,7 @@ pub struct EnterKeyContext<'a> {
     pub seed_words_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
     pub admin_chat_keys: Option<&'a Keys>,
+    pub dm_subscription_tx: &'a UnboundedSender<OrderDmSubscriptionCmd>,
 }
 
 // Re-export public functions
@@ -170,6 +172,7 @@ pub fn handle_key_event(
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
     save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
+    dm_subscription_tx: &UnboundedSender<OrderDmSubscriptionCmd>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
     let code = key_event.code;
@@ -611,6 +614,7 @@ pub fn handle_key_event(
                 seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
+                dm_subscription_tx,
             };
             let should_continue = handle_enter_key(app, &ctx);
             Some(should_continue)
@@ -650,6 +654,7 @@ pub fn handle_key_event(
                 seed_words_tx,
                 mostro_info_tx,
                 admin_chat_keys,
+                dm_subscription_tx,
             };
             let should_continue = handle_confirm_key(app, &ctx);
             Some(should_continue)

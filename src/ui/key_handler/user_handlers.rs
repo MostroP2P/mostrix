@@ -30,6 +30,7 @@ pub fn handle_enter_taking_order(
             ctx.client,
             ctx.mostro_pubkey,
             ctx.order_result_tx,
+            ctx.dm_subscription_tx,
         );
     } else {
         // NO selected - cancel and return to the appropriate normal mode
@@ -52,6 +53,7 @@ pub(crate) fn execute_take_order_action(
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
+    dm_subscription_tx: &UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
 ) -> bool {
     // Validate range order if needed
     if take_state.is_range_order {

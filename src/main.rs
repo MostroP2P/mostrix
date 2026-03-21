@@ -18,7 +18,7 @@ use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    spawn_save_attachment,
+    spawn_save_attachment, OrderDmSubscriptionCmd,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -307,6 +307,7 @@ async fn main() -> Result<(), anyhow::Error> {
             messages_clone,
             message_notification_tx_clone,
             pending_notifications_clone,
+            dm_subscription_rx,
         )
         .await;
     });
@@ -481,6 +482,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),
+                        &dm_subscription_tx,
                     ) {
                         Some(true) => {
                             if app.pending_key_reload {
