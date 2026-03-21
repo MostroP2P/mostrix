@@ -218,6 +218,7 @@ pub async fn parse_dm_events(
 }
 
 /// Handle a single decoded trade DM for a given order/trade index.
+#[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
     messages: &Arc<Mutex<Vec<OrderMessage>>>,
     pending_notifications: &Arc<Mutex<usize>>,
@@ -332,7 +333,7 @@ pub async fn listen_for_order_messages(
     let mut notifications = client.notifications();
     let mut subscribed_pubkeys: HashSet<PublicKey> = HashSet::new();
     let mut pubkey_to_order: HashMap<PublicKey, (uuid::Uuid, i64)> = HashMap::new();
-    let mut subscribe_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    let mut subscribe_interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
 
     loop {
         tokio::select! {
