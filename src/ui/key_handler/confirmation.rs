@@ -3,9 +3,7 @@ use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 use crate::ui::key_handler::admin_handlers::{
     execute_take_dispute_action, handle_enter_admin_mode,
 };
-use crate::ui::key_handler::async_tasks::{
-    spawn_add_relay_task, spawn_refresh_mostro_info_task,
-};
+use crate::ui::key_handler::async_tasks::{spawn_add_relay_task, spawn_refresh_mostro_info_task};
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{

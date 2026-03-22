@@ -148,7 +148,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                 Err(e) => log::warn!("Failed to copy invoice to clipboard: {}", e),
             }
         });
-        return true;
+        true
     }
 
     // Non-Linux: clipboard ops can still block; run off UI thread.
