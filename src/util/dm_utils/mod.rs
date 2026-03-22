@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::models::{Order, User};
 use crate::ui::{MessageNotification, OrderMessage};
+use crate::util::db_utils::update_order_status;
+use crate::util::order_utils::map_action_to_status;
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -328,6 +330,35 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
+    // Persist status transitions when Mostro sends an Order payload for a lifecycle step.
+    if let Some(Payload::Order(ref order_payload)) = inner_kind.payload {
+        if let (Some(oid), Some(status)) = (
+            order_payload.id,
+            map_action_to_status(&action, order_payload),
+        ) {
+            let order_id_str = oid.to_string();
+            if let Err(e) = update_order_status(pool, &order_id_str, status).await {
+                log::warn!(
+                    "Failed to update status for order {} from DM action {:?}: {}",
+                    order_id_str,
+                    action,
+                    e
+                );
+            }
+        }
+    }
+
+    // Only show PayInvoice popup/notification when an invoice is actually present.
+    let is_actionable_notification = match &action {
+        Action::PayInvoice => invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+        Action::AddInvoice => true,
+        _ => true,
+    };
+
+    if matches!(action, Action::PayInvoice) && !is_actionable_notification {
+        return;
+    }
+
     // Lock `messages` only long enough to extract comparison data, then drop it
     // before touching `pending_notifications` to avoid lock-order deadlocks.
     let existing_message_data = {
@@ -361,7 +392,7 @@ async fn handle_trade_dm_for_order(
         }
     };
 
-    if is_new_message {
+    if is_new_message && is_actionable_notification {
         let mut pending_notifications = pending_notifications.lock().unwrap();
         *pending_notifications += 1;
     }

@@ -1,11 +1,11 @@
 use ratatui::layout::{Constraint, Direction, Flex, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{helpers, FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
+pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_button: bool) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
     let popup_height = 20;
@@ -37,8 +37,8 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
             Constraint::Length(1), // premium
             Constraint::Length(1), // invoice (if present)
             Constraint::Length(1), // expiration
-            Constraint::Length(1), // separator
-            Constraint::Length(1), // confirmation prompt
+            Constraint::Length(3), // buttons
+            Constraint::Length(1), // help text
         ],
     )
     .split(popup);
@@ -160,24 +160,15 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState) {
         inner_chunks[10],
     );
 
-    // Confirmation prompt
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Y",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" to confirm or "),
-            Span::styled(
-                "N",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" to cancel"),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
+    // YES/NO buttons
+    helpers::render_yes_no_buttons(f, inner_chunks[11], selected_button, "✓ YES", "✗ NO");
+
+    // Help text: use Enter/Esc for confirmation
+    helpers::render_help_text(
+        f,
         inner_chunks[12],
+        "Press ",
+        "Enter",
+        " to confirm, Esc to cancel",
     );
 }

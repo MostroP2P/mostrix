@@ -66,6 +66,25 @@ pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     Ok(order)
 }
 
+/// Map a Mostro `Action` plus the current `SmallOrder` into a new `Status`,
+/// when the transition is clear from protocol semantics.
+///
+/// For intermediate states where Mostro already sets `order.status` on the
+/// `SmallOrder`, callers can simply rely on that value instead of this helper.
+pub fn map_action_to_status(action: &Action, order: &SmallOrder) -> Option<Status> {
+    // If the order already has an explicit status from Mostro, prefer that.
+    if let Some(status) = order.status {
+        return Some(status);
+    }
+
+    // Successful completion – treat FiatSentOk / Release / Released as final success.
+    match action {
+        Action::FiatSentOk => Some(Status::Success),
+        Action::Release | Action::Released => Some(Status::Success),
+        _ => None,
+    }
+}
+
 /// Parse dispute from nostr tags
 pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();

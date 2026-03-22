@@ -101,32 +101,75 @@ fn handle_admin_chat_input(
 
 /// Handle clipboard copy for invoice
 fn handle_clipboard_copy(invoice: String) -> bool {
-    let copy_result = {
-        match arboard::Clipboard::new() {
-            Ok(mut clipboard) => {
-                #[cfg(target_os = "linux")]
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, prefer arboard (system clipboard) but run it off the UI thread.
+        // Some clipboard backends can emit warnings to stderr; silence stderr during the call
+        // to avoid corrupting the TUI.
+        std::thread::spawn(move || {
+            let copy_result = {
+                #[cfg(unix)]
                 {
-                    use arboard::SetExtLinux;
-                    clipboard.set().wait().text(invoice)
+                    use std::os::unix::io::AsRawFd;
+                    let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+                    let devnull = std::fs::File::open("/dev/null");
+                    if saved_stderr >= 0 {
+                        if let Ok(devnull) = devnull {
+                            unsafe {
+                                let _ = libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
+                            }
+                        }
+                    }
+
+                    let r = match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Err(e) => Err(e),
+                    };
+
+                    if saved_stderr >= 0 {
+                        unsafe {
+                            let _ = libc::dup2(saved_stderr, libc::STDERR_FILENO);
+                            let _ = libc::close(saved_stderr);
+                        }
+                    }
+                    r
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(unix))]
                 {
-                    clipboard.set_text(invoice)
+                    match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Err(e) => Err(e),
+                    }
+                }
+            };
+
+            match copy_result {
+                Ok(_) => log::info!("Invoice copied to clipboard"),
+                Err(e) => log::warn!("Failed to copy invoice to clipboard: {}", e),
+            }
+        });
+        return true;
+    }
+
+    // Non-Linux: clipboard ops can still block; run off UI thread.
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::thread::spawn(move || {
+            let copy_result = match arboard::Clipboard::new() {
+                Ok(mut clipboard) => clipboard.set_text(invoice),
+                Err(e) => Err(e),
+            };
+
+            match copy_result {
+                Ok(_) => {
+                    log::info!("Invoice copied to clipboard");
+                }
+                Err(e) => {
+                    log::warn!("Failed to copy invoice to clipboard: {}", e);
                 }
             }
-            Err(e) => Err(e),
-        }
-    };
-
-    match copy_result {
-        Ok(_) => {
-            log::info!("Invoice copied to clipboard");
-            true
-        }
-        Err(e) => {
-            log::warn!("Failed to copy invoice to clipboard: {}", e);
-            false
-        }
+        });
+        true
     }
 }
 
@@ -190,6 +233,29 @@ pub fn handle_key_event(
             return Some(true);
         }
         return Some(true); // consume all other keys while help is open
+    }
+
+    // PayInvoice popup: allow scrolling the (wrapped) invoice text.
+    if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
+        match code {
+            KeyCode::Up => {
+                invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(1);
+                return Some(true);
+            }
+            KeyCode::Down => {
+                invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(1);
+                return Some(true);
+            }
+            KeyCode::PageUp => {
+                invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(10);
+                return Some(true);
+            }
+            KeyCode::PageDown => {
+                invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(10);
+                return Some(true);
+            }
+            _ => {}
+        }
     }
 
     // Save attachment popup: Up/Down to select, Enter to save, Esc to cancel
@@ -640,25 +706,8 @@ pub fn handle_key_event(
             }
             Some(true)
         }
-        // 'q' key removed - use Exit tab instead
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let ctx = EnterKeyContext {
-                orders,
-                disputes,
-                pool,
-                client,
-                mostro_pubkey,
-                current_mostro_pubkey,
-                order_result_tx,
-                key_rotation_tx,
-                seed_words_tx,
-                mostro_info_tx,
-                admin_chat_keys,
-                dm_subscription_tx,
-            };
-            let should_continue = handle_confirm_key(app, &ctx);
-            Some(should_continue)
-        }
+        // 'q' key removed - use Exit tab instead.
+        // For confirmations, prefer using Enter on the focused button instead of 'y'/'n'.
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
             Some(true)

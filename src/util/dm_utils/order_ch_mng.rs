@@ -42,6 +42,7 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
             focused: false,
             just_pasted: false,
             copied_to_clipboard: false,
+            scroll_y: 0,
         };
         // Reuse pay invoice popup for buy orders when taking an order
         app.mode = UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);

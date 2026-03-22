@@ -12,6 +12,7 @@ use crate::ui::{
 use crate::ui::key_handler::async_tasks::{
     spawn_key_rotation_task, spawn_load_seed_words_task,
     spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
+    spawn_send_new_order_task,
 };
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
@@ -79,9 +80,19 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             handle_enter_creating_order(app, form);
             true
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
-            // Enter acts as Yes in confirmation - handled by 'y' key
-            app.mode = default_mode;
+        UiMode::UserMode(UserMode::ConfirmingOrder {
+            form,
+            selected_button,
+        }) => {
+            if selected_button {
+                // YES selected - send the order (similar to handle_confirm_key)
+                let form_clone = form.clone();
+                app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
+                spawn_send_new_order_task(ctx, form_clone);
+            } else {
+                // NO selected - go back to form
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
+            }
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
@@ -559,11 +570,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     focused: matches!(action, Action::AddInvoice),
                     just_pasted: false,
                     copied_to_clipboard: false,
+                    scroll_y: 0,
                 };
 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
-            } else {
-                // Show simple message view popup for other message types
+            } else if matches!(
+                action,
+                Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+            ) {
+                // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
                 let view_state = MessageViewState {
                     message_content: notification.message_preview,
@@ -572,6 +587,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            } else {
+                // Non-actionable messages: show info popup (no "send" semantics).
+                let notification = order_message_to_notification(msg);
+                app.mode =
+                    UiMode::OperationResult(OperationResult::Info(notification.message_preview));
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {

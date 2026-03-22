@@ -8,7 +8,10 @@ use tokio::sync::mpsc::UnboundedSender;
 pub fn handle_enter_creating_order(app: &mut AppState, form: &FormState) {
     // Show confirmation popup when Enter is pressed
     if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder(form.clone()));
+        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder {
+            form: form.clone(),
+            selected_button: true, // default to YES
+        });
     } else {
         app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     }

@@ -107,8 +107,12 @@ pub fn ui_draw(
     }
 
     // Confirmation popup overlay (user mode only)
-    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
-        order_confirm::render_order_confirm(f, form);
+    if let UiMode::UserMode(UserMode::ConfirmingOrder {
+        form,
+        selected_button,
+    }) = &app.mode
+    {
+        order_confirm::render_order_confirm(f, form, *selected_button);
     }
 
     // Waiting for Mostro popup overlay (user mode only)

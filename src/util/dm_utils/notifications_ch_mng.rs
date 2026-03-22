@@ -47,6 +47,7 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 focused: matches!(notification.action, Action::AddInvoice),
                 just_pasted: false,
                 copied_to_clipboard: false,
+                scroll_y: 0,
             };
             let action = notification.action.clone();
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);

@@ -24,8 +24,8 @@ pub use fetch_scheduler::{
     FetchSchedulerResult,
 };
 pub use helper::{
-    dispute_from_tags, fetch_events_list, get_disputes, get_orders, order_from_tags,
-    parse_disputes_events, parse_orders_events,
+    dispute_from_tags, fetch_events_list, get_disputes, get_orders, map_action_to_status,
+    order_from_tags, parse_disputes_events, parse_orders_events,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;

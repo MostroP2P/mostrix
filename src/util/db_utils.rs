@@ -31,3 +31,37 @@ pub async fn save_order(
     }
     Ok(())
 }
+
+/// Update the status for an existing order in the local database.
+/// This is a thin wrapper over `Order::update_status` that logs failures.
+pub async fn update_order_status(pool: &SqlitePool, order_id: &str, status: Status) -> Result<()> {
+    match Order::update_status(pool, order_id, status).await {
+        Ok(()) => {
+            log::info!("Updated status for order {} to {:?}", order_id, status);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "Failed to update status for order {} to {:?}: {}",
+                order_id,
+                status,
+                e
+            );
+            Err(e)
+        }
+    }
+}
+
+/// Best-effort helper to sync the local DB status from a `SmallOrder` that was
+/// fetched from relays (e.g. via `order_from_tags`), when an order row already
+/// exists locally.
+pub async fn refresh_order_status_from_small_order(
+    pool: &SqlitePool,
+    small_order: &SmallOrder,
+) -> Result<()> {
+    if let (Some(order_id), Some(status)) = (small_order.id, small_order.status) {
+        // Ignore errors here; callers typically run this as a background refresh.
+        let _ = update_order_status(pool, &order_id.to_string(), status).await;
+    }
+    Ok(())
+}

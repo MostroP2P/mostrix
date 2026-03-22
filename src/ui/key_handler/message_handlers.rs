@@ -22,14 +22,9 @@ pub fn handle_enter_viewing_message(
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
         _ => {
-            let _ = ctx.order_result_tx.send(OperationResult::Error(
-                "Invalid action for send message".to_string(),
-            ));
-            let default_mode = match app.user_role {
-                UserRole::User => UiMode::UserMode(UserMode::Normal),
-                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-            };
-            app.mode = default_mode;
+            // This view is sometimes used as a generic "view message" popup; if the message
+            // doesn't map to a sendable action, just dismiss without error.
+            app.mode = UiMode::Normal;
             return;
         }
     };

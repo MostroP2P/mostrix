@@ -401,6 +401,28 @@ impl Order {
 
         Ok(order)
     }
+
+    /// Update only the status field of an existing order by id.
+    /// The caller is responsible for providing a valid Mostro `Status`.
+    pub async fn update_status(
+        pool: &SqlitePool,
+        order_id: &str,
+        new_status: mostro_core::prelude::Status,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE orders
+            SET status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(new_status.to_string())
+        .bind(order_id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 /// Admin dispute model for storing SolverDisputeInfo
