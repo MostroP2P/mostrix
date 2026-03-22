@@ -12,8 +12,8 @@ use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_
 use crate::util::order_utils::helper::{
     create_order_result_from_form, create_order_result_success, handle_mostro_response,
 };
-use sqlx::SqlitePool;
 use crate::util::OrderDmSubscriptionCmd;
+use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Send a new order to Mostro

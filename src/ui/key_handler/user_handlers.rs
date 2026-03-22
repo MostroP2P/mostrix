@@ -103,6 +103,7 @@ pub(crate) fn execute_take_order_action(
         amount,
         invoice,
         order_result_tx.clone(),
+        dm_subscription_tx.clone(),
     );
 
     true

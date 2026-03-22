@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crate::models::User;
+use crate::models::{Order, User};
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
@@ -141,11 +141,23 @@ where
                         event,
                         ..
                     } => {
-                        // Ignore events from unrelated subscriptions.
-                        if subscription_id != expected_subscription_id {
+                        let event = *event;
+                        if event.kind != nostr_sdk::Kind::GiftWrap {
                             continue;
                         }
-                        return Ok(*event);
+                        // The same physical GiftWrap may be tagged with a different subscription id
+                        // when both this temporary subscribe and `listen_for_order_messages` match
+                        // the same filter (early trade-key subscribe). Only the listener's id may
+                        // appear on the notification; strict id equality would starve wait_for_dm.
+                        let accept = if subscription_id == expected_subscription_id {
+                            true
+                        } else {
+                            nip59::extract_rumor(trade_keys, &event).await.is_ok()
+                        };
+                        if !accept {
+                            continue;
+                        }
+                        return Ok(event);
                     }
                     _ => continue,
                 },
@@ -271,9 +283,37 @@ async fn handle_trade_dm_for_order(
     message: Message,
     timestamp: i64,
     sender: PublicKey,
+    pool: &sqlx::SqlitePool,
+    trade_keys: &Keys,
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
+
+    if matches!(&action, Action::AddInvoice) {
+        if let Some(Payload::Order(ref small_order)) = inner_kind.payload {
+            let msg_request_id = inner_kind.request_id.and_then(|u| i64::try_from(u).ok());
+            match Order::upsert_from_small_order_dm(
+                pool,
+                order_id,
+                small_order.clone(),
+                trade_keys,
+                msg_request_id,
+            )
+            .await
+            {
+                Ok(_) => log::info!(
+                    "Persisted order {} to database from AddInvoice DM (status={:?})",
+                    order_id,
+                    small_order.status
+                ),
+                Err(e) => log::error!(
+                    "Failed to persist order {} from AddInvoice DM: {}",
+                    order_id,
+                    e
+                ),
+            }
+        }
+    }
 
     // Extract invoice and sat_amount from payload based on action type
     let (sat_amount, invoice) = match &action {
@@ -305,11 +345,19 @@ async fn handle_trade_dm_for_order(
     };
 
     // Only increment pending notifications if this is a truly new message.
-    let is_new_message = match existing_message_data {
+    // Relay delivery can be out-of-order: a later protocol step may carry an older Nostr
+    // `created_at` than a message we already stored. If we only compared timestamps,
+    // `waiting-seller-to-pay` after `add-invoice` would not bump the counter. Treat any
+    // **different action** as a new notification; for the **same** action, require a
+    // strictly newer timestamp (dedup stale/duplicate events).
+    let is_new_message = match &existing_message_data {
         None => true,
         Some((existing_timestamp, existing_action)) => {
-            timestamp > existing_timestamp
-                || (timestamp == existing_timestamp && action != existing_action)
+            if action != *existing_action {
+                true
+            } else {
+                timestamp > *existing_timestamp
+            }
         }
     };
 
@@ -362,6 +410,97 @@ async fn handle_trade_dm_for_order(
     };
 
     let _ = message_notification_tx.send(notification);
+}
+
+/// How terminal order status is handled after each decoded GiftWrap in a batch.
+enum GiftWrapTerminalPolicy<'a> {
+    /// Known `listen_for_order_messages` subscription: unsubscribe relay sub and stop batch.
+    TrackedSubscription(&'a SubscriptionId),
+    /// Unknown subscription id (e.g. parallel `wait_for_dm`): only local index/pubkey cleanup;
+    /// do not unsubscribe (id not ours). Process the full batch like the pre-refactor path.
+    UntrackedFallback,
+}
+
+/// Shared path for parsed GiftWrap batches: `handle_trade_dm_for_order` plus terminal cleanup.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_giftwrap_batch(
+    parsed_messages: Vec<(Message, i64, PublicKey)>,
+    order_id: uuid::Uuid,
+    trade_index: i64,
+    trade_keys: &Keys,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: &Arc<Mutex<usize>>,
+    message_notification_tx: &tokio::sync::mpsc::UnboundedSender<MessageNotification>,
+    pool: &sqlx::SqlitePool,
+    user: &User,
+    active_order_trade_indices: &Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    client: &Client,
+    subscription_to_order: &mut HashMap<SubscriptionId, (uuid::Uuid, i64)>,
+    terminal_policy: GiftWrapTerminalPolicy<'_>,
+) {
+    let log_each_message = matches!(
+        terminal_policy,
+        GiftWrapTerminalPolicy::TrackedSubscription(_)
+    );
+
+    for (message, timestamp, sender) in parsed_messages {
+        let has_terminal_status = message_has_terminal_order_status(&message);
+        if log_each_message {
+            log::info!(
+                "[dm_listener] Handling message action={:?} ts={} order_id={} trade_index={}",
+                message.get_inner_message_kind().action,
+                timestamp,
+                order_id,
+                trade_index
+            );
+        }
+        handle_trade_dm_for_order(
+            messages,
+            pending_notifications,
+            message_notification_tx,
+            order_id,
+            trade_index,
+            message,
+            timestamp,
+            sender,
+            pool,
+            trade_keys,
+        )
+        .await;
+
+        if has_terminal_status {
+            match terminal_policy {
+                GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
+                    log::info!(
+                        "[dm_listener] Terminal order status detected, cleaning up order_id={}, trade_index={}, subscription_id={}",
+                        order_id,
+                        trade_index,
+                        subscription_id
+                    );
+                    {
+                        let mut indices = active_order_trade_indices.lock().unwrap();
+                        indices.remove(&order_id);
+                    }
+                    if let Ok(keys) = user.derive_trade_keys(trade_index) {
+                        subscribed_pubkeys.remove(&keys.public_key());
+                    }
+                    subscription_to_order.remove(subscription_id);
+                    client.unsubscribe(subscription_id).await;
+                    break;
+                }
+                GiftWrapTerminalPolicy::UntrackedFallback => {
+                    {
+                        let mut indices = active_order_trade_indices.lock().unwrap();
+                        indices.remove(&order_id);
+                    }
+                    if let Ok(keys) = user.derive_trade_keys(trade_index) {
+                        subscribed_pubkeys.remove(&keys.public_key());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Continuously listen for messages on trade keys for active orders using subscriptions.
@@ -444,6 +583,13 @@ pub async fn listen_for_order_messages(
                             order_id,
                             trade_index
                         );
+                        // Must run before any GiftWrap for this trade can hit the unknown-
+                        // subscription_id fallback (e.g. wait_for_dm's temporary subscribe). Main
+                        // thread only inserts this map when take_order completes — too late.
+                        {
+                            let mut indices = active_order_trade_indices.lock().unwrap();
+                            indices.insert(order_id, trade_index);
+                        }
                         let trade_keys = match user.derive_trade_keys(trade_index) {
                             Ok(k) => k,
                             Err(e) => {
@@ -541,50 +687,23 @@ pub async fn listen_for_order_messages(
                             trade_index,
                             subscription_id
                         );
-                        for (message, timestamp, sender) in parsed_messages {
-                            let has_terminal_status = message_has_terminal_order_status(&message);
-                            log::info!(
-                                "[dm_listener] Handling message action={:?} ts={} order_id={} trade_index={}",
-                                message.get_inner_message_kind().action,
-                                timestamp,
-                                order_id,
-                                trade_index
-                            );
-                            handle_trade_dm_for_order(
-                                &messages,
-                                &pending_notifications,
-                                &message_notification_tx,
-                                order_id,
-                                trade_index,
-                                message,
-                                timestamp,
-                                sender,
-                            )
-                            .await;
-
-                            // Event-driven cleanup: when Mostro sends terminal order status,
-                            // stop tracking this order/subscription immediately.
-                            if has_terminal_status {
-                                log::info!(
-                                    "[dm_listener] Terminal order status detected, cleaning up order_id={}, trade_index={}, subscription_id={}",
-                                    order_id,
-                                    trade_index,
-                                    subscription_id
-                                );
-                                {
-                                    let mut indices = active_order_trade_indices.lock().unwrap();
-                                    indices.remove(&order_id);
-                                }
-
-                                if let Ok(keys) = user.derive_trade_keys(trade_index) {
-                                    subscribed_pubkeys.remove(&keys.public_key());
-                                }
-
-                                subscription_to_order.remove(&subscription_id);
-                                client.unsubscribe(&subscription_id).await;
-                                break;
-                            }
-                        }
+                        dispatch_giftwrap_batch(
+                            parsed_messages,
+                            order_id,
+                            trade_index,
+                            &trade_keys,
+                            &messages,
+                            &pending_notifications,
+                            &message_notification_tx,
+                            &pool,
+                            &user,
+                            &active_order_trade_indices,
+                            &mut subscribed_pubkeys,
+                            &client,
+                            &mut subscription_to_order,
+                            GiftWrapTerminalPolicy::TrackedSubscription(&subscription_id),
+                        )
+                        .await;
                     } else {
                         // Fallback path: some valid GiftWrap events can arrive under a
                         // subscription id not tracked by this listener (e.g. parallel wait_for_dm
@@ -617,30 +736,23 @@ pub async fn listen_for_order_messages(
                                 trade_index,
                                 parsed_messages.len()
                             );
-                            for (message, timestamp, sender) in parsed_messages {
-                                let has_terminal_status = message_has_terminal_order_status(&message);
-                                handle_trade_dm_for_order(
-                                    &messages,
-                                    &pending_notifications,
-                                    &message_notification_tx,
-                                    order_id,
-                                    trade_index,
-                                    message,
-                                    timestamp,
-                                    sender,
-                                )
-                                .await;
-
-                                if has_terminal_status {
-                                    {
-                                        let mut indices = active_order_trade_indices.lock().unwrap();
-                                        indices.remove(&order_id);
-                                    }
-                                    if let Ok(keys) = user.derive_trade_keys(trade_index) {
-                                        subscribed_pubkeys.remove(&keys.public_key());
-                                    }
-                                }
-                            }
+                            dispatch_giftwrap_batch(
+                                parsed_messages,
+                                order_id,
+                                trade_index,
+                                &trade_keys,
+                                &messages,
+                                &pending_notifications,
+                                &message_notification_tx,
+                                &pool,
+                                &user,
+                                &active_order_trade_indices,
+                                &mut subscribed_pubkeys,
+                                &client,
+                                &mut subscription_to_order,
+                                GiftWrapTerminalPolicy::UntrackedFallback,
+                            )
+                            .await;
                             routed = true;
                             break;
                         }

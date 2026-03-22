@@ -102,6 +102,7 @@ pub fn handle_enter_message_notification(
                         UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
                         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
                     };
+                    app.pending_post_take_operation_result = None;
                     app.mode = default_mode;
 
                     // Send invoice to Mostro

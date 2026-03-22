@@ -84,16 +84,21 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
     }
 
     // Set appropriate result mode based on current state
-    match app.mode {
+    match &app.mode {
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
             app.mode = UiMode::OperationResult(result);
         }
         UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             app.mode = UiMode::OperationResult(result);
         }
-        UiMode::NewMessageNotification(_, _, _) => {
-            // If we have a notification, replace it with the result
-            app.mode = UiMode::OperationResult(result);
+        UiMode::NewMessageNotification(_, action, _) => {
+            // Do not replace AddInvoice/PayInvoice popups: the take-order task can finish after
+            // the DM listener already showed the invoice UI — overwriting would drop the popup.
+            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+                app.pending_post_take_operation_result = Some(result);
+            } else {
+                app.mode = UiMode::OperationResult(result);
+            }
         }
         _ => {
             app.mode = UiMode::OperationResult(result);

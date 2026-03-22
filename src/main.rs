@@ -18,7 +18,7 @@ use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_order_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    spawn_save_attachment, OrderDmSubscriptionCmd,
+    spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -283,6 +283,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut save_attachment_rx,
         mostro_info_tx,
         mut mostro_info_rx,
+        mut dm_subscription_tx,
+        dm_subscription_rx,
     } = create_app_channels();
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
@@ -498,6 +500,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     Arc::clone(&disputes),
                                     &mut order_task,
                                     &mut dispute_task,
+                                    &mut dm_subscription_tx,
                                 )
                                 .await;
                             }
