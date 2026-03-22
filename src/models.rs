@@ -170,12 +170,16 @@ pub struct Order {
 }
 
 impl Order {
-    /// Create a new order from SmallOrder and save it to the database
+    /// Create a new order from SmallOrder and save it to the database.
+    ///
+    /// `is_maker`: `true` if the local user **created** the order (maker); `false` if they **took**
+    /// an existing order from the book (taker). Stored as `is_mine`.
     pub async fn new(
         pool: &SqlitePool,
         order: mostro_core::prelude::SmallOrder,
         trade_keys: &nostr_sdk::prelude::Keys,
         _request_id: Option<i64>,
+        is_maker: bool,
     ) -> Result<Self> {
         let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
 
@@ -196,7 +200,7 @@ impl Order {
             premium: order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
-            is_mine: Some(true),
+            is_mine: Some(is_maker),
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             created_at: Some(chrono::Utc::now().timestamp()),
@@ -292,6 +296,9 @@ impl Order {
     ///
     /// Does not update `users.last_trade_index` (unlike [`crate::util::db_utils::save_order`]).
     /// Preserves `created_at` and selected fields when a row already exists.
+    ///
+    /// `is_mine` is taken from an existing row when present; otherwise defaults to `true` (maker)
+    /// for a brand-new DM-only insert (rare race before [`save_order`]).
     pub async fn upsert_from_small_order_dm(
         pool: &SqlitePool,
         order_id_fallback: uuid::Uuid,

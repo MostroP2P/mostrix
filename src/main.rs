@@ -15,7 +15,7 @@ use crate::ui::key_handler::{
 };
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    fetch_mostro_instance_info, handle_message_notification, handle_order_result,
+    fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
     spawn_save_attachment,
@@ -323,7 +323,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
-                    handle_order_result(result, &mut app);
+                    handle_operation_result(result, &mut app);
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {

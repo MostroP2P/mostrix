@@ -6,7 +6,7 @@ use crate::ui::{
 use mostro_core::prelude::Action;
 
 /// Handle order result from the order result channel
-pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
+pub fn handle_operation_result(result: OperationResult, app: &mut AppState) {
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
         order,

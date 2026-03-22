@@ -163,6 +163,7 @@ pub async fn take_order(
                                 request_id,
                                 next_idx,
                                 pool,
+                                false,
                             )
                             .await
                             {
@@ -212,6 +213,7 @@ pub async fn take_order(
                                 request_id,
                                 next_idx,
                                 pool,
+                                false,
                             )
                             .await
                             {

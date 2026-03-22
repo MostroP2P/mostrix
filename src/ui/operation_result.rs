@@ -198,7 +198,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::ObserverChatLoaded(_) | OperationResult::ObserverChatError(_) => {
-            // Handled directly in handle_order_result, should not reach render
+            // Handled directly in handle_operation_result, should not reach render
         }
         OperationResult::PaymentRequestRequired { .. } => {
             // This should not be displayed - it's converted to a notification in main.rs

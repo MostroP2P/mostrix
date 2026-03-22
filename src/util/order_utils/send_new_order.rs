@@ -170,6 +170,7 @@ pub async fn send_new_order(
                                     request_id,
                                     next_idx,
                                     pool,
+                                    true,
                                 )
                                 .await
                                 {
@@ -218,7 +219,8 @@ pub async fn send_new_order(
                 if let Some(Payload::Order(order)) = &inner_message.payload {
                     // Save order to database
                     if let Err(e) =
-                        save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await
+                        save_order(order.clone(), &trade_keys, request_id, next_idx, pool, true)
+                            .await
                     {
                         log::error!("Failed to save order to database: {}", e);
                     }

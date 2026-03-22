@@ -6,7 +6,7 @@ mod notifications_ch_mng;
 mod order_ch_mng;
 
 pub use notifications_ch_mng::handle_message_notification;
-pub use order_ch_mng::handle_order_result;
+pub use order_ch_mng::handle_operation_result;
 
 use anyhow::Result;
 use mostro_core::prelude::*;
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use crate::models::{Order, User};
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::update_order_status;
-use crate::util::order_utils::map_action_to_status;
+use crate::util::order_utils::{inferred_status_from_trade_action, map_action_to_status};
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -56,6 +56,16 @@ fn message_has_terminal_order_status(message: &Message) -> bool {
         })
         .map(is_terminal_order_status)
         .unwrap_or(false)
+}
+
+/// Terminal end of trade: either `SmallOrder.status` in the payload, or actions that
+/// Mostro sends with `payload: null` (e.g. `canceled`).
+fn trade_message_is_terminal(message: &Message) -> bool {
+    let kind = message.get_inner_message_kind();
+    if matches!(&kind.action, Action::Canceled | Action::AdminCanceled) {
+        return true;
+    }
+    message_has_terminal_order_status(message)
 }
 
 /// Send a direct message to a receiver
@@ -330,21 +340,29 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
-    // Persist status transitions when Mostro sends an Order payload for a lifecycle step.
+    // Persist status: `Payload::Order`, or action-only messages (`canceled` + `payload: null`
+    // with `id` on [`MessageKind`] — see mostro daemon JSON).
     if let Some(Payload::Order(ref order_payload)) = inner_kind.payload {
-        if let (Some(oid), Some(status)) = (
-            order_payload.id,
-            map_action_to_status(&action, order_payload),
-        ) {
-            let order_id_str = oid.to_string();
-            if let Err(e) = update_order_status(pool, &order_id_str, status).await {
+        if let Some(status) = map_action_to_status(&action, order_payload) {
+            let oid = order_payload.id.or(inner_kind.id).unwrap_or(order_id);
+            if let Err(e) = update_order_status(pool, &oid.to_string(), status).await {
                 log::warn!(
                     "Failed to update status for order {} from DM action {:?}: {}",
-                    order_id_str,
+                    oid,
                     action,
                     e
                 );
             }
+        }
+    } else if let Some(status) = inferred_status_from_trade_action(&action) {
+        let oid = inner_kind.id.unwrap_or(order_id);
+        if let Err(e) = update_order_status(pool, &oid.to_string(), status).await {
+            log::warn!(
+                "Failed to update status for order {} from DM action {:?} (no order payload): {}",
+                oid,
+                action,
+                e
+            );
         }
     }
 
@@ -424,6 +442,9 @@ async fn handle_trade_dm_for_order(
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat Received",
         Action::Release | Action::Released => "Release",
+        Action::Cancel => "Cancel",
+        Action::Canceled => "Order canceled",
+        Action::AdminCanceled => "Order canceled by admin",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
         Action::Rate => "Rate Counterparty",
@@ -476,7 +497,7 @@ async fn dispatch_giftwrap_batch(
     );
 
     for (message, timestamp, sender) in parsed_messages {
-        let has_terminal_status = message_has_terminal_order_status(&message);
+        let has_terminal_status = trade_message_is_terminal(&message);
         if log_each_message {
             log::info!(
                 "[dm_listener] Handling message action={:?} ts={} order_id={} trade_index={}",
