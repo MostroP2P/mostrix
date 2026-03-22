@@ -4,7 +4,11 @@ use crate::ui::{FormState, TakeOrderState};
 pub enum UserMode {
     Normal,
     CreatingOrder(FormState),
-    ConfirmingOrder(FormState),       // Confirmation popup
+    ConfirmingOrder {
+        // Confirmation popup with YES/NO selection
+        form: FormState,
+        selected_button: bool, // true = YES, false = NO
+    },
     TakingOrder(TakeOrderState),      // Taking an order from the list
     WaitingForMostro(FormState),      // Waiting for Mostro response (order creation)
     WaitingTakeOrder(TakeOrderState), // Waiting for Mostro response (taking order)

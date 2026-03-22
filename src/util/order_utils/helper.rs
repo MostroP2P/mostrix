@@ -66,6 +66,32 @@ pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     Ok(order)
 }
 
+/// Infer `Status` from the message `action` when there is no `SmallOrder` payload
+/// (e.g. daemon sends `action: "canceled"` with `payload: null` but `id` on the kind).
+pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
+    match action {
+        Action::Canceled => Some(Status::Canceled),
+        Action::AdminCanceled => Some(Status::CanceledByAdmin),
+        Action::FiatSentOk => Some(Status::Success),
+        Action::Release | Action::Released => Some(Status::Success),
+        _ => None,
+    }
+}
+
+/// Map a Mostro `Action` plus the current `SmallOrder` into a new `Status`,
+/// when the transition is clear from protocol semantics.
+///
+/// For intermediate states where Mostro already sets `order.status` on the
+/// `SmallOrder`, callers can simply rely on that value instead of this helper.
+pub fn map_action_to_status(action: &Action, order: &SmallOrder) -> Option<Status> {
+    // If the order already has an explicit status from Mostro, prefer that.
+    if let Some(status) = order.status {
+        return Some(status);
+    }
+
+    inferred_status_from_trade_action(action)
+}
+
 /// Parse dispute from nostr tags
 pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();

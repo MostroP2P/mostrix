@@ -4,23 +4,46 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::orders::FormField;
 
 pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
     // Calculate number of fields dynamically
     let field_count = if form.use_range { 10 } else { 9 };
-    let mut constraints = vec![Constraint::Length(1)]; // spacer
+    // Start with a top spacer so the form doesn't hug the frame border
+    let mut constraints = vec![Constraint::Length(2)]; // spacer
     for _ in 0..field_count {
-        constraints.push(Constraint::Length(3));
+        // Give each field a bit more vertical space to improve readability
+        constraints.push(Constraint::Length(4));
     }
-    constraints.push(Constraint::Length(1)); // hint
+    // Slightly taller row for the footer hint
+    constraints.push(Constraint::Length(2)); // hint
 
-    let inner_chunks = Layout::new(Direction::Vertical, constraints).split(area);
-
+    // Outer frame for the whole tab
     let block = Block::default()
         .title("✨ Create New Order")
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
-    f.render_widget(block, area);
+    f.render_widget(&block, area);
+
+    // Work inside the inner area of the frame
+    let inner = block.inner(area);
+
+    // Horizontal layout: spacer | centered form | help panel
+    let h_chunks = Layout::new(
+        Direction::Horizontal,
+        [
+            Constraint::Percentage(10),
+            Constraint::Min(40),
+            Constraint::Percentage(30),
+        ],
+    )
+    .split(inner);
+
+    let form_area = h_chunks[1];
+    let help_area = h_chunks[2];
+
+    // Vertical layout for the form fields inside the centered column
+    let inner_chunks = Layout::new(Direction::Vertical, constraints).split(form_area);
 
     let mut field_idx = 1;
 
@@ -31,7 +54,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
             Span::styled("Order Type", Style::default().add_modifier(Modifier::BOLD)),
         ]))
         .borders(Borders::ALL)
-        .style(if form.focused == 0 {
+        .style(if form.focused == FormField::OrderType {
             Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
         } else {
             Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -64,7 +87,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 Span::styled("Currency", Style::default().add_modifier(Modifier::BOLD)),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 1 {
+            .style(if form.focused == FormField::Currency {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -84,7 +107,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 ),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 2 {
+            .style(if form.focused == FormField::AmountSats {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -101,7 +124,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
             Span::styled(" (Space to toggle)", Style::default().fg(Color::DarkGray)),
         ]))
         .borders(Borders::ALL)
-        .style(if form.focused == 3 {
+        .style(if form.focused == FormField::FiatAmount {
             Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
         } else {
             Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -147,7 +170,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                     ),
                 ]))
                 .borders(Borders::ALL)
-                .style(if form.focused == 4 {
+                .style(if form.focused == FormField::FiatAmountMax {
                     Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
                 } else {
                     Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -168,7 +191,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 ),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 5 {
+            .style(if form.focused == FormField::PaymentMethod {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -185,7 +208,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 Span::styled("Premium (%)", Style::default().add_modifier(Modifier::BOLD)),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 6 {
+            .style(if form.focused == FormField::Premium {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -205,7 +228,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 ),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 7 {
+            .style(if form.focused == FormField::Invoice {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -225,7 +248,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 ),
             ]))
             .borders(Borders::ALL)
-            .style(if form.focused == 8 {
+            .style(if form.focused == FormField::ExpirationDays {
                 Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
             } else {
                 Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
@@ -234,7 +257,7 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
     f.render_widget(exp, inner_chunks[field_idx]);
     field_idx += 1;
 
-    // Footer hint
+    // Footer hint (still in the form column)
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("💡 ", Style::default().fg(Color::Cyan)),
         Span::styled(
@@ -267,28 +290,42 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
     .block(Block::default());
     f.render_widget(hint, inner_chunks[field_idx]);
 
+    // Contextual help panel on the right side
+    let help_lines = build_field_help(form);
+    let help_paragraph = Paragraph::new(help_lines)
+        .block(
+            Block::default()
+                .title("Field Help")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        )
+        .wrap(ratatui::widgets::Wrap { trim: true });
+    f.render_widget(help_paragraph, help_area);
+
     // Show cursor in active text field
     let cursor_field = match form.focused {
-        1 => Some((inner_chunks[2], &form.fiat_code, 0)),
-        2 => Some((inner_chunks[3], &form.amount, 0)),
-        3 => Some((inner_chunks[4], &form.fiat_amount, 11)), // 11 chars for "[ Single ] " or "[ Range ] "
-        4 if form.use_range => Some((inner_chunks[5], &form.fiat_amount_max, 0)),
-        5 => Some((
+        FormField::Currency => Some((inner_chunks[2], &form.fiat_code, 0)),
+        FormField::AmountSats => Some((inner_chunks[3], &form.amount, 0)),
+        FormField::FiatAmount => Some((inner_chunks[4], &form.fiat_amount, 11)), // 11 chars for "[ Single ] " or "[ Range ] "
+        FormField::FiatAmountMax if form.use_range => {
+            Some((inner_chunks[5], &form.fiat_amount_max, 0))
+        }
+        FormField::PaymentMethod => Some((
             inner_chunks[if form.use_range { 6 } else { 5 }],
             &form.payment_method,
             0,
         )),
-        6 => Some((
+        FormField::Premium => Some((
             inner_chunks[if form.use_range { 7 } else { 6 }],
             &form.premium,
             0,
         )),
-        7 => Some((
+        FormField::Invoice => Some((
             inner_chunks[if form.use_range { 8 } else { 7 }],
             &form.invoice,
             0,
         )),
-        8 => Some((
+        FormField::ExpirationDays => Some((
             inner_chunks[if form.use_range { 9 } else { 8 }],
             &form.expiration_days,
             0,
@@ -299,6 +336,60 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
         let x = chunk.x + 1 + offset + text.len() as u16;
         let y = chunk.y + 1;
         f.set_cursor_position((x, y));
+    }
+}
+
+fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
+    match form.focused {
+        FormField::OrderType => vec![
+            Line::from("Order Type"),
+            Line::from("Choose whether you want to buy or sell bitcoin."),
+            Line::from("Use Space to toggle between buy and sell orders."),
+        ],
+        FormField::Currency => vec![
+            Line::from("Currency"),
+            Line::from("Enter the fiat currency code (e.g. USD, EUR)."),
+            Line::from("It must be one of the currencies accepted by the Mostro instance."),
+        ],
+        FormField::AmountSats => vec![
+            Line::from("Amount (sats)"),
+            Line::from("Amount in satoshis you want to trade."),
+            Line::from("Set to 0 to create a market order, so the order will be executed at the current market price."),
+        ],
+        FormField::FiatAmount => vec![
+            Line::from("Fiat Amount"),
+            Line::from("Price of the order in fiat currency (e.g. USD, EUR, ARS, etc.)."),
+            Line::from("Use Space to toggle between a single amount and a range (e.g. 100-200 USD)."),
+        ],
+        FormField::FiatAmountMax if form.use_range => vec![
+            Line::from("Fiat Amount (Max)"),
+            Line::from("Upper bound of the fiat amount range."),
+            Line::from("Leave narrow if you only need a rough upper limit."),
+        ],
+        FormField::PaymentMethod => vec![
+            Line::from("Payment Method"),
+            Line::from("Describe how you want to receive or send fiat."),
+            Line::from("Use a short but recognizable label (e.g. SEPA, Bizum)."),
+        ],
+        FormField::Premium => vec![
+            Line::from("Premium (%)"),
+            Line::from("Markup or discount relative to the reference price."),
+            Line::from("Positive values are a premium, negative values a discount."),
+        ],
+        FormField::Invoice => vec![
+            Line::from("Invoice (optional)"),
+            Line::from("Pre-generated Lightning invoice, if applicable."),
+            Line::from("You can leave this empty for Mostro to handle invoices."),
+        ],
+        FormField::ExpirationDays => vec![
+            Line::from("Expiration (days)"),
+            Line::from("How long the order should remain active."),
+            Line::from("Use 0 for no expiration."),
+        ],
+        _ => vec![
+            Line::from("Create New Order"),
+            Line::from("Fill the fields on the left and press Enter to submit."),
+        ],
     }
 }
 

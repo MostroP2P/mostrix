@@ -109,7 +109,7 @@ async fn test_order_new() {
         None,
     );
 
-    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123))
+    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), true)
         .await
         .unwrap();
 
@@ -135,7 +135,7 @@ async fn test_order_get_by_id() {
     small_order.payment_method = "paypal".to_string();
     small_order.premium = 3;
 
-    let created_order = Order::new(&pool, small_order, &trade_keys, None)
+    let created_order = Order::new(&pool, small_order, &trade_keys, None, true)
         .await
         .unwrap();
     let order_id_str = created_order.id.as_ref().unwrap();
@@ -171,14 +171,14 @@ async fn test_order_update_existing() {
     small_order.premium = 5;
 
     // Create order
-    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None)
+    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, true)
         .await
         .unwrap();
 
     // Update with same ID but different data
     small_order.amount = 200000;
     small_order.fiat_amount = 200;
-    let order2 = Order::new(&pool, small_order, &trade_keys, None)
+    let order2 = Order::new(&pool, small_order, &trade_keys, None, true)
         .await
         .unwrap();
 

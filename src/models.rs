@@ -170,12 +170,16 @@ pub struct Order {
 }
 
 impl Order {
-    /// Create a new order from SmallOrder and save it to the database
+    /// Create a new order from SmallOrder and save it to the database.
+    ///
+    /// `is_maker`: `true` if the local user **created** the order (maker); `false` if they **took**
+    /// an existing order from the book (taker). Stored as `is_mine`.
     pub async fn new(
         pool: &SqlitePool,
         order: mostro_core::prelude::SmallOrder,
         trade_keys: &nostr_sdk::prelude::Keys,
         _request_id: Option<i64>,
+        is_maker: bool,
     ) -> Result<Self> {
         let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
 
@@ -196,7 +200,7 @@ impl Order {
             premium: order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
-            is_mine: Some(true),
+            is_mine: Some(is_maker),
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             created_at: Some(chrono::Utc::now().timestamp()),
@@ -288,6 +292,105 @@ impl Order {
         Ok(())
     }
 
+    /// Insert or update an order from a trade DM (e.g. `AddInvoice` with `waiting-buyer-invoice`).
+    ///
+    /// Does not update `users.last_trade_index` (unlike [`crate::util::db_utils::save_order`]).
+    /// Preserves `created_at` and selected fields when a row already exists.
+    ///
+    /// `is_mine` is taken from an existing row when present; otherwise defaults to `true` (maker)
+    /// for a brand-new DM-only insert (rare race before [`save_order`]).
+    pub async fn upsert_from_small_order_dm(
+        pool: &SqlitePool,
+        order_id_fallback: uuid::Uuid,
+        mut small_order: mostro_core::prelude::SmallOrder,
+        trade_keys: &nostr_sdk::prelude::Keys,
+        message_request_id: Option<i64>,
+    ) -> Result<Self> {
+        let resolved_id = small_order.id.unwrap_or(order_id_fallback);
+        small_order.id = Some(resolved_id);
+        let id_str = resolved_id.to_string();
+        let so = small_order.clone();
+
+        let existing = Self::get_by_id(pool, &id_str).await.ok();
+
+        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
+
+        let created_at = existing
+            .as_ref()
+            .and_then(|e| e.created_at)
+            .or_else(|| Some(Utc::now().timestamp()));
+
+        let request_id =
+            message_request_id.or_else(|| existing.as_ref().and_then(|e| e.request_id));
+
+        let order_row = Order {
+            id: Some(id_str.clone()),
+            kind: so.kind.as_ref().map(|k| k.to_string()),
+            status: so.status.as_ref().map(|s| s.to_string()),
+            amount: so.amount,
+            fiat_code: so.fiat_code,
+            min_amount: so.min_amount,
+            max_amount: so.max_amount,
+            fiat_amount: so.fiat_amount,
+            payment_method: so.payment_method,
+            premium: so.premium,
+            trade_keys: Some(trade_keys_hex),
+            counterparty_pubkey: existing
+                .as_ref()
+                .and_then(|e| e.counterparty_pubkey.clone()),
+            is_mine: existing.as_ref().and_then(|e| e.is_mine).or(Some(true)),
+            buyer_invoice: so.buyer_invoice,
+            request_id,
+            created_at,
+            expires_at: so.expires_at,
+        };
+
+        if existing.is_some() {
+            order_row.update_db(pool).await?;
+            return Ok(order_row);
+        }
+
+        match order_row.insert_db(pool).await {
+            Ok(()) => Ok(order_row),
+            Err(e) => {
+                let is_unique_violation = match e.as_database_error() {
+                    Some(db_err) => {
+                        let code = db_err.code().map(|c| c.to_string()).unwrap_or_default();
+                        code == "1555" || code == "2067"
+                    }
+                    None => false,
+                };
+                if is_unique_violation {
+                    let ex = Self::get_by_id(pool, &id_str).await?;
+                    let retry_so = small_order.clone();
+                    let updated = Order {
+                        id: Some(id_str),
+                        kind: retry_so.kind.as_ref().map(|k| k.to_string()),
+                        status: retry_so.status.as_ref().map(|s| s.to_string()),
+                        amount: retry_so.amount,
+                        fiat_code: retry_so.fiat_code,
+                        min_amount: retry_so.min_amount,
+                        max_amount: retry_so.max_amount,
+                        fiat_amount: retry_so.fiat_amount,
+                        payment_method: retry_so.payment_method,
+                        premium: retry_so.premium,
+                        trade_keys: Some(trade_keys.secret_key().to_secret_hex()),
+                        counterparty_pubkey: ex.counterparty_pubkey,
+                        is_mine: ex.is_mine.or(Some(true)),
+                        buyer_invoice: retry_so.buyer_invoice,
+                        request_id: message_request_id.or(ex.request_id),
+                        created_at: ex.created_at,
+                        expires_at: retry_so.expires_at,
+                    };
+                    updated.update_db(pool).await?;
+                    Ok(updated)
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
     pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
         let order = sqlx::query_as::<_, Order>(
             r#"
@@ -304,6 +407,28 @@ impl Order {
         }
 
         Ok(order)
+    }
+
+    /// Update only the status field of an existing order by id.
+    /// The caller is responsible for providing a valid Mostro `Status`.
+    pub async fn update_status(
+        pool: &SqlitePool,
+        order_id: &str,
+        new_status: mostro_core::prelude::Status,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE orders
+            SET status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(new_status.to_string())
+        .bind(order_id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
     }
 }
 

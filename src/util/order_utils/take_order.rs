@@ -9,6 +9,8 @@ use crate::ui::OperationResult;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
+use crate::util::OrderDmSubscriptionCmd;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Create payload based on action type and parameters
 fn create_take_order_payload(
@@ -34,6 +36,7 @@ fn create_take_order_payload(
 }
 
 /// Take an order from the order book
+#[allow(clippy::too_many_arguments)]
 pub async fn take_order(
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
@@ -42,6 +45,7 @@ pub async fn take_order(
     order: &SmallOrder,
     amount: Option<i64>,
     invoice: Option<String>,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
 ) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Determine action based on order kind
     let action = match order.kind {
@@ -67,6 +71,20 @@ pub async fn take_order(
     let next_idx = user.last_trade_index.unwrap_or(1) + 1;
     let trade_keys = user.derive_trade_keys(next_idx)?;
     let _ = User::update_last_trade_index(pool, next_idx).await;
+
+    // Subscribe as early as possible for take-order flow so the first
+    // Mostro response/event is not missed by the background DM listener.
+    if let Some(tx) = dm_subscription_tx {
+        log::info!(
+            "[take_order] Early subscribe command for order_id={}, trade_index={}",
+            order_id,
+            next_idx
+        );
+        let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+            order_id,
+            trade_index: next_idx,
+        });
+    }
 
     // Create payload based on action type
     let payload = create_take_order_payload(action.clone(), &invoice, amount)?;
@@ -123,30 +141,70 @@ pub async fn take_order(
                     // Request ID matches, process the response
                     match &inner_message.payload {
                         Some(Payload::Order(returned_order)) => {
+                            let mut normalized_order = returned_order.clone();
+                            if normalized_order.id.is_none() {
+                                log::warn!(
+                                    "[take_order] Mostro response Order payload missing id; falling back to requested order_id={}",
+                                    order_id
+                                );
+                                normalized_order.id = Some(order_id);
+                            }
+                            let effective_order_id = normalized_order.id.unwrap_or(order_id);
+                            log::info!(
+                                "[take_order] Action::Order response mapped to effective_order_id={}, trade_index={}",
+                                effective_order_id,
+                                next_idx
+                            );
+
                             // Save order to database
                             if let Err(e) = save_order(
-                                returned_order.clone(),
+                                normalized_order.clone(),
                                 &trade_keys,
                                 request_id,
                                 next_idx,
                                 pool,
+                                false,
                             )
                             .await
                             {
                                 log::error!("Failed to save order to database: {}", e);
                             }
-                            Ok(create_order_result_success(returned_order, next_idx))
+                            if let Some(tx) = dm_subscription_tx {
+                                log::info!(
+                                    "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
+                                    effective_order_id,
+                                    next_idx
+                                );
+                                let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                    order_id: effective_order_id,
+                                    trade_index: next_idx,
+                                });
+                            }
+                            Ok(create_order_result_success(&normalized_order, next_idx))
                         }
                         Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
                             // For buy orders, we receive PaymentRequest with invoice for seller to pay
                             // Use the order from payload if available, otherwise use the original order
-                            let order_to_save = if let Some(order_to_save) = opt_order {
-                                order_to_save
+                            let mut order_to_save = if let Some(order_to_save) = opt_order {
+                                order_to_save.clone()
                             } else {
                                 return Err(anyhow::anyhow!(
                                     "Order details are missing from payload"
                                 ));
                             };
+                            if order_to_save.id.is_none() {
+                                log::warn!(
+                                    "[take_order] Mostro PaymentRequest payload order missing id; falling back to requested order_id={}",
+                                    order_id
+                                );
+                                order_to_save.id = Some(order_id);
+                            }
+                            let effective_order_id = order_to_save.id.unwrap_or(order_id);
+                            log::info!(
+                                "[take_order] Action::PaymentRequest response mapped to effective_order_id={}, trade_index={}",
+                                effective_order_id,
+                                next_idx
+                            );
 
                             // Save order to database
                             if let Err(e) = save_order(
@@ -155,10 +213,22 @@ pub async fn take_order(
                                 request_id,
                                 next_idx,
                                 pool,
+                                false,
                             )
                             .await
                             {
                                 log::error!("Failed to save order to database: {}", e);
+                            }
+                            if let Some(tx) = dm_subscription_tx {
+                                log::info!(
+                                    "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
+                                    effective_order_id,
+                                    next_idx
+                                );
+                                let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                    order_id: effective_order_id,
+                                    trade_index: next_idx,
+                                });
                             }
 
                             log::info!(

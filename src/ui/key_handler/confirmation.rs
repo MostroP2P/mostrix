@@ -3,9 +3,7 @@ use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 use crate::ui::key_handler::admin_handlers::{
     execute_take_dispute_action, handle_enter_admin_mode,
 };
-use crate::ui::key_handler::async_tasks::{
-    spawn_add_relay_task, spawn_refresh_mostro_info_task, spawn_send_new_order_task,
-};
+use crate::ui::key_handler::async_tasks::{spawn_add_relay_task, spawn_refresh_mostro_info_task};
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
@@ -81,12 +79,14 @@ pub fn handle_confirm_key(
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
     match std::mem::replace(&mut app.mode, default_mode.clone()) {
-        UiMode::UserMode(UserMode::ConfirmingOrder(form)) => {
-            // User confirmed, send the order
-            let form_clone = form.clone();
-            app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
-            spawn_send_new_order_task(ctx, form_clone);
-            true
+        UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) => {
+            // ConfirmingOrder is now handled via Enter with YES/NO buttons.
+            // Keep mode unchanged; fallback returns false so the caller can decide.
+            app.mode = UiMode::UserMode(UserMode::ConfirmingOrder {
+                form,
+                selected_button: true,
+            });
+            false
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             // User confirmed taking the order (same as Enter key)
@@ -97,6 +97,7 @@ pub fn handle_confirm_key(
                 ctx.client,
                 ctx.mostro_pubkey,
                 ctx.order_result_tx,
+                ctx.dm_subscription_tx,
             );
             true
         }
@@ -232,7 +233,7 @@ pub fn handle_cancel_key(app: &mut AppState) {
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
-    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
+    if let UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) = &app.mode {
         // User cancelled, go back to form
         app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     } else if let UiMode::UserMode(UserMode::TakingOrder(_)) = &app.mode {

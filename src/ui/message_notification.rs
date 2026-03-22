@@ -83,7 +83,12 @@ fn render_invoice_input(f: &mut ratatui::Frame, area: Rect, invoice_state: &Invo
 }
 
 /// Renders the invoice display field for PayInvoice
-fn render_invoice_display(f: &mut ratatui::Frame, area: Rect, invoice: Option<&String>) {
+fn render_invoice_display(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    invoice: Option<&String>,
+    scroll_y: u16,
+) {
     let (invoice_text, text_color) = match invoice {
         Some(inv) if !inv.is_empty() => (inv.clone(), Color::White),
         Some(_) => (
@@ -94,16 +99,15 @@ fn render_invoice_display(f: &mut ratatui::Frame, area: Rect, invoice: Option<&S
     };
 
     f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            invoice_text,
-            Style::default().fg(text_color).add_modifier(Modifier::BOLD),
-        )]))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().fg(PRIMARY_COLOR)),
-        ),
+        Paragraph::new(invoice_text)
+            .style(Style::default().fg(text_color).add_modifier(Modifier::BOLD))
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .scroll((scroll_y, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(PRIMARY_COLOR)),
+            ),
         area,
     );
 }
@@ -223,7 +227,12 @@ fn render_pay_invoice(
         chunks[4],
     );
 
-    render_invoice_display(f, chunks[5], notification.invoice.as_ref());
+    render_invoice_display(
+        f,
+        chunks[5],
+        notification.invoice.as_ref(),
+        invoice_state.scroll_y,
+    );
 
     // Help text - first line
     if invoice_state.copied_to_clipboard {
@@ -247,7 +256,14 @@ fn render_pay_invoice(
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" to copy invoice to clipboard, or ", Style::default()),
+                Span::styled(" to copy invoice to clipboard. ", Style::default()),
+                Span::styled(
+                    "↑/↓",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" scroll, ", Style::default()),
                 Span::styled(
                     "Shift",
                     Style::default()

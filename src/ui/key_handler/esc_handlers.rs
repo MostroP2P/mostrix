@@ -13,7 +13,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(form)) => {
+        UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) => {
             // Cancel confirmation, go back to form
             app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
             true
@@ -59,8 +59,12 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         UiMode::NewMessageNotification(_, _, _) => {
-            // Dismiss notification
-            app.mode = UiMode::Normal;
+            // Dismiss notification; if take-order finished while this popup was open, show that result now.
+            app.mode = if let Some(r) = app.pending_post_take_operation_result.take() {
+                UiMode::OperationResult(r)
+            } else {
+                UiMode::Normal
+            };
             true
         }
         UiMode::ViewingMessage(_) => {

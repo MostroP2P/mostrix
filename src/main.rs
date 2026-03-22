@@ -15,7 +15,7 @@ use crate::ui::key_handler::{
 };
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    fetch_mostro_instance_info, handle_message_notification, handle_order_result,
+    fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
     spawn_save_attachment,
@@ -283,6 +283,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut save_attachment_rx,
         mostro_info_tx,
         mut mostro_info_rx,
+        mut dm_subscription_tx,
+        dm_subscription_rx,
     } = create_app_channels();
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
@@ -307,6 +309,7 @@ async fn main() -> Result<(), anyhow::Error> {
             messages_clone,
             message_notification_tx_clone,
             pending_notifications_clone,
+            dm_subscription_rx,
         )
         .await;
     });
@@ -320,7 +323,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
-                    handle_order_result(result, &mut app);
+                    handle_operation_result(result, &mut app);
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {
@@ -481,6 +484,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),
+                        &dm_subscription_tx,
                     ) {
                         Some(true) => {
                             if app.pending_key_reload {
@@ -496,6 +500,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     Arc::clone(&disputes),
                                     &mut order_task,
                                     &mut dispute_task,
+                                    &mut dm_subscription_tx,
                                 )
                                 .await;
                             }

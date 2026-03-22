@@ -15,8 +15,8 @@ pub use blossom::{
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;
 pub use dm_utils::{
-    handle_message_notification, handle_order_result, listen_for_order_messages, parse_dm_events,
-    send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    handle_message_notification, handle_operation_result, listen_for_order_messages,
+    parse_dm_events, send_dm, wait_for_dm, OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
 };
 pub use filters::{create_filter, create_seven_days_filter};
 pub use mostro_info::{

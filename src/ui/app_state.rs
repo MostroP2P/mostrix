@@ -138,6 +138,10 @@ pub struct AppState {
     /// Set when the user dismisses BackupNewKeys after runtime rotation.
     /// Main loop performs an in-process runtime reload and clears session state.
     pub pending_key_reload: bool,
+    /// When `take_order` completes while an AddInvoice/PayInvoice popup is open, we stash the
+    /// [`OperationResult`] here so the invoice UI is not replaced by the success screen (race).
+    /// Applied when the user dismisses the popup (Esc), or cleared when they submit the invoice.
+    pub pending_post_take_operation_result: Option<OperationResult>,
 }
 
 impl AppState {
@@ -177,6 +181,7 @@ impl AppState {
             mostro_info: None,
             backup_requires_restart: false,
             pending_key_reload: false,
+            pending_post_take_operation_result: None,
         }
     }
 

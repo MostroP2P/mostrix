@@ -55,7 +55,7 @@ sequenceDiagram
             app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
 ```
 
-The user fills out the order form and confirms with the `y` key. The UI switches to `WaitingForMostro` mode.
+The user fills out the order form and confirms with **Enter** on the \"Create New Order\" form. The UI switches to `WaitingForMostro` mode.
 
 ### 2. Trade Key Derivation
 **Source**: `src/util/order_utils/send_new_order.rs:84`
