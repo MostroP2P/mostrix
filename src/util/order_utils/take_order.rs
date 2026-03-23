@@ -80,7 +80,7 @@ pub async fn take_order(
             order_id,
             next_idx
         );
-        let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
             order_id,
             trade_index: next_idx,
         });
@@ -175,7 +175,7 @@ pub async fn take_order(
                                     effective_order_id,
                                     next_idx
                                 );
-                                let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
                                     order_id: effective_order_id,
                                     trade_index: next_idx,
                                 });
@@ -225,7 +225,7 @@ pub async fn take_order(
                                     effective_order_id,
                                     next_idx
                                 );
-                                let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
                                     order_id: effective_order_id,
                                     trade_index: next_idx,
                                 });

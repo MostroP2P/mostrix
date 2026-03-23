@@ -178,7 +178,7 @@ pub async fn send_new_order(
                                 }
                                 if let Some(tx) = dm_subscription_tx {
                                     if let Some(order_id) = order.id {
-                                        let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                                        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
                                             order_id,
                                             trade_index: next_idx,
                                         });
@@ -226,7 +226,7 @@ pub async fn send_new_order(
                     }
                     if let Some(tx) = dm_subscription_tx {
                         if let Some(order_id) = order.id {
-                            let _ = tx.send(OrderDmSubscriptionCmd::Subscribe {
+                            let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
                                 order_id,
                                 trade_index: next_idx,
                             });

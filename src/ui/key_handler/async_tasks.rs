@@ -10,7 +10,7 @@ use crate::ui::{
 use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
-use crate::util::OrderDmSubscriptionCmd;
+use crate::util::{set_dm_router_cmd_tx, OrderDmSubscriptionCmd};
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
@@ -94,6 +94,7 @@ pub async fn apply_pending_key_reload(
                         Arc::clone(current_mostro_pubkey),
                         Arc::clone(&orders),
                         Arc::clone(&disputes),
+                        &latest_settings,
                     );
                     *order_fetch_task = o;
                     *dispute_fetch_task = d;
@@ -108,6 +109,7 @@ pub async fn apply_pending_key_reload(
                     let (new_dm_tx, new_dm_rx) =
                         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
                     *dm_subscription_tx = new_dm_tx;
+                    set_dm_router_cmd_tx(dm_subscription_tx.clone());
                     *message_listener_handle = tokio::spawn(async move {
                         listen_for_order_messages(
                             client_for_messages,

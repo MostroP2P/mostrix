@@ -28,7 +28,8 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    clear_currency_filters, save_currency_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings,
 };
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
@@ -474,6 +475,7 @@ fn handle_enter_settings_mode(
             if selected_button {
                 // Persist to settings and update in-memory cache.
                 save_currency_to_settings(&currency_string);
+                app.pending_key_reload = true;
                 let upper = currency_string.trim().to_uppercase();
                 if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
                     app.currencies_filter.push(upper);
@@ -484,7 +486,7 @@ fn handle_enter_settings_mode(
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
                 // YES selected - clear currency filters (both on disk and in cache)
-                use crate::ui::key_handler::settings::clear_currency_filters;
+                app.pending_key_reload = true;
                 clear_currency_filters();
                 app.currencies_filter.clear();
             }

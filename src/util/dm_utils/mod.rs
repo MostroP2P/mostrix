@@ -14,8 +14,11 @@ use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
 
 use crate::models::{Order, User};
+use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{inferred_status_from_trade_action, map_action_to_status};
@@ -24,12 +27,28 @@ use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-#[derive(Debug, Clone)]
-pub enum OrderDmSubscriptionCmd {
-    Subscribe {
-        order_id: uuid::Uuid,
+#[derive(Debug)]
+pub enum DmRouterCmd {
+    TrackOrder {
+        order_id: Uuid,
         trade_index: i64,
     },
+    RegisterWaiter {
+        trade_keys: Keys,
+        response_tx: oneshot::Sender<Event>,
+    },
+}
+
+pub type OrderDmSubscriptionCmd = DmRouterCmd;
+
+static DM_ROUTER_CMD_TX: Mutex<Option<mpsc::UnboundedSender<DmRouterCmd>>> = Mutex::new(None);
+
+pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) {
+    if let Ok(mut guard) = DM_ROUTER_CMD_TX.lock() {
+        *guard = Some(tx);
+    } else {
+        log::warn!("[dm_listener] Failed to set DM router sender due to poisoned lock");
+    }
 }
 
 fn is_terminal_order_status(status: Status) -> bool {
@@ -121,9 +140,9 @@ pub async fn send_dm(
 }
 
 /// Wait for a direct message response from Mostro
-/// Subscribes first, then sends the message (to avoid missing messages)
+/// Registers a router waiter, then sends the message (to avoid missing responses).
 pub async fn wait_for_dm<F>(
-    client: &Client,
+    _client: &Client,
     trade_keys: &Keys,
     timeout: std::time::Duration,
     sent_message: F,
@@ -131,57 +150,28 @@ pub async fn wait_for_dm<F>(
 where
     F: std::future::Future<Output = Result<()>> + Send,
 {
-    let mut notifications = client.notifications();
-    let opts =
-        SubscribeAutoCloseOptions::default().exit_policy(ReqExitPolicy::WaitForEventsAfterEOSE(4));
-    let subscription = Filter::new()
-        .pubkey(trade_keys.public_key())
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(0);
-    let subscription_output = client.subscribe(subscription, Some(opts)).await?;
-    let expected_subscription_id = subscription_output.val;
+    let dm_router_tx = DM_ROUTER_CMD_TX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!("DM router is not ready. Please retry after listener initialization.")
+        })?;
+    let (response_tx, response_rx) = oneshot::channel::<Event>();
+    dm_router_tx
+        .send(DmRouterCmd::RegisterWaiter {
+            trade_keys: trade_keys.clone(),
+            response_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("Failed to register DM waiter: router channel closed"))?;
 
-    // Send message here after opening notifications to avoid missing messages.
+    // Send message only after waiter registration to avoid races.
     sent_message.await?;
 
-    let event = tokio::time::timeout(timeout, async move {
-        loop {
-            match notifications.recv().await {
-                Ok(notification) => match notification {
-                    RelayPoolNotification::Event {
-                        subscription_id,
-                        event,
-                        ..
-                    } => {
-                        let event = *event;
-                        if event.kind != nostr_sdk::Kind::GiftWrap {
-                            continue;
-                        }
-                        // The same physical GiftWrap may be tagged with a different subscription id
-                        // when both this temporary subscribe and `listen_for_order_messages` match
-                        // the same filter (early trade-key subscribe). Only the listener's id may
-                        // appear on the notification; strict id equality would starve wait_for_dm.
-                        let accept = if subscription_id == expected_subscription_id {
-                            true
-                        } else {
-                            nip59::extract_rumor(trade_keys, &event).await.is_ok()
-                        };
-                        if !accept {
-                            continue;
-                        }
-                        return Ok(event);
-                    }
-                    _ => continue,
-                },
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Error receiving notification: {:?}", e));
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
-    .map_err(|e| anyhow::anyhow!("Error: {}", e))?;
+    let event = tokio::time::timeout(timeout, response_rx)
+        .await
+        .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
+        .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
 
     let mut events = Events::default();
     events.insert(event);
@@ -290,7 +280,7 @@ async fn handle_trade_dm_for_order(
     messages: &Arc<Mutex<Vec<OrderMessage>>>,
     pending_notifications: &Arc<Mutex<usize>>,
     message_notification_tx: &tokio::sync::mpsc::UnboundedSender<MessageNotification>,
-    order_id: uuid::Uuid,
+    order_id: Uuid,
     trade_index: i64,
     message: Message,
     timestamp: i64,
@@ -431,36 +421,11 @@ async fn handle_trade_dm_for_order(
     // Keep one row per order, but ensure the newly accepted message is the one kept.
     // This avoids dropping same-timestamp/different-action updates during dedup.
     messages_lock.retain(|m| m.order_id != Some(order_id));
-    messages_lock.push(order_message);
+    messages_lock.push(order_message.clone());
     messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    let action_str = match &action {
-        Action::AddInvoice => "Invoice Request",
-        Action::PayInvoice => "Payment Request",
-        Action::TakeSell => "Take Sell",
-        Action::TakeBuy => "Take Buy",
-        Action::FiatSent => "Fiat Sent",
-        Action::FiatSentOk => "Fiat Received",
-        Action::Release | Action::Released => "Release",
-        Action::Cancel => "Cancel",
-        Action::Canceled => "Order canceled",
-        Action::AdminCanceled => "Order canceled by admin",
-        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
-        Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::Rate => "Rate Counterparty",
-        Action::RateReceived => "Rate Counterparty received",
-        _ => "New Message",
-    };
-
-    let notification = MessageNotification {
-        order_id: Some(order_id),
-        message_preview: action_str.to_string(),
-        timestamp,
-        action,
-        sat_amount,
-        invoice,
-    };
-
+    // Send notification
+    let notification = order_message_to_notification(&order_message);
     let _ = message_notification_tx.send(notification);
 }
 
@@ -477,7 +442,7 @@ enum GiftWrapTerminalPolicy<'a> {
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_giftwrap_batch(
     parsed_messages: Vec<(Message, i64, PublicKey)>,
-    order_id: uuid::Uuid,
+    order_id: Uuid,
     trade_index: i64,
     trade_keys: &Keys,
     messages: &Arc<Mutex<Vec<OrderMessage>>>,
@@ -485,10 +450,10 @@ async fn dispatch_giftwrap_batch(
     message_notification_tx: &tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pool: &sqlx::SqlitePool,
     user: &User,
-    active_order_trade_indices: &Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     client: &Client,
-    subscription_to_order: &mut HashMap<SubscriptionId, (uuid::Uuid, i64)>,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     terminal_policy: GiftWrapTerminalPolicy<'_>,
 ) {
     let log_each_message = matches!(
@@ -555,12 +520,38 @@ async fn dispatch_giftwrap_batch(
     }
 }
 
+struct PendingDmWaiter {
+    trade_keys: Keys,
+    response_tx: oneshot::Sender<Event>,
+}
+
+async fn resolve_order_for_event(
+    event: &Event,
+    user: &User,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
+) -> Option<(Uuid, i64, Keys)> {
+    let active_orders = {
+        let indices = active_order_trade_indices.lock().ok()?;
+        indices.clone()
+    };
+    for (order_id, trade_index) in active_orders {
+        let trade_keys = match user.derive_trade_keys(trade_index) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        if nip59::extract_rumor(&trade_keys, event).await.is_ok() {
+            return Some((order_id, trade_index, trade_keys));
+        }
+    }
+    None
+}
+
 /// Continuously listen for messages on trade keys for active orders using subscriptions.
 /// This function should be spawned as a background task.
 pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
-    active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
+    active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
     messages: Arc<Mutex<Vec<OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
@@ -577,7 +568,8 @@ pub async fn listen_for_order_messages(
 
     let mut notifications = client.notifications();
     let mut subscribed_pubkeys: HashSet<PublicKey> = HashSet::new();
-    let mut subscription_to_order: HashMap<SubscriptionId, (uuid::Uuid, i64)> = HashMap::new();
+    let mut subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
+    let mut pending_waiters: Vec<PendingDmWaiter> = Vec::new();
 
     // Bootstrap subscriptions for orders already known at startup.
     let startup_active_orders = {
@@ -621,15 +613,15 @@ pub async fn listen_for_order_messages(
 
     loop {
         tokio::select! {
-            cmd = dm_subscription_rx.recv() => {
-                let Some(cmd) = cmd else {
+            new_subscription_cmd = dm_subscription_rx.recv() => {
+                let Some(cmd_subscription) = new_subscription_cmd else {
                     // Sender dropped; keep listener alive for existing subscriptions.
                     log::warn!("[dm_listener] dm_subscription_rx closed; no new dynamic subscriptions will be received");
                     continue;
                 };
 
-                match cmd {
-                    OrderDmSubscriptionCmd::Subscribe { order_id, trade_index } => {
+                match cmd_subscription {
+                    DmRouterCmd::TrackOrder { order_id, trade_index } => {
                         log::info!(
                             "[dm_listener] Received subscribe command order_id={}, trade_index={}",
                             order_id,
@@ -685,6 +677,15 @@ pub async fn listen_for_order_messages(
                             }
                         }
                     }
+                    DmRouterCmd::RegisterWaiter {
+                        trade_keys,
+                        response_tx,
+                    } => {
+                        pending_waiters.push(PendingDmWaiter {
+                            trade_keys,
+                            response_tx,
+                        });
+                    }
                 }
             }
             notification = notifications.recv() => {
@@ -705,6 +706,19 @@ pub async fn listen_for_order_messages(
                     let event = *event;
                     if event.kind != nostr_sdk::Kind::GiftWrap {
                         continue;
+                    }
+
+                    if !pending_waiters.is_empty() {
+                        let mut still_pending: Vec<PendingDmWaiter> =
+                            Vec::with_capacity(pending_waiters.len());
+                        for waiter in pending_waiters.drain(..) {
+                            if nip59::extract_rumor(&waiter.trade_keys, &event).await.is_ok() {
+                                let _ = waiter.response_tx.send(event.clone());
+                            } else {
+                                still_pending.push(waiter);
+                            }
+                        }
+                        pending_waiters = still_pending;
                     }
 
                     if let Some((order_id, trade_index)) = subscription_to_order.get(&subscription_id).copied() {
@@ -756,64 +770,36 @@ pub async fn listen_for_order_messages(
                             GiftWrapTerminalPolicy::TrackedSubscription(&subscription_id),
                         )
                         .await;
-                    } else {
-                        // Fallback path: some valid GiftWrap events can arrive under a
-                        // subscription id not tracked by this listener (e.g. parallel wait_for_dm
-                        // temporary subscriptions). Try active trade keys before dropping.
-                        log::info!(
-                            "[dm_listener] Unknown subscription_id={}, trying active trade-key fallback",
-                            subscription_id
-                        );
-                        let active_orders = {
-                            let indices = active_order_trade_indices.lock().unwrap();
-                            indices.clone()
-                        };
-
-                        let mut routed = false;
-                        for (order_id, trade_index) in active_orders {
-                            let trade_keys = match user.derive_trade_keys(trade_index) {
-                                Ok(k) => k,
-                                Err(_) => continue,
-                            };
-                            let mut events = Events::default();
-                            events.insert(event.clone());
-                            let parsed_messages = parse_dm_events(events, &trade_keys, None).await;
-                            if parsed_messages.is_empty() {
-                                continue;
-                            }
-
+                    } else if let Some((order_id, trade_index, trade_keys)) =
+                        resolve_order_for_event(&event, &user, &active_order_trade_indices).await
+                    {
+                        let mut events = Events::default();
+                        events.insert(event.clone());
+                        let parsed_messages = parse_dm_events(events, &trade_keys, None).await;
+                        if !parsed_messages.is_empty() {
                             log::info!(
-                                "[dm_listener] Fallback routed GiftWrap to order_id={}, trade_index={} (parsed {} message(s))",
+                                "[dm_listener] Routed GiftWrap by active-order key for unknown subscription_id={} to order_id={}, trade_index={}",
+                                subscription_id,
                                 order_id,
-                                trade_index,
-                                parsed_messages.len()
+                                trade_index
                             );
-                            dispatch_giftwrap_batch(
-                                parsed_messages,
-                                order_id,
-                                trade_index,
-                                &trade_keys,
-                                &messages,
-                                &pending_notifications,
-                                &message_notification_tx,
-                                &pool,
-                                &user,
-                                &active_order_trade_indices,
-                                &mut subscribed_pubkeys,
-                                &client,
-                                &mut subscription_to_order,
-                                GiftWrapTerminalPolicy::UntrackedFallback,
-                            )
-                            .await;
-                            routed = true;
-                            break;
-                        }
-
-                        if !routed {
-                            log::info!(
-                                "[dm_listener] Fallback failed for unknown subscription_id={}",
-                                subscription_id
-                            );
+                                dispatch_giftwrap_batch(
+                                    parsed_messages,
+                                    order_id,
+                                    trade_index,
+                                    &trade_keys,
+                                    &messages,
+                                    &pending_notifications,
+                                    &message_notification_tx,
+                                    &pool,
+                                    &user,
+                                    &active_order_trade_indices,
+                                    &mut subscribed_pubkeys,
+                                    &client,
+                                    &mut subscription_to_order,
+                                    GiftWrapTerminalPolicy::UntrackedFallback,
+                                )
+                                .await;
                         }
                     }
                 }

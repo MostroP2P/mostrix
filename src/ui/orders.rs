@@ -206,6 +206,8 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
+        Action::TakeSell => "Take Sell",
+        Action::TakeBuy => "Take Buy",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
@@ -213,10 +215,13 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::HoldInvoicePaymentAccepted => {
             "Hold Invoice Payment Accepted - Press Yes to confirm fiat payment"
         }
+        Action::Cancel => "Cancel",
+        Action::Canceled => "Order canceled",
+        Action::AdminCanceled => "Order canceled by admin",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rate Counterparty received",
         Action::Release | Action::Released => "Release",
-        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         _ => "Message",
     };
 
