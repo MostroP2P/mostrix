@@ -114,15 +114,17 @@ pub fn render_orders_tab(
 
                 let payment_method_cell = Cell::from(order.payment_method.clone());
 
-                let date = DateTime::from_timestamp(order.created_at.unwrap_or(0), 0);
-                // Convert UTC timestamp to local time for display
+                // Missing created_at must not fall back to epoch (unwrap_or(0)); propagate None.
                 let date_cell = Cell::from(
-                    date.map(|d| {
-                        d.with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M")
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "Invalid date".to_string()),
+                    order
+                        .created_at
+                        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                        .map(|d| {
+                            d.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 
                 let row = Row::new(vec![

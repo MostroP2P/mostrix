@@ -109,7 +109,10 @@ pub async fn apply_pending_key_reload(
                     let (new_dm_tx, new_dm_rx) =
                         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
                     *dm_subscription_tx = new_dm_tx;
-                    set_dm_router_cmd_tx(dm_subscription_tx.clone());
+                    let router_reg = set_dm_router_cmd_tx(dm_subscription_tx.clone());
+                    if let Err(msg) = &router_reg {
+                        log::error!("[dm_listener] {}", msg);
+                    }
                     *message_listener_handle = tokio::spawn(async move {
                         listen_for_order_messages(
                             client_for_messages,
@@ -125,9 +128,14 @@ pub async fn apply_pending_key_reload(
 
                     app.backup_requires_restart = false;
                     app.pending_key_reload = false;
-                    app.mode = UiMode::OperationResult(OperationResult::Info(
-                        "Keys reloaded. Active session state has been reset.".to_string(),
-                    ));
+                    app.mode = match router_reg {
+                        Ok(()) => UiMode::OperationResult(OperationResult::Info(
+                            "Keys reloaded. Active session state has been reset.".to_string(),
+                        )),
+                        Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
+                            "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
+                        ))),
+                    };
                 } else {
                     app.pending_key_reload = false;
                     app.mode = UiMode::OperationResult(OperationResult::Error(format!(

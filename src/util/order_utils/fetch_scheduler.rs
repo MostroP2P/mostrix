@@ -35,7 +35,17 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
     let Some(order_id) = order.id else {
         return;
     };
-    let mut orders_lock = orders.lock().unwrap();
+    let mut orders_lock = match orders.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!(
+                "[orders_live] Failed to lock orders Arc<Mutex<Vec<SmallOrder>>> (poisoned): {} order_id={}",
+                e,
+                order_id
+            );
+            return;
+        }
+    };
     if order.status != Some(Status::Pending) {
         log::debug!(
             "[orders_live] removing non-pending order_id={} status={:?}",
@@ -69,7 +79,17 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
 fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispute) {
     let dispute_id = dispute.id;
     let dispute_status = dispute.status.clone();
-    let mut disputes_lock = disputes.lock().unwrap();
+    let mut disputes_lock = match disputes.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!(
+                "[disputes_live] Failed to lock disputes Arc<Mutex<Vec<Dispute>>> (poisoned): {} dispute_id={}",
+                e,
+                dispute_id
+            );
+            return;
+        }
+    };
     if let Some(existing) = disputes_lock
         .iter_mut()
         .find(|existing| existing.id == dispute.id)

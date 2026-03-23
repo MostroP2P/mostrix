@@ -13,7 +13,9 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -43,11 +45,27 @@ pub type OrderDmSubscriptionCmd = DmRouterCmd;
 
 static DM_ROUTER_CMD_TX: Mutex<Option<mpsc::UnboundedSender<DmRouterCmd>>> = Mutex::new(None);
 
-pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) {
-    if let Ok(mut guard) = DM_ROUTER_CMD_TX.lock() {
-        *guard = Some(tx);
-    } else {
-        log::warn!("[dm_listener] Failed to set DM router sender due to poisoned lock");
+/// Cumulative count of GiftWrap routes that ran the linear active-order decrypt fallback
+/// (`resolve_order_for_event`). Useful for monitoring how often the O(n) path runs.
+static GIFTWRAP_FALLBACK_DECRYPT_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Last fallback scan: number of active orders considered.
+static GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Last fallback scan: loop duration in milliseconds.
+static GIFTWRAP_FALLBACK_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Publishes the global sender consumed by `listen_for_order_messages` and `wait_for_dm`.
+///
+/// Returns `Err` if the mutex is poisoned (the sender was **not** updated).
+pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) -> Result<(), &'static str> {
+    match DM_ROUTER_CMD_TX.lock() {
+        Ok(mut guard) => {
+            *guard = Some(tx);
+            Ok(())
+        }
+        Err(_) => {
+            log::warn!("[dm_listener] Failed to set DM router sender due to poisoned lock");
+            Err("DM_ROUTER_CMD_TX mutex poisoned")
+        }
     }
 }
 
@@ -142,7 +160,6 @@ pub async fn send_dm(
 /// Wait for a direct message response from Mostro
 /// Registers a router waiter, then sends the message (to avoid missing responses).
 pub async fn wait_for_dm<F>(
-    _client: &Client,
     trade_keys: &Keys,
     timeout: std::time::Duration,
     sent_message: F,
@@ -150,13 +167,16 @@ pub async fn wait_for_dm<F>(
 where
     F: std::future::Future<Output = Result<()>> + Send,
 {
-    let dm_router_tx = DM_ROUTER_CMD_TX
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .ok_or_else(|| {
+    let dm_router_tx = match DM_ROUTER_CMD_TX.lock() {
+        Ok(guard) => guard.clone().ok_or_else(|| {
             anyhow::anyhow!("DM router is not ready. Please retry after listener initialization.")
-        })?;
+        })?,
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "DM router mutex poisoned; restart the application."
+            ));
+        }
+    };
     let (response_tx, response_rx) = oneshot::channel::<Event>();
     dm_router_tx
         .send(DmRouterCmd::RegisterWaiter {
@@ -358,7 +378,7 @@ async fn handle_trade_dm_for_order(
     // Only show PayInvoice popup/notification when an invoice is actually present.
     let is_actionable_notification = match &action {
         Action::PayInvoice => invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
-        Action::AddInvoice => true,
+        Action::AddInvoice => sat_amount.is_some(),
         _ => true,
     };
 
@@ -378,6 +398,9 @@ async fn handle_trade_dm_for_order(
                 (
                     m.timestamp,
                     m.message.get_inner_message_kind().action.clone(),
+                    m.sat_amount,
+                    m.buyer_invoice.clone(),
+                    m.auto_popup_shown,
                 )
             })
     };
@@ -390,7 +413,7 @@ async fn handle_trade_dm_for_order(
     // strictly newer timestamp (dedup stale/duplicate events).
     let is_new_message = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action)) => {
+        Some((existing_timestamp, existing_action, _, _, _)) => {
             if action != *existing_action {
                 true
             } else {
@@ -398,6 +421,20 @@ async fn handle_trade_dm_for_order(
             }
         }
     };
+
+    let prior_sat_amount = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, amt, _, _)| *amt);
+    let prior_invoice = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, _, inv, _)| inv.clone());
+    let prior_auto_popup_shown = existing_message_data
+        .as_ref()
+        .map(|(_, existing_action, _, _, shown)| *shown && *existing_action == action)
+        .unwrap_or(false);
+
+    let effective_sat_amount = sat_amount.or(prior_sat_amount);
+    let effective_invoice = invoice.clone().or(prior_invoice);
 
     if is_new_message && is_actionable_notification {
         let mut pending_notifications = pending_notifications.lock().unwrap();
@@ -411,9 +448,11 @@ async fn handle_trade_dm_for_order(
         order_id: Some(order_id),
         trade_index,
         read: false,
-        sat_amount,
-        buyer_invoice: invoice.clone(),
-        auto_popup_shown: false,
+        sat_amount: effective_sat_amount,
+        buyer_invoice: effective_invoice,
+        // Preserve popup-shown state for same-action updates (e.g. duplicate AddInvoice
+        // carrying peer reputation payload but no amount), preventing noisy re-popups.
+        auto_popup_shown: prior_auto_popup_shown,
     };
 
     let mut messages_lock = messages.lock().unwrap();
@@ -423,9 +462,12 @@ async fn handle_trade_dm_for_order(
     messages_lock.push(order_message.clone());
     messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    // Send notification
-    let notification = order_message_to_notification(&order_message);
-    let _ = message_notification_tx.send(notification);
+    // Send notification only for actionable/new updates; this avoids follow-up AddInvoice
+    // payload variants (without order amount) from retriggering invoice popups with 0 sats.
+    if is_new_message && is_actionable_notification {
+        let notification = order_message_to_notification(&order_message);
+        let _ = message_notification_tx.send(notification);
+    }
 }
 
 /// How terminal order status is handled after each decoded GiftWrap in a batch.
@@ -524,24 +566,74 @@ struct PendingDmWaiter {
     response_tx: oneshot::Sender<Event>,
 }
 
+fn log_giftwrap_fallback_decrypt_stats(
+    active_orders_scanned: usize,
+    decrypt_attempts: u32,
+    duration_ms: u64,
+    matched: bool,
+) {
+    let cumulative = GIFTWRAP_FALLBACK_DECRYPT_TOTAL.load(Ordering::Relaxed);
+    log::debug!(
+        "[dm_listener] giftwrap_fallback_decrypt: cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
+        cumulative,
+        active_orders_scanned,
+        decrypt_attempts,
+        duration_ms,
+        matched
+    );
+    // Keep warn low-volume: large scans, slow decrypt loop, or successful match.
+    if active_orders_scanned > 5 || duration_ms > 50 || matched {
+        log::warn!(
+            "[dm_listener] giftwrap_fallback_decrypt(significant): cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
+            cumulative,
+            active_orders_scanned,
+            decrypt_attempts,
+            duration_ms,
+            matched
+        );
+    }
+}
+
 async fn resolve_order_for_event(
     event: &Event,
     user: &User,
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
 ) -> Option<(Uuid, i64, Keys)> {
-    let active_orders = {
-        let indices = active_order_trade_indices.lock().ok()?;
-        indices.clone()
+    GIFTWRAP_FALLBACK_DECRYPT_TOTAL.fetch_add(1, Ordering::Relaxed);
+    let started = Instant::now();
+
+    let active_orders = match active_order_trade_indices.lock() {
+        Ok(indices) => indices.clone(),
+        Err(e) => {
+            log::warn!(
+                "[dm_listener] giftwrap_fallback_decrypt: poisoned active_order_trade_indices lock ({})",
+                e
+            );
+            return None;
+        }
     };
+
+    let active_count = active_orders.len();
+    GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT.store(active_count as u64, Ordering::Relaxed);
+
+    let mut decrypt_attempts: u32 = 0;
     for (order_id, trade_index) in active_orders {
+        decrypt_attempts = decrypt_attempts.saturating_add(1);
         let trade_keys = match user.derive_trade_keys(trade_index) {
             Ok(k) => k,
             Err(_) => continue,
         };
         if nip59::extract_rumor(&trade_keys, event).await.is_ok() {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
+            log_giftwrap_fallback_decrypt_stats(active_count, decrypt_attempts, duration_ms, true);
             return Some((order_id, trade_index, trade_keys));
         }
     }
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
+    log_giftwrap_fallback_decrypt_stats(active_count, decrypt_attempts, duration_ms, false);
     None
 }
 
@@ -711,6 +803,10 @@ pub async fn listen_for_order_messages(
                         let mut still_pending: Vec<PendingDmWaiter> =
                             Vec::with_capacity(pending_waiters.len());
                         for waiter in pending_waiters.drain(..) {
+                            // Drop promptly when wait_for_dm timed out (receiver gone); no decrypt.
+                            if waiter.response_tx.is_closed() {
+                                continue;
+                            }
                             if nip59::extract_rumor(&waiter.trade_keys, &event).await.is_ok() {
                                 let _ = waiter.response_tx.send(event.clone());
                             } else {

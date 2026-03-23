@@ -286,7 +286,9 @@ async fn main() -> Result<(), anyhow::Error> {
         mut dm_subscription_tx,
         dm_subscription_rx,
     } = create_app_channels();
-    set_dm_router_cmd_tx(dm_subscription_tx.clone());
+    set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
+        anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
+    })?;
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {

@@ -71,6 +71,7 @@ pub(crate) async fn create_gift_wrap_event(
 
 /// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
 /// Returns `true` when subscription is active (already subscribed or newly subscribed).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_order_giftwrap_subscription(
     client: &Client,
     subscribed_pubkeys: &mut HashSet<PublicKey>,

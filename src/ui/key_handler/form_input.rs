@@ -33,7 +33,13 @@ pub fn handle_char_input(
                         FormField::Currency => &mut form.fiat_code,
                         FormField::AmountSats => &mut form.amount,
                         FormField::FiatAmount => &mut form.fiat_amount,
-                        FormField::FiatAmountMax if form.use_range => &mut form.fiat_amount_max,
+                        FormField::FiatAmountMax => {
+                            if form.use_range {
+                                &mut form.fiat_amount_max
+                            } else {
+                                &mut form.fiat_amount
+                            }
+                        }
                         FormField::PaymentMethod => &mut form.payment_method,
                         FormField::Premium => &mut form.premium,
                         FormField::Invoice => &mut form.invoice,
@@ -68,7 +74,13 @@ pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut 
                 FormField::Currency => &mut form.fiat_code,
                 FormField::AmountSats => &mut form.amount,
                 FormField::FiatAmount => &mut form.fiat_amount,
-                FormField::FiatAmountMax if form.use_range => &mut form.fiat_amount_max,
+                FormField::FiatAmountMax => {
+                    if form.use_range {
+                        &mut form.fiat_amount_max
+                    } else {
+                        &mut form.fiat_amount
+                    }
+                }
                 FormField::PaymentMethod => &mut form.payment_method,
                 FormField::Premium => &mut form.premium,
                 FormField::Invoice => &mut form.invoice,

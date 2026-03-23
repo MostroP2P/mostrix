@@ -75,6 +75,9 @@ pub async fn take_order(
     // Subscribe as early as possible for take-order flow so the first
     // Mostro response/event is not missed by the background DM listener.
     if let Some(tx) = dm_subscription_tx {
+        // Optimistic `TrackOrder` via `dm_subscription_tx`: register this trade key with the
+        // listener *before* `send_dm` / `wait_for_dm`, using the requested `order_id` and
+        // `next_idx`. Intentionally redundant with the post-`save_order` send below.
         log::info!(
             "[take_order] Early subscribe command for order_id={}, trade_index={}",
             order_id,
@@ -127,7 +130,7 @@ pub async fn take_order(
     );
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
-    let recv_event = wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(&trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &trade_keys, None).await;
@@ -170,6 +173,12 @@ pub async fn take_order(
                                 log::error!("Failed to save order to database: {}", e);
                             }
                             if let Some(tx) = dm_subscription_tx {
+                                // Post-persistence `TrackOrder` confirmation: re-send after
+                                // `save_order(normalized_order, ...)` so the listener tracks
+                                // `effective_order_id` from `normalized_order` (may differ from
+                                // the early send if Mostro filled `id`) and state stays aligned
+                                // with DB even when `save_order` fails. Pairs with
+                                // `create_order_result_success(&normalized_order, next_idx)`.
                                 log::info!(
                                     "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
                                     effective_order_id,
@@ -220,6 +229,8 @@ pub async fn take_order(
                                 log::error!("Failed to save order to database: {}", e);
                             }
                             if let Some(tx) = dm_subscription_tx {
+                                // Same post-persistence `TrackOrder` as the `Payload::Order` branch
+                                // above: confirm `effective_order_id` after `save_order(order_to_save, ...)`.
                                 log::info!(
                                     "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
                                     effective_order_id,
