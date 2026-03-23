@@ -6,6 +6,8 @@ use mostro_core::prelude::*;
 use nip44::v2::encrypt_to_bytes;
 use nip44::v2::ConversationKey;
 use nostr_sdk::prelude::*;
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 use crate::util::types::create_expiration_tags;
 
@@ -65,4 +67,47 @@ pub(crate) async fn create_gift_wrap_event(
     };
 
     Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
+}
+
+/// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
+/// Returns `true` when subscription is active (already subscribed or newly subscribed).
+pub(crate) async fn ensure_order_giftwrap_subscription(
+    client: &Client,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    pubkey: PublicKey,
+    order_id: Uuid,
+    trade_index: i64,
+    error_label: &str,
+    info_label: Option<&str>,
+) -> bool {
+    if !subscribed_pubkeys.insert(pubkey) {
+        return true;
+    }
+
+    let filter = Filter::new()
+        .pubkey(pubkey)
+        .kind(nostr_sdk::Kind::GiftWrap)
+        .limit(0);
+
+    match client.subscribe(filter, None).await {
+        Ok(output) => {
+            if let Some(label) = info_label {
+                log::info!(
+                    "{} subscription_id={}, order_id={}, trade_index={}",
+                    label,
+                    output.val,
+                    order_id,
+                    trade_index
+                );
+            }
+            subscription_to_order.insert(output.val, (order_id, trade_index));
+            true
+        }
+        Err(e) => {
+            log::warn!("{} {} (index {}): {}", error_label, pubkey, trade_index, e);
+            subscribed_pubkeys.remove(&pubkey);
+            false
+        }
+    }
 }

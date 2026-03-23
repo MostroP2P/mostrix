@@ -211,7 +211,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `premium` | `INTEGER` | Premium amount in satoshis. |
 | `trade_keys` | `TEXT` | **Critical**: The trade keys (secret key in hex) for this order. Used to decrypt messages and sign actions for this specific trade. |
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
-| `is_mine` | `INTEGER` | Boolean (0 or 1). Indicates if this order was created by the local user. |
+| `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
 | `created_at` | `INTEGER` | Unix timestamp when the order was created. |
@@ -230,6 +230,7 @@ The `orders` table is essential for:
 
 - **Trade Keys**: Stored as hex-encoded secret keys. **Critical security data** - these keys are needed to decrypt messages for each trade.
 - **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic.
+- **Maker/Taker persistence**: `save_order(..., is_maker)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow).
 
 **Source**: `src/models.rs:154`
 

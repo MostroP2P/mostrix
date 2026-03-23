@@ -167,7 +167,6 @@ where
 
     // Send message only after waiter registration to avoid races.
     sent_message.await?;
-
     let event = tokio::time::timeout(timeout, response_rx)
         .await
         .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
@@ -589,26 +588,17 @@ pub async fn listen_for_order_messages(
             }
         };
         let pubkey = trade_keys.public_key();
-        if subscribed_pubkeys.insert(pubkey) {
-            let filter = Filter::new()
-                .pubkey(pubkey)
-                .kind(nostr_sdk::Kind::GiftWrap)
-                .limit(0);
-            match client.subscribe(filter, None).await {
-                Ok(output) => {
-                    subscription_to_order.insert(output.val, (order_id, trade_index));
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed startup subscribe for trade pubkey {} (index {}): {}",
-                        pubkey,
-                        trade_index,
-                        e
-                    );
-                    subscribed_pubkeys.remove(&pubkey);
-                }
-            }
-        }
+        let _ = dm_helpers::ensure_order_giftwrap_subscription(
+            &client,
+            &mut subscribed_pubkeys,
+            &mut subscription_to_order,
+            pubkey,
+            order_id,
+            trade_index,
+            "Failed startup subscribe for trade pubkey",
+            None,
+        )
+        .await;
     }
 
     loop {
@@ -647,44 +637,53 @@ pub async fn listen_for_order_messages(
                         };
 
                         let pubkey = trade_keys.public_key();
-                        if subscribed_pubkeys.insert(pubkey) {
-                            let filter = Filter::new()
-                                .pubkey(pubkey)
-                                .kind(nostr_sdk::Kind::GiftWrap)
-                                .limit(0);
-
-                            match client.subscribe(filter, None).await {
-                                Ok(output) => {
-                                    log::info!(
-                                        "[dm_listener] Subscribed GiftWrap: subscription_id={}, order_id={}, trade_index={}",
-                                        output.val,
-                                        order_id,
-                                        trade_index
-                                    );
-                                    subscription_to_order
-                                        .insert(output.val, (order_id, trade_index));
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "Failed to subscribe for trade pubkey {} (index {}): {}",
-                                        pubkey,
-                                        trade_index,
-                                        e
-                                    );
-                                    subscribed_pubkeys.remove(&pubkey);
-                                    continue;
-                                }
-                            }
+                        if !dm_helpers::ensure_order_giftwrap_subscription(
+                            &client,
+                            &mut subscribed_pubkeys,
+                            &mut subscription_to_order,
+                            pubkey,
+                            order_id,
+                            trade_index,
+                            "Failed to subscribe for trade pubkey",
+                            Some("[dm_listener] Subscribed GiftWrap:"),
+                        )
+                        .await
+                        {
+                            continue;
                         }
                     }
                     DmRouterCmd::RegisterWaiter {
                         trade_keys,
                         response_tx,
                     } => {
+                        let before = pending_waiters.len();
+                        let waiter_pubkey = trade_keys.public_key();
+                        if subscribed_pubkeys.insert(waiter_pubkey) {
+                            let filter = Filter::new()
+                                .pubkey(waiter_pubkey)
+                                .kind(nostr_sdk::Kind::GiftWrap)
+                                .limit(0);
+                            match client.subscribe(filter, None).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    subscribed_pubkeys.remove(&waiter_pubkey);
+                                    log::warn!(
+                                        "Failed to subscribe waiter pubkey {}: {}",
+                                        waiter_pubkey,
+                                        e
+                                    );
+                                }
+                            }
+                        }
                         pending_waiters.push(PendingDmWaiter {
                             trade_keys,
                             response_tx,
                         });
+                        log::trace!(
+                            "[dm_listener] waiter queued pending_before={} pending_after={}",
+                            before,
+                            pending_waiters.len()
+                        );
                     }
                 }
             }
