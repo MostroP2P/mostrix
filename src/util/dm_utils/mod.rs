@@ -764,6 +764,10 @@ pub async fn listen_for_order_messages(
                                         waiter_pubkey,
                                         e
                                     );
+                                    // Immediate waiter cancellation path: do not queue this waiter
+                                    // when we could not subscribe. Dropping response_tx here makes
+                                    // wait_for_dm receive oneshot cancellation right away.
+                                    continue;
                                 }
                             }
                         }
