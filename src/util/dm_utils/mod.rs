@@ -852,7 +852,7 @@ pub async fn listen_for_order_messages(
                                 rumor_cache.insert(key, ok);
                                 ok
                             };
-                         
+
                             if can_decrypt {
                                 let _ = waiter.response_tx.send(event.clone());
                             } else {
@@ -895,7 +895,7 @@ pub async fn listen_for_order_messages(
                             rumor_cache.insert(key, ok);
                             ok
                         };
-                        
+
                         if !can_decrypt {
                             continue;
                         }

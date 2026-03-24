@@ -98,7 +98,7 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
     if !subscribed_pubkeys.insert(pubkey) {
         return true;
     }
-  // get the limit for the subscription
+    // get the limit for the subscription
     let limit = match options.mode {
         GiftWrapSubscriptionMode::StartupCatchUp => 1,
         GiftWrapSubscriptionMode::LiveOnly => 0,
