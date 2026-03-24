@@ -637,8 +637,21 @@ async fn resolve_order_for_event(
     None
 }
 
-/// Continuously listen for messages on trade keys for active orders using subscriptions.
-/// This function should be spawned as a background task.
+/// Background DM router for GiftWrap events.
+///
+/// Responsibilities:
+/// - maintain relay subscriptions for tracked orders (`TrackOrder`) and temporary
+///   request/response waiters (`RegisterWaiter` / `wait_for_dm`)
+/// - route each incoming GiftWrap through two complementary paths:
+///   1) waiter path: satisfy in-flight `wait_for_dm` calls
+///   2) tracked-order path: parse and dispatch updates to the order/UI pipeline
+/// - reuse per-event decryptability checks across both paths to avoid duplicate
+///   `nip59::extract_rumor` work for the same `(event_id, trade_pubkey)`
+///
+/// Lifecycle notes:
+/// - bootstrap subscriptions for already-active orders at startup
+/// - continue processing relay notifications even if `dm_subscription_rx` is closed
+///   (no new dynamic subscriptions, existing ones remain active)
 pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
@@ -685,10 +698,13 @@ pub async fn listen_for_order_messages(
             &mut subscribed_pubkeys,
             &mut subscription_to_order,
             pubkey,
-            order_id,
-            trade_index,
-            "Failed startup subscribe for trade pubkey",
-            None,
+            dm_helpers::GiftWrapOrderSubscription {
+                order_id,
+                trade_index,
+                error_label: "Failed startup subscribe for trade pubkey",
+                info_label: None,
+                mode: dm_helpers::GiftWrapSubscriptionMode::StartupCatchUp,
+            },
         )
         .await;
     }
@@ -734,10 +750,13 @@ pub async fn listen_for_order_messages(
                             &mut subscribed_pubkeys,
                             &mut subscription_to_order,
                             pubkey,
-                            order_id,
-                            trade_index,
-                            "Failed to subscribe for trade pubkey",
-                            Some("[dm_listener] Subscribed GiftWrap:"),
+                            dm_helpers::GiftWrapOrderSubscription {
+                                order_id,
+                                trade_index,
+                                error_label: "Failed to subscribe for trade pubkey",
+                                info_label: Some("[dm_listener] Subscribed GiftWrap:"),
+                                mode: dm_helpers::GiftWrapSubscriptionMode::LiveOnly,
+                            },
                         )
                         .await
                         {
@@ -802,18 +821,43 @@ pub async fn listen_for_order_messages(
                     if event.kind != nostr_sdk::Kind::GiftWrap {
                         continue;
                     }
+                    // One GiftWrap event can be consumed by:
+                    // 1) request/response waiters (`wait_for_dm`) and
+                    // 2) tracked order subscriptions (UI/order state pipeline).
+                    // Keep a shared per-event cache so we only test decryptability once per
+                    // (event_id, trade_pubkey), then reuse the result in both paths.
+                    // This avoids duplicate `extract_rumor` calls while preserving behavior.
+                    let event_id = event.id;
+                    // Cache decryptability for this event across both waiter and tracked paths.
+                    // Keep it event-scoped to avoid unbounded growth over runtime.
+                    let mut rumor_cache: HashMap<(EventId, PublicKey), bool> = HashMap::new();
 
                     if !pending_waiters.is_empty() {
                         let mut still_pending: Vec<PendingDmWaiter> =
                             Vec::with_capacity(pending_waiters.len());
+                        // Try to satisfy in-flight `wait_for_dm` calls first.
+                        // Non-matching waiters are re-queued and will be checked again on the
+                        // next GiftWrap event.
                         for waiter in pending_waiters.drain(..) {
                             // Drop promptly when wait_for_dm timed out (receiver gone); no decrypt.
                             if waiter.response_tx.is_closed() {
                                 continue;
                             }
-                            if nip59::extract_rumor(&waiter.trade_keys, &event).await.is_ok() {
+                            // Cache key: this event + this waiter's trade pubkey.
+                            let key = (event_id, waiter.trade_keys.public_key());
+                            let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
+                                *boolean
+                            } else {
+                                let ok = nip59::extract_rumor(&waiter.trade_keys, &event).await.is_ok();
+                                rumor_cache.insert(key, ok);
+                                ok
+                            };
+                         
+                            if can_decrypt {
                                 let _ = waiter.response_tx.send(event.clone());
                             } else {
+                                // If the rumor cannot be extracted, the waiter is still pending
+                                // push it back to the pending waiters vector
                                 still_pending.push(waiter);
                             }
                         }
@@ -828,7 +872,8 @@ pub async fn listen_for_order_messages(
                             trade_index
                         );
 
-                        // Derive trade keys again for decryption
+                        // Tracked subscription path: decode and dispatch into the main
+                        // order/message handling flow.
                         let trade_keys = match user.derive_trade_keys(trade_index) {
                             Ok(k) => k,
                             Err(e) => {
@@ -840,7 +885,22 @@ pub async fn listen_for_order_messages(
                                 continue;
                             }
                         };
+                        // Reuse per-event decryptability result if waiter path already checked
+                        // this same trade pubkey.
+                        let key = (event_id, trade_keys.public_key());
+                        let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
+                            *boolean
+                        } else {
+                            let ok = nip59::extract_rumor(&trade_keys, &event).await.is_ok();
+                            rumor_cache.insert(key, ok);
+                            ok
+                        };
+                        
+                        if !can_decrypt {
+                            continue;
+                        }
 
+                        // Decrypt succeeded for this tracked order, so parse and dispatch.
                         let mut events = Events::default();
                         events.insert(event.clone());
 

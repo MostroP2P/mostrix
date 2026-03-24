@@ -11,6 +11,23 @@ use uuid::Uuid;
 
 use crate::util::types::create_expiration_tags;
 
+/// Subscription behavior for GiftWrap filters.
+pub(crate) enum GiftWrapSubscriptionMode {
+    /// Startup catch-up: request the latest retained event for this pubkey.
+    StartupCatchUp,
+    /// Live-only stream: no backlog replay, only events after subscription.
+    LiveOnly,
+}
+
+/// Metadata/config used when binding a subscription id to an order.
+pub(crate) struct GiftWrapOrderSubscription {
+    pub(crate) order_id: Uuid,
+    pub(crate) trade_index: i64,
+    pub(crate) error_label: &'static str,
+    pub(crate) info_label: Option<&'static str>,
+    pub(crate) mode: GiftWrapSubscriptionMode,
+}
+
 /// Create a private direct message event
 pub(crate) async fn create_private_dm_event(
     trade_keys: &Keys,
@@ -71,42 +88,49 @@ pub(crate) async fn create_gift_wrap_event(
 
 /// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
 /// Returns `true` when subscription is active (already subscribed or newly subscribed).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_order_giftwrap_subscription(
     client: &Client,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     pubkey: PublicKey,
-    order_id: Uuid,
-    trade_index: i64,
-    error_label: &str,
-    info_label: Option<&str>,
+    options: GiftWrapOrderSubscription,
 ) -> bool {
     if !subscribed_pubkeys.insert(pubkey) {
         return true;
     }
+  // get the limit for the subscription
+    let limit = match options.mode {
+        GiftWrapSubscriptionMode::StartupCatchUp => 1,
+        GiftWrapSubscriptionMode::LiveOnly => 0,
+    };
 
     let filter = Filter::new()
         .pubkey(pubkey)
         .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(0);
+        .limit(limit);
 
     match client.subscribe(filter, None).await {
         Ok(output) => {
-            if let Some(label) = info_label {
+            if let Some(label) = options.info_label {
                 log::info!(
                     "{} subscription_id={}, order_id={}, trade_index={}",
                     label,
                     output.val,
-                    order_id,
-                    trade_index
+                    options.order_id,
+                    options.trade_index
                 );
             }
-            subscription_to_order.insert(output.val, (order_id, trade_index));
+            subscription_to_order.insert(output.val, (options.order_id, options.trade_index));
             true
         }
         Err(e) => {
-            log::warn!("{} {} (index {}): {}", error_label, pubkey, trade_index, e);
+            log::warn!(
+                "{} {} (index {}): {}",
+                options.error_label,
+                pubkey,
+                options.trade_index,
+                e
+            );
             subscribed_pubkeys.remove(&pubkey);
             false
         }
