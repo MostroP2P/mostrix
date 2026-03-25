@@ -160,7 +160,7 @@ pub fn spawn_fetch_scheduler_loops(
     let orders_clone = Arc::clone(&orders);
     let client_for_orders = client.clone();
     let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey);
-    let latest_settings = settings.clone();
+    let reloaded_settings = settings.clone();
     let order_task = tokio::spawn(async move {
         let mut notifications = client_for_orders.notifications();
         // Real-time order subscription + periodic reconciliation poll.
@@ -197,9 +197,11 @@ pub fn spawn_fetch_scheduler_loops(
         loop {
             tokio::select! {
                 _ = refresh_interval.tick() => {
-                    // Reload currency filters from settings on each fetch.
+                    // Read currency filters from the settings snapshot (`reloaded_settings`) each fetch.
+                    // Note: this does not reload from disk; settings are refreshed when the
+                    // scheduler tasks are respawned (e.g. via apply_pending_key_reload).
                     // An empty list means "no filter" (show all currencies).
-                    let currencies = latest_settings.currencies_filter.clone();
+                    let currencies = reloaded_settings.currencies_filter.clone();
 
                     let mostro_pubkey_for_orders = match current_mostro_pubkey_for_orders.lock() {
                         Ok(pk) => *pk,
@@ -246,7 +248,7 @@ pub fn spawn_fetch_scheduler_loops(
                     }
                     let mut one = Events::default();
                     one.insert(event);
-                    let currencies = latest_settings.currencies_filter.clone();
+                    let currencies = reloaded_settings.currencies_filter.clone();
                     let mut parsed = super::parse_orders_events(
                         one,
                         Some(currencies),
