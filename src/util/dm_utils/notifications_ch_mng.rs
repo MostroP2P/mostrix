@@ -7,7 +7,15 @@ use mostro_core::prelude::Action;
 /// adds it before sending the notification.
 fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppState) -> bool {
     // Acquire lock on the messages vector
-    let mut messages = app.messages.lock().unwrap();
+    let mut messages = match app.messages.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+            return false;
+        }
+    };
     // Check if the notification has an order_id
     if let Some(order_id) = notification.order_id {
         // Find the corresponding OrderMessage - it's guaranteed to exist because

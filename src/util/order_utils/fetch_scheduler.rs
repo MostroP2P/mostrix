@@ -38,11 +38,9 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
     let mut orders_lock = match orders.lock() {
         Ok(guard) => guard,
         Err(e) => {
-            log::warn!(
-                "[orders_live] Failed to lock orders Arc<Mutex<Vec<SmallOrder>>> (poisoned): {} order_id={}",
-                e,
-                order_id
-            );
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error while processing live order updates (poisoned orders lock: {e}). Please restart the app."
+            ));
             return;
         }
     };
@@ -82,11 +80,9 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
     let mut disputes_lock = match disputes.lock() {
         Ok(guard) => guard,
         Err(e) => {
-            log::warn!(
-                "[disputes_live] Failed to lock disputes Arc<Mutex<Vec<Dispute>>> (poisoned): {} dispute_id={}",
-                e,
-                dispute_id
-            );
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error while processing live dispute updates (poisoned disputes lock: {e}). Please restart the app."
+            ));
             return;
         }
     };
@@ -171,10 +167,9 @@ pub fn spawn_fetch_scheduler_loops(
         let mostro_pubkey_for_order_subscribe = match current_mostro_pubkey_for_orders.lock() {
             Ok(pk) => *pk,
             Err(e) => {
-                log::warn!(
-                    "Failed to lock current_mostro_pubkey for live order subscription: {}",
-                    e
-                );
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                ));
                 return;
             }
         };
@@ -209,11 +204,10 @@ pub fn spawn_fetch_scheduler_loops(
                     let mostro_pubkey_for_orders = match current_mostro_pubkey_for_orders.lock() {
                         Ok(pk) => *pk,
                         Err(e) => {
-                            log::warn!(
-                                "Failed to lock current_mostro_pubkey for orders fetch: {}",
-                                e
-                            );
-                            continue;
+                            crate::util::request_fatal_restart(format!(
+                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                            ));
+                            return;
                         }
                     };
 
@@ -225,7 +219,15 @@ pub fn spawn_fetch_scheduler_loops(
                     )
                     .await
                     {
-                        let mut orders_lock = orders_clone.lock().unwrap();
+                        let mut orders_lock = match orders_clone.lock() {
+                            Ok(g) => g,
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error while reconciling orders (poisoned orders lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        };
                         orders_lock.clear();
                         orders_lock.extend(fetched_orders);
                         log::debug!(
@@ -272,10 +274,9 @@ pub fn spawn_fetch_scheduler_loops(
         let mostro_pubkey_for_dispute_subscribe = match current_mostro_pubkey_for_disputes.lock() {
             Ok(pk) => *pk,
             Err(e) => {
-                log::warn!(
-                    "Failed to lock current_mostro_pubkey for live dispute subscription: {}",
-                    e
-                );
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                ));
                 return;
             }
         };
@@ -306,17 +307,24 @@ pub fn spawn_fetch_scheduler_loops(
                     let mostro_pubkey_for_disputes = match current_mostro_pubkey_for_disputes.lock() {
                         Ok(pk) => *pk,
                         Err(e) => {
-                            log::warn!(
-                                "Failed to lock current_mostro_pubkey for disputes fetch: {}",
-                                e
-                            );
-                            continue;
+                            crate::util::request_fatal_restart(format!(
+                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                            ));
+                            return;
                         }
                     };
                     if let Ok(fetched_disputes) =
                         get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
                     {
-                        let mut disputes_lock = disputes_clone.lock().unwrap();
+                        let mut disputes_lock = match disputes_clone.lock() {
+                            Ok(g) => g,
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error while reconciling disputes (poisoned disputes lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        };
                         disputes_lock.clear();
                         disputes_lock.extend(fetched_disputes);
                         log::debug!(

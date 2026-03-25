@@ -25,14 +25,43 @@ use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 fn clear_runtime_session_state(app: &mut AppState) {
-    if let Ok(mut messages) = app.messages.lock() {
-        messages.clear();
+    match app.messages.lock() {
+        Ok(mut messages) => messages.clear(),
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+            app.fatal_exit_on_close = true;
+            app.mode = UiMode::OperationResult(OperationResult::Error(
+                "Internal error. Please restart Mostrix.".to_string(),
+            ));
+            return;
+        }
     }
-    if let Ok(mut active) = app.active_order_trade_indices.lock() {
-        active.clear();
+    match app.active_order_trade_indices.lock() {
+        Ok(mut active) => active.clear(),
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+            ));
+            app.fatal_exit_on_close = true;
+            app.mode = UiMode::OperationResult(OperationResult::Error(
+                "Internal error. Please restart Mostrix.".to_string(),
+            ));
+            return;
+        }
     }
-    if let Ok(mut pending) = app.pending_notifications.lock() {
-        *pending = 0;
+    match app.pending_notifications.lock() {
+        Ok(mut pending) => *pending = 0,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+            ));
+            app.fatal_exit_on_close = true;
+            app.mode = UiMode::OperationResult(OperationResult::Error(
+                "Internal error. Please restart Mostrix.".to_string(),
+            ));
+        }
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
@@ -79,10 +108,21 @@ pub async fn apply_pending_key_reload(
 
                     *client = new_client;
                     *mostro_pubkey = new_mostro_pubkey;
-                    if let Ok(mut active_pubkey) = current_mostro_pubkey.lock() {
-                        *active_pubkey = new_mostro_pubkey;
-                    } else {
-                        log::warn!("Failed to update shared Mostro pubkey during key reload");
+                    match current_mostro_pubkey.lock() {
+                        Ok(mut active_pubkey) => {
+                            *active_pubkey = new_mostro_pubkey;
+                        }
+                        Err(e) => {
+                            crate::util::request_fatal_restart(format!(
+                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                            ));
+                            app.pending_key_reload = false;
+                            app.fatal_exit_on_close = true;
+                            app.mode = UiMode::OperationResult(OperationResult::Error(
+                                "Internal error. Please restart Mostrix.".to_string(),
+                            ));
+                            return;
+                        }
                     }
                     app.currencies_filter = latest_settings.currencies_filter.clone();
                     clear_runtime_session_state(app);
@@ -179,6 +219,8 @@ pub struct AppChannels {
     pub mostro_info_rx: UnboundedReceiver<MostroInfoFetchResult>,
     pub dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
     pub dm_subscription_rx: UnboundedReceiver<OrderDmSubscriptionCmd>,
+    pub fatal_error_tx: UnboundedSender<String>,
+    pub fatal_error_rx: UnboundedReceiver<String>,
 }
 
 pub fn create_app_channels() -> AppChannels {
@@ -198,6 +240,7 @@ pub fn create_app_channels() -> AppChannels {
         tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
     let (dm_subscription_tx, dm_subscription_rx) =
         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     AppChannels {
         order_result_tx,
@@ -216,6 +259,8 @@ pub fn create_app_channels() -> AppChannels {
         mostro_info_rx,
         dm_subscription_tx,
         dm_subscription_rx,
+        fatal_error_tx,
+        fatal_error_rx,
     }
 }
 

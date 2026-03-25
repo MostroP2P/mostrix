@@ -124,10 +124,20 @@ pub fn handle_confirm_key(
                     return true;
                 }
             };
-            if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
-                *active_pubkey = new_pubkey;
-            } else {
-                log::warn!("Failed to update runtime Mostro pubkey after confirmation");
+            match ctx.current_mostro_pubkey.lock() {
+                Ok(mut active_pubkey) => {
+                    *active_pubkey = new_pubkey;
+                }
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                    ));
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
+                        "Internal error. Please restart Mostrix.".to_string(),
+                    ));
+                    return true;
+                }
             }
             spawn_refresh_mostro_info_task(
                 ctx.client.clone(),

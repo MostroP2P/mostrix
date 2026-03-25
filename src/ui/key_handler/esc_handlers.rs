@@ -42,6 +42,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         UiMode::OperationResult(_) => {
+            if app.fatal_exit_on_close {
+                return false;
+            }
             // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
             if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);

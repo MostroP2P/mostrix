@@ -122,6 +122,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::OperationResult(_) => {
+            if app.fatal_exit_on_close {
+                return false;
+            }
             // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
             if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -406,10 +409,16 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 };
-                if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
-                    *active_pubkey = new_pubkey;
-                } else {
-                    log::warn!("Failed to update runtime Mostro pubkey after Enter confirmation");
+                match ctx.current_mostro_pubkey.lock() {
+                    Ok(mut active_pubkey) => {
+                        *active_pubkey = new_pubkey;
+                    }
+                    Err(e) => {
+                        crate::util::request_fatal_restart(format!(
+                            "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                        ));
+                        return false;
+                    }
                 }
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
@@ -526,7 +535,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         ));
     } else if let Tab::User(UserTab::Orders) = app.active_tab {
         // Show take order popup when Enter is pressed in Orders tab (user mode only)
-        let orders_lock = ctx.orders.lock().unwrap();
+        let orders_lock = match ctx.orders.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
             let take_state = TakeOrderState {
@@ -540,7 +557,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         }
     } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
-        let disputes_lock = ctx.disputes.lock().unwrap();
+        let disputes_lock = match ctx.disputes.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         // Filter to only get "initiated" disputes
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
             .iter()
@@ -559,7 +584,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
-        let messages_lock = app.messages.lock().unwrap();
+        let messages_lock = match app.messages.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();

@@ -17,8 +17,21 @@ pub fn handle_operation_result(result: OperationResult, app: &mut AppState) {
     {
         // Track trade_index
         if let Some(order_id) = order.id {
-            let mut indices = app.active_order_trade_indices.lock().unwrap();
-            indices.insert(order_id, *trade_index);
+            match app.active_order_trade_indices.lock() {
+                Ok(mut indices) => {
+                    indices.insert(order_id, *trade_index);
+                }
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                    ));
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "Internal error. Please restart Mostrix.".to_string(),
+                    ));
+                    return;
+                }
+            }
             log::info!(
                 "Tracking order {} with trade_index {}",
                 order_id,
@@ -57,8 +70,21 @@ pub fn handle_operation_result(result: OperationResult, app: &mut AppState) {
     }) = &result
     {
         if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
-            let mut indices = app.active_order_trade_indices.lock().unwrap();
-            indices.insert(*order_id, *trade_index);
+            match app.active_order_trade_indices.lock() {
+                Ok(mut indices) => {
+                    indices.insert(*order_id, *trade_index);
+                }
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                    ));
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "Internal error. Please restart Mostrix.".to_string(),
+                    ));
+                    return;
+                }
+            }
             log::info!(
                 "Tracking order {} with trade_index {}",
                 order_id,

@@ -16,7 +16,26 @@ pub fn render_orders_tab(
     selected_order_idx: usize,
     app: &AppState,
 ) {
-    let orders_lock = orders.lock().unwrap();
+    let orders_lock = match orders.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+            ));
+            let paragraph = Paragraph::new(Span::styled(
+                "❌ Internal error. Please restart Mostrix.",
+                Style::default().fg(Color::Red),
+            ))
+            .block(
+                Block::default()
+                    .title("Orders")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
+            );
+            f.render_widget(paragraph, area);
+            return;
+        }
+    };
 
     if orders_lock.is_empty() {
         let paragraph = Paragraph::new(Span::styled(

@@ -63,7 +63,10 @@ pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) -> Result<()
             Ok(())
         }
         Err(_) => {
-            log::warn!("[dm_listener] Failed to set DM router sender due to poisoned lock");
+            crate::util::request_fatal_restart(
+                "Mostrix encountered an internal error (poisoned DM router lock). Please restart the app."
+                    .to_string(),
+            );
             Err("DM_ROUTER_CMD_TX mutex poisoned")
         }
     }
@@ -172,6 +175,10 @@ where
             anyhow::anyhow!("DM router is not ready. Please retry after listener initialization.")
         })?,
         Err(_) => {
+            crate::util::request_fatal_restart(
+                "Mostrix encountered an internal error (poisoned DM router lock). Please restart the app."
+                    .to_string(),
+            );
             return Err(anyhow::anyhow!(
                 "DM router mutex poisoned; restart the application."
             ));
@@ -389,7 +396,15 @@ async fn handle_trade_dm_for_order(
     // Lock `messages` only long enough to extract comparison data, then drop it
     // before touching `pending_notifications` to avoid lock-order deadlocks.
     let existing_message_data = {
-        let messages_lock = messages.lock().unwrap();
+        let messages_lock = match messages.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         messages_lock
             .iter()
             .filter(|m| m.order_id == Some(order_id))
@@ -437,8 +452,17 @@ async fn handle_trade_dm_for_order(
     let effective_invoice = invoice.clone().or(prior_invoice);
 
     if is_new_message && is_actionable_notification {
-        let mut pending_notifications = pending_notifications.lock().unwrap();
-        *pending_notifications += 1;
+        match pending_notifications.lock() {
+            Ok(mut pending_notifications) => {
+                *pending_notifications += 1;
+            }
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        }
     }
 
     let order_message = crate::ui::OrderMessage {
@@ -455,7 +479,15 @@ async fn handle_trade_dm_for_order(
         auto_popup_shown: prior_auto_popup_shown,
     };
 
-    let mut messages_lock = messages.lock().unwrap();
+    let mut messages_lock = match messages.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+            return;
+        }
+    };
     // Keep one row per order, but ensure the newly accepted message is the one kept.
     // This avoids dropping same-timestamp/different-action updates during dedup.
     messages_lock.retain(|m| m.order_id != Some(order_id));
@@ -537,8 +569,17 @@ async fn dispatch_giftwrap_batch(
                         subscription_id
                     );
                     {
-                        let mut indices = active_order_trade_indices.lock().unwrap();
-                        indices.remove(&order_id);
+                        match active_order_trade_indices.lock() {
+                            Ok(mut indices) => {
+                                indices.remove(&order_id);
+                            }
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        }
                     }
                     if let Ok(keys) = user.derive_trade_keys(trade_index) {
                         subscribed_pubkeys.remove(&keys.public_key());
@@ -549,8 +590,17 @@ async fn dispatch_giftwrap_batch(
                 }
                 GiftWrapTerminalPolicy::UntrackedFallback => {
                     {
-                        let mut indices = active_order_trade_indices.lock().unwrap();
-                        indices.remove(&order_id);
+                        match active_order_trade_indices.lock() {
+                            Ok(mut indices) => {
+                                indices.remove(&order_id);
+                            }
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        }
                     }
                     if let Ok(keys) = user.derive_trade_keys(trade_index) {
                         subscribed_pubkeys.remove(&keys.public_key());
@@ -605,10 +655,9 @@ async fn resolve_order_for_event(
     let active_orders = match active_order_trade_indices.lock() {
         Ok(indices) => indices.clone(),
         Err(e) => {
-            log::warn!(
-                "[dm_listener] giftwrap_fallback_decrypt: poisoned active_order_trade_indices lock ({})",
-                e
-            );
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+            ));
             return None;
         }
     };
@@ -677,8 +726,15 @@ pub async fn listen_for_order_messages(
 
     // Bootstrap subscriptions for orders already known at startup.
     let startup_active_orders = {
-        let indices = active_order_trade_indices.lock().unwrap();
-        indices.clone()
+        match active_order_trade_indices.lock() {
+            Ok(indices) => indices.clone(),
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        }
     };
     for (order_id, trade_index) in startup_active_orders {
         let trade_keys = match user.derive_trade_keys(trade_index) {
@@ -729,8 +785,17 @@ pub async fn listen_for_order_messages(
                         // subscription_id fallback (e.g. wait_for_dm's temporary subscribe). Main
                         // thread only inserts this map when take_order completes — too late.
                         {
-                            let mut indices = active_order_trade_indices.lock().unwrap();
-                            indices.insert(order_id, trade_index);
+                            match active_order_trade_indices.lock() {
+                                Ok(mut indices) => {
+                                    indices.insert(order_id, trade_index);
+                                }
+                                Err(e) => {
+                                    crate::util::request_fatal_restart(format!(
+                                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                                    ));
+                                    return;
+                                }
+                            }
                         }
                         let trade_keys = match user.derive_trade_keys(trade_index) {
                             Ok(k) => k,

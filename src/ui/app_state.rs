@@ -142,6 +142,9 @@ pub struct AppState {
     /// [`OperationResult`] here so the invoice UI is not replaced by the success screen (race).
     /// Applied when the user dismisses the popup (Esc), or cleared when they submit the invoice.
     pub pending_post_take_operation_result: Option<OperationResult>,
+    /// When set, closing an OperationResult popup (ESC/ENTER) will exit the app.
+    /// Used for fatal errors that require a clean restart.
+    pub fatal_exit_on_close: bool,
 }
 
 impl AppState {
@@ -182,6 +185,7 @@ impl AppState {
             backup_requires_restart: false,
             pending_key_reload: false,
             pending_post_take_operation_result: None,
+            fatal_exit_on_close: false,
         }
     }
 
