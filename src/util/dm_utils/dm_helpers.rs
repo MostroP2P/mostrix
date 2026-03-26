@@ -92,11 +92,21 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
     client: &Client,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
     pubkey: PublicKey,
     options: GiftWrapOrderSubscription,
 ) -> bool {
     if !subscribed_pubkeys.insert(pubkey) {
-        return true;
+        // Already subscribed: keep the tracked mapping fresh (e.g. post-take-order TrackOrder
+        // rebinding from optimistic order_id -> effective_order_id).
+        if let Some(sub_id) = pubkey_to_subscription.get(&pubkey).cloned() {
+            subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
+            return true;
+        }
+        log::warn!(
+            "[dm_listener] pubkey {} marked subscribed but missing subscription id; resubscribing to restore mapping",
+            pubkey
+        );
     }
     // get the limit for the subscription
     let limit = match options.mode {
@@ -111,16 +121,18 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
 
     match client.subscribe(filter, None).await {
         Ok(output) => {
+            let sub_id = output.val;
             if let Some(label) = options.info_label {
                 log::info!(
                     "{} subscription_id={}, order_id={}, trade_index={}",
                     label,
-                    output.val,
+                    sub_id,
                     options.order_id,
                     options.trade_index
                 );
             }
-            subscription_to_order.insert(output.val, (options.order_id, options.trade_index));
+            pubkey_to_subscription.insert(pubkey, sub_id.clone());
+            subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
             true
         }
         Err(e) => {
@@ -132,6 +144,7 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
                 e
             );
             subscribed_pubkeys.remove(&pubkey);
+            pubkey_to_subscription.remove(&pubkey);
             false
         }
     }

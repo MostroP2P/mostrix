@@ -162,6 +162,35 @@ async fn main() -> Result<(), anyhow::Error> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
+    let AppChannels {
+        order_result_tx,
+        mut order_result_rx,
+        key_rotation_tx,
+        mut key_rotation_rx,
+        seed_words_tx,
+        mut seed_words_rx,
+        message_notification_tx,
+        mut message_notification_rx,
+        admin_chat_updates_tx,
+        mut admin_chat_updates_rx,
+        save_attachment_tx,
+        mut save_attachment_rx,
+        mostro_info_tx,
+        mut mostro_info_rx,
+        mut dm_subscription_tx,
+        dm_subscription_rx,
+        fatal_error_tx,
+        mut fatal_error_rx,
+    } = create_app_channels();
+
+    // Set fatal error tx for the app channels
+    set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
+
+    // Set dm subscription tx for the app channels
+    set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
+        anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
+    })?;
+
     // Configure Nostr client.
     let my_keys = settings
         .nsec_privkey
@@ -267,31 +296,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
     }
-
-    let AppChannels {
-        order_result_tx,
-        mut order_result_rx,
-        key_rotation_tx,
-        mut key_rotation_rx,
-        seed_words_tx,
-        mut seed_words_rx,
-        message_notification_tx,
-        mut message_notification_rx,
-        admin_chat_updates_tx,
-        mut admin_chat_updates_rx,
-        save_attachment_tx,
-        mut save_attachment_rx,
-        mostro_info_tx,
-        mut mostro_info_rx,
-        mut dm_subscription_tx,
-        dm_subscription_rx,
-        fatal_error_tx,
-        mut fatal_error_rx,
-    } = create_app_channels();
-    set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
-        anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
-    })?;
-    set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
 
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {

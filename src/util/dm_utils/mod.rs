@@ -722,6 +722,7 @@ pub async fn listen_for_order_messages(
     let mut notifications = client.notifications();
     let mut subscribed_pubkeys: HashSet<PublicKey> = HashSet::new();
     let mut subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
+    let mut pubkey_to_subscription: HashMap<PublicKey, SubscriptionId> = HashMap::new();
     let mut pending_waiters: Vec<PendingDmWaiter> = Vec::new();
 
     // Bootstrap subscriptions for orders already known at startup.
@@ -753,6 +754,7 @@ pub async fn listen_for_order_messages(
             &client,
             &mut subscribed_pubkeys,
             &mut subscription_to_order,
+            &mut pubkey_to_subscription,
             pubkey,
             dm_helpers::GiftWrapOrderSubscription {
                 order_id,
@@ -787,6 +789,23 @@ pub async fn listen_for_order_messages(
                         {
                             match active_order_trade_indices.lock() {
                                 Ok(mut indices) => {
+                                    // TrackOrder should be idempotent per `trade_index`: when the
+                                    // optimistic order_id differs from the effective order_id
+                                    // (Mostro-filled), drop any prior entries for this trade_index
+                                    // so we don't keep phantom order_ids forever.
+                                    let stale: Vec<Uuid> = indices
+                                        .iter()
+                                        .filter_map(|(oid, idx)| {
+                                            if *idx == trade_index && *oid != order_id {
+                                                Some(*oid)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    for oid in stale {
+                                        indices.remove(&oid);
+                                    }
                                     indices.insert(order_id, trade_index);
                                 }
                                 Err(e) => {
@@ -814,6 +833,7 @@ pub async fn listen_for_order_messages(
                             &client,
                             &mut subscribed_pubkeys,
                             &mut subscription_to_order,
+                            &mut pubkey_to_subscription,
                             pubkey,
                             dm_helpers::GiftWrapOrderSubscription {
                                 order_id,
@@ -840,7 +860,12 @@ pub async fn listen_for_order_messages(
                                 .kind(nostr_sdk::Kind::GiftWrap)
                                 .limit(0);
                             match client.subscribe(filter, None).await {
-                                Ok(_) => {}
+                                Ok(output) => {
+                                    // Remember the subscription id so a later TrackOrder can
+                                    // rebind this pubkey to a concrete order_id without requiring
+                                    // a second relay subscription.
+                                    pubkey_to_subscription.insert(waiter_pubkey, output.val);
+                                }
                                 Err(e) => {
                                     subscribed_pubkeys.remove(&waiter_pubkey);
                                     log::warn!(
