@@ -53,6 +53,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)
                     | Tab::Admin(AdminTab::Observer)
+                    | Tab::User(UserTab::Messages)
             ) {
                 app.active_tab = Tab::first(app.user_role);
                 app.mode = default_mode.clone();

@@ -162,7 +162,8 @@ pub struct Order {
     pub premium: i64,
     pub trade_keys: Option<String>,
     pub counterparty_pubkey: Option<String>,
-    pub is_mine: Option<bool>,
+    /// Maker (`true`) vs taker (`false`). Matches `orders.is_mine` INTEGER NOT NULL (0/1).
+    pub is_mine: bool,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
     pub created_at: Option<i64>,
@@ -200,7 +201,7 @@ impl Order {
             premium: order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
-            is_mine: Some(is_maker),
+            is_mine: is_maker,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             created_at: Some(chrono::Utc::now().timestamp()),

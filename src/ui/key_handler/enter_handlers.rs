@@ -135,6 +135,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     | Tab::Admin(AdminTab::Observer)
                     | Tab::User(UserTab::MostroInfo)
                     | Tab::Admin(AdminTab::MostroInfo)
+                    | Tab::User(UserTab::Messages)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }

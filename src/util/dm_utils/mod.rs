@@ -17,6 +17,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -303,12 +304,57 @@ pub async fn parse_dm_events(
     direct_messages
 }
 
+/// `SmallOrder` embedded in the payload when present (standalone order or pay-invoice with a full order).
+fn small_order_ref_from_payload(payload: &Option<Payload>) -> Option<&SmallOrder> {
+    match payload.as_ref()? {
+        Payload::Order(o) => Some(o),
+        Payload::PaymentRequest(Some(o), _, _) => Some(o),
+        _ => None,
+    }
+}
+
+/// Refreshes the local `orders` row from embedded order data on `add-invoice` / `pay-invoice` DMs.
+async fn upsert_order_from_trade_dm(
+    pool: &sqlx::SqlitePool,
+    order_id: Uuid,
+    action: &Action,
+    payload: &Option<Payload>,
+    request_id: Option<u64>,
+    trade_keys: &Keys,
+) {
+    let (label, small_order) = match (action, payload.as_ref()) {
+        (Action::AddInvoice, Some(Payload::Order(o))) => ("AddInvoice", o.clone()),
+        (Action::PayInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
+            ("PayInvoice", o.clone())
+        }
+        _ => return,
+    };
+    let msg_request_id = request_id.and_then(|u| i64::try_from(u).ok());
+    let status_for_log = small_order.status;
+    match Order::upsert_from_small_order_dm(pool, order_id, small_order, trade_keys, msg_request_id)
+        .await
+    {
+        Ok(_) => log::info!(
+            "Persisted order {} to database from {} DM (status={:?})",
+            order_id,
+            label,
+            status_for_log
+        ),
+        Err(e) => log::error!(
+            "Failed to persist order {} from {} DM: {}",
+            order_id,
+            label,
+            e
+        ),
+    }
+}
+
 /// Handle a single decoded trade DM for a given order/trade index.
 #[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
     messages: &Arc<Mutex<Vec<OrderMessage>>>,
     pending_notifications: &Arc<Mutex<usize>>,
-    message_notification_tx: &tokio::sync::mpsc::UnboundedSender<MessageNotification>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
     order_id: Uuid,
     trade_index: i64,
     message: Message,
@@ -320,36 +366,30 @@ async fn handle_trade_dm_for_order(
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
 
-    if matches!(&action, Action::AddInvoice) {
-        if let Some(Payload::Order(ref small_order)) = inner_kind.payload {
-            let msg_request_id = inner_kind.request_id.and_then(|u| i64::try_from(u).ok());
-            match Order::upsert_from_small_order_dm(
-                pool,
-                order_id,
-                small_order.clone(),
-                trade_keys,
-                msg_request_id,
-            )
-            .await
-            {
-                Ok(_) => log::info!(
-                    "Persisted order {} to database from AddInvoice DM (status={:?})",
-                    order_id,
-                    small_order.status
-                ),
-                Err(e) => log::error!(
-                    "Failed to persist order {} from AddInvoice DM: {}",
-                    order_id,
-                    e
-                ),
-            }
-        }
-    }
+    let status_from_payment_req = match &inner_kind.payload {
+        Some(Payload::PaymentRequest(Some(o), _, _)) => o.status,
+        _ => None,
+    };
+    let status_from_payload = small_order_ref_from_payload(&inner_kind.payload)
+        .and_then(|o| o.status)
+        .or(status_from_payment_req);
+
+    upsert_order_from_trade_dm(
+        pool,
+        order_id,
+        &action,
+        &inner_kind.payload,
+        inner_kind.request_id,
+        trade_keys,
+    )
+    .await;
 
     // Extract invoice and sat_amount from payload based on action type
     let (sat_amount, invoice) = match &action {
         Action::PayInvoice => match &inner_kind.payload {
-            Some(Payload::PaymentRequest(_, invoice, _)) => (None, Some(invoice.clone())),
+            Some(Payload::PaymentRequest(opt_order, invoice, _)) => {
+                (opt_order.as_ref().map(|o| o.amount), Some(invoice.clone()))
+            }
             _ => (None, None),
         },
         Action::AddInvoice => match &inner_kind.payload {
@@ -359,9 +399,9 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
-    // Persist status: `Payload::Order`, or action-only messages (`canceled` + `payload: null`
-    // with `id` on [`MessageKind`] — see mostro daemon JSON).
-    if let Some(Payload::Order(ref order_payload)) = inner_kind.payload {
+    // Persist status: `Payload::Order`, `PaymentRequest(Some(order), …)`, or action-only messages
+    // (`canceled` + `payload: null` with `id` on [`MessageKind`] — see mostro daemon JSON).
+    if let Some(order_payload) = small_order_ref_from_payload(&inner_kind.payload) {
         if let Some(status) = map_action_to_status(&action, order_payload) {
             let oid = order_payload.id.or(inner_kind.id).unwrap_or(order_id);
             if let Err(e) = update_order_status(pool, &oid.to_string(), status).await {
@@ -420,6 +460,8 @@ async fn handle_trade_dm_for_order(
                     m.buyer_invoice.clone(),
                     m.auto_popup_shown,
                     m.order_kind,
+                    m.is_mine,
+                    m.order_status,
                 )
             })
     };
@@ -432,7 +474,7 @@ async fn handle_trade_dm_for_order(
     // strictly newer timestamp (dedup stale/duplicate events).
     let is_new_message = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _)) => {
+        Some((existing_timestamp, existing_action, _, _, _, _, _, _)) => {
             if action != *existing_action {
                 true
             } else {
@@ -443,22 +485,25 @@ async fn handle_trade_dm_for_order(
 
     let prior_sat_amount = existing_message_data
         .as_ref()
-        .and_then(|(_, _, amt, _, _, _)| *amt);
+        .and_then(|(_, _, amt, _, _, _, _, _)| *amt);
     let prior_invoice = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, inv, _, _)| inv.clone());
+        .and_then(|(_, _, _, inv, _, _, _, _)| inv.clone());
     let prior_auto_popup_shown = existing_message_data
         .as_ref()
-        .map(|(_, existing_action, _, _, shown, _)| *shown && *existing_action == action)
+        .map(|(_, existing_action, _, _, shown, _, _, _)| *shown && *existing_action == action)
         .unwrap_or(false);
     let prior_order_kind = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, _, _, k)| *k);
+        .and_then(|(_, _, _, _, _, k, _, _)| *k);
+    let prior_is_mine = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, _, _, _, _, im, _)| *im);
+    let prior_order_status = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, _, _, _, _, _, st)| *st);
 
-    let kind_from_payload = inner_kind.payload.as_ref().and_then(|p| match p {
-        Payload::Order(o) => o.kind,
-        _ => None,
-    });
+    let kind_from_payload = small_order_ref_from_payload(&inner_kind.payload).and_then(|o| o.kind);
     let kind_from_take_action = match &action {
         Action::TakeSell => Some(mostro_core::order::Kind::Sell),
         Action::TakeBuy => Some(mostro_core::order::Kind::Buy),
@@ -468,14 +513,27 @@ async fn handle_trade_dm_for_order(
     let mut effective_order_kind = kind_from_payload
         .or(prior_order_kind)
         .or(kind_from_take_action);
+
+    let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
     if effective_order_kind.is_none() {
-        if let Ok(row) = Order::get_by_id(pool, &order_id.to_string()).await {
+        if let Some(ref row) = db_order {
             effective_order_kind = row
                 .kind
                 .as_ref()
                 .and_then(|s| mostro_core::order::Kind::from_str(s).ok());
         }
     }
+
+    // `Order.is_mine` is `bool` (not `Option<bool>`) so taker (`false`) is never confused with “unknown”.
+    let effective_is_mine = db_order.as_ref().map(|r| r.is_mine).or(prior_is_mine);
+
+    let status_from_db = db_order
+        .as_ref()
+        .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
+
+    let effective_order_status = status_from_payload
+        .or(status_from_db)
+        .or(prior_order_status);
 
     let effective_sat_amount = sat_amount.or(prior_sat_amount);
     let effective_invoice = invoice.clone().or(prior_invoice);
@@ -504,6 +562,8 @@ async fn handle_trade_dm_for_order(
         sat_amount: effective_sat_amount,
         buyer_invoice: effective_invoice,
         order_kind: effective_order_kind,
+        is_mine: effective_is_mine,
+        order_status: effective_order_status,
         // Preserve popup-shown state for same-action updates (e.g. duplicate AddInvoice
         // carrying peer reputation payload but no amount), preventing noisy re-popups.
         auto_popup_shown: prior_auto_popup_shown,

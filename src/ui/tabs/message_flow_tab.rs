@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::ui::orders::{
-    message_action_compact_label, message_buy_flow_step, message_order_kind_label,
-    message_timeline_warning,
+    buy_listing_flow_step, buy_listing_timeline_labels, message_action_compact_label,
+    message_order_kind_label, message_timeline_warning, BuyFlowStep,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -175,7 +175,13 @@ fn render_message_timeline_panel(
     );
     f.render_widget(header, right_chunks[0]);
 
-    render_buy_stepper(f, right_chunks[1], message_buy_flow_step(selected_action));
+    let step_labels = buy_listing_timeline_labels(selected_msg);
+    render_buy_stepper(
+        f,
+        right_chunks[1],
+        buy_listing_flow_step(selected_msg),
+        &step_labels,
+    );
 
     let warning = message_timeline_warning(selected_action)
         .unwrap_or("Trade is on normal path")
@@ -201,14 +207,15 @@ fn render_message_timeline_panel(
         Line::from(Span::raw(action_text)),
         Line::from(Span::raw("")),
         Line::from(Span::styled(
-            "Buy flow",
+            "Trade timeline",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::raw("1) Paste Invoice")),
-        Line::from(Span::raw("2) Wait for Seller")),
-        Line::from(Span::raw("3) Chat with Seller")),
-        Line::from(Span::raw("4) Send Fiat")),
-        Line::from(Span::raw("5) Receive Sats")),
+        Line::from(Span::raw(format!("1) {}", step_labels[0]))),
+        Line::from(Span::raw(format!("2) {}", step_labels[1]))),
+        Line::from(Span::raw(format!("3) {}", step_labels[2]))),
+        Line::from(Span::raw(format!("4) {}", step_labels[3]))),
+        Line::from(Span::raw(format!("5) {}", step_labels[4]))),
+        Line::from(Span::raw(format!("6) {}", step_labels[5]))),
     ])
     .block(
         Block::default()
@@ -219,22 +226,22 @@ fn render_message_timeline_panel(
     f.render_widget(details, right_chunks[3]);
 }
 
-fn render_buy_stepper(f: &mut ratatui::Frame, area: Rect, current_step: usize) {
-    let steps = [
-        "Paste Invoice",
-        "Wait for Seller",
-        "Chat with Seller",
-        "Send Fiat",
-        "Receive Sats",
-    ];
+fn render_buy_stepper(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    current_step: BuyFlowStep,
+    steps: &[&str; 6],
+) {
+    let current_step = current_step.step_number();
     let step_columns = Layout::new(
         Direction::Horizontal,
         [
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Percentage(17),
+            Constraint::Percentage(17),
+            Constraint::Percentage(17),
+            Constraint::Percentage(17),
+            Constraint::Percentage(16),
+            Constraint::Percentage(16),
         ],
     )
     .split(area);
