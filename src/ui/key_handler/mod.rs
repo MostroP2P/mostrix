@@ -258,6 +258,29 @@ pub fn handle_key_event(
         }
     }
 
+    // Rate counterparty: 1..=5 stars (Left/Right or +/-).
+    if let UiMode::RatingOrder(ref mut s) = app.mode {
+        match code {
+            KeyCode::Left => {
+                s.selected_rating = s.selected_rating.saturating_sub(1).max(MIN_RATING);
+                return Some(true);
+            }
+            KeyCode::Right => {
+                s.selected_rating = (s.selected_rating + 1).min(MAX_RATING);
+                return Some(true);
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                s.selected_rating = (s.selected_rating + 1).min(MAX_RATING);
+                return Some(true);
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                s.selected_rating = s.selected_rating.saturating_sub(1).max(MIN_RATING);
+                return Some(true);
+            }
+            _ => {}
+        }
+    }
+
     // Save attachment popup: Up/Down to select, Enter to save, Esc to cancel
     if matches!(app.mode, UiMode::SaveAttachmentPopup(_)) {
         let dispute_id_key = app

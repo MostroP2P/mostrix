@@ -313,7 +313,7 @@ impl Order {
             premium: small_order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: existing.and_then(|e| e.counterparty_pubkey.clone()),
-            is_mine: existing.and_then(|e| e.is_mine).or(Some(true)),
+            is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
             created_at: existing

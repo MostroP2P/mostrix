@@ -71,6 +71,8 @@ pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
 pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
     match action {
         Action::Canceled => Some(Status::Canceled),
+        Action::WaitingBuyerInvoice | Action::AddInvoice => Some(Status::WaitingBuyerInvoice),
+        Action::WaitingSellerToPay | Action::PayInvoice => Some(Status::WaitingPayment),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::Success),
         Action::Release | Action::Released => Some(Status::Success),

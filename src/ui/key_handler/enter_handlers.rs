@@ -6,7 +6,8 @@ use crate::ui::key_handler::input_helpers::{
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
-    MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
+    MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
+    UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -60,7 +61,7 @@ use crate::ui::key_handler::admin_handlers::{
 
 // Message handlers moved to message_handlers.rs
 use crate::ui::key_handler::message_handlers::{
-    handle_enter_message_notification, handle_enter_viewing_message,
+    handle_enter_message_notification, handle_enter_rating_order, handle_enter_viewing_message,
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -156,6 +157,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Enter confirms the selected button (YES or NO)
             handle_enter_viewing_message(app, &view_state, ctx);
             // Mode is updated inside handle_enter_viewing_message
+            true
+        }
+        UiMode::RatingOrder(state) => {
+            handle_enter_rating_order(app, &state, ctx);
             true
         }
         UiMode::AdminMode(AdminMode::AddSolver(_))
@@ -623,6 +628,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            } else if matches!(action, Action::Rate) {
+                if let Some(oid) = msg.order_id {
+                    app.mode = UiMode::RatingOrder(RatingOrderState {
+                        order_id: oid,
+                        selected_rating: 3,
+                    });
+                } else {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "No order ID for rating".to_string(),
+                    ));
+                }
             } else {
                 // Non-actionable messages: show info popup (no "send" semantics).
                 let notification = order_message_to_notification(msg);

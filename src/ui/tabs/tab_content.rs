@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::ui::{helpers, MessageViewState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{helpers, MessageViewState, RatingOrderState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
     let paragraph = Paragraph::new(Span::raw("Coming soon")).block(
@@ -351,4 +351,83 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             inner_chunks[6],
         );
     }
+}
+
+/// Popup to choose a 1..=5 star rating before sending `RateUser` to Mostro.
+pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
+    let area = f.area();
+    let popup_width = area.width.saturating_sub(area.width / 4);
+    let popup = helpers::create_centered_popup(area, popup_width, 14);
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title("Rate counterparty")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block.clone(), popup);
+    let inner = block.inner(popup);
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ],
+    )
+    .split(inner);
+
+    let order_line = helpers::format_order_id(Some(state.order_id));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            order_line,
+            Style::default().add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[1],
+    );
+
+    let stars: String = (1..=5)
+        .map(|i| {
+            if i <= state.selected_rating {
+                "★ "
+            } else {
+                "☆ "
+            }
+        })
+        .collect::<String>();
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            stars.trim_end(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[2],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::raw(format!(
+            "{} / {}",
+            state.selected_rating, MAX_RATING
+        ))]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[3],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Left/Right ", Style::default().fg(PRIMARY_COLOR)),
+            Span::raw("or "),
+            Span::styled("+/- ", Style::default().fg(PRIMARY_COLOR)),
+            Span::raw("adjust  "),
+            Span::styled("Enter ", Style::default().fg(PRIMARY_COLOR)),
+            Span::raw("submit  "),
+            Span::styled("Esc ", Style::default().fg(PRIMARY_COLOR)),
+            Span::raw("cancel"),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[4],
+    );
 }

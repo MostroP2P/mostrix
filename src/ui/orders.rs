@@ -2,44 +2,12 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
 
-const BUY_ORDER_FLOW_STEPS_MAKER: [&str; 6] = [
-    "Wait for Seller",
-    "Paste Invoice",
-    "Chat with Seller",
-    "Send Fiat",
-    "Wait for Sats",
-    "Rate Counterparty",
-];
+use crate::ui::constants::{
+    BUY_ORDER_FLOW_STEPS_MAKER, BUY_ORDER_FLOW_STEPS_TAKER, GENERIC_ORDER_FLOW_STEPS_TAKER,
+    SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
+};
 
-const BUY_ORDER_FLOW_STEPS_TAKER: [&str; 6] = [
-    "Pay Hold Invoice",
-    "Wait for Buyer Invoice",
-    "Chat with Buyer",
-    "Wait for Fiat",
-    "Release Sats",
-    "Rate Counterparty",
-];
-
-const BUY_ORDER_FLOW_STEPS_MAKER_SELL: [&str; 6] = [
-    "Wait for Buyer Invoice",
-    "Pay Hold Invoice",
-    "Chat with Buyer",
-    "Wait for Fiat",
-    "Release Sats",
-    "Rate Counterparty",
-];
-
-const BUY_ORDER_FLOW_STEPS_TAKER_SELL: [&str; 6] = [
-    "Add Invoice",
-    "Wait for Seller",
-    "Chat with Buyer",
-    "Send Fiat",
-    "Wait for Sats",
-    "Rate Counterparty",
-];
-
-const GENERIC_ORDER_FLOW_STEPS_TAKER: [&str; 6] =
-    ["Payment / Wait", "Invoice", "Chat", "Fiat", "Sats", "Rate"];
+pub use crate::ui::constants::StepLabel;
 
 #[derive(Clone, Debug, Default)]
 pub struct OrderSuccess {
@@ -242,6 +210,14 @@ pub struct MessageViewState {
     pub selected_button: bool, // true for YES, false for NO
 }
 
+/// Rate counterparty after Mostro prompts with `action: rate` (daemon resolves peer by order id).
+#[derive(Clone, Debug)]
+pub struct RatingOrderState {
+    pub order_id: uuid::Uuid,
+    /// 1..=5 (`mostro_core::MIN_RATING`..=`MAX_RATING`).
+    pub selected_rating: u8,
+}
+
 /// Build a `MessageNotification` from an `OrderMessage` for use in popups.
 pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification {
     let inner_message_kind = msg.message.get_inner_message_kind();
@@ -323,28 +299,62 @@ pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
     }
 }
 
-/// One-based step in the buy-order trade timeline (matches the Messages tab stepper).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(u8)]
-pub enum BuyFlowStep {
-    WaitForSeller = 1,
-    PasteInvoice = 2,
-    ChatWithSeller = 3,
-    SendFiat = 4,
-    ReceiveSats = 5,
-    RateCounterparty = 6,
+#[allow(clippy::enum_variant_names)] // Step* names match UI column semantics
+pub enum StepLabelsBuy {
+    StepSellerPayment = 1,
+    StepBuyerInvoice = 2,
+    StepChatWithSeller = 3,
+    StepSendFiat = 4,
+    StepReleaseSats = 5,
+    StepRate = 6,
 }
 
-impl BuyFlowStep {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(u8)]
+#[allow(clippy::enum_variant_names)] // Step* names match UI column semantics
+pub enum StepLabelsSell {
+    StepBuyerInvoice = 1,
+    StepSellerPayment = 2,
+    StepChatWithSeller = 3,
+    StepSendFiat = 4,
+    StepReleaseSats = 5,
+    StepRate = 6,
+}
+/// Highlighted column (`1`..=`6`) for the Messages tab stepper; buy vs sell use different label order.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(u8)]
+#[allow(clippy::enum_variant_names)] // Step* names match UI "Step N" labels
+pub enum FlowStep {
+    BuyFlowStep(StepLabelsBuy),
+    SellFlowStep(StepLabelsSell),
+}
+
+impl FlowStep {
     /// Step index for UI (`1`..=`6`), aligned with stepper labels.
     #[must_use]
     pub const fn step_number(self) -> usize {
-        self as u8 as usize
+        match self {
+            FlowStep::BuyFlowStep(step) => step as usize,
+            FlowStep::SellFlowStep(step) => step as usize,
+        }
+    }
+}
+
+/// Resolves the highlighted timeline step for the Messages tab (buy and sell listings).
+#[must_use]
+pub fn message_trade_timeline_step(msg: &OrderMessage) -> FlowStep {
+    let action = msg.message.get_inner_message_kind().action.clone();
+    match msg.order_kind {
+        Some(mostro_core::order::Kind::Buy) => buy_listing_flow_step(msg),
+        Some(mostro_core::order::Kind::Sell) => sell_listing_flow_step(msg),
+        None => message_buy_flow_step_fallback(&action),
     }
 }
 
 /// Buy-listing timeline step: prefers [`OrderMessage::order_status`] + maker/taker for `Kind::Buy`.
-pub fn buy_listing_flow_step(msg: &OrderMessage) -> BuyFlowStep {
+pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     let action = msg.message.get_inner_message_kind().action.clone();
     if msg.order_kind != Some(mostro_core::order::Kind::Buy) {
         return message_buy_flow_step_fallback(&action);
@@ -352,101 +362,210 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> BuyFlowStep {
     let Some(is_maker) = msg.is_mine else {
         return message_buy_flow_step_fallback(&action);
     };
+    // Post-`success` phases are action-specific (`rate` vs release); handle before status.
+    if matches!(&action, Action::Rate | Action::RateReceived) {
+        return FlowStep::BuyFlowStep(StepLabelsBuy::StepRate);
+    }
     if let Some(status) = msg.order_status {
-        if let Some(step) = buy_listing_step_from_status(status) {
+        if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Buy, status) {
             return step;
         }
     }
     buy_listing_flow_step_from_action(&action, is_maker)
 }
 
-fn buy_listing_step_from_status(status: Status) -> Option<BuyFlowStep> {
-    match status {
-        Status::Pending | Status::WaitingPayment => Some(BuyFlowStep::WaitForSeller),
-        Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => Some(BuyFlowStep::PasteInvoice),
-        Status::InProgress | Status::Active => Some(BuyFlowStep::ChatWithSeller),
-        Status::FiatSent => Some(BuyFlowStep::SendFiat),
-        Status::Success => Some(BuyFlowStep::ReceiveSats),
-        Status::Canceled
-        | Status::CanceledByAdmin
-        | Status::CooperativelyCanceled
-        | Status::Expired
-        | Status::Dispute
-        | Status::SettledByAdmin
-        | Status::CompletedByAdmin => None,
+/// Sell-listing timeline step: same pipeline as buy; action fallback matches [`SELL_ORDER_FLOW_STEPS_*`].
+pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
+    let action = msg.message.get_inner_message_kind().action.clone();
+    if msg.order_kind != Some(mostro_core::order::Kind::Sell) {
+        return message_buy_flow_step_fallback(&action);
+    }
+    let Some(is_maker) = msg.is_mine else {
+        return message_buy_flow_step_fallback(&action);
+    };
+    if matches!(&action, Action::Rate | Action::RateReceived) {
+        return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
+    }
+    if let Some(status) = msg.order_status {
+        if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Sell, status) {
+            return step;
+        }
+    }
+    sell_listing_flow_step_from_action(&action, is_maker)
+}
+
+/// Shared Mostro `Status` machine; column indices differ for buy vs sell (see [`StepLabelsBuy`] vs [`StepLabelsSell`]).
+fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> Option<FlowStep> {
+    match kind {
+        mostro_core::order::Kind::Buy => match status {
+            Status::Pending | Status::WaitingPayment => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment))
+            }
+            Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice))
+            }
+            Status::InProgress | Status::Active => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller))
+            }
+            Status::FiatSent => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat)),
+            Status::Success => None,
+            Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::CooperativelyCanceled
+            | Status::Expired
+            | Status::Dispute
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin => None,
+        },
+        mostro_core::order::Kind::Sell => match status {
+            Status::Pending | Status::WaitingPayment => {
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment))
+            }
+            Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice))
+            }
+            Status::InProgress | Status::Active => {
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller))
+            }
+            Status::FiatSent => Some(FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat)),
+            Status::Success => None,
+            Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::CooperativelyCanceled
+            | Status::Expired
+            | Status::Dispute
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin => None,
+        },
     }
 }
 
-fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> BuyFlowStep {
+/// Sell listing: maker = seller (created the sell order), taker = buyer.
+fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowStep {
     if is_maker {
         match action {
-            Action::WaitingSellerToPay => BuyFlowStep::WaitForSeller,
-            Action::AddInvoice | Action::WaitingBuyerInvoice => BuyFlowStep::PasteInvoice,
-            Action::PayInvoice => BuyFlowStep::PasteInvoice,
-            Action::HoldInvoicePaymentAccepted => BuyFlowStep::ChatWithSeller,
-            Action::FiatSent => BuyFlowStep::SendFiat,
-            Action::FiatSentOk | Action::Release | Action::Released => BuyFlowStep::ReceiveSats,
-            Action::Rate => BuyFlowStep::RateCounterparty,
-            Action::TakeBuy | Action::TakeSell => BuyFlowStep::ChatWithSeller,
-            _ => BuyFlowStep::ChatWithSeller,
+            Action::WaitingSellerToPay => FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice),
+            Action::PayInvoice => FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment),
+            Action::AddInvoice | Action::WaitingBuyerInvoice => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+            }
+            Action::HoldInvoicePaymentAccepted => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+            }
+            Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
+            Action::FiatSentOk | Action::Release | Action::Released => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
+            }
+            Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
+            Action::TakeBuy | Action::TakeSell => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+            }
+            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
         }
     } else {
         match action {
-            Action::PayInvoice | Action::WaitingSellerToPay => BuyFlowStep::WaitForSeller,
-            Action::HoldInvoicePaymentAccepted => BuyFlowStep::PasteInvoice,
-            Action::WaitingBuyerInvoice | Action::AddInvoice => BuyFlowStep::PasteInvoice,
-            Action::FiatSent => BuyFlowStep::SendFiat,
-            Action::FiatSentOk | Action::Release | Action::Released => BuyFlowStep::ReceiveSats,
-            Action::Rate => BuyFlowStep::RateCounterparty,
-            Action::TakeBuy | Action::TakeSell => BuyFlowStep::ChatWithSeller,
-            _ => BuyFlowStep::ChatWithSeller,
+            Action::AddInvoice | Action::WaitingBuyerInvoice => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+            }
+            Action::PayInvoice | Action::WaitingSellerToPay => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+            }
+            Action::HoldInvoicePaymentAccepted => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+            }
+            Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
+            Action::FiatSentOk | Action::Release | Action::Released => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
+            }
+            Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
+            Action::TakeBuy | Action::TakeSell => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+            }
+            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
+        }
+    }
+}
+
+fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowStep {
+    if is_maker {
+        match action {
+            Action::WaitingSellerToPay => FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment),
+            Action::AddInvoice | Action::WaitingBuyerInvoice => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
+            }
+            Action::PayInvoice => FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment),
+            Action::HoldInvoicePaymentAccepted => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            }
+            Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
+            Action::FiatSentOk | Action::Release | Action::Released => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
+            }
+            Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+            Action::TakeBuy | Action::TakeSell => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            }
+            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
+        }
+    } else {
+        match action {
+            Action::PayInvoice | Action::WaitingSellerToPay => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+            }
+            Action::HoldInvoicePaymentAccepted => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            }
+            Action::WaitingBuyerInvoice | Action::AddInvoice => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
+            }
+            Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
+            Action::FiatSentOk | Action::Release | Action::Released => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
+            }
+            Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+            Action::TakeBuy | Action::TakeSell => {
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            }
+            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
         }
     }
 }
 
 /// Action-only fallback for non-buy listings or unknown role/status.
-pub fn message_buy_flow_step_fallback(action: &Action) -> BuyFlowStep {
+pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
     match action {
-        Action::AddInvoice | Action::WaitingBuyerInvoice => BuyFlowStep::WaitForSeller,
-        Action::PayInvoice | Action::WaitingSellerToPay | Action::HoldInvoicePaymentAccepted => {
-            BuyFlowStep::PasteInvoice
+        Action::AddInvoice | Action::WaitingBuyerInvoice => {
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
         }
-        Action::TakeBuy | Action::TakeSell => BuyFlowStep::ChatWithSeller,
-        Action::FiatSent => BuyFlowStep::SendFiat,
-        Action::FiatSentOk | Action::Release | Action::Released => BuyFlowStep::ReceiveSats,
-        Action::Rate => BuyFlowStep::RateCounterparty,
-        _ => BuyFlowStep::ChatWithSeller,
+        Action::PayInvoice | Action::WaitingSellerToPay | Action::HoldInvoicePaymentAccepted => {
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+        }
+        Action::TakeBuy | Action::TakeSell => {
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+        }
+        Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
+        Action::FiatSentOk | Action::Release | Action::Released => {
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
+        }
+        Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+        _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
     }
 }
 
-/// Labels for the six timeline steps; buy listings use role-specific wording for early steps.
-pub fn buy_listing_timeline_labels(msg: &OrderMessage) -> [&'static str; 6] {
+/// Labels for the six timeline steps (wording); column order matches [`StepLabelsBuy`] / [`StepLabelsSell`].
+pub fn listing_timeline_labels(msg: &OrderMessage) -> [StepLabel; 6] {
     match msg.order_kind {
-        Some(mostro_core::order::Kind::Buy) => {
-            match msg.is_mine {
-                Some(true) => BUY_ORDER_FLOW_STEPS_MAKER,
-                Some(false) => BUY_ORDER_FLOW_STEPS_TAKER,
-                None => GENERIC_ORDER_FLOW_STEPS_TAKER,
-            }
+        Some(mostro_core::order::Kind::Buy) => match msg.is_mine {
+            Some(true) => BUY_ORDER_FLOW_STEPS_MAKER,
+            Some(false) => BUY_ORDER_FLOW_STEPS_TAKER,
+            None => GENERIC_ORDER_FLOW_STEPS_TAKER,
         },
-        Some(mostro_core::order::Kind::Sell) => {
-             match msg.is_mine {
-                Some(true) => BUY_ORDER_FLOW_STEPS_TAKER,
-                Some(false) => BUY_ORDER_FLOW_STEPS_MAKER,
-                None => GENERIC_ORDER_FLOW_STEPS_TAKER,
-            }
-        }
+        Some(mostro_core::order::Kind::Sell) => match msg.is_mine {
+            Some(true) => SELL_ORDER_FLOW_STEPS_MAKER,
+            Some(false) => SELL_ORDER_FLOW_STEPS_TAKER,
+            None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+        },
         None => GENERIC_ORDER_FLOW_STEPS_TAKER,
-
-    // } else {
-    //     [
-    //         "Trade setup",
-    //         "Invoice / Pay",
-    //         "Chat",
-    //         "Fiat",
-    //         "Sats",
-    //         "Rate",
-    //     ]
     }
 }
 
@@ -465,5 +584,104 @@ pub fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
     match kind {
         mostro_core::order::Kind::Buy => Style::default().fg(Color::Green),
         mostro_core::order::Kind::Sell => Style::default().fg(Color::Red),
+    }
+}
+
+#[cfg(test)]
+mod timeline_step_tests {
+    use super::*;
+    use nostr_sdk::Keys;
+
+    fn sample_order_message(
+        action: Action,
+        order_kind: Option<mostro_core::order::Kind>,
+        is_mine: Option<bool>,
+        order_status: Option<mostro_core::order::Status>,
+    ) -> OrderMessage {
+        let keys = Keys::generate();
+        OrderMessage {
+            message: Message::new_order(None, None, None, action, None),
+            timestamp: 0,
+            sender: keys.public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind,
+            is_mine,
+            order_status,
+            read: false,
+            auto_popup_shown: false,
+        }
+    }
+
+    #[test]
+    fn buy_maker_add_invoice_maps_to_invoice_step() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            None,
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
+        );
+    }
+
+    #[test]
+    fn sell_maker_pay_invoice_maps_to_second_column() {
+        let m = sample_order_message(
+            Action::PayInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            None,
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+        );
+    }
+
+    #[test]
+    fn sell_taker_add_invoice_maps_to_first_column() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            None,
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+        );
+    }
+
+    #[test]
+    fn sell_success_and_rate_maps_to_rate_step() {
+        let m = sample_order_message(
+            Action::Rate,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(mostro_core::order::Status::Success),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepRate)
+        );
+    }
+
+    #[test]
+    fn sell_waiting_payment_uses_status_before_action() {
+        let m = sample_order_message(
+            Action::FiatSent,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(mostro_core::order::Status::WaitingPayment),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+        );
     }
 }

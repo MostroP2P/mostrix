@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::ui::orders::{
-    buy_listing_flow_step, buy_listing_timeline_labels, message_action_compact_label,
-    message_order_kind_label, message_timeline_warning, BuyFlowStep,
+    listing_timeline_labels, message_action_compact_label, message_order_kind_label,
+    message_timeline_warning, message_trade_timeline_step, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -169,11 +169,11 @@ fn render_message_timeline_panel(
     );
     f.render_widget(header, right_chunks[0]);
 
-    let step_labels = buy_listing_timeline_labels(selected_msg);
-    render_buy_stepper(
+    let step_labels = listing_timeline_labels(selected_msg);
+    render_trade_stepper(
         f,
         right_chunks[1],
-        buy_listing_flow_step(selected_msg),
+        message_trade_timeline_step(selected_msg),
         &step_labels,
     );
 
@@ -204,12 +204,12 @@ fn render_message_timeline_panel(
             "Trade timeline",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::raw(format!("1) {}", step_labels[0]))),
-        Line::from(Span::raw(format!("2) {}", step_labels[1]))),
-        Line::from(Span::raw(format!("3) {}", step_labels[2]))),
-        Line::from(Span::raw(format!("4) {}", step_labels[3]))),
-        Line::from(Span::raw(format!("5) {}", step_labels[4]))),
-        Line::from(Span::raw(format!("6) {}", step_labels[5]))),
+        Line::from(Span::raw(format!("1) {}", step_labels[0].as_single_line()))),
+        Line::from(Span::raw(format!("2) {}", step_labels[1].as_single_line()))),
+        Line::from(Span::raw(format!("3) {}", step_labels[2].as_single_line()))),
+        Line::from(Span::raw(format!("4) {}", step_labels[3].as_single_line()))),
+        Line::from(Span::raw(format!("5) {}", step_labels[4].as_single_line()))),
+        Line::from(Span::raw(format!("6) {}", step_labels[5].as_single_line()))),
     ])
     .block(
         Block::default()
@@ -220,11 +220,11 @@ fn render_message_timeline_panel(
     f.render_widget(details, right_chunks[3]);
 }
 
-fn render_buy_stepper(
+fn render_trade_stepper(
     f: &mut ratatui::Frame,
     area: Rect,
-    current_step: BuyFlowStep,
-    steps: &[&str; 6],
+    current_step: FlowStep,
+    steps: &[StepLabel; 6],
 ) {
     let current_step = current_step.step_number();
     let step_columns = Layout::new(
@@ -240,7 +240,7 @@ fn render_buy_stepper(
     )
     .split(area);
 
-    for (idx, step_name) in steps.iter().enumerate() {
+    for (idx, step_label) in steps.iter().enumerate() {
         let step_number = idx + 1;
         let style = if step_number < current_step {
             Style::default()
@@ -254,17 +254,10 @@ fn render_buy_stepper(
             Style::default().fg(Color::DarkGray)
         };
 
-        let indicator = if step_number <= current_step {
-            "[x]"
-        } else {
-            "[ ]"
-        };
         let step = Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!("{indicator} Step {step_number}"),
-                style,
-            )),
-            Line::from(Span::styled(step_name.to_string(), style)),
+            Line::from(Span::styled(format!("Step {step_number}"), style)),
+            Line::from(Span::styled(step_label.top.to_string(), style)),
+            Line::from(Span::styled(step_label.bottom.to_string(), style)),
         ])
         .alignment(ratatui::layout::Alignment::Center)
         .block(Block::default().borders(Borders::ALL));

@@ -76,6 +76,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::Normal;
             true
         }
+        UiMode::RatingOrder(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
         UiMode::AdminMode(AdminMode::AddSolver(_))
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)

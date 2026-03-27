@@ -372,4 +372,8 @@ pub fn ui_draw(
     if let UiMode::ViewingMessage(view_state) = &app.mode {
         tabs::tab_content::render_message_view(f, view_state);
     }
+
+    if let UiMode::RatingOrder(state) = &app.mode {
+        tabs::tab_content::render_rating_order(f, state);
+    }
 }

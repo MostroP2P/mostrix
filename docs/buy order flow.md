@@ -64,7 +64,7 @@ Same status vocabulary applies; **order** of states must match [ORDER.md](https:
 
 ## TUI: Messages tab — Enter key and popups (normative target)
 
-**Scope:** This section describes **intended** Mostrix behavior. **Current code** may not match yet (see Implementation notes).
+**Scope:** This section mixes **normative targets** with **current behavior** where implemented (see Implementation notes).
 
 **Surface:** **Messages tab only** for phase-gated invoice, confirmation, cancel, and dispute flows. The **Orders** tab remains “take order” on Enter unless a future task changes it.
 
@@ -90,12 +90,21 @@ For actions that require explicit confirmation (e.g. **`HoldInvoicePaymentAccept
 
 ### Current implementation pointer (non-normative)
 
-Today, `handle_enter_normal_mode` in `src/ui/key_handler/enter_handlers.rs` routes Messages Enter primarily by **`Action`**: `AddInvoice` / `PayInvoice` → invoice popup; `HoldInvoicePaymentAccepted` / `FiatSentOk` → viewing popup; else → info. That is **not** phase-aware; aligning with this spec is follow-up work.
+In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by **`Action`** (and by **`order_id`** where required):
+
+- **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`).
+- **`HoldInvoicePaymentAccepted` / `FiatSentOk`** → confirmation popup (`ViewingMessage` with yes/no where applicable).
+- **`Rate`** → **rating popup** (`UiMode::RatingOrder`): choose **1–5** stars, **Enter** submits **`RateUser`** + **`RatingUser`** via **`execute_rate_user`** in `src/util/order_utils/execute_send_msg.rs` (Mostro resolves the counterparty; only **`order_id`** + rating are sent).
+- **Else** → informational `OperationResult::Info` (no send).
+
+**Gaps vs this spec:** Enter is still **not** fully phase-aware (e.g. invoice popups are not gated by **`order.status` + local role** alone). Cooperative cancel / dispute entry from Messages as described above remains **TBD**.
 
 ## Implementation notes (non-normative)
 
-- The Messages stepper in `src/ui/orders.rs` (`message_buy_flow_step`) is **action-based** and does not yet reflect status + role; it should be refactored when implementing this spec.
-- Prefer a single **phase resolver** (status + `is_mine` / maker-taker + `kind`) shared by the stepper and Enter handling.
+- **Trade timeline step** (`message_trade_timeline_step` in `src/ui/orders.rs`): returns **`FlowStep`** — either **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**. Each inner enum uses **discriminants 1…6** for the stepper column; **sell** uses a **different order** for the first two phases than buy (`StepLabelsSell`: `StepBuyerInvoice` = column 1, `StepSellerPayment` = column 2; see `src/ui/orders.rs`).
+- **Pipeline:** **`buy_listing_flow_step`** / **`sell_listing_flow_step`** → early **`Action::Rate`** / **`RateReceived`** → **`listing_step_from_status(order_kind, status)`** (same Mostro statuses, **kind-specific** mapping to columns) → **`buy_listing_flow_step_from_action`** / **`sell_listing_flow_step_from_action`**. **`Status::Success`** does **not** pick step 6 alone; **`Action::Rate`** / **`RateReceived`** run before status so **`rate`** + **`success`** still highlights rate.
+- **Text labels** (top/bottom lines per column): **`src/ui/constants.rs`** — **`BUY_ORDER_FLOW_STEPS_*`**, **`SELL_ORDER_FLOW_STEPS_*`**, **`GENERIC_ORDER_FLOW_STEPS_TAKER`**; **`listing_timeline_labels`** in `orders.rs` picks the array by **`order_kind`** and **`is_mine`**. Rendering: **`src/ui/tabs/message_flow_tab.rs`**.
+- **Follow-up:** stricter **Enter** / popups (status + role + **`kind`**); see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#messages-tab-trade-timeline-stepper-buy-and-sell-listings). Sell detail: [sell order flow.md](sell%20order%20flow.md).
 
 ## Open questions (for review)
 

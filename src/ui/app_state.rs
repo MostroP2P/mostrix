@@ -11,7 +11,7 @@ use crate::ui::chat::{AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeF
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
     InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
-    OrderMessage,
+    OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
@@ -21,6 +21,8 @@ pub enum UiMode {
     // Shared modes (available to both user and admin)
     Normal,
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
+    /// Rate the trade counterparty (1–5); Mostro resolves peer from order id.
+    RatingOrder(RatingOrderState),
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
@@ -53,6 +55,7 @@ impl Clone for UiMode {
         match self {
             UiMode::Normal => UiMode::Normal,
             UiMode::ViewingMessage(view_state) => UiMode::ViewingMessage(view_state.clone()),
+            UiMode::RatingOrder(state) => UiMode::RatingOrder(state.clone()),
             UiMode::NewMessageNotification(notification, action, invoice_state) => {
                 UiMode::NewMessageNotification(
                     notification.clone(),

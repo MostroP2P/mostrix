@@ -1,7 +1,9 @@
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
-use crate::ui::{AdminMode, AppState, MessageViewState, UiMode, UserMode, UserRole};
-use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
+use crate::ui::{
+    AdminMode, AppState, MessageViewState, RatingOrderState, UiMode, UserMode, UserRole,
+};
+use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
 use mostro_core::prelude::*;
 use uuid::Uuid;
 
@@ -137,4 +139,39 @@ pub fn handle_enter_message_notification(
                 .send(OperationResult::Error("Invalid action".to_string()));
         }
     }
+}
+
+/// Confirm and send the selected star rating (`RateUser`).
+pub fn handle_enter_rating_order(
+    app: &mut AppState,
+    state: &RatingOrderState,
+    ctx: &EnterKeyContext<'_>,
+) {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    app.mode = default_mode;
+
+    let order_id = state.order_id;
+    let rating = state.selected_rating;
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let result_tx = ctx.order_result_tx.clone();
+
+    tokio::spawn(async move {
+        match execute_rate_user(&order_id, rating, &pool_clone, &client_clone, mostro_pubkey).await
+        {
+            Ok(()) => {
+                let _ = result_tx.send(OperationResult::Info(
+                    "Rating sent successfully".to_string(),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to send rating: {}", e);
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
 }
