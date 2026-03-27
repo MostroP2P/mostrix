@@ -218,8 +218,14 @@ fn handle_up_key(
                     }
                 };
                 let messages_len = messages.len();
-                if messages_len > 0 && app.selected_message_idx > 0 {
-                    app.selected_message_idx -= 1;
+                if messages_len == 0 {
+                    app.selected_message_idx = 0;
+                } else {
+                    if app.selected_message_idx >= messages_len {
+                        app.selected_message_idx = messages_len.saturating_sub(1);
+                    } else if app.selected_message_idx > 0 {
+                        app.selected_message_idx -= 1;
+                    }
                     // Mark selected message as read
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;
@@ -346,8 +352,14 @@ fn handle_down_key(
                     }
                 };
                 let messages_len = messages.len();
-                if messages_len > 0 && app.selected_message_idx < messages_len.saturating_sub(1) {
-                    app.selected_message_idx += 1;
+                if messages_len == 0 {
+                    app.selected_message_idx = 0;
+                } else {
+                    if app.selected_message_idx >= messages_len {
+                        app.selected_message_idx = messages_len.saturating_sub(1);
+                    } else if app.selected_message_idx < messages_len.saturating_sub(1) {
+                        app.selected_message_idx += 1;
+                    }
                     // Mark selected message as read
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;

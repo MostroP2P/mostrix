@@ -235,6 +235,61 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     }
 }
 
+/// Short, UI-friendly action label for the messages sidebar.
+pub fn message_action_compact_label(action: &Action) -> &'static str {
+    match action {
+        Action::AddInvoice => "Invoice Request",
+        Action::PayInvoice => "Payment Request",
+        Action::WaitingBuyerInvoice => "Waiting Buyer Invoice",
+        Action::WaitingSellerToPay => "Waiting Seller Payment",
+        Action::HoldInvoicePaymentAccepted => "Hold Invoice Accepted",
+        Action::FiatSent => "Fiat Sent",
+        Action::FiatSentOk => "Fiat Confirmed",
+        Action::Release | Action::Released => "Release",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        Action::Canceled => "Canceled",
+        Action::AdminCanceled => "Admin Canceled",
+        _ => "Message",
+    }
+}
+
+/// Best-effort order kind label from a message payload.
+pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
+    let inner = msg.message.get_inner_message_kind();
+    if let Some(Payload::Order(order)) = &inner.payload {
+        return match order.kind {
+            Some(mostro_core::order::Kind::Buy) => "BUY",
+            Some(mostro_core::order::Kind::Sell) => "SELL",
+            None => "N/A",
+        };
+    }
+    "N/A"
+}
+
+/// Buy-flow step index in range [1..=5] derived from the current action.
+pub fn message_buy_flow_step(action: &Action) -> usize {
+    match action {
+        Action::AddInvoice | Action::WaitingBuyerInvoice => 1,
+        Action::PayInvoice | Action::WaitingSellerToPay | Action::HoldInvoicePaymentAccepted => 2,
+        Action::TakeBuy | Action::TakeSell => 3,
+        Action::FiatSent => 4,
+        Action::FiatSentOk | Action::Release | Action::Released => 5,
+        _ => 3,
+    }
+}
+
+/// Warning text for non-happy path trade actions.
+pub fn message_timeline_warning(action: &Action) -> Option<&'static str> {
+    match action {
+        Action::Canceled => Some("Trade canceled"),
+        Action::AdminCanceled => Some("Trade canceled by admin"),
+        Action::Dispute | Action::DisputeInitiatedByYou => {
+            Some("Trade in dispute state")
+        }
+        _ => None,
+    }
+}
+
 /// Apply color coding to order kind cells (adapted for ratatui)
 pub fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
     match kind {
