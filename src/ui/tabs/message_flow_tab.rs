@@ -57,11 +57,6 @@ pub fn render_messages_tab(
         .iter()
         .enumerate()
         .map(|(idx, msg)| {
-            let order_short = if let Some(order_id) = msg.order_id {
-                order_id.to_string().chars().take(8).collect::<String>()
-            } else {
-                "unknown".to_string()
-            };
             let kind = message_order_kind_label(msg);
             let action = msg.message.get_inner_message_kind().action.clone();
             let action_label = message_action_compact_label(&action);
@@ -97,7 +92,6 @@ pub fn render_messages_tab(
             };
 
             let line1 = Line::from(vec![
-                Span::styled(format!("{order_short:8} "), base_style),
                 Span::styled(format!("{kind:4} "), kind_style),
                 Span::styled(action_label.to_string(), base_style),
             ]);

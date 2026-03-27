@@ -2,6 +2,45 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
 
+const BUY_ORDER_FLOW_STEPS_MAKER: [&str; 6] = [
+    "Wait for Seller",
+    "Paste Invoice",
+    "Chat with Seller",
+    "Send Fiat",
+    "Wait for Sats",
+    "Rate Counterparty",
+];
+
+const BUY_ORDER_FLOW_STEPS_TAKER: [&str; 6] = [
+    "Pay Hold Invoice",
+    "Wait for Buyer Invoice",
+    "Chat with Buyer",
+    "Wait for Fiat",
+    "Release Sats",
+    "Rate Counterparty",
+];
+
+const BUY_ORDER_FLOW_STEPS_MAKER_SELL: [&str; 6] = [
+    "Wait for Buyer Invoice",
+    "Pay Hold Invoice",
+    "Chat with Buyer",
+    "Wait for Fiat",
+    "Release Sats",
+    "Rate Counterparty",
+];
+
+const BUY_ORDER_FLOW_STEPS_TAKER_SELL: [&str; 6] = [
+    "Add Invoice",
+    "Wait for Seller",
+    "Chat with Buyer",
+    "Send Fiat",
+    "Wait for Sats",
+    "Rate Counterparty",
+];
+
+const GENERIC_ORDER_FLOW_STEPS_TAKER: [&str; 6] =
+    ["Payment / Wait", "Invoice", "Chat", "Fiat", "Sats", "Rate"];
+
 #[derive(Clone, Debug, Default)]
 pub struct OrderSuccess {
     pub order_id: Option<uuid::Uuid>,
@@ -382,35 +421,32 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> BuyFlowStep {
 
 /// Labels for the six timeline steps; buy listings use role-specific wording for early steps.
 pub fn buy_listing_timeline_labels(msg: &OrderMessage) -> [&'static str; 6] {
-    if msg.order_kind == Some(mostro_core::order::Kind::Buy) {
-        match msg.is_mine {
-            Some(true) => [
-                "Wait for Seller",
-                "Paste Invoice",
-                "Chat with Seller",
-                "Send Fiat",
-                "Receive Sats",
-                "Rate Counterparty",
-            ],
-            Some(false) => [
-                "Pay Hold Invoice",
-                "Wait for Buyer Invoice",
-                "Chat with Buyer",
-                "Buyer Sends Fiat",
-                "Release Sats",
-                "Rate Counterparty",
-            ],
-            None => ["Payment / Wait", "Invoice", "Chat", "Fiat", "Sats", "Rate"],
+    match msg.order_kind {
+        Some(mostro_core::order::Kind::Buy) => {
+            match msg.is_mine {
+                Some(true) => BUY_ORDER_FLOW_STEPS_MAKER,
+                Some(false) => BUY_ORDER_FLOW_STEPS_TAKER,
+                None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+            }
+        },
+        Some(mostro_core::order::Kind::Sell) => {
+             match msg.is_mine {
+                Some(true) => BUY_ORDER_FLOW_STEPS_TAKER,
+                Some(false) => BUY_ORDER_FLOW_STEPS_MAKER,
+                None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+            }
         }
-    } else {
-        [
-            "Trade setup",
-            "Invoice / Pay",
-            "Chat",
-            "Fiat",
-            "Sats",
-            "Rate",
-        ]
+        None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+
+    // } else {
+    //     [
+    //         "Trade setup",
+    //         "Invoice / Pay",
+    //         "Chat",
+    //         "Fiat",
+    //         "Sats",
+    //         "Rate",
+    //     ]
     }
 }
 
