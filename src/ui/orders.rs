@@ -153,6 +153,8 @@ pub struct OrderMessage {
     pub trade_index: i64,
     pub sat_amount: Option<i64>,
     pub buyer_invoice: Option<String>,
+    /// Book side (`buy` / `sell`) for this trade, carried across DMs that omit `Payload::Order`.
+    pub order_kind: Option<mostro_core::order::Kind>,
     pub read: bool, // Whether the message has been read
     /// Whether we've already shown the automatic popup for this message
     pub auto_popup_shown: bool,
@@ -253,8 +255,15 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
     }
 }
 
-/// Best-effort order kind label from a message payload.
+/// Book order kind for sidebar: prefer persisted [`OrderMessage::order_kind`], then payload,
+/// then take-action hints when the listing side is implied (`take-sell` → sell listing, etc.).
 pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
+    if let Some(k) = msg.order_kind {
+        return match k {
+            mostro_core::order::Kind::Buy => "BUY",
+            mostro_core::order::Kind::Sell => "SELL",
+        };
+    }
     let inner = msg.message.get_inner_message_kind();
     if let Some(Payload::Order(order)) = &inner.payload {
         return match order.kind {
@@ -263,7 +272,11 @@ pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
             None => "N/A",
         };
     }
-    "N/A"
+    match inner.action {
+        Action::TakeSell => "SELL",
+        Action::TakeBuy => "BUY",
+        _ => "N/A",
+    }
 }
 
 /// Buy-flow step index in range [1..=5] derived from the current action.

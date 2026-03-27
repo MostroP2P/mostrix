@@ -58,7 +58,7 @@ pub fn ui_draw(
                     return;
                 }
             };
-            tabs::tab_content::render_messages_tab(
+            tabs::message_flow_tab::render_messages_tab(
                 f,
                 content_area,
                 &messages,

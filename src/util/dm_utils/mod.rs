@@ -13,6 +13,7 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -418,6 +419,7 @@ async fn handle_trade_dm_for_order(
                     m.sat_amount,
                     m.buyer_invoice.clone(),
                     m.auto_popup_shown,
+                    m.order_kind,
                 )
             })
     };
@@ -430,7 +432,7 @@ async fn handle_trade_dm_for_order(
     // strictly newer timestamp (dedup stale/duplicate events).
     let is_new_message = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _)) => {
+        Some((existing_timestamp, existing_action, _, _, _, _)) => {
             if action != *existing_action {
                 true
             } else {
@@ -441,14 +443,42 @@ async fn handle_trade_dm_for_order(
 
     let prior_sat_amount = existing_message_data
         .as_ref()
-        .and_then(|(_, _, amt, _, _)| *amt);
+        .and_then(|(_, _, amt, _, _, _)| *amt);
     let prior_invoice = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, inv, _)| inv.clone());
+        .and_then(|(_, _, _, inv, _, _)| inv.clone());
     let prior_auto_popup_shown = existing_message_data
         .as_ref()
-        .map(|(_, existing_action, _, _, shown)| *shown && *existing_action == action)
+        .map(|(_, existing_action, _, _, shown, _)| *shown && *existing_action == action)
         .unwrap_or(false);
+    let prior_order_kind = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, _, _, _, k)| *k);
+
+    let kind_from_payload = inner_kind
+        .payload
+        .as_ref()
+        .and_then(|p| match p {
+            Payload::Order(o) => o.kind,
+            _ => None,
+        });
+    let kind_from_take_action = match &action {
+        Action::TakeSell => Some(mostro_core::order::Kind::Sell),
+        Action::TakeBuy => Some(mostro_core::order::Kind::Buy),
+        _ => None,
+    };
+
+    let mut effective_order_kind = kind_from_payload
+        .or(prior_order_kind)
+        .or(kind_from_take_action);
+    if effective_order_kind.is_none() {
+        if let Ok(row) = Order::get_by_id(pool, &order_id.to_string()).await {
+            effective_order_kind = row
+                .kind
+                .as_ref()
+                .and_then(|s| mostro_core::order::Kind::from_str(s).ok());
+        }
+    }
 
     let effective_sat_amount = sat_amount.or(prior_sat_amount);
     let effective_invoice = invoice.clone().or(prior_invoice);
@@ -476,6 +506,7 @@ async fn handle_trade_dm_for_order(
         read: false,
         sat_amount: effective_sat_amount,
         buyer_invoice: effective_invoice,
+        order_kind: effective_order_kind,
         // Preserve popup-shown state for same-action updates (e.g. duplicate AddInvoice
         // carrying peer reputation payload but no amount), preventing noisy re-popups.
         auto_popup_shown: prior_auto_popup_shown,
