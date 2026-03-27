@@ -8,7 +8,10 @@ use tokio::sync::mpsc::UnboundedSender;
 pub fn handle_enter_creating_order(app: &mut AppState, form: &FormState) {
     // Show confirmation popup when Enter is pressed
     if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder(form.clone()));
+        app.mode = UiMode::UserMode(UserMode::ConfirmingOrder {
+            form: form.clone(),
+            selected_button: true, // default to YES
+        });
     } else {
         app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     }
@@ -30,6 +33,7 @@ pub fn handle_enter_taking_order(
             ctx.client,
             ctx.mostro_pubkey,
             ctx.order_result_tx,
+            ctx.dm_subscription_tx,
         );
     } else {
         // NO selected - cancel and return to the appropriate normal mode
@@ -52,6 +56,7 @@ pub(crate) fn execute_take_order_action(
     client: &Client,
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
+    dm_subscription_tx: &UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
 ) -> bool {
     // Validate range order if needed
     if take_state.is_range_order {
@@ -101,6 +106,7 @@ pub(crate) fn execute_take_order_action(
         amount,
         invoice,
         order_result_tx.clone(),
+        dm_subscription_tx.clone(),
     );
 
     true

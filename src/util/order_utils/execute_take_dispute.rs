@@ -81,7 +81,7 @@ pub async fn execute_take_dispute(
     );
 
     // Wait for incoming DM response
-    let recv_event = wait_for_dm(client, &admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(&admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
 
     // Parse the incoming DM
     let messages = parse_dm_events(recv_event, &admin_keys, None).await;

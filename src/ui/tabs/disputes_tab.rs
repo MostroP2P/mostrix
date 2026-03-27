@@ -18,7 +18,26 @@ pub fn render_disputes_tab(
     disputes: &Arc<Mutex<Vec<Dispute>>>,
     selected_dispute_idx: usize,
 ) {
-    let disputes_lock = disputes.lock().unwrap();
+    let disputes_lock = match disputes.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
+            ));
+            let paragraph = Paragraph::new(Span::styled(
+                "❌ Internal error. Please restart Mostrix.",
+                Style::default().fg(Color::Red),
+            ))
+            .block(
+                Block::default()
+                    .title("Disputes Pending")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
+            );
+            f.render_widget(paragraph, area);
+            return;
+        }
+    };
 
     // Filter to only show disputes with "initiated" status
     let initiated_disputes: Vec<&Dispute> = disputes_lock

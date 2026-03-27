@@ -27,6 +27,14 @@ pub fn ui_draw(
     // Render tabs
     tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
 
+    // Fatal restart prompt: render only the popup overlay (no additional locks).
+    if app.fatal_exit_on_close {
+        if let UiMode::OperationResult(result) = &app.mode {
+            operation_result::render_operation_result(f, result);
+        }
+        return;
+    }
+
     // Render content based on active tab and role
     let content_area = chunks[1];
     match (&app.active_tab, app.user_role) {
@@ -41,7 +49,15 @@ pub fn ui_draw(
             tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
-            let messages = app.messages.lock().unwrap();
+            let messages = match app.messages.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                    ));
+                    return;
+                }
+            };
             tabs::tab_content::render_messages_tab(
                 f,
                 content_area,
@@ -102,13 +118,25 @@ pub fn ui_draw(
 
     // Bottom status bar
     if let Some(lines) = status_line {
-        let pending_count = *app.pending_notifications.lock().unwrap();
+        let pending_count = match app.pending_notifications.lock() {
+            Ok(g) => *g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+                ));
+                0
+            }
+        };
         status::render_status_bar(f, chunks[2], lines, pending_count);
     }
 
     // Confirmation popup overlay (user mode only)
-    if let UiMode::UserMode(UserMode::ConfirmingOrder(form)) = &app.mode {
-        order_confirm::render_order_confirm(f, form);
+    if let UiMode::UserMode(UserMode::ConfirmingOrder {
+        form,
+        selected_button,
+    }) = &app.mode
+    {
+        order_confirm::render_order_confirm(f, form, *selected_button);
     }
 
     // Waiting for Mostro popup overlay (user mode only)

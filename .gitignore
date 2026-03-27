@@ -5,5 +5,7 @@
 .cursorrules
 .cursor/
 .vscode/
+# Opensats reports
+reports/
 
 

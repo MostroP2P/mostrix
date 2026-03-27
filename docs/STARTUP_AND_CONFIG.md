@@ -150,6 +150,14 @@ Several background tasks are spawned to keep the UI and data in sync:
 
 **Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers.rs` (`apply_admin_chat_updates`)
 
+4. **DM Router Wiring (trade messages)**:
+   - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
+   - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
+   - `listen_for_order_messages(..., dm_subscription_rx)` runs as the single router loop consuming:
+     - `TrackOrder` commands for long-lived trade subscriptions.
+     - `RegisterWaiter` commands for one-shot request/response waits.
+   - This unifies in-flight response handling and background trade notifications on top of one notification stream.
+
 ### Admin Chat Restore at Startup
 
 In addition to the background scheduler, Mostrix restores admin chat state during startup:

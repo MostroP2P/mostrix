@@ -12,7 +12,9 @@ use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_
 use crate::util::order_utils::helper::{
     create_order_result_from_form, create_order_result_success, handle_mostro_response,
 };
+use crate::util::OrderDmSubscriptionCmd;
 use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Send a new order to Mostro
 pub async fn send_new_order(
@@ -20,6 +22,7 @@ pub async fn send_new_order(
     client: &Client,
     mostro_pubkey: PublicKey,
     form: FormState,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
 ) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Parse form data
     let kind_str = if form.kind.trim().is_empty() {
@@ -139,8 +142,7 @@ pub async fn send_new_order(
     );
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
-    let recv_event =
-        wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, new_order_message).await?;
+    let recv_event = wait_for_dm(&trade_keys, FETCH_EVENTS_TIMEOUT, new_order_message).await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &trade_keys, None).await;
@@ -167,10 +169,19 @@ pub async fn send_new_order(
                                     request_id,
                                     next_idx,
                                     pool,
+                                    true,
                                 )
                                 .await
                                 {
                                     log::error!("Failed to save order to database: {}", e);
+                                }
+                                if let Some(tx) = dm_subscription_tx {
+                                    if let Some(order_id) = order.id {
+                                        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
+                                            order_id,
+                                            trade_index: next_idx,
+                                        });
+                                    }
                                 }
 
                                 Ok(create_order_result_success(order, next_idx))
@@ -207,9 +218,18 @@ pub async fn send_new_order(
                 if let Some(Payload::Order(order)) = &inner_message.payload {
                     // Save order to database
                     if let Err(e) =
-                        save_order(order.clone(), &trade_keys, request_id, next_idx, pool).await
+                        save_order(order.clone(), &trade_keys, request_id, next_idx, pool, true)
+                            .await
                     {
                         log::error!("Failed to save order to database: {}", e);
+                    }
+                    if let Some(tx) = dm_subscription_tx {
+                        if let Some(order_id) = order.id {
+                            let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
+                                order_id,
+                                trade_index: next_idx,
+                            });
+                        }
                     }
 
                     Ok(create_order_result_success(order, next_idx))

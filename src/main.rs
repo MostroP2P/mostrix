@@ -15,10 +15,10 @@ use crate::ui::key_handler::{
 };
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    fetch_mostro_instance_info, handle_message_notification, handle_order_result,
+    fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    spawn_save_attachment,
+    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -162,6 +162,35 @@ async fn main() -> Result<(), anyhow::Error> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
+    let AppChannels {
+        order_result_tx,
+        mut order_result_rx,
+        key_rotation_tx,
+        mut key_rotation_rx,
+        seed_words_tx,
+        mut seed_words_rx,
+        message_notification_tx,
+        mut message_notification_rx,
+        admin_chat_updates_tx,
+        mut admin_chat_updates_rx,
+        save_attachment_tx,
+        mut save_attachment_rx,
+        mostro_info_tx,
+        mut mostro_info_rx,
+        mut dm_subscription_tx,
+        dm_subscription_rx,
+        fatal_error_tx,
+        mut fatal_error_rx,
+    } = create_app_channels();
+
+    // Set fatal error tx for the app channels
+    set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
+
+    // Set dm subscription tx for the app channels
+    set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
+        anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
+    })?;
+
     // Configure Nostr client.
     let my_keys = settings
         .nsec_privkey
@@ -184,7 +213,7 @@ async fn main() -> Result<(), anyhow::Error> {
         disputes,
         mut order_task,
         mut dispute_task,
-    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey));
+    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -268,23 +297,6 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     }
 
-    let AppChannels {
-        order_result_tx,
-        mut order_result_rx,
-        key_rotation_tx,
-        mut key_rotation_rx,
-        seed_words_tx,
-        mut seed_words_rx,
-        message_notification_tx,
-        mut message_notification_rx,
-        admin_chat_updates_tx,
-        mut admin_chat_updates_rx,
-        save_attachment_tx,
-        mut save_attachment_rx,
-        mostro_info_tx,
-        mut mostro_info_rx,
-    } = create_app_channels();
-
     // Admin chat keys (for trade-key send/fetch); only set when admin mode
     let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
         admin_keys
@@ -307,12 +319,23 @@ async fn main() -> Result<(), anyhow::Error> {
             messages_clone,
             message_notification_tx_clone,
             pending_notifications_clone,
+            dm_subscription_rx,
         )
         .await;
     });
 
     loop {
         tokio::select! {
+            fatal = fatal_error_rx.recv() => {
+                if let Some(msg) = fatal {
+                    // Stop background work and prompt the user to restart.
+                    order_task.abort();
+                    dispute_task.abort();
+                    message_listener_handle.abort();
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                }
+            }
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
                     // Check if this is a dispute-related result before handling
@@ -320,7 +343,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
-                    handle_order_result(result, &mut app);
+                    handle_operation_result(result, &mut app);
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {
@@ -481,6 +504,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &validate_range_amount,
                         admin_chat_keys.as_ref(),
                         Some(&save_attachment_tx),
+                        &dm_subscription_tx,
                     ) {
                         Some(true) => {
                             if app.pending_key_reload {
@@ -496,6 +520,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     Arc::clone(&disputes),
                                     &mut order_task,
                                     &mut dispute_task,
+                                    &mut dm_subscription_tx,
                                 )
                                 .await;
                             }
@@ -533,7 +558,20 @@ async fn main() -> Result<(), anyhow::Error> {
 
         // Ensure the selected index is valid when orders list changes.
         {
-            let orders_len = orders.lock().unwrap().len();
+            let orders_len = match orders.lock() {
+                Ok(g) => g.len(),
+                Err(e) => {
+                    let msg = format!(
+                        "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+                    );
+                    order_task.abort();
+                    dispute_task.abort();
+                    message_listener_handle.abort();
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                    0
+                }
+            };
             if orders_len > 0 && app.selected_order_idx >= orders_len {
                 app.selected_order_idx = orders_len - 1;
             }
@@ -544,7 +582,20 @@ async fn main() -> Result<(), anyhow::Error> {
         {
             use mostro_core::prelude::*;
             use std::str::FromStr;
-            let disputes_lock = disputes.lock().unwrap();
+            let disputes_lock = match disputes.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    let msg = format!(
+                        "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
+                    );
+                    order_task.abort();
+                    dispute_task.abort();
+                    message_listener_handle.abort();
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                    continue;
+                }
+            };
             let initiated_count = disputes_lock
                 .iter()
                 .filter(|d| {

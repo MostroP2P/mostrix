@@ -12,6 +12,7 @@ use crate::ui::{
 use crate::ui::key_handler::async_tasks::{
     spawn_key_rotation_task, spawn_load_seed_words_task,
     spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
+    spawn_send_new_order_task,
 };
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
@@ -27,7 +28,8 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    clear_currency_filters, save_currency_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings,
 };
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
@@ -79,9 +81,19 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             handle_enter_creating_order(app, form);
             true
         }
-        UiMode::UserMode(UserMode::ConfirmingOrder(_)) => {
-            // Enter acts as Yes in confirmation - handled by 'y' key
-            app.mode = default_mode;
+        UiMode::UserMode(UserMode::ConfirmingOrder {
+            form,
+            selected_button,
+        }) => {
+            if selected_button {
+                // YES selected - send the order (similar to handle_confirm_key)
+                let form_clone = form.clone();
+                app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
+                spawn_send_new_order_task(ctx, form_clone);
+            } else {
+                // NO selected - go back to form
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
+            }
             true
         }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
@@ -110,6 +122,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::OperationResult(_) => {
+            if app.fatal_exit_on_close {
+                return false;
+            }
             // Close result popup. If on Disputes in Progress, stay there and return to ManagingDispute.
             if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
                 app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -394,10 +409,16 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 };
-                if let Ok(mut active_pubkey) = ctx.current_mostro_pubkey.lock() {
-                    *active_pubkey = new_pubkey;
-                } else {
-                    log::warn!("Failed to update runtime Mostro pubkey after Enter confirmation");
+                match ctx.current_mostro_pubkey.lock() {
+                    Ok(mut active_pubkey) => {
+                        *active_pubkey = new_pubkey;
+                    }
+                    Err(e) => {
+                        crate::util::request_fatal_restart(format!(
+                            "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                        ));
+                        return false;
+                    }
                 }
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
@@ -463,6 +484,7 @@ fn handle_enter_settings_mode(
             if selected_button {
                 // Persist to settings and update in-memory cache.
                 save_currency_to_settings(&currency_string);
+                app.pending_key_reload = true;
                 let upper = currency_string.trim().to_uppercase();
                 if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
                     app.currencies_filter.push(upper);
@@ -473,7 +495,7 @@ fn handle_enter_settings_mode(
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
                 // YES selected - clear currency filters (both on disk and in cache)
-                use crate::ui::key_handler::settings::clear_currency_filters;
+                app.pending_key_reload = true;
                 clear_currency_filters();
                 app.currencies_filter.clear();
             }
@@ -513,7 +535,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         ));
     } else if let Tab::User(UserTab::Orders) = app.active_tab {
         // Show take order popup when Enter is pressed in Orders tab (user mode only)
-        let orders_lock = ctx.orders.lock().unwrap();
+        let orders_lock = match ctx.orders.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
             let take_state = TakeOrderState {
@@ -527,7 +557,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         }
     } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
         // Show take dispute confirmation popup when Enter is pressed in Disputes tab (admin mode only)
-        let disputes_lock = ctx.disputes.lock().unwrap();
+        let disputes_lock = match ctx.disputes.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         // Filter to only get "initiated" disputes
         let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
             .iter()
@@ -546,7 +584,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
-        let messages_lock = app.messages.lock().unwrap();
+        let messages_lock = match app.messages.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
@@ -559,11 +605,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     focused: matches!(action, Action::AddInvoice),
                     just_pasted: false,
                     copied_to_clipboard: false,
+                    scroll_y: 0,
                 };
 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
-            } else {
-                // Show simple message view popup for other message types
+            } else if matches!(
+                action,
+                Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+            ) {
+                // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
                 let view_state = MessageViewState {
                     message_content: notification.message_preview,
@@ -572,6 +622,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            } else {
+                // Non-actionable messages: show info popup (no "send" semantics).
+                let notification = order_message_to_notification(msg);
+                app.mode =
+                    UiMode::OperationResult(OperationResult::Info(notification.message_preview));
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {

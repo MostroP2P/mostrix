@@ -46,6 +46,64 @@ pub enum MostroInfoFetchResult {
     Err(String),
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub enum FormField {
+    #[default]
+    OrderType,
+    Currency,
+    AmountSats,
+    FiatAmount,
+    FiatAmountMax,
+    PaymentMethod,
+    Premium,
+    Invoice,
+    ExpirationDays,
+}
+
+impl FormField {
+    pub fn next(self, use_range: bool) -> Self {
+        use FormField::*;
+        match self {
+            OrderType => Currency,
+            Currency => AmountSats,
+            AmountSats => FiatAmount,
+            FiatAmount => {
+                if use_range {
+                    FiatAmountMax
+                } else {
+                    PaymentMethod
+                }
+            }
+            FiatAmountMax => PaymentMethod,
+            PaymentMethod => Premium,
+            Premium => Invoice,
+            Invoice => ExpirationDays,
+            ExpirationDays => OrderType,
+        }
+    }
+
+    pub fn prev(self, use_range: bool) -> Self {
+        use FormField::*;
+        match self {
+            OrderType => ExpirationDays,
+            Currency => OrderType,
+            AmountSats => Currency,
+            FiatAmount => AmountSats,
+            FiatAmountMax => FiatAmount,
+            PaymentMethod => {
+                if use_range {
+                    FiatAmountMax
+                } else {
+                    FiatAmount
+                }
+            }
+            Premium => PaymentMethod,
+            Invoice => Premium,
+            ExpirationDays => Invoice,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
     pub kind: String,            // buy | sell
@@ -57,8 +115,23 @@ pub struct FormState {
     pub premium: String,         // premium percentage
     pub invoice: String,         // optional invoice
     pub expiration_days: String, // expiration days (0 for no expiration)
-    pub focused: usize,          // field index
+    pub focused: FormField,      // which field is focused
     pub use_range: bool,         // whether to use fiat range
+}
+
+impl FormState {
+    /// Create a default order form used when entering the Create New Order tab.
+    pub fn new_default_form() -> Self {
+        Self {
+            kind: "buy".to_string(),
+            fiat_code: "USD".to_string(),
+            amount: "0".to_string(),
+            premium: "0".to_string(),
+            expiration_days: "1".to_string(),
+            focused: FormField::Currency,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +176,8 @@ pub struct InvoiceInputState {
     pub focused: bool,
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
+    /// Vertical scroll offset for long invoice display (PayInvoice popup).
+    pub scroll_y: u16,
 }
 
 /// State for handling key input (pubkey or privkey) in admin settings
@@ -131,6 +206,8 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
+        Action::TakeSell => "Take Sell",
+        Action::TakeBuy => "Take Buy",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
@@ -138,10 +215,13 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::HoldInvoicePaymentAccepted => {
             "Hold Invoice Payment Accepted - Press Yes to confirm fiat payment"
         }
+        Action::Cancel => "Cancel",
+        Action::Canceled => "Order canceled",
+        Action::AdminCanceled => "Order canceled by admin",
+        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rate Counterparty received",
         Action::Release | Action::Released => "Release",
-        Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         _ => "Message",
     };
 

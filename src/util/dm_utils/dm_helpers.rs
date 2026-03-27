@@ -6,8 +6,27 @@ use mostro_core::prelude::*;
 use nip44::v2::encrypt_to_bytes;
 use nip44::v2::ConversationKey;
 use nostr_sdk::prelude::*;
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 use crate::util::types::create_expiration_tags;
+
+/// Subscription behavior for GiftWrap filters.
+pub(crate) enum GiftWrapSubscriptionMode {
+    /// Startup catch-up: request the latest retained event for this pubkey.
+    StartupCatchUp,
+    /// Live-only stream: no backlog replay, only events after subscription.
+    LiveOnly,
+}
+
+/// Metadata/config used when binding a subscription id to an order.
+pub(crate) struct GiftWrapOrderSubscription {
+    pub(crate) order_id: Uuid,
+    pub(crate) trade_index: i64,
+    pub(crate) error_label: &'static str,
+    pub(crate) info_label: Option<&'static str>,
+    pub(crate) mode: GiftWrapSubscriptionMode,
+}
 
 /// Create a private direct message event
 pub(crate) async fn create_private_dm_event(
@@ -65,4 +84,68 @@ pub(crate) async fn create_gift_wrap_event(
     };
 
     Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
+}
+
+/// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
+/// Returns `true` when subscription is active (already subscribed or newly subscribed).
+pub(crate) async fn ensure_order_giftwrap_subscription(
+    client: &Client,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
+    pubkey: PublicKey,
+    options: GiftWrapOrderSubscription,
+) -> bool {
+    if !subscribed_pubkeys.insert(pubkey) {
+        // Already subscribed: keep the tracked mapping fresh (e.g. post-take-order TrackOrder
+        // rebinding from optimistic order_id -> effective_order_id).
+        if let Some(sub_id) = pubkey_to_subscription.get(&pubkey).cloned() {
+            subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
+            return true;
+        }
+        log::warn!(
+            "[dm_listener] pubkey {} marked subscribed but missing subscription id; resubscribing to restore mapping",
+            pubkey
+        );
+    }
+    // get the limit for the subscription
+    let limit = match options.mode {
+        GiftWrapSubscriptionMode::StartupCatchUp => 1,
+        GiftWrapSubscriptionMode::LiveOnly => 0,
+    };
+
+    let filter = Filter::new()
+        .pubkey(pubkey)
+        .kind(nostr_sdk::Kind::GiftWrap)
+        .limit(limit);
+
+    match client.subscribe(filter, None).await {
+        Ok(output) => {
+            let sub_id = output.val;
+            if let Some(label) = options.info_label {
+                log::info!(
+                    "{} subscription_id={}, order_id={}, trade_index={}",
+                    label,
+                    sub_id,
+                    options.order_id,
+                    options.trade_index
+                );
+            }
+            pubkey_to_subscription.insert(pubkey, sub_id.clone());
+            subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
+            true
+        }
+        Err(e) => {
+            log::warn!(
+                "{} {} (index {}): {}",
+                options.error_label,
+                pubkey,
+                options.trade_index,
+                e
+            );
+            subscribed_pubkeys.remove(&pubkey);
+            pubkey_to_subscription.remove(&pubkey);
+            false
+        }
+    }
 }

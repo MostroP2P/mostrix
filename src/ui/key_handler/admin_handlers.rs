@@ -25,7 +25,10 @@ pub(crate) fn execute_take_dispute_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        crate::util::request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
         return;
     };
     // Spawn async task to take dispute
@@ -74,7 +77,10 @@ pub(crate) fn execute_add_solver_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        crate::util::request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
         return;
     };
 
@@ -110,7 +116,10 @@ pub(crate) fn execute_finalize_dispute_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        log::warn!("Failed to get runtime Mostro pubkey after confirmation");
+        crate::util::request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
         return;
     };
     // Spawn async task to finalize dispute

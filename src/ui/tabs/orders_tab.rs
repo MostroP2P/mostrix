@@ -16,7 +16,26 @@ pub fn render_orders_tab(
     selected_order_idx: usize,
     app: &AppState,
 ) {
-    let orders_lock = orders.lock().unwrap();
+    let orders_lock = match orders.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+            ));
+            let paragraph = Paragraph::new(Span::styled(
+                "❌ Internal error. Please restart Mostrix.",
+                Style::default().fg(Color::Red),
+            ))
+            .block(
+                Block::default()
+                    .title("Orders")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
+            );
+            f.render_widget(paragraph, area);
+            return;
+        }
+    };
 
     if orders_lock.is_empty() {
         let paragraph = Paragraph::new(Span::styled(
@@ -114,9 +133,16 @@ pub fn render_orders_tab(
 
                 let payment_method_cell = Cell::from(order.payment_method.clone());
 
-                let date = DateTime::from_timestamp(order.created_at.unwrap_or(0), 0);
+                // Missing created_at must not fall back to epoch (unwrap_or(0)); propagate None.
                 let date_cell = Cell::from(
-                    date.map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    order
+                        .created_at
+                        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+                        .map(|d| {
+                            d.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string()
+                        })
                         .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 

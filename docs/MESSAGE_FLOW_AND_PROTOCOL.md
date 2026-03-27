@@ -24,7 +24,7 @@ sequenceDiagram
     participant NostrRelays
     participant Mostro
 
-    User->>TUI: Fill form & confirm (y)
+    User->>TUI: Fill form & confirm (Enter)
     TUI->>Client: send_new_order()
     Client->>DB: Get user & last_trade_index
     DB-->>Client: user data
@@ -33,7 +33,7 @@ sequenceDiagram
     Client->>Client: Construct message (request_id, trade_index)
     Client->>IdentityKey: Sign Seal
     Client->>TradeKey: Sign Rumor
-    Client->>NostrRelays: Subscribe to TradeKey events
+    Client->>Client: Register DM waiter in router
     Client->>NostrRelays: Publish NIP-59 Gift Wrap
     NostrRelays->>Mostro: Forward Gift Wrap
     Mostro->>Mostro: Process NewOrder
@@ -55,7 +55,7 @@ sequenceDiagram
             app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
 ```
 
-The user fills out the order form and confirms with the `y` key. The UI switches to `WaitingForMostro` mode.
+The user fills out the order form and confirms with **Enter** on the \"Create New Order\" form. The UI switches to `WaitingForMostro` mode.
 
 ### 2. Trade Key Derivation
 **Source**: `src/util/order_utils/send_new_order.rs:84`
@@ -117,10 +117,11 @@ The message is sent via `send_dm`, which:
         wait_for_dm(client, &trade_keys, FETCH_EVENTS_TIMEOUT, new_order_message).await?;
 ```
 
-The `wait_for_dm` function:
-1. **Subscribes first** to the trade key's Gift Wrap events (to avoid missing the response)
-2. **Sends the message** after subscription is active
-3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) for a response
+The `wait_for_dm` function now uses the shared DM router:
+1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
+2. **Sends the message** after waiter registration
+3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
+4. The background DM listener decrypt-checks incoming GiftWrap events against pending waiters and delivers the first match to `wait_for_dm`
 
 ### 6. Parsing and Handling Response
 **Source**: `src/util/order_utils/send_new_order.rs:145`
@@ -243,32 +244,26 @@ Similar to order creation, the client waits for Mostro's response, which may inc
 
 ## Background Message Listening
 
-Mostrix runs a background task that continuously monitors for new messages related to active trades.
+Mostrix runs a background task that continuously monitors relay notifications and routes trade DMs in real time.
 
 ```mermaid
 sequenceDiagram
-    participant BackgroundTask
-    participant DB
-    participant TradeKey
-    participant NostrRelays
+    participant Router as DM Listener
+    participant Cmd as Command Channel
+    participant Relays as NostrRelays
     participant UI
 
-    loop Every 5 seconds
-        BackgroundTask->>DB: Get active orders
-        DB-->>BackgroundTask: order_id, trade_index list
-        loop For each order
-            BackgroundTask->>TradeKey: Re-derive key (trade_index)
-            BackgroundTask->>NostrRelays: Query Gift Wrap events
-            NostrRelays-->>BackgroundTask: Events
-            alt NIP-59 Gift Wrap
-                BackgroundTask->>TradeKey: Decrypt Gift Wrap
-            else NIP-44 DM
-                BackgroundTask->>TradeKey: Decrypt DM
-            end
-            BackgroundTask->>BackgroundTask: Parse JSON message
-            BackgroundTask->>UI: Send notification
-        end
+    Cmd->>Router: TrackOrder(order_id, trade_index)
+    Router->>Relays: subscribe GiftWrap(pubkey(trade_index))
+    Cmd->>Router: RegisterWaiter(trade_keys, response_tx)
+    Router->>Relays: (if needed) subscribe GiftWrap(waiter pubkey)
+    Relays-->>Router: RelayPoolNotification::Event(GiftWrap)
+    Router->>Router: Try waiter decrypt match
+    alt waiter matched
+        Router-->>Cmd: oneshot response_tx.send(event)
     end
+    Router->>Router: Route by subscription_id or active-order fallback
+    Router->>UI: message_notification_tx.send(...)
 ```
 
 ### Message Listener Task
@@ -285,12 +280,11 @@ pub async fn listen_for_order_messages(
 ```
 
 This task:
-1. **Runs every 5 seconds** (`refresh_interval`)
-2. **Iterates through active orders** (stored in `active_order_trade_indices`)
-3. **Re-derives trade keys** for each active order
-4. **Fetches recent Gift Wrap events** directed to those trade public keys
-5. **Parses and decrypts messages** using `parse_dm_events`
-6. **Sends notifications** to the UI via the `message_notification_tx` channel
+1. Maintains a command-driven subscription router (`TrackOrder` + `RegisterWaiter`)
+2. Consumes `client.notifications()` and handles GiftWrap events as they arrive
+3. Routes events by known `subscription_id` to `(order_id, trade_index)`
+4. Falls back to decrypting against active tracked trade keys when `subscription_id` is unknown
+5. Parses/decrypts with `parse_dm_events`, updates order state, and emits UI notifications
 
 ### Message Parsing
 **Source**: `src/util/dm_utils/mod.rs:137`
@@ -425,7 +419,7 @@ Key points:
 ## Error Handling Patterns
 
 ### Timeout Handling
-If Mostro doesn't respond within `FETCH_EVENTS_TIMEOUT` (15 seconds), the operation fails with a timeout error.
+If no waiter-matching GiftWrap arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds), `wait_for_dm` fails with a timeout error.
 
 ### Request ID Mismatch
 **Source**: `src/util/order_utils/send_new_order.rs:199`
@@ -501,6 +495,7 @@ sequenceDiagram
 ```
 
 This approach means:
-- No local message database is required
+- No local trade-message database is required
 - The client can recover from crashes or restarts
-- The state is always synchronized with what Mostro knows
+- Message delivery for in-flight requests is race-resistant through router waiters
+- The runtime state is synchronized from active order/trade-key tracking + relay notifications

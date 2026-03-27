@@ -6,7 +6,7 @@ use crate::ui::{
 use mostro_core::prelude::Action;
 
 /// Handle order result from the order result channel
-pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
+pub fn handle_operation_result(result: OperationResult, app: &mut AppState) {
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
         order,
@@ -17,8 +17,21 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
     {
         // Track trade_index
         if let Some(order_id) = order.id {
-            let mut indices = app.active_order_trade_indices.lock().unwrap();
-            indices.insert(order_id, *trade_index);
+            match app.active_order_trade_indices.lock() {
+                Ok(mut indices) => {
+                    indices.insert(order_id, *trade_index);
+                }
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                    ));
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "Internal error. Please restart Mostrix.".to_string(),
+                    ));
+                    return;
+                }
+            }
             log::info!(
                 "Tracking order {} with trade_index {}",
                 order_id,
@@ -42,6 +55,7 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
             focused: false,
             just_pasted: false,
             copied_to_clipboard: false,
+            scroll_y: 0,
         };
         // Reuse pay invoice popup for buy orders when taking an order
         app.mode = UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);
@@ -56,8 +70,21 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
     }) = &result
     {
         if let (Some(order_id), Some(trade_index)) = (order_id, trade_index) {
-            let mut indices = app.active_order_trade_indices.lock().unwrap();
-            indices.insert(*order_id, *trade_index);
+            match app.active_order_trade_indices.lock() {
+                Ok(mut indices) => {
+                    indices.insert(*order_id, *trade_index);
+                }
+                Err(e) => {
+                    crate::util::request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                    ));
+                    app.fatal_exit_on_close = true;
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "Internal error. Please restart Mostrix.".to_string(),
+                    ));
+                    return;
+                }
+            }
             log::info!(
                 "Tracking order {} with trade_index {}",
                 order_id,
@@ -84,16 +111,21 @@ pub fn handle_order_result(result: OperationResult, app: &mut AppState) {
     }
 
     // Set appropriate result mode based on current state
-    match app.mode {
+    match &app.mode {
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
             app.mode = UiMode::OperationResult(result);
         }
         UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             app.mode = UiMode::OperationResult(result);
         }
-        UiMode::NewMessageNotification(_, _, _) => {
-            // If we have a notification, replace it with the result
-            app.mode = UiMode::OperationResult(result);
+        UiMode::NewMessageNotification(_, action, _) => {
+            // Do not replace AddInvoice/PayInvoice popups: the take-order task can finish after
+            // the DM listener already showed the invoice UI — overwriting would drop the popup.
+            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+                app.pending_post_take_operation_result = Some(result);
+            } else {
+                app.mode = UiMode::OperationResult(result);
+            }
         }
         _ => {
             app.mode = UiMode::OperationResult(result);

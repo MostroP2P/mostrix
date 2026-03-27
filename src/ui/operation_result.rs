@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -120,8 +120,20 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
                 Style::default().fg(Color::DarkGray),
             )]));
 
+            let content_height: u16 = lines.len().try_into().unwrap_or(inner.height);
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(paragraph, inner);
+            let vertical_chunks = Layout::new(
+                Direction::Vertical,
+                [
+                    Constraint::Min(0),
+                    Constraint::Length(content_height.min(inner.height)),
+                    Constraint::Min(0),
+                ],
+            )
+            .split(inner);
+            let content_area = vertical_chunks[1];
+
+            f.render_widget(paragraph, content_area);
         }
         OperationResult::Error(error_msg) => {
             let block = Block::default()
@@ -186,7 +198,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::ObserverChatLoaded(_) | OperationResult::ObserverChatError(_) => {
-            // Handled directly in handle_order_result, should not reach render
+            // Handled directly in handle_operation_result, should not reach render
         }
         OperationResult::PaymentRequestRequired { .. } => {
             // This should not be displayed - it's converted to a notification in main.rs

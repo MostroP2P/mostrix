@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval_at, Duration, Instant};
 
 use crate::models::AdminDispute;
+use crate::settings::Settings;
 use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
 use crate::util::chat_utils::fetch_admin_chat_updates;
 
@@ -28,12 +29,87 @@ pub struct FetchSchedulerResult {
 
 // Semaphore to prevent multiple chat messages from being processed at the same time
 pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
+const RECONCILIATION_INTERVAL_SECS: u64 = 30;
+
+fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrder) {
+    let Some(order_id) = order.id else {
+        return;
+    };
+    let mut orders_lock = match orders.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error while processing live order updates (poisoned orders lock: {e}). Please restart the app."
+            ));
+            return;
+        }
+    };
+    if order.status != Some(Status::Pending) {
+        log::debug!(
+            "[orders_live] removing non-pending order_id={} status={:?}",
+            order_id,
+            order.status
+        );
+        orders_lock.retain(|existing| existing.id != Some(order_id));
+        return;
+    }
+
+    if let Some(existing) = orders_lock
+        .iter_mut()
+        .find(|existing| existing.id == Some(order_id))
+    {
+        let existing_ts = existing.created_at.unwrap_or(0);
+        let new_ts = order.created_at.unwrap_or(0);
+        if new_ts >= existing_ts {
+            *existing = order;
+        }
+    } else {
+        orders_lock.push(order);
+    }
+    orders_lock.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    log::debug!(
+        "[orders_live] upserted pending order_id={}, total_pending={}",
+        order_id,
+        orders_lock.len()
+    );
+}
+
+fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispute) {
+    let dispute_id = dispute.id;
+    let dispute_status = dispute.status.clone();
+    let mut disputes_lock = match disputes.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error while processing live dispute updates (poisoned disputes lock: {e}). Please restart the app."
+            ));
+            return;
+        }
+    };
+    if let Some(existing) = disputes_lock
+        .iter_mut()
+        .find(|existing| existing.id == dispute.id)
+    {
+        if dispute.created_at >= existing.created_at {
+            *existing = dispute;
+        }
+    } else {
+        disputes_lock.push(dispute);
+    }
+    disputes_lock.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    log::debug!(
+        "[disputes_live] upserted dispute_id={} status={} total_disputes={}",
+        dispute_id,
+        dispute_status,
+        disputes_lock.len()
+    );
+}
 
 /// Start background tasks to periodically fetch orders and disputes
 ///
 /// This function spawns two async tasks:
-/// - Orders fetcher: Fetches pending orders every 10 seconds
-/// - Disputes fetcher: Fetches all disputes every 10 seconds
+/// - Orders updater: Applies live subscription updates + reconciles pending orders every 30s
+/// - Disputes updater: Applies live subscription updates + reconciles disputes every 30s
 ///
 /// Both tasks start immediately and then refresh at the specified interval.
 ///
@@ -48,6 +124,7 @@ pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
 pub fn start_fetch_scheduler(
     client: Client,
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,
+    settings: &Settings,
 ) -> FetchSchedulerResult {
     let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
     let disputes: Arc<Mutex<Vec<Dispute>>> = Arc::new(Mutex::new(Vec::new()));
@@ -57,6 +134,7 @@ pub fn start_fetch_scheduler(
         Arc::clone(&current_mostro_pubkey),
         Arc::clone(&orders),
         Arc::clone(&disputes),
+        settings,
     );
 
     FetchSchedulerResult {
@@ -76,45 +154,115 @@ pub fn spawn_fetch_scheduler_loops(
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,
     orders: Arc<Mutex<Vec<SmallOrder>>>,
     disputes: Arc<Mutex<Vec<Dispute>>>,
+    settings: &Settings,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     // Spawn task to periodically fetch orders
     let orders_clone = Arc::clone(&orders);
     let client_for_orders = client.clone();
     let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey);
+    let reloaded_settings = settings.clone();
     let order_task = tokio::spawn(async move {
-        // Periodically refresh orders list (immediate first fetch, then every 5 seconds)
-        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(5));
+        let mut notifications = client_for_orders.notifications();
+        // Real-time order subscription + periodic reconciliation poll.
+        let mostro_pubkey_for_order_subscribe = match current_mostro_pubkey_for_orders.lock() {
+            Ok(pk) => *pk,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
+        let order_filter = Filter::new()
+            .author(mostro_pubkey_for_order_subscribe)
+            .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+            .limit(0);
+        match client_for_orders.subscribe(order_filter, None).await {
+            Ok(output) => {
+                log::debug!(
+                    "[orders_live] subscribed to order updates subscription_id={}",
+                    output.val
+                );
+            }
+            Err(e) => {
+                log::warn!("Failed to subscribe live order updates: {}", e);
+            }
+        }
+
+        // Reconcile from relay every 30s (immediate first poll, then periodic).
+        let mut refresh_interval = interval_at(
+            Instant::now(),
+            Duration::from_secs(RECONCILIATION_INTERVAL_SECS),
+        );
         loop {
-            refresh_interval.tick().await;
-            // Reload currency filters from settings on each fetch.
-            // An empty list means "no filter" (show all currencies).
-            let currencies = crate::settings::load_settings_from_disk()
-                .ok()
-                .map(|s| s.currencies_filter)
-                .filter(|list| !list.is_empty());
+            tokio::select! {
+                _ = refresh_interval.tick() => {
+                    // Read currency filters from the settings snapshot (`reloaded_settings`) each fetch.
+                    // Note: this does not reload from disk; settings are refreshed when the
+                    // scheduler tasks are respawned (e.g. via apply_pending_key_reload).
+                    // An empty list means "no filter" (show all currencies).
+                    let currencies = reloaded_settings.currencies_filter.clone();
 
-            let mostro_pubkey_for_orders = match current_mostro_pubkey_for_orders.lock() {
-                Ok(pk) => *pk,
-                Err(e) => {
-                    log::warn!(
-                        "Failed to lock current_mostro_pubkey for orders fetch: {}",
-                        e
-                    );
-                    continue;
+                    let mostro_pubkey_for_orders = match current_mostro_pubkey_for_orders.lock() {
+                        Ok(pk) => *pk,
+                        Err(e) => {
+                            crate::util::request_fatal_restart(format!(
+                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                            ));
+                            return;
+                        }
+                    };
+
+                    if let Ok(fetched_orders) = get_orders(
+                        &client_for_orders,
+                        mostro_pubkey_for_orders,
+                        Some(Status::Pending),
+                        Some(currencies),
+                    )
+                    .await
+                    {
+                        let mut orders_lock = match orders_clone.lock() {
+                            Ok(g) => g,
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error while reconciling orders (poisoned orders lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        };
+                        orders_lock.clear();
+                        orders_lock.extend(fetched_orders);
+                        log::debug!(
+                            "[orders_reconcile] refreshed pending orders count={}",
+                            orders_lock.len()
+                        );
+                    }
                 }
-            };
-
-            if let Ok(fetched_orders) = get_orders(
-                &client_for_orders,
-                mostro_pubkey_for_orders,
-                Some(Status::Pending),
-                currencies,
-            )
-            .await
-            {
-                let mut orders_lock = orders_clone.lock().unwrap();
-                orders_lock.clear();
-                orders_lock.extend(fetched_orders);
+                notification = notifications.recv() => {
+                    let Ok(RelayPoolNotification::Event { event, .. }) = notification else {
+                        continue;
+                    };
+                    let event = *event;
+                    if event.kind != nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND) {
+                        continue;
+                    }
+                    let mut one = Events::default();
+                    one.insert(event);
+                    let currencies = reloaded_settings.currencies_filter.clone();
+                    let mut parsed = super::parse_orders_events(
+                        one,
+                        Some(currencies),
+                        None,
+                        None,
+                    );
+                    log::debug!(
+                        "[orders_live] received order event, parsed_candidates={}",
+                        parsed.len()
+                    );
+                    if let Some(order) = parsed.pop() {
+                        apply_live_order_update(&orders_clone, order);
+                    }
+                }
             }
         }
     });
@@ -124,26 +272,88 @@ pub fn spawn_fetch_scheduler_loops(
     let client_for_disputes = client.clone();
     let current_mostro_pubkey_for_disputes = Arc::clone(&current_mostro_pubkey);
     let dispute_task = tokio::spawn(async move {
-        // Periodically refresh disputes list (immediate first fetch, then every 5 seconds)
-        let mut refresh_interval = interval_at(Instant::now(), Duration::from_secs(5));
+        let mut notifications = client_for_disputes.notifications();
+        let mostro_pubkey_for_dispute_subscribe = match current_mostro_pubkey_for_disputes.lock() {
+            Ok(pk) => *pk,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
+        let dispute_filter = Filter::new()
+            .author(mostro_pubkey_for_dispute_subscribe)
+            .kind(nostr_sdk::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND))
+            .limit(0);
+        match client_for_disputes.subscribe(dispute_filter, None).await {
+            Ok(output) => {
+                log::debug!(
+                    "[disputes_live] subscribed to dispute updates subscription_id={}",
+                    output.val
+                );
+            }
+            Err(e) => {
+                log::warn!("Failed to subscribe live dispute updates: {}", e);
+            }
+        }
+
+        // Reconcile from relay every 30s (immediate first poll, then periodic).
+        let mut refresh_interval = interval_at(
+            Instant::now(),
+            Duration::from_secs(RECONCILIATION_INTERVAL_SECS),
+        );
         loop {
-            refresh_interval.tick().await;
-            let mostro_pubkey_for_disputes = match current_mostro_pubkey_for_disputes.lock() {
-                Ok(pk) => *pk,
-                Err(e) => {
-                    log::warn!(
-                        "Failed to lock current_mostro_pubkey for disputes fetch: {}",
-                        e
-                    );
-                    continue;
+            tokio::select! {
+                _ = refresh_interval.tick() => {
+                    let mostro_pubkey_for_disputes = match current_mostro_pubkey_for_disputes.lock() {
+                        Ok(pk) => *pk,
+                        Err(e) => {
+                            crate::util::request_fatal_restart(format!(
+                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                            ));
+                            return;
+                        }
+                    };
+                    if let Ok(fetched_disputes) =
+                        get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
+                    {
+                        let mut disputes_lock = match disputes_clone.lock() {
+                            Ok(g) => g,
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error while reconciling disputes (poisoned disputes lock: {e}). Please restart the app."
+                                ));
+                                return;
+                            }
+                        };
+                        disputes_lock.clear();
+                        disputes_lock.extend(fetched_disputes);
+                        log::debug!(
+                            "[disputes_reconcile] refreshed disputes count={}",
+                            disputes_lock.len()
+                        );
+                    }
                 }
-            };
-            if let Ok(fetched_disputes) =
-                get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
-            {
-                let mut disputes_lock = disputes_clone.lock().unwrap();
-                disputes_lock.clear();
-                disputes_lock.extend(fetched_disputes);
+                notification = notifications.recv() => {
+                    let Ok(RelayPoolNotification::Event { event, .. }) = notification else {
+                        continue;
+                    };
+                    let event = *event;
+                    if event.kind != nostr_sdk::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND) {
+                        continue;
+                    }
+                    let mut one = Events::default();
+                    one.insert(event);
+                    let mut parsed = super::parse_disputes_events(one);
+                    log::debug!(
+                        "[disputes_live] received dispute event, parsed_candidates={}",
+                        parsed.len()
+                    );
+                    if let Some(dispute) = parsed.pop() {
+                        apply_live_dispute_update(&disputes_clone, dispute);
+                    }
+                }
             }
         }
     });

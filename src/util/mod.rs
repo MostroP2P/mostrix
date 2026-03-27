@@ -2,6 +2,7 @@ pub mod blossom;
 pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;
+pub mod fatal;
 pub mod filters;
 pub mod mostro_info;
 pub mod order_utils;
@@ -15,9 +16,11 @@ pub use blossom::{
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;
 pub use dm_utils::{
-    handle_message_notification, handle_order_result, listen_for_order_messages, parse_dm_events,
-    send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    handle_message_notification, handle_operation_result, listen_for_order_messages,
+    parse_dm_events, send_dm, set_dm_router_cmd_tx, wait_for_dm, OrderDmSubscriptionCmd,
+    FETCH_EVENTS_TIMEOUT,
 };
+pub use fatal::{fatal_requested, request_fatal_restart, set_fatal_error_tx};
 pub use filters::{create_filter, create_seven_days_filter};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,

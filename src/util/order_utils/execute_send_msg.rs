@@ -95,13 +95,7 @@ pub async fn execute_send_msg(
     );
 
     // Wait for the DM response from Mostro
-    let recv_event = wait_for_dm(
-        client,
-        &order_trade_keys,
-        FETCH_EVENTS_TIMEOUT,
-        sent_message,
-    )
-    .await?;
+    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
