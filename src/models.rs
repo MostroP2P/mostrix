@@ -292,6 +292,36 @@ impl Order {
         Ok(())
     }
 
+    fn build_order_from_small_order(
+        id: String,
+        small_order: &mostro_core::prelude::SmallOrder,
+        trade_keys_hex: String,
+        existing: Option<&Order>,
+        message_request_id: Option<i64>,
+    ) -> Order {
+        Order {
+            id: Some(id),
+            kind: small_order.kind.as_ref().map(|k| k.to_string()),
+            status: small_order.status.as_ref().map(|s| s.to_string()),
+            amount: small_order.amount,
+            fiat_code: small_order.fiat_code.clone(),
+            min_amount: small_order.min_amount,
+            max_amount: small_order.max_amount,
+            fiat_amount: small_order.fiat_amount,
+            payment_method: small_order.payment_method.clone(),
+            premium: small_order.premium,
+            trade_keys: Some(trade_keys_hex),
+            counterparty_pubkey: existing.and_then(|e| e.counterparty_pubkey.clone()),
+            is_mine: existing.and_then(|e| e.is_mine).or(Some(true)),
+            buyer_invoice: small_order.buyer_invoice.clone(),
+            request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
+            created_at: existing
+                .and_then(|e| e.created_at)
+                .or_else(|| Some(Utc::now().timestamp())),
+            expires_at: small_order.expires_at,
+        }
+    }
+
     /// Insert or update an order from a trade DM (e.g. `AddInvoice` with `waiting-buyer-invoice`).
     ///
     /// Does not update `users.last_trade_index` (unlike [`crate::util::db_utils::save_order`]).
@@ -309,41 +339,15 @@ impl Order {
         let resolved_id = small_order.id.unwrap_or(order_id_fallback);
         small_order.id = Some(resolved_id);
         let id_str = resolved_id.to_string();
-        let so = small_order.clone();
 
         let existing = Self::get_by_id(pool, &id_str).await.ok();
-
-        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
-
-        let created_at = existing
-            .as_ref()
-            .and_then(|e| e.created_at)
-            .or_else(|| Some(Utc::now().timestamp()));
-
-        let request_id =
-            message_request_id.or_else(|| existing.as_ref().and_then(|e| e.request_id));
-
-        let order_row = Order {
-            id: Some(id_str.clone()),
-            kind: so.kind.as_ref().map(|k| k.to_string()),
-            status: so.status.as_ref().map(|s| s.to_string()),
-            amount: so.amount,
-            fiat_code: so.fiat_code,
-            min_amount: so.min_amount,
-            max_amount: so.max_amount,
-            fiat_amount: so.fiat_amount,
-            payment_method: so.payment_method,
-            premium: so.premium,
-            trade_keys: Some(trade_keys_hex),
-            counterparty_pubkey: existing
-                .as_ref()
-                .and_then(|e| e.counterparty_pubkey.clone()),
-            is_mine: existing.as_ref().and_then(|e| e.is_mine).or(Some(true)),
-            buyer_invoice: so.buyer_invoice,
-            request_id,
-            created_at,
-            expires_at: so.expires_at,
-        };
+        let order_row = Self::build_order_from_small_order(
+            id_str.clone(),
+            &small_order,
+            trade_keys.secret_key().to_secret_hex(),
+            existing.as_ref(),
+            message_request_id,
+        );
 
         if existing.is_some() {
             order_row.update_db(pool).await?;
@@ -362,26 +366,13 @@ impl Order {
                 };
                 if is_unique_violation {
                     let ex = Self::get_by_id(pool, &id_str).await?;
-                    let retry_so = small_order.clone();
-                    let updated = Order {
-                        id: Some(id_str),
-                        kind: retry_so.kind.as_ref().map(|k| k.to_string()),
-                        status: retry_so.status.as_ref().map(|s| s.to_string()),
-                        amount: retry_so.amount,
-                        fiat_code: retry_so.fiat_code,
-                        min_amount: retry_so.min_amount,
-                        max_amount: retry_so.max_amount,
-                        fiat_amount: retry_so.fiat_amount,
-                        payment_method: retry_so.payment_method,
-                        premium: retry_so.premium,
-                        trade_keys: Some(trade_keys.secret_key().to_secret_hex()),
-                        counterparty_pubkey: ex.counterparty_pubkey,
-                        is_mine: ex.is_mine.or(Some(true)),
-                        buyer_invoice: retry_so.buyer_invoice,
-                        request_id: message_request_id.or(ex.request_id),
-                        created_at: ex.created_at,
-                        expires_at: retry_so.expires_at,
-                    };
+                    let updated = Self::build_order_from_small_order(
+                        id_str,
+                        &small_order,
+                        trade_keys.secret_key().to_secret_hex(),
+                        Some(&ex),
+                        message_request_id,
+                    );
                     updated.update_db(pool).await?;
                     Ok(updated)
                 } else {
