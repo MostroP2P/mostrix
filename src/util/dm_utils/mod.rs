@@ -28,6 +28,8 @@ use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_PENDING_WAITERS: usize = 32;
 
 #[derive(Debug)]
 pub enum DmRouterCmd {
@@ -616,6 +618,19 @@ struct PendingDmWaiter {
     response_tx: oneshot::Sender<Event>,
 }
 
+fn prune_closed_waiters(pending_waiters: &mut Vec<PendingDmWaiter>) {
+    let before = pending_waiters.len();
+    pending_waiters.retain(|w| !w.response_tx.is_closed());
+    let pruned = before.saturating_sub(pending_waiters.len());
+    if pruned > 0 {
+        log::debug!(
+            "[dm_listener] pruned {} closed waiter(s); pending_waiters={}",
+            pruned,
+            pending_waiters.len()
+        );
+    }
+}
+
 fn log_giftwrap_fallback_decrypt_stats(
     active_orders_scanned: usize,
     decrypt_attempts: u32,
@@ -724,6 +739,9 @@ pub async fn listen_for_order_messages(
     let mut subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
     let mut pubkey_to_subscription: HashMap<PublicKey, SubscriptionId> = HashMap::new();
     let mut pending_waiters: Vec<PendingDmWaiter> = Vec::new();
+    let mut waiter_gc_interval = tokio::time::interval(PENDING_WAITER_GC_INTERVAL);
+    // First tick is immediate; skip it so the first cleanup runs after the interval.
+    waiter_gc_interval.tick().await;
 
     // Bootstrap subscriptions for orders already known at startup.
     let startup_active_orders = {
@@ -769,6 +787,9 @@ pub async fn listen_for_order_messages(
 
     loop {
         tokio::select! {
+            _ = waiter_gc_interval.tick() => {
+                prune_closed_waiters(&mut pending_waiters);
+            }
             new_subscription_cmd = dm_subscription_rx.recv() => {
                 let Some(cmd_subscription) = new_subscription_cmd else {
                     // Sender dropped; keep listener alive for existing subscriptions.
@@ -852,6 +873,16 @@ pub async fn listen_for_order_messages(
                         trade_keys,
                         response_tx,
                     } => {
+                        prune_closed_waiters(&mut pending_waiters);
+                        if pending_waiters.len() >= MAX_PENDING_WAITERS {
+                            log::warn!(
+                                "[dm_listener] rejecting waiter registration: pending_waiters={} (cap={})",
+                                pending_waiters.len(),
+                                MAX_PENDING_WAITERS
+                            );
+                            // Dropping `response_tx` cancels waiter immediately in `wait_for_dm`.
+                            continue;
+                        }
                         let before = pending_waiters.len();
                         let waiter_pubkey = trade_keys.public_key();
                         if subscribed_pubkeys.insert(waiter_pubkey) {
