@@ -296,9 +296,7 @@ pub fn message_timeline_warning(action: &Action) -> Option<&'static str> {
     match action {
         Action::Canceled => Some("Trade canceled"),
         Action::AdminCanceled => Some("Trade canceled by admin"),
-        Action::Dispute | Action::DisputeInitiatedByYou => {
-            Some("Trade in dispute state")
-        }
+        Action::Dispute | Action::DisputeInitiatedByYou => Some("Trade in dispute state"),
         _ => None,
     }
 }

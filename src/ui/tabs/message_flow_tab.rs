@@ -168,7 +168,11 @@ fn render_message_timeline_panel(
         )),
         Line::from(Span::raw(format!("Last message at {timestamp}"))),
     ])
-    .block(Block::default().title("Selected Trade").borders(Borders::ALL));
+    .block(
+        Block::default()
+            .title("Selected Trade")
+            .borders(Borders::ALL),
+    );
     f.render_widget(header, right_chunks[0]);
 
     render_buy_stepper(f, right_chunks[1], message_buy_flow_step(selected_action));
@@ -177,7 +181,9 @@ fn render_message_timeline_panel(
         .unwrap_or("Trade is on normal path")
         .to_string();
     let warning_style = if message_timeline_warning(selected_action).is_some() {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Green)
     };
@@ -204,7 +210,11 @@ fn render_message_timeline_panel(
         Line::from(Span::raw("4) Send Fiat")),
         Line::from(Span::raw("5) Receive Sats")),
     ])
-    .block(Block::default().title("Timeline Details").borders(Borders::ALL))
+    .block(
+        Block::default()
+            .title("Timeline Details")
+            .borders(Borders::ALL),
+    )
     .wrap(ratatui::widgets::Wrap { trim: true });
     f.render_widget(details, right_chunks[3]);
 }
@@ -232,7 +242,9 @@ fn render_buy_stepper(f: &mut ratatui::Frame, area: Rect, current_step: usize) {
     for (idx, step_name) in steps.iter().enumerate() {
         let step_number = idx + 1;
         let style = if step_number < current_step {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else if step_number == current_step {
             Style::default()
                 .fg(PRIMARY_COLOR)
@@ -241,9 +253,16 @@ fn render_buy_stepper(f: &mut ratatui::Frame, area: Rect, current_step: usize) {
             Style::default().fg(Color::DarkGray)
         };
 
-        let indicator = if step_number <= current_step { "[x]" } else { "[ ]" };
+        let indicator = if step_number <= current_step {
+            "[x]"
+        } else {
+            "[ ]"
+        };
         let step = Paragraph::new(vec![
-            Line::from(Span::styled(format!("{indicator} Step {step_number}"), style)),
+            Line::from(Span::styled(
+                format!("{indicator} Step {step_number}"),
+                style,
+            )),
             Line::from(Span::styled(step_name.to_string(), style)),
         ])
         .alignment(ratatui::layout::Alignment::Center)

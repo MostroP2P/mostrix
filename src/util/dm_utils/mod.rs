@@ -455,13 +455,10 @@ async fn handle_trade_dm_for_order(
         .as_ref()
         .and_then(|(_, _, _, _, _, k)| *k);
 
-    let kind_from_payload = inner_kind
-        .payload
-        .as_ref()
-        .and_then(|p| match p {
-            Payload::Order(o) => o.kind,
-            _ => None,
-        });
+    let kind_from_payload = inner_kind.payload.as_ref().and_then(|p| match p {
+        Payload::Order(o) => o.kind,
+        _ => None,
+    });
     let kind_from_take_action = match &action {
         Action::TakeSell => Some(mostro_core::order::Kind::Sell),
         Action::TakeBuy => Some(mostro_core::order::Kind::Buy),
