@@ -50,6 +50,10 @@ pub enum MostroInfoFetchResult {
         info: Box<Option<crate::util::MostroInstanceInfo>>,
         message: String,
     },
+    /// Startup / background refresh: update `mostro_info` only; do not change mode or show toasts.
+    Applied {
+        info: Box<Option<crate::util::MostroInstanceInfo>>,
+    },
     Err(String),
 }
 

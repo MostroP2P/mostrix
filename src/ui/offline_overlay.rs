@@ -58,4 +58,3 @@ pub fn render_offline_overlay(f: &mut ratatui::Frame, message: &str) {
         inner,
     );
 }
-

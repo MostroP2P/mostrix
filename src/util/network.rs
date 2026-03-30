@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use futures::FutureExt;
+use nostr_sdk::prelude::Client;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -49,3 +51,16 @@ pub async fn any_relay_reachable(relays: &[String]) -> bool {
     false
 }
 
+/// Connect the `nostr-sdk` client, but never let a panic crash the app.
+///
+/// Some `nostr-sdk` connect paths have historically panicked in "no network" environments.
+/// This wrapper turns that into an error so the UI can keep running (offline overlay / retry).
+pub async fn connect_client_safely(client: &Client) -> Result<(), String> {
+    let result = std::panic::AssertUnwindSafe(client.connect())
+        .catch_unwind()
+        .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) => Err("nostr client connect panicked".to_string()),
+    }
+}

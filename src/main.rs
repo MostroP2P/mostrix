@@ -12,14 +12,16 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::{
     apply_pending_key_reload, create_app_channels, handle_key_event,
-    reload_runtime_session_after_reconnect, AppChannels, RuntimeReconnectContext,
+    reload_runtime_session_after_reconnect, spawn_refresh_mostro_info_task, AppChannels,
+    RuntimeReconnectContext,
 };
+use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
-    listen_for_order_messages,
+    any_relay_reachable, connect_client_safely, handle_message_notification,
+    handle_operation_result, listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    any_relay_reachable, set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
+    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -232,10 +234,11 @@ Please restart Mostrix after restoring internet connectivity."
         client.add_relay(relay).await?;
     }
     let relays_reachable = any_relay_reachable(&settings.relays).await;
-    if relays_reachable {
-        client.connect().await;
-    } else {
-        log::warn!("No configured relays reachable; skipping nostr connect");
+    if !relays_reachable {
+        log::warn!("No configured relays reachable; nostr connect may fail");
+    }
+    if let Err(e) = connect_client_safely(&client).await {
+        log::warn!("Failed to connect Nostr client at startup: {e}");
     }
 
     let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
@@ -248,20 +251,7 @@ Please restart Mostrix after restoring internet connectivity."
         disputes,
         mut order_task,
         mut dispute_task,
-    } = if relays_reachable {
-        start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings)
-    } else {
-        let orders = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let disputes = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let order_task = tokio::spawn(async move { futures::future::pending::<()>().await });
-        let dispute_task = tokio::spawn(async move { futures::future::pending::<()>().await });
-        FetchSchedulerResult {
-            orders,
-            disputes,
-            order_task,
-            dispute_task,
-        }
-    };
+    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -314,44 +304,18 @@ Please restart Mostrix after restoring internet connectivity."
     }
 
     // Background offline monitor: emit status transitions every 5 seconds.
-    let initial_relays = settings.relays.clone();
-    let network_status_tx_clone = network_status_tx.clone();
-    tokio::spawn(async move {
-        let mut last_reachable: Option<bool> = None;
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            ticker.tick().await;
-            let relays = crate::settings::load_settings_from_disk()
-                .map(|s| s.relays)
-                .unwrap_or_else(|_| initial_relays.clone());
-            let reachable = any_relay_reachable(&relays).await;
-            if last_reachable == Some(reachable) {
-                continue;
-            }
-            last_reachable = Some(reachable);
-            let _ = if reachable {
-                network_status_tx_clone.send(crate::ui::NetworkStatus::Online(
-                    "Internet restored".to_string(),
-                ))
-            } else {
-                network_status_tx_clone.send(crate::ui::NetworkStatus::Offline(
-                    "No internet / relays unreachable".to_string(),
-                ))
-            };
-        }
-    });
+    spawn_network_status_monitor(settings.relays.clone(), network_status_tx.clone());
 
-    // Fetch initial Mostro instance info for the current Mostro pubkey.
-    match fetch_mostro_instance_info(&client, mostro_pubkey).await {
-        Ok(Some(info)) => {
-            app.mostro_info = Some(info);
-        }
-        Ok(None) => {
-            log::info!("No Mostro instance info event found for current Mostro pubkey");
-        }
-        Err(e) => {
-            log::warn!("Failed to fetch Mostro instance info: {}", e);
-        }
+    // Initial Mostro instance info (same path as manual refresh; no startup toast).
+    // Only attempt this when at least one relay is reachable, otherwise some
+    // nostr client paths may panic on machines without network.
+    if relays_reachable {
+        spawn_refresh_mostro_info_task(
+            client.clone(),
+            mostro_pubkey,
+            mostro_info_tx.clone(),
+            false,
+        );
     }
 
     // Load all admin disputes from database if admin mode
@@ -394,22 +358,18 @@ Please restart Mostrix after restoring internet connectivity."
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
-    let mut message_listener_handle: JoinHandle<()> = if relays_reachable {
-        tokio::spawn(async move {
-            listen_for_order_messages(
-                client_for_messages,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dm_subscription_rx,
-            )
-            .await;
-        })
-    } else {
-        tokio::spawn(async move { futures::future::pending::<()>().await })
-    };
+    let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
+        listen_for_order_messages(
+            client_for_messages,
+            pool_for_messages,
+            active_order_trade_indices_clone,
+            messages_clone,
+            message_notification_tx_clone,
+            pending_notifications_clone,
+            dm_subscription_rx,
+        )
+        .await;
+    });
 
     loop {
         tokio::select! {
@@ -554,6 +514,9 @@ Please restart Mostrix after restoring internet connectivity."
                             app.mode = crate::ui::UiMode::OperationResult(
                                 crate::ui::OperationResult::Info(message),
                             );
+                        }
+                        MostroInfoFetchResult::Applied { info } => {
+                            app.mostro_info = *info;
                         }
                         MostroInfoFetchResult::Err(e) => {
                             app.mostro_info = None;

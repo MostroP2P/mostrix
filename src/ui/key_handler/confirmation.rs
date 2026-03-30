@@ -143,6 +143,7 @@ pub fn handle_confirm_key(
                 ctx.client.clone(),
                 new_pubkey,
                 ctx.mostro_info_tx.clone(),
+                true,
             );
             app.mode = crate::ui::UiMode::OperationResult(crate::ui::OperationResult::Info(
                 "Fetching Mostro instance info...".to_string(),

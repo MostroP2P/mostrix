@@ -10,7 +10,9 @@ use crate::ui::{
 use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
-use crate::util::{any_relay_reachable, set_dm_router_cmd_tx, OrderDmSubscriptionCmd};
+use crate::util::{
+    any_relay_reachable, connect_client_safely, set_dm_router_cmd_tx, OrderDmSubscriptionCmd,
+};
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
@@ -123,13 +125,8 @@ pub async fn apply_pending_key_reload(
                     PublicKey::from_str(&latest_settings.mostro_pubkey)
                 {
                     message_listener_handle.abort();
-                    let relays_reachable = any_relay_reachable(&latest_settings.relays).await;
-                    if relays_reachable {
-                        new_client.connect().await;
-                    } else {
-                        log::warn!(
-                            "Key reload: no internet / relays unreachable; skipping nostr connect"
-                        );
+                    if let Err(e) = connect_client_safely(&new_client).await {
+                        log::warn!("Key reload: failed to connect Nostr client: {e}");
                     }
 
                     *client = new_client;
@@ -155,24 +152,15 @@ pub async fn apply_pending_key_reload(
 
                     order_fetch_task.abort();
                     dispute_fetch_task.abort();
-                    if relays_reachable {
-                        let (o, d) = spawn_fetch_scheduler_loops(
-                            client.clone(),
-                            Arc::clone(current_mostro_pubkey),
-                            Arc::clone(&orders),
-                            Arc::clone(&disputes),
-                            &latest_settings,
-                        );
-                        *order_fetch_task = o;
-                        *dispute_fetch_task = d;
-                    } else {
-                        *order_fetch_task = tokio::spawn(async move {
-                            futures::future::pending::<()>().await
-                        });
-                        *dispute_fetch_task = tokio::spawn(async move {
-                            futures::future::pending::<()>().await
-                        });
-                    }
+                    let (o, d) = spawn_fetch_scheduler_loops(
+                        client.clone(),
+                        Arc::clone(current_mostro_pubkey),
+                        Arc::clone(&orders),
+                        Arc::clone(&disputes),
+                        &latest_settings,
+                    );
+                    *order_fetch_task = o;
+                    *dispute_fetch_task = d;
 
                     let client_for_messages = client.clone();
                     let pool_for_messages = pool.clone();
@@ -188,40 +176,28 @@ pub async fn apply_pending_key_reload(
                     if let Err(msg) = &router_reg {
                         log::error!("[dm_listener] {}", msg);
                     }
-                    *message_listener_handle = if relays_reachable {
-                        tokio::spawn(async move {
-                            listen_for_order_messages(
-                                client_for_messages,
-                                pool_for_messages,
-                                active_order_trade_indices_clone,
-                                messages_clone,
-                                message_notification_tx_clone,
-                                pending_notifications_clone,
-                                new_dm_rx,
-                            )
-                            .await;
-                        })
-                    } else {
-                        tokio::spawn(async move { futures::future::pending::<()>().await })
-                    };
+                    *message_listener_handle = tokio::spawn(async move {
+                        listen_for_order_messages(
+                            client_for_messages,
+                            pool_for_messages,
+                            active_order_trade_indices_clone,
+                            messages_clone,
+                            message_notification_tx_clone,
+                            pending_notifications_clone,
+                            new_dm_rx,
+                        )
+                        .await;
+                    });
 
                     app.backup_requires_restart = false;
                     app.pending_key_reload = false;
-                    app.mode = if !relays_reachable {
-                        UiMode::OperationResult(OperationResult::Error(
-                            "Keys reloaded, but no internet / relays unreachable.\n\
-Restore connectivity and restart to resume fetching orders/messages."
-                                .to_string(),
-                        ))
-                    } else {
-                        match router_reg {
-                            Ok(()) => UiMode::OperationResult(OperationResult::Info(
-                                "Keys reloaded. Active session state has been reset.".to_string(),
-                            )),
-                            Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
-                                "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
-                            ))),
-                        }
+                    app.mode = match router_reg {
+                        Ok(()) => UiMode::OperationResult(OperationResult::Info(
+                            "Keys reloaded. Active session state has been reset.".to_string(),
+                        )),
+                        Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
+                            "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
+                        ))),
                     };
                 } else {
                     app.pending_key_reload = false;
@@ -265,7 +241,9 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
 
-    ctx.client.connect().await;
+    if let Err(e) = connect_client_safely(ctx.client).await {
+        log::warn!("Reconnect: failed to connect Nostr client: {e}");
+    }
 
     ctx.app.currencies_filter = ctx.settings.currencies_filter.clone();
     clear_runtime_session_state(ctx.app);
@@ -518,13 +496,33 @@ pub fn spawn_refresh_mostro_info_from_settings_task(
     });
 }
 
+/// `show_result_toast`: when false (e.g. startup), only [`MostroInfoFetchResult::Applied`] is sent on
+/// success and errors are logged without UI.
 pub fn spawn_refresh_mostro_info_task(
     client: Client,
     mostro_pubkey: PublicKey,
     tx: UnboundedSender<MostroInfoFetchResult>,
+    show_result_toast: bool,
 ) {
     tokio::spawn(async move {
         let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
+        if !show_result_toast {
+            match &result {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    log::info!("No Mostro instance info event found for current Mostro pubkey");
+                }
+                Err(e) => {
+                    log::warn!("Failed to fetch Mostro instance info: {}", e);
+                }
+            }
+            if let Ok(info) = result {
+                let _ = tx.send(MostroInfoFetchResult::Applied {
+                    info: Box::new(info),
+                });
+            }
+            return;
+        }
         let res = match result {
             Ok(info) => MostroInfoFetchResult::Ok {
                 info: Box::new(info),
