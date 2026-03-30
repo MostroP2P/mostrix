@@ -176,7 +176,7 @@ pub fn spawn_fetch_scheduler_loops(
         let order_filter = Filter::new()
             .author(mostro_pubkey_for_order_subscribe)
             .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
-            .limit(0);
+            .since(Timestamp::now());
         match client_for_orders.subscribe(order_filter, None).await {
             Ok(output) => {
                 log::debug!(
@@ -285,7 +285,7 @@ pub fn spawn_fetch_scheduler_loops(
         let dispute_filter = Filter::new()
             .author(mostro_pubkey_for_dispute_subscribe)
             .kind(nostr_sdk::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND))
-            .limit(0);
+            .since(Timestamp::now());
         match client_for_disputes.subscribe(dispute_filter, None).await {
             Ok(output) => {
                 log::debug!(

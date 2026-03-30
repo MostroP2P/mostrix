@@ -376,4 +376,9 @@ pub fn ui_draw(
     if let UiMode::RatingOrder(state) = &app.mode {
         tabs::tab_content::render_rating_order(f, state);
     }
+
+    // Non-blocking offline overlay (does not affect current mode).
+    if let Some(message) = app.offline_overlay_message.as_deref() {
+        offline_overlay::render_offline_overlay(f, message);
+    }
 }

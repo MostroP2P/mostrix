@@ -135,6 +135,8 @@ pub struct AppState {
     pub currencies_filter: Vec<String>,
     /// Cached Mostro instance info (kind 38385 event), if available.
     pub mostro_info: Option<MostroInstanceInfo>,
+    /// Non-blocking overlay shown when relays are unreachable.
+    pub offline_overlay_message: Option<String>,
     /// True only when BackupNewKeys was opened after runtime key rotation.
     /// In that case, app must restart to reload in-memory keys safely.
     pub backup_requires_restart: bool,
@@ -185,6 +187,7 @@ impl AppState {
             observer_error: None,
             currencies_filter: Vec::new(),
             mostro_info: None,
+            offline_overlay_message: None,
             backup_requires_restart: false,
             pending_key_reload: false,
             pending_post_take_operation_result: None,
@@ -220,6 +223,7 @@ impl AppState {
         self.selected_in_progress_idx = 0;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
+        self.offline_overlay_message = None;
         // Clear observer state when switching roles so sensitive data does not linger
         self.clear_observer_secrets();
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,

@@ -5,6 +5,7 @@ pub mod dm_utils;
 pub mod fatal;
 pub mod filters;
 pub mod mostro_info;
+pub mod network;
 pub mod order_utils;
 pub mod types;
 
@@ -21,6 +22,7 @@ pub use dm_utils::{
     FETCH_EVENTS_TIMEOUT,
 };
 pub use fatal::{fatal_requested, request_fatal_restart, set_fatal_error_tx};
+pub use network::any_relay_reachable;
 pub use filters::{create_filter, create_seven_days_filter};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,

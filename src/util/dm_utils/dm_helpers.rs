@@ -108,16 +108,19 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             pubkey
         );
     }
-    // get the limit for the subscription
-    let limit = match options.mode {
-        GiftWrapSubscriptionMode::StartupCatchUp => 1,
-        GiftWrapSubscriptionMode::LiveOnly => 0,
+    let now = Timestamp::now();
+    let filter = match options.mode {
+        GiftWrapSubscriptionMode::StartupCatchUp => Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .limit(1),
+        // Avoid `.limit(0)`: some nostr-relay-pool paths treat 0 as an invalid bounded-channel size.
+        // Instead, request only new events from "now".
+        GiftWrapSubscriptionMode::LiveOnly => Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .since(now),
     };
-
-    let filter = Filter::new()
-        .pubkey(pubkey)
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(limit);
 
     match client.subscribe(filter, None).await {
         Ok(output) => {

@@ -11,14 +11,15 @@ use crate::ui::helpers::{
     apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
 };
 use crate::ui::key_handler::{
-    apply_pending_key_reload, create_app_channels, handle_key_event, AppChannels,
+    apply_pending_key_reload, create_app_channels, handle_key_event,
+    reload_runtime_session_after_reconnect, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
     listen_for_order_messages,
     order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
+    any_relay_reachable, set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -179,12 +180,37 @@ async fn main() -> Result<(), anyhow::Error> {
         mut mostro_info_rx,
         mut dm_subscription_tx,
         dm_subscription_rx,
+        network_status_tx,
+        mut network_status_rx,
         fatal_error_tx,
         mut fatal_error_rx,
     } = create_app_channels();
 
     // Set fatal error tx for the app channels
     set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
+
+    // Route background panics to a user-facing popup (instead of raw terminal panic output).
+    // Keep the previous hook behavior too.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("panic");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        crate::util::request_fatal_restart(format!(
+            "A background task panicked ({payload}) at {location}.\n\
+This can happen when no network is available.\n\
+Please restart Mostrix after restoring internet connectivity."
+        ));
+        previous_hook(info);
+    }));
 
     // Set dm subscription tx for the app channels
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
@@ -199,9 +225,18 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut client = Client::new(my_keys);
     // Add relays.
     for relay in &settings.relays {
+        let relay = relay.trim();
+        if relay.is_empty() {
+            continue;
+        }
         client.add_relay(relay).await?;
     }
-    client.connect().await;
+    let relays_reachable = any_relay_reachable(&settings.relays).await;
+    if relays_reachable {
+        client.connect().await;
+    } else {
+        log::warn!("No configured relays reachable; skipping nostr connect");
+    }
 
     let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
@@ -213,7 +248,20 @@ async fn main() -> Result<(), anyhow::Error> {
         disputes,
         mut order_task,
         mut dispute_task,
-    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
+    } = if relays_reachable {
+        start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings)
+    } else {
+        let orders = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let disputes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let order_task = tokio::spawn(async move { futures::future::pending::<()>().await });
+        let dispute_task = tokio::spawn(async move { futures::future::pending::<()>().await });
+        FetchSchedulerResult {
+            orders,
+            disputes,
+            order_task,
+            dispute_task,
+        }
+    };
 
     // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
     let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
@@ -257,6 +305,41 @@ async fn main() -> Result<(), anyhow::Error> {
     // Seed currencies filter cache from settings so UI-side filtering does not
     // need to hit the filesystem on every render.
     app.currencies_filter = settings.currencies_filter.clone();
+
+    if !relays_reachable {
+        app.offline_overlay_message = Some(
+            "No internet / relays unreachable. Mostrix is retrying connection automatically."
+                .to_string(),
+        );
+    }
+
+    // Background offline monitor: emit status transitions every 5 seconds.
+    let initial_relays = settings.relays.clone();
+    let network_status_tx_clone = network_status_tx.clone();
+    tokio::spawn(async move {
+        let mut last_reachable: Option<bool> = None;
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            let relays = crate::settings::load_settings_from_disk()
+                .map(|s| s.relays)
+                .unwrap_or_else(|_| initial_relays.clone());
+            let reachable = any_relay_reachable(&relays).await;
+            if last_reachable == Some(reachable) {
+                continue;
+            }
+            last_reachable = Some(reachable);
+            let _ = if reachable {
+                network_status_tx_clone.send(crate::ui::NetworkStatus::Online(
+                    "Internet restored".to_string(),
+                ))
+            } else {
+                network_status_tx_clone.send(crate::ui::NetworkStatus::Offline(
+                    "No internet / relays unreachable".to_string(),
+                ))
+            };
+        }
+    });
 
     // Fetch initial Mostro instance info for the current Mostro pubkey.
     match fetch_mostro_instance_info(&client, mostro_pubkey).await {
@@ -311,18 +394,22 @@ async fn main() -> Result<(), anyhow::Error> {
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
-    let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
-        listen_for_order_messages(
-            client_for_messages,
-            pool_for_messages,
-            active_order_trade_indices_clone,
-            messages_clone,
-            message_notification_tx_clone,
-            pending_notifications_clone,
-            dm_subscription_rx,
-        )
-        .await;
-    });
+    let mut message_listener_handle: JoinHandle<()> = if relays_reachable {
+        tokio::spawn(async move {
+            listen_for_order_messages(
+                client_for_messages,
+                pool_for_messages,
+                active_order_trade_indices_clone,
+                messages_clone,
+                message_notification_tx_clone,
+                pending_notifications_clone,
+                dm_subscription_rx,
+            )
+            .await;
+        })
+    } else {
+        tokio::spawn(async move { futures::future::pending::<()>().await })
+    };
 
     loop {
         tokio::select! {
@@ -334,6 +421,49 @@ async fn main() -> Result<(), anyhow::Error> {
                     message_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                }
+            }
+            net = network_status_rx.recv() => {
+                if let Some(status) = net {
+                    match status {
+                        crate::ui::NetworkStatus::Offline(msg) => {
+                            app.offline_overlay_message = Some(format!(
+                                "{msg}. Mostrix will retry connection every 5 seconds."
+                            ));
+                        }
+                        crate::ui::NetworkStatus::Online(_msg) => {
+                            // Attempt reconnect + full runtime reload (mirrors key reload path).
+                            let latest_settings = crate::settings::load_settings_from_disk()
+                                .unwrap_or_else(|_| settings.clone());
+                            match reload_runtime_session_after_reconnect(
+                                RuntimeReconnectContext {
+                                    app: &mut app,
+                                    client: &mut client,
+                                    current_mostro_pubkey: &current_mostro_pubkey,
+                                    pool: &pool,
+                                    message_listener_handle: &mut message_listener_handle,
+                                    message_notification_tx: &message_notification_tx,
+                                    orders: Arc::clone(&orders),
+                                    disputes: Arc::clone(&disputes),
+                                    order_fetch_task: &mut order_task,
+                                    dispute_fetch_task: &mut dispute_task,
+                                    dm_subscription_tx: &mut dm_subscription_tx,
+                                    settings: &latest_settings,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    app.offline_overlay_message = None;
+                                }
+                                Err(e) => {
+                                    app.offline_overlay_message = Some(format!(
+                                        "Reconnect failed: {e}. Retrying every 5 seconds."
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             result = order_result_rx.recv() => {

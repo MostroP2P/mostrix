@@ -44,7 +44,10 @@ pub struct EnterKeyContext<'a> {
 }
 
 // Re-export public functions
-pub use async_tasks::{apply_pending_key_reload, create_app_channels, AppChannels};
+pub use async_tasks::{
+    apply_pending_key_reload, create_app_channels, reload_runtime_session_after_reconnect,
+    AppChannels, RuntimeReconnectContext,
+};
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;

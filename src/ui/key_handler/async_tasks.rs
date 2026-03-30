@@ -5,12 +5,12 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::FormState;
 use crate::ui::{
     AdminChatUpdate, AppState, ChatAttachment, MessageNotification, MostroInfoFetchResult,
-    OperationResult, TakeOrderState, UiMode,
+    NetworkStatus, OperationResult, TakeOrderState, UiMode,
 };
 use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
-use crate::util::{set_dm_router_cmd_tx, OrderDmSubscriptionCmd};
+use crate::util::{any_relay_reachable, set_dm_router_cmd_tx, OrderDmSubscriptionCmd};
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
@@ -23,6 +23,21 @@ use std::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
+
+pub struct RuntimeReconnectContext<'a> {
+    pub app: &'a mut AppState,
+    pub client: &'a mut Client,
+    pub current_mostro_pubkey: &'a Arc<Mutex<PublicKey>>,
+    pub pool: &'a SqlitePool,
+    pub message_listener_handle: &'a mut JoinHandle<()>,
+    pub message_notification_tx: &'a UnboundedSender<MessageNotification>,
+    pub orders: Arc<Mutex<Vec<SmallOrder>>>,
+    pub disputes: Arc<Mutex<Vec<Dispute>>>,
+    pub order_fetch_task: &'a mut JoinHandle<()>,
+    pub dispute_fetch_task: &'a mut JoinHandle<()>,
+    pub dm_subscription_tx: &'a mut UnboundedSender<OrderDmSubscriptionCmd>,
+    pub settings: &'a Settings,
+}
 
 fn clear_runtime_session_state(app: &mut AppState) {
     match app.messages.lock() {
@@ -91,6 +106,10 @@ pub async fn apply_pending_key_reload(
                 let new_client = Client::new(new_identity_keys);
                 let mut reload_error: Option<String> = None;
                 for relay in &latest_settings.relays {
+                    let relay = relay.trim();
+                    if relay.is_empty() {
+                        continue;
+                    }
                     if let Err(e) = new_client.add_relay(relay).await {
                         reload_error =
                             Some(format!("Failed to add relay during key reload: {}", e));
@@ -104,7 +123,14 @@ pub async fn apply_pending_key_reload(
                     PublicKey::from_str(&latest_settings.mostro_pubkey)
                 {
                     message_listener_handle.abort();
-                    new_client.connect().await;
+                    let relays_reachable = any_relay_reachable(&latest_settings.relays).await;
+                    if relays_reachable {
+                        new_client.connect().await;
+                    } else {
+                        log::warn!(
+                            "Key reload: no internet / relays unreachable; skipping nostr connect"
+                        );
+                    }
 
                     *client = new_client;
                     *mostro_pubkey = new_mostro_pubkey;
@@ -129,15 +155,24 @@ pub async fn apply_pending_key_reload(
 
                     order_fetch_task.abort();
                     dispute_fetch_task.abort();
-                    let (o, d) = spawn_fetch_scheduler_loops(
-                        client.clone(),
-                        Arc::clone(current_mostro_pubkey),
-                        Arc::clone(&orders),
-                        Arc::clone(&disputes),
-                        &latest_settings,
-                    );
-                    *order_fetch_task = o;
-                    *dispute_fetch_task = d;
+                    if relays_reachable {
+                        let (o, d) = spawn_fetch_scheduler_loops(
+                            client.clone(),
+                            Arc::clone(current_mostro_pubkey),
+                            Arc::clone(&orders),
+                            Arc::clone(&disputes),
+                            &latest_settings,
+                        );
+                        *order_fetch_task = o;
+                        *dispute_fetch_task = d;
+                    } else {
+                        *order_fetch_task = tokio::spawn(async move {
+                            futures::future::pending::<()>().await
+                        });
+                        *dispute_fetch_task = tokio::spawn(async move {
+                            futures::future::pending::<()>().await
+                        });
+                    }
 
                     let client_for_messages = client.clone();
                     let pool_for_messages = pool.clone();
@@ -153,28 +188,40 @@ pub async fn apply_pending_key_reload(
                     if let Err(msg) = &router_reg {
                         log::error!("[dm_listener] {}", msg);
                     }
-                    *message_listener_handle = tokio::spawn(async move {
-                        listen_for_order_messages(
-                            client_for_messages,
-                            pool_for_messages,
-                            active_order_trade_indices_clone,
-                            messages_clone,
-                            message_notification_tx_clone,
-                            pending_notifications_clone,
-                            new_dm_rx,
-                        )
-                        .await;
-                    });
+                    *message_listener_handle = if relays_reachable {
+                        tokio::spawn(async move {
+                            listen_for_order_messages(
+                                client_for_messages,
+                                pool_for_messages,
+                                active_order_trade_indices_clone,
+                                messages_clone,
+                                message_notification_tx_clone,
+                                pending_notifications_clone,
+                                new_dm_rx,
+                            )
+                            .await;
+                        })
+                    } else {
+                        tokio::spawn(async move { futures::future::pending::<()>().await })
+                    };
 
                     app.backup_requires_restart = false;
                     app.pending_key_reload = false;
-                    app.mode = match router_reg {
-                        Ok(()) => UiMode::OperationResult(OperationResult::Info(
-                            "Keys reloaded. Active session state has been reset.".to_string(),
-                        )),
-                        Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
-                            "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
-                        ))),
+                    app.mode = if !relays_reachable {
+                        UiMode::OperationResult(OperationResult::Error(
+                            "Keys reloaded, but no internet / relays unreachable.\n\
+Restore connectivity and restart to resume fetching orders/messages."
+                                .to_string(),
+                        ))
+                    } else {
+                        match router_reg {
+                            Ok(()) => UiMode::OperationResult(OperationResult::Info(
+                                "Keys reloaded. Active session state has been reset.".to_string(),
+                            )),
+                            Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
+                                "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
+                            ))),
+                        }
                     };
                 } else {
                     app.pending_key_reload = false;
@@ -202,6 +249,91 @@ pub async fn apply_pending_key_reload(
     }
 }
 
+/// Reconnect runtime background tasks after connectivity returns.
+///
+/// Mirrors the `apply_pending_key_reload` flow (abort/respawn fetch loops and DM listener),
+/// but does not change keys or Mostro pubkey.
+#[allow(clippy::too_many_arguments)]
+pub async fn reload_runtime_session_after_reconnect(
+    ctx: RuntimeReconnectContext<'_>,
+) -> Result<(), String> {
+    if !any_relay_reachable(&ctx.settings.relays).await {
+        return Err("No internet / relays unreachable".to_string());
+    }
+
+    ctx.message_listener_handle.abort();
+    ctx.order_fetch_task.abort();
+    ctx.dispute_fetch_task.abort();
+
+    ctx.client.connect().await;
+
+    ctx.app.currencies_filter = ctx.settings.currencies_filter.clone();
+    clear_runtime_session_state(ctx.app);
+
+    let (o, d) = spawn_fetch_scheduler_loops(
+        ctx.client.clone(),
+        Arc::clone(ctx.current_mostro_pubkey),
+        Arc::clone(&ctx.orders),
+        Arc::clone(&ctx.disputes),
+        ctx.settings,
+    );
+    *ctx.order_fetch_task = o;
+    *ctx.dispute_fetch_task = d;
+
+    let client_for_messages = ctx.client.clone();
+    let pool_for_messages = ctx.pool.clone();
+    let active_order_trade_indices_clone = Arc::clone(&ctx.app.active_order_trade_indices);
+    let messages_clone = Arc::clone(&ctx.app.messages);
+    let message_notification_tx_clone = ctx.message_notification_tx.clone();
+    let pending_notifications_clone = Arc::clone(&ctx.app.pending_notifications);
+    let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    *ctx.dm_subscription_tx = new_dm_tx;
+    let router_reg = set_dm_router_cmd_tx(ctx.dm_subscription_tx.clone());
+    if let Err(msg) = &router_reg {
+        log::error!("[dm_listener] {}", msg);
+    }
+    *ctx.message_listener_handle = tokio::spawn(async move {
+        listen_for_order_messages(
+            client_for_messages,
+            pool_for_messages,
+            active_order_trade_indices_clone,
+            messages_clone,
+            message_notification_tx_clone,
+            pending_notifications_clone,
+            new_dm_rx,
+        )
+        .await;
+    });
+
+    let mostro_pubkey = match ctx.current_mostro_pubkey.lock() {
+        Ok(pk) => *pk,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+            ));
+            return Err("Internal error. Please restart Mostrix.".to_string());
+        }
+    };
+    match fetch_mostro_instance_info(ctx.client, mostro_pubkey).await {
+        Ok(Some(info)) => {
+            ctx.app.mostro_info = Some(info);
+        }
+        Ok(None) => {
+            // Keep prior info if any; not an error.
+        }
+        Err(e) => {
+            log::warn!("Reconnect: failed to refresh Mostro instance info: {}", e);
+        }
+    }
+
+    match router_reg {
+        Ok(()) => Ok(()),
+        Err(msg) => Err(format!(
+            "Reconnected, but DM router registration failed ({msg}). Consider restarting Mostrix."
+        )),
+    }
+}
+
 pub struct AppChannels {
     pub order_result_tx: UnboundedSender<OperationResult>,
     pub order_result_rx: UnboundedReceiver<OperationResult>,
@@ -219,6 +351,8 @@ pub struct AppChannels {
     pub mostro_info_rx: UnboundedReceiver<MostroInfoFetchResult>,
     pub dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
     pub dm_subscription_rx: UnboundedReceiver<OrderDmSubscriptionCmd>,
+    pub network_status_tx: UnboundedSender<NetworkStatus>,
+    pub network_status_rx: UnboundedReceiver<NetworkStatus>,
     pub fatal_error_tx: UnboundedSender<String>,
     pub fatal_error_rx: UnboundedReceiver<String>,
 }
@@ -240,6 +374,8 @@ pub fn create_app_channels() -> AppChannels {
         tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
     let (dm_subscription_tx, dm_subscription_rx) =
         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    let (network_status_tx, network_status_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NetworkStatus>();
     let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     AppChannels {
@@ -259,6 +395,8 @@ pub fn create_app_channels() -> AppChannels {
         mostro_info_rx,
         dm_subscription_tx,
         dm_subscription_rx,
+        network_status_tx,
+        network_status_rx,
         fatal_error_tx,
         fatal_error_rx,
     }
