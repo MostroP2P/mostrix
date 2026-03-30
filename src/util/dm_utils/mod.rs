@@ -977,7 +977,7 @@ pub async fn listen_for_order_messages(
                             let filter = Filter::new()
                                 .pubkey(waiter_pubkey)
                                 .kind(nostr_sdk::Kind::GiftWrap)
-                                .since(Timestamp::now());
+                                .limit(0);
                             match client.subscribe(filter, None).await {
                                 Ok(output) => {
                                     // Remember the subscription id so a later TrackOrder can
