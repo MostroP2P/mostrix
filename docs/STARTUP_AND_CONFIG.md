@@ -116,21 +116,16 @@ pub struct Settings {
 ## Nostr & Background Tasks
 
 ### Nostr Client Connection
-Mostrix initializes a `nostr_sdk::Client` with the user's keys and connects to the configured relays.
+Mostrix initializes a `nostr_sdk::Client` with the user's keys, adds configured relays, and
+connects using a panic-safe wrapper (`connect_client_safely`).
 
-**Source**: `src/main.rs:118`
-```118:127:src/main.rs
-    let my_keys = settings
-        .nsec_privkey
-        .parse::<Keys>()
-        .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
-    let client = Client::new(my_keys);
-    // Add relays.
-    for relay in &settings.relays {
-        client.add_relay(relay).await?;
-    }
-    client.connect().await;
-```
+Current startup behavior:
+
+- Trims relay strings and skips empty entries before adding.
+- Computes `relays_reachable` with `any_relay_reachable` for offline UI behavior.
+- Calls `connect_client_safely(&client)` (instead of raw `client.connect().await`) to prevent
+  background panic crashes when connectivity is unstable.
+- Logs a warning if no configured relays are reachable at boot.
 
 ### Background Tasks
 
@@ -138,7 +133,13 @@ Several background tasks are spawned to keep the UI and data in sync:
 
 1. **Order Refresh**: Periodically fetches pending orders from Mostro.
 2. **Trade Message Listener**: Listens for new messages related to active orders.
-3. **Admin Chat Scheduler** (shared-key model):
+3. **Network Status Monitor**:
+   - `spawn_network_status_monitor` runs every 5 seconds.
+   - Re-checks relay reachability from disk settings and emits `NetworkStatus::Offline/Online`.
+   - On `Offline`, startup overlay text indicates automatic retry.
+   - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
+     and reload runtime background tasks.
+4. **Admin Chat Scheduler** (shared-key model):
    - In the main event loop, when `user_role == Admin`, a 5-second interval triggers `spawn_admin_chat_fetch` (see `src/util/order_utils/fetch_scheduler.rs`).
    - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one admin chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
    - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
@@ -150,7 +151,7 @@ Several background tasks are spawned to keep the UI and data in sync:
 
 **Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers.rs` (`apply_admin_chat_updates`)
 
-4. **DM Router Wiring (trade messages)**:
+5. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
    - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
    - `listen_for_order_messages(..., dm_subscription_rx)` runs as the single router loop consuming:
@@ -173,11 +174,12 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
 
 ## Main Event Loop
 
-The TUI runs in a `tokio::select!` loop that handles three types of events:
+The TUI runs in a `tokio::select!` loop that handles:
 1. **Order Results**: Results from asynchronous order-related operations.
 2. **Message Notifications**: New direct messages from counterparties or Mostro.
-3. **User Input**: Keyboard and paste events processed via `key_handler.rs`.
-4. **UI Refresh**: Periodic ticks to ensure the UI stays up-to-date.
+3. **Network Status Events**: Offline/online transitions and reconnect workflow.
+4. **User Input**: Keyboard and paste events processed via `key_handler.rs`.
+5. **UI Refresh**: Periodic ticks to ensure the UI stays up-to-date.
 
 **Source**: `src/main.rs:184`
 ```184:279:src/main.rs

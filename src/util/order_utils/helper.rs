@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::ui::state::{OperationResult, OrderSuccess};
+use crate::ui::state::{OperationResult, OrderSuccess, TakeOrderState};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
@@ -92,6 +92,34 @@ pub fn map_action_to_status(action: &Action, order: &SmallOrder) -> Option<Statu
     }
 
     inferred_status_from_trade_action(action)
+}
+
+/// Validates the range amount input against min/max limits.
+pub fn validate_range_amount(take_state: &mut TakeOrderState) {
+    if take_state.amount_input.is_empty() {
+        take_state.validation_error = None;
+        return;
+    }
+
+    let amount = match take_state.amount_input.parse::<f64>() {
+        Ok(val) => val,
+        Err(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
+    };
+
+    let min = take_state.order.min_amount.unwrap_or(0) as f64;
+    let max = take_state.order.max_amount.unwrap_or(0) as f64;
+
+    if amount < min || amount > max {
+        take_state.validation_error = Some(format!(
+            "Amount must be between {} and {} {}",
+            min, max, take_state.order.fiat_code
+        ));
+    } else {
+        take_state.validation_error = None;
+    }
 }
 
 /// Parse dispute from nostr tags

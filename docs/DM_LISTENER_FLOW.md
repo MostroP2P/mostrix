@@ -71,6 +71,8 @@ What happens:
 
 - Waiters are bounded (`MAX_PENDING_WAITERS`), and periodically garbage-collected (drops closed oneshots).
 - If this trade pubkey is not yet subscribed, the listener subscribes to GiftWrap events for it and records the `SubscriptionId` in `pubkey_to_subscription`.
+- The waiter subscription uses a **live-only GiftWrap filter** (`.limit(0)`), which avoids
+  replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
 - The waiter is pushed into `pending_waiters`.
 
 **Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”.

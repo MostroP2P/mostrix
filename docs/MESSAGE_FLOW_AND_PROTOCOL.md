@@ -125,6 +125,10 @@ The `wait_for_dm` function now uses the shared DM router:
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
 4. The background DM listener decrypt-checks incoming GiftWrap events against pending waiters and delivers the first match to `wait_for_dm`
 
+Waiter subscription detail:
+- `RegisterWaiter` uses a live-only GiftWrap filter with `.limit(0)` (not `since(now)`), which
+  avoids same-second timestamp edge cases that can miss immediate Mostro responses.
+
 ### 6. Parsing and Handling Response
 **Source**: `src/util/order_utils/send_new_order.rs:145`
 ```145:176:src/util/order_utils/send_new_order.rs

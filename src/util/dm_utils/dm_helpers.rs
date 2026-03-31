@@ -9,6 +9,7 @@ use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 use crate::util::types::create_expiration_tags;
 
 /// Subscription behavior for GiftWrap filters.
@@ -145,6 +146,31 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             subscribed_pubkeys.remove(&pubkey);
             pubkey_to_subscription.remove(&pubkey);
             false
+        }
+    }
+}
+
+/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
+/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
+pub fn seed_admin_chat_last_seen(app: &mut AppState) {
+    let disputes = app.admin_disputes_in_progress.clone();
+
+    for dispute in &disputes {
+        if dispute.buyer_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Buyer),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.buyer_chat_last_seen,
+                },
+            );
+        }
+        if dispute.seller_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Seller),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.seller_chat_last_seen,
+                },
+            );
         }
     }
 }

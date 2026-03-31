@@ -18,8 +18,8 @@ pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;
 pub use dm_utils::{
     handle_message_notification, handle_operation_result, listen_for_order_messages,
-    parse_dm_events, send_dm, set_dm_router_cmd_tx, wait_for_dm, OrderDmSubscriptionCmd,
-    FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, seed_admin_chat_last_seen, send_dm, set_dm_router_cmd_tx, wait_for_dm,
+    OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
 };
 pub use fatal::{fatal_requested, request_fatal_restart, set_fatal_error_tx};
 pub use filters::{create_filter, create_seven_days_filter};

@@ -16,12 +16,14 @@ use crate::ui::key_handler::{
     RuntimeReconnectContext,
 };
 use crate::ui::network_status::spawn_network_status_monitor;
-use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
+use crate::ui::{MostroInfoFetchResult, OperationResult};
 use crate::util::{
     any_relay_reachable, connect_client_safely, handle_message_notification,
     handle_operation_result, listen_for_order_messages,
-    order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
+    order_utils::{
+        spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
+    },
+    seed_admin_chat_last_seen, set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -52,7 +54,7 @@ use zeroize::Zeroizing;
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserRole};
+use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -77,59 +79,6 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
-}
-
-/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
-/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
-fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
-    let disputes = app.admin_disputes_in_progress.clone();
-
-    for dispute in &disputes {
-        if dispute.buyer_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Buyer),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.buyer_chat_last_seen,
-                },
-            );
-        }
-        if dispute.seller_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Seller),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.seller_chat_last_seen,
-                },
-            );
-        }
-    }
-}
-
-/// Validates the range amount input against min/max limits
-fn validate_range_amount(take_state: &mut TakeOrderState) {
-    if take_state.amount_input.is_empty() {
-        take_state.validation_error = None;
-        return;
-    }
-
-    let amount = match take_state.amount_input.parse::<f64>() {
-        Ok(val) => val,
-        Err(_) => {
-            take_state.validation_error = Some("Invalid number format".to_string());
-            return;
-        }
-    };
-
-    let min = take_state.order.min_amount.unwrap_or(0) as f64;
-    let max = take_state.order.max_amount.unwrap_or(0) as f64;
-
-    if amount < min || amount > max {
-        take_state.validation_error = Some(format!(
-            "Amount must be between {} and {} {}",
-            min, max, take_state.order.fiat_code
-        ));
-    } else {
-        take_state.validation_error = None;
-    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -328,8 +277,8 @@ Please restart Mostrix after restoring internet connectivity."
                 // Pre-compute chat last seen timestamps for all disputes/parties so that the
                 // background listener can fetch messages incrementally based on
                 // last_seen timestamps stored in the database.
-                if let Some(ref keys) = admin_keys {
-                    seed_admin_chat_last_seen(&mut app, keys);
+                if admin_keys.is_some() {
+                    seed_admin_chat_last_seen(&mut app);
                 }
 
                 recover_admin_chat_from_files(
