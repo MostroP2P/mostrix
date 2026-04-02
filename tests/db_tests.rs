@@ -109,7 +109,7 @@ async fn test_order_new() {
         None,
     );
 
-    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), true)
+    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), 1, true)
         .await
         .unwrap();
 
@@ -135,7 +135,7 @@ async fn test_order_get_by_id() {
     small_order.payment_method = "paypal".to_string();
     small_order.premium = 3;
 
-    let created_order = Order::new(&pool, small_order, &trade_keys, None, true)
+    let created_order = Order::new(&pool, small_order, &trade_keys, None, 2, true)
         .await
         .unwrap();
     let order_id_str = created_order.id.as_ref().unwrap();
@@ -171,14 +171,14 @@ async fn test_order_update_existing() {
     small_order.premium = 5;
 
     // Create order
-    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, true)
+    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, 3, true)
         .await
         .unwrap();
 
     // Update with same ID but different data
     small_order.amount = 200000;
     small_order.fiat_amount = 200;
-    let order2 = Order::new(&pool, small_order, &trade_keys, None, true)
+    let order2 = Order::new(&pool, small_order, &trade_keys, None, 3, true)
         .await
         .unwrap();
 
@@ -186,4 +186,30 @@ async fn test_order_update_existing() {
     assert_eq!(order1.id, order2.id);
     assert_eq!(order2.amount, 200000);
     assert_eq!(order2.fiat_amount, 200);
+}
+
+#[tokio::test]
+async fn test_order_new_requires_positive_trade_index() {
+    let pool = create_test_db().await.unwrap();
+    let trade_keys = Keys::generate();
+    let small_order = SmallOrder::new(
+        None,
+        Some(mostro_core::order::Kind::Buy),
+        Some(mostro_core::order::Status::Pending),
+        100000,
+        "USD".to_string(),
+        None,
+        None,
+        100,
+        "bank_transfer".to_string(),
+        5,
+        None,
+        None,
+        None,
+        Some(0),
+        None,
+    );
+
+    let result = Order::new(&pool, small_order, &trade_keys, Some(123), 0, true).await;
+    assert!(result.is_err());
 }

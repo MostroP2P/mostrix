@@ -58,6 +58,11 @@ static GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Last fallback scan: loop duration in milliseconds.
 static GIFTWRAP_FALLBACK_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 
+pub struct StartupDmHydration {
+    pub active_order_trade_indices: HashMap<Uuid, i64>,
+    pub order_last_seen_dm_ts: HashMap<Uuid, i64>,
+}
+
 /// Publishes the global sender consumed by `listen_for_order_messages` and `wait_for_dm`.
 ///
 /// Returns `Err` if the mutex is poisoned (the sender was **not** updated).
@@ -88,6 +93,46 @@ fn is_terminal_order_status(status: Status) -> bool {
             | Status::Expired
             | Status::CooperativelyCanceled
     )
+}
+
+fn status_str_is_non_terminal(status: Option<&str>) -> bool {
+    match status.and_then(|s| Status::from_str(s).ok()) {
+        Some(parsed) => !is_terminal_order_status(parsed),
+        None => true,
+    }
+}
+
+pub async fn hydrate_startup_active_order_dm_state(
+    pool: &sqlx::sqlite::SqlitePool,
+) -> Result<StartupDmHydration> {
+    let rows = Order::get_startup_active_orders(pool).await?;
+    let mut active_order_trade_indices: HashMap<Uuid, i64> = HashMap::new();
+    let mut order_last_seen_dm_ts: HashMap<Uuid, i64> = HashMap::new();
+
+    for row in rows {
+        if !status_str_is_non_terminal(row.status.as_deref()) {
+            continue;
+        }
+        let Ok(order_id) = Uuid::parse_str(&row.id) else {
+            continue;
+        };
+        let Some(trade_index) = row.trade_index else {
+            log::error!(
+                "Order {} is non-terminal but missing trade_index in DB; skipping DM startup hydration for this row",
+                row.id
+            );
+            continue;
+        };
+        active_order_trade_indices.insert(order_id, trade_index);
+        if let Some(ts) = row.last_seen_dm_ts {
+            order_last_seen_dm_ts.insert(order_id, ts);
+        }
+    }
+
+    Ok(StartupDmHydration {
+        active_order_trade_indices,
+        order_last_seen_dm_ts,
+    })
 }
 
 fn message_has_terminal_order_status(message: &Message) -> bool {
@@ -650,6 +695,14 @@ async fn dispatch_giftwrap_batch(
         )
         .await;
 
+        if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await {
+            log::warn!(
+                "[dm_listener] Failed to persist last_seen_dm_ts for order_id={}: {}",
+                order_id,
+                e
+            );
+        }
+
         if has_terminal_status {
             match terminal_policy {
                 GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
@@ -809,6 +862,7 @@ pub async fn listen_for_order_messages(
     client: Client,
     pool: sqlx::sqlite::SqlitePool,
     active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
+    order_last_seen_dm_ts: HashMap<Uuid, i64>,
     messages: Arc<Mutex<Vec<OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
@@ -857,6 +911,10 @@ pub async fn listen_for_order_messages(
             }
         };
         let pubkey = trade_keys.public_key();
+        let startup_mode = match order_last_seen_dm_ts.get(&order_id).copied() {
+            Some(ts) => dm_helpers::GiftWrapSubscriptionMode::StartupSince(ts),
+            None => dm_helpers::GiftWrapSubscriptionMode::StartupCatchUp,
+        };
         let _ = dm_helpers::ensure_order_giftwrap_subscription(
             &client,
             &mut subscribed_pubkeys,
@@ -868,7 +926,7 @@ pub async fn listen_for_order_messages(
                 trade_index,
                 error_label: "Failed startup subscribe for trade pubkey",
                 info_label: None,
-                mode: dm_helpers::GiftWrapSubscriptionMode::StartupCatchUp,
+                mode: startup_mode,
             },
         )
         .await;

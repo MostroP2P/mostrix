@@ -16,6 +16,8 @@ use crate::util::types::create_expiration_tags;
 pub(crate) enum GiftWrapSubscriptionMode {
     /// Startup catch-up: request the latest retained event for this pubkey.
     StartupCatchUp,
+    /// Startup catch-up from the persisted cursor timestamp.
+    StartupSince(i64),
     /// Live-only stream: no backlog replay, only events after subscription.
     LiveOnly,
 }
@@ -109,15 +111,20 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             pubkey
         );
     }
-    let limit = match options.mode {
-        GiftWrapSubscriptionMode::StartupCatchUp => 1,
-        GiftWrapSubscriptionMode::LiveOnly => 0,
+    let filter = match options.mode {
+        GiftWrapSubscriptionMode::StartupCatchUp => Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .limit(1),
+        GiftWrapSubscriptionMode::StartupSince(ts) => Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .since(Timestamp::from(ts as u64)),
+        GiftWrapSubscriptionMode::LiveOnly => Filter::new()
+            .pubkey(pubkey)
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .since(Timestamp::now()),
     };
-
-    let filter = Filter::new()
-        .pubkey(pubkey)
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(limit);
 
     match client.subscribe(filter, None).await {
         Ok(output) => {

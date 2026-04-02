@@ -166,8 +166,19 @@ pub struct Order {
     pub is_mine: bool,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
+    pub trade_index: Option<i64>,
     pub created_at: Option<i64>,
     pub expires_at: Option<i64>,
+    pub last_seen_dm_ts: Option<i64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StartupActiveOrderRecord {
+    pub id: String,
+    pub status: Option<String>,
+    pub trade_index: Option<i64>,
+    pub trade_keys: Option<String>,
+    pub last_seen_dm_ts: Option<i64>,
 }
 
 impl Order {
@@ -180,8 +191,15 @@ impl Order {
         order: mostro_core::prelude::SmallOrder,
         trade_keys: &nostr_sdk::prelude::Keys,
         _request_id: Option<i64>,
+        trade_index: i64,
         is_maker: bool,
     ) -> Result<Self> {
+        if trade_index <= 0 {
+            anyhow::bail!(
+                "Invalid trade_index {} while persisting order; expected positive index",
+                trade_index
+            );
+        }
         let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
 
         let id = match order.id {
@@ -204,8 +222,10 @@ impl Order {
             is_mine: is_maker,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
+            trade_index: Some(trade_index),
             created_at: Some(chrono::Utc::now().timestamp()),
             expires_at: order.expires_at,
+            last_seen_dm_ts: None,
         };
 
         // Try insert; if id already exists, perform an update instead
@@ -236,8 +256,8 @@ impl Order {
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
             fiat_code, fiat_amount, payment_method, premium, is_mine,
-            trade_keys, counterparty_pubkey, buyer_invoice, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            trade_keys, counterparty_pubkey, buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -254,8 +274,11 @@ impl Order {
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.buyer_invoice)
+        .bind(self.request_id)
+        .bind(self.trade_index)
         .bind(self.created_at)
         .bind(self.expires_at)
+        .bind(self.last_seen_dm_ts)
         .execute(pool)
         .await?;
         Ok(())
@@ -268,7 +291,7 @@ impl Order {
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
                 is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, buyer_invoice = ?,
-                created_at = ?, expires_at = ?
+                request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ?
             "#,
         )
@@ -285,8 +308,11 @@ impl Order {
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.buyer_invoice)
+        .bind(self.request_id)
+        .bind(self.trade_index)
         .bind(self.created_at)
         .bind(self.expires_at)
+        .bind(self.last_seen_dm_ts)
         .bind(&self.id)
         .execute(pool)
         .await?;
@@ -316,10 +342,12 @@ impl Order {
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
+            trade_index: existing.and_then(|e| e.trade_index),
             created_at: existing
                 .and_then(|e| e.created_at)
                 .or_else(|| Some(Utc::now().timestamp())),
             expires_at: small_order.expires_at,
+            last_seen_dm_ts: existing.and_then(|e| e.last_seen_dm_ts),
         }
     }
 
@@ -353,6 +381,12 @@ impl Order {
         if existing.is_some() {
             order_row.update_db(pool).await?;
             return Ok(order_row);
+        }
+        if order_row.trade_index.is_none() {
+            anyhow::bail!(
+                "Cannot insert order {} from DM without persisted trade_index; this indicates an inconsistent local state.",
+                id_str
+            );
         }
 
         match order_row.insert_db(pool).await {
@@ -421,6 +455,38 @@ impl Order {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn update_last_seen_dm_ts(pool: &SqlitePool, order_id: &str, ts: i64) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE orders
+            SET last_seen_dm_ts = CASE
+                WHEN last_seen_dm_ts IS NULL OR ? > last_seen_dm_ts THEN ?
+                ELSE last_seen_dm_ts
+            END
+            WHERE id = ?
+            "#,
+        )
+        .bind(ts)
+        .bind(ts)
+        .bind(order_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_startup_active_orders(pool: &SqlitePool) -> Result<Vec<StartupActiveOrderRecord>> {
+        let rows = sqlx::query_as::<_, StartupActiveOrderRecord>(
+            r#"
+            SELECT id, status, trade_index, trade_keys, last_seen_dm_ts
+            FROM orders
+            WHERE trade_keys IS NOT NULL AND trade_keys != ''
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
     }
 }
 

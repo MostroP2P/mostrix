@@ -11,7 +11,8 @@ use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
-    any_relay_reachable, connect_client_safely, set_dm_router_cmd_tx, OrderDmSubscriptionCmd,
+    any_relay_reachable, connect_client_safely, hydrate_startup_active_order_dm_state,
+    set_dm_router_cmd_tx, StartupDmHydration, OrderDmSubscriptionCmd,
 };
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
@@ -164,8 +165,26 @@ pub async fn apply_pending_key_reload(
 
                     let client_for_messages = client.clone();
                     let pool_for_messages = pool.clone();
+                    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(pool).await {
+                        Ok(h) => h,
+                        Err(e) => {
+                            log::warn!(
+                                "Key reload: failed to hydrate startup active order DM state: {}",
+                                e
+                            );
+                            StartupDmHydration {
+                                active_order_trade_indices: std::collections::HashMap::new(),
+                                order_last_seen_dm_ts: std::collections::HashMap::new(),
+                            }
+                        }
+                    };
+                    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+                        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+                    }
                     let active_order_trade_indices_clone =
                         Arc::clone(&app.active_order_trade_indices);
+                    let order_last_seen_dm_ts_clone =
+                        startup_dm_hydration.order_last_seen_dm_ts.clone();
                     let messages_clone = Arc::clone(&app.messages);
                     let message_notification_tx_clone = message_notification_tx.clone();
                     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
@@ -181,6 +200,7 @@ pub async fn apply_pending_key_reload(
                             client_for_messages,
                             pool_for_messages,
                             active_order_trade_indices_clone,
+                            order_last_seen_dm_ts_clone,
                             messages_clone,
                             message_notification_tx_clone,
                             pending_notifications_clone,
@@ -260,7 +280,24 @@ pub async fn reload_runtime_session_after_reconnect(
 
     let client_for_messages = ctx.client.clone();
     let pool_for_messages = ctx.pool.clone();
+    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(ctx.pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!(
+                "Reconnect: failed to hydrate startup active order DM state: {}",
+                e
+            );
+            StartupDmHydration {
+                active_order_trade_indices: std::collections::HashMap::new(),
+                order_last_seen_dm_ts: std::collections::HashMap::new(),
+            }
+        }
+    };
+    if let Ok(mut indices) = ctx.app.active_order_trade_indices.lock() {
+        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+    }
     let active_order_trade_indices_clone = Arc::clone(&ctx.app.active_order_trade_indices);
+    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let messages_clone = Arc::clone(&ctx.app.messages);
     let message_notification_tx_clone = ctx.message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&ctx.app.pending_notifications);
@@ -275,6 +312,7 @@ pub async fn reload_runtime_session_after_reconnect(
             client_for_messages,
             pool_for_messages,
             active_order_trade_indices_clone,
+            order_last_seen_dm_ts_clone,
             messages_clone,
             message_notification_tx_clone,
             pending_notifications_clone,

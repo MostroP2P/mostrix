@@ -19,7 +19,7 @@ use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{MostroInfoFetchResult, OperationResult};
 use crate::util::{
     any_relay_reachable, connect_client_safely, handle_message_notification,
-    handle_operation_result, listen_for_order_messages,
+    handle_operation_result, hydrate_startup_active_order_dm_state, listen_for_order_messages,
     order_utils::{
         spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
     },
@@ -301,9 +301,29 @@ Please restart Mostrix after restoring internet connectivity."
     };
 
     // Spawn background task to listen for messages on active orders
+    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!(
+                "Failed to hydrate startup active order DM state from DB: {}",
+                e
+            );
+            crate::util::StartupDmHydration {
+                active_order_trade_indices: std::collections::HashMap::new(),
+                order_last_seen_dm_ts: std::collections::HashMap::new(),
+            }
+        }
+    };
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+    } else {
+        log::warn!("Failed to seed startup active order map (poisoned lock)");
+    }
+
     let client_for_messages = client.clone();
     let pool_for_messages = pool.clone();
     let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
@@ -312,6 +332,7 @@ Please restart Mostrix after restoring internet connectivity."
             client_for_messages,
             pool_for_messages,
             active_order_trade_indices_clone,
+            order_last_seen_dm_ts_clone,
             messages_clone,
             message_notification_tx_clone,
             pending_notifications_clone,
