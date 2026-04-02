@@ -22,7 +22,9 @@ pub use dm_utils::{
     set_dm_router_cmd_tx, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
     FETCH_EVENTS_TIMEOUT,
 };
-pub use fatal::{fatal_requested, request_fatal_restart, set_fatal_error_tx};
+pub use fatal::{
+    fatal_requested, install_background_panic_hook, request_fatal_restart, set_fatal_error_tx,
+};
 pub use filters::{create_filter, create_seven_days_filter, filter_giftwrap_to_recipient};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,

@@ -33,3 +33,29 @@ pub fn request_fatal_restart(message: impl Into<String>) {
         let _ = tx.send(msg);
     }
 }
+
+/// Route background task panics to the fatal UI path, then run the previous panic hook.
+///
+/// Call **after** [`set_fatal_error_tx`] so panics can notify the main loop.
+pub fn install_background_panic_hook() {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("panic");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        request_fatal_restart(format!(
+            "A background task panicked ({payload}) at {location}.\n\
+This can happen when no network is available.\n\
+Please restart Mostrix after restoring internet connectivity."
+        ));
+        previous_hook(info);
+    }));
+}

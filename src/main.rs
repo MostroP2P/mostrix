@@ -19,7 +19,8 @@ use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{MostroInfoFetchResult, OperationResult};
 use crate::util::{
     any_relay_reachable, connect_client_safely, handle_message_notification,
-    handle_operation_result, hydrate_startup_active_order_dm_state, listen_for_order_messages,
+    handle_operation_result, hydrate_startup_active_order_dm_state, install_background_panic_hook,
+    listen_for_order_messages,
     order_utils::{
         spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
     },
@@ -140,29 +141,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Set fatal error tx for the app channels
     set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
-
-    // Route background panics to a user-facing popup (instead of raw terminal panic output).
-    // Keep the previous hook behavior too.
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
-            .unwrap_or("panic");
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
-
-        crate::util::request_fatal_restart(format!(
-            "A background task panicked ({payload}) at {location}.\n\
-This can happen when no network is available.\n\
-Please restart Mostrix after restoring internet connectivity."
-        ));
-        previous_hook(info);
-    }));
+    install_background_panic_hook();
 
     // Set dm subscription tx for the app channels
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
