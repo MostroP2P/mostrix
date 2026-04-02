@@ -16,8 +16,15 @@ pub async fn save_order(
     pool: &SqlitePool,
     is_maker: bool,
 ) -> Result<()> {
-    if let Ok(order) =
-        Order::new(pool, order, trade_keys, Some(request_id as i64), trade_index, is_maker).await
+    if let Ok(order) = Order::new(
+        pool,
+        order,
+        trade_keys,
+        Some(request_id as i64),
+        trade_index,
+        is_maker,
+    )
+    .await
     {
         if let Some(order_id) = order.id {
             log::info!("Order {} created", order_id);

@@ -35,15 +35,38 @@ Mostrix has a **single background task** that:
 - **`messages: Arc<Mutex<Vec<OrderMessage>>>`** *(shared with UI)*  
   The in-memory list backing the “Messages”/flow UI. Important: this vector is **not a full history**; it stores **one “latest relevant” row per order**.
 
-## Startup bootstrap (how initial subscriptions are created)
+## Startup bootstrap (subscriptions + relay replay)
 
-On startup, the listener clones `active_order_trade_indices` and for each `(order_id, trade_index)`:
+### 1) Load active orders from the database
+
+Before the listener task starts, `hydrate_startup_active_order_dm_state` (`src/util/dm_utils/mod.rs`) reads non-terminal orders from SQLite (`Order::get_startup_active_orders`) and builds:
+
+- **`active_order_trade_indices`**: `order_id → trade_index` (seeds the shared `Arc<Mutex<…>>` used by the UI and listener)
+- **`order_last_seen_dm_ts`**: optional per-order Unix cursor (max seen GiftWrap rumor time), used to choose the initial subscription filter
+
+The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only the DB row (trade keys, index, cursor) survives restart.
+
+### 2) Per-order GiftWrap `subscribe` (routing tables)
+
+`listen_for_order_messages` clones the active-order map and, for each `(order_id, trade_index)`:
 
 1. derives `trade_keys` from the persisted `User` seed + trade index
-2. subscribes to GiftWrap events addressed to the trade pubkey
+2. subscribes via `dm_helpers::ensure_order_giftwrap_subscription` with a mode from `GiftWrapSubscriptionMode`:
+   - **`StartupCatchUp`** (no `last_seen_dm_ts` yet): latest retained event (`limit(1)`) — tight catch-up
+   - **`StartupSince(ts)`** (cursor present): `since(ts)` for incremental subscription
+   - **`LiveOnly`** (used after `TrackOrder` during live flows, e.g. take-order): **`.limit(0)`** live stream — **not** `.since(now)`, so Same-second Mostro replies are not dropped when `take_order` sends an early `TrackOrder` before `wait_for_dm` (the pubkey is already subscribed once; a second waiter subscription is skipped)
 3. records routing metadata (`subscribed_pubkeys`, `subscription_to_order`, `pubkey_to_subscription`)
 
-The subscription mode is “catch-up” oriented (the helper decides the exact filter details).
+### 3) One-shot `fetch_events` replay (Messages tab after restart)
+
+Relay subscriptions alone often **do not** deliver enough stored history into the notification stream to refill the UI. Immediately after the bootstrap `subscribe` loop, the listener runs **`fetch_and_replay_startup_trade_dms`**:
+
+- Builds a **`DmListenerStartupReplay`** struct (same locals as the main loop: `client`, `pool`, `user`, `messages`, notification maps, subscription maps).
+- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` (GiftWrap, trade pubkey, ~30-day lookback, capped batch size).
+- Sorts events by `created_at`, decrypts, `parse_dm_events`, then **`dispatch_giftwrap_batch`** with **`notify: false`** so historical replay does not bump the unread badge or re-trigger invoice popups.
+- Live relay notifications still use **`notify: true`**.
+
+**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, `DmListenerStartupReplay`, and the `notify` parameter on `handle_trade_dm_for_order` / `dispatch_giftwrap_batch` in `src/util/dm_utils/mod.rs`.
 
 ## Command “preferences”: TrackOrder vs Waiter
 
@@ -222,7 +245,8 @@ When a terminal message is detected:
 flowchart TD
   A[listen_for_order_messages start] --> B[Load User from DB]
   B --> C[Bootstrap subs for active_order_trade_indices]
-  C --> D{loop: select}
+  C --> C2[fetch_events replay into messages notify=false]
+  C2 --> D{loop: select}
 
   D -->|tick| GC[Prune closed waiters]
   D -->|cmd| CMD{DmRouterCmd}

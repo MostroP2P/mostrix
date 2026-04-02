@@ -24,6 +24,7 @@ use crate::util::{
         spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
     },
     seed_admin_chat_last_seen, set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
+    StartupDmHydration,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -308,10 +309,7 @@ Please restart Mostrix after restoring internet connectivity."
                 "Failed to hydrate startup active order DM state from DB: {}",
                 e
             );
-            crate::util::StartupDmHydration {
-                active_order_trade_indices: std::collections::HashMap::new(),
-                order_last_seen_dm_ts: std::collections::HashMap::new(),
-            }
+            StartupDmHydration::empty()
         }
     };
     if let Ok(mut indices) = app.active_order_trade_indices.lock() {

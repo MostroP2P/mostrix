@@ -154,10 +154,14 @@ Several background tasks are spawned to keep the UI and data in sync:
 5. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
    - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
-   - `listen_for_order_messages(..., dm_subscription_rx)` runs as the single router loop consuming:
+   - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.
+   - `listen_for_order_messages(..., order_last_seen_dm_ts, ..., dm_subscription_rx)` runs as the single router loop consuming:
      - `TrackOrder` commands for long-lived trade subscriptions.
      - `RegisterWaiter` commands for one-shot request/response waits.
+   - After bootstrapping per-order GiftWrap subscriptions, the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
    - This unifies in-flight response handling and background trade notifications on top of one notification stream.
+
+See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for GiftWrap filter modes (`StartupCatchUp`, `StartupSince`, `LiveOnly`), waiter vs `TrackOrder` ordering, and replay details.
 
 ### Admin Chat Restore at Startup
 

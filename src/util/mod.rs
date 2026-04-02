@@ -23,7 +23,7 @@ pub use dm_utils::{
     FETCH_EVENTS_TIMEOUT,
 };
 pub use fatal::{fatal_requested, request_fatal_restart, set_fatal_error_tx};
-pub use filters::{create_filter, create_seven_days_filter};
+pub use filters::{create_filter, create_seven_days_filter, filter_giftwrap_to_recipient};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,
     mostro_info_from_tags, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,

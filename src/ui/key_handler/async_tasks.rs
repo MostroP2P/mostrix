@@ -12,7 +12,7 @@ use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
     any_relay_reachable, connect_client_safely, hydrate_startup_active_order_dm_state,
-    set_dm_router_cmd_tx, StartupDmHydration, OrderDmSubscriptionCmd,
+    set_dm_router_cmd_tx, OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
@@ -165,19 +165,17 @@ pub async fn apply_pending_key_reload(
 
                     let client_for_messages = client.clone();
                     let pool_for_messages = pool.clone();
-                    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(pool).await {
-                        Ok(h) => h,
-                        Err(e) => {
-                            log::warn!(
+                    let startup_dm_hydration =
+                        match hydrate_startup_active_order_dm_state(pool).await {
+                            Ok(h) => h,
+                            Err(e) => {
+                                log::warn!(
                                 "Key reload: failed to hydrate startup active order DM state: {}",
                                 e
                             );
-                            StartupDmHydration {
-                                active_order_trade_indices: std::collections::HashMap::new(),
-                                order_last_seen_dm_ts: std::collections::HashMap::new(),
+                                StartupDmHydration::empty()
                             }
-                        }
-                    };
+                        };
                     if let Ok(mut indices) = app.active_order_trade_indices.lock() {
                         *indices = startup_dm_hydration.active_order_trade_indices.clone();
                     }
@@ -287,10 +285,7 @@ pub async fn reload_runtime_session_after_reconnect(
                 "Reconnect: failed to hydrate startup active order DM state: {}",
                 e
             );
-            StartupDmHydration {
-                active_order_trade_indices: std::collections::HashMap::new(),
-                order_last_seen_dm_ts: std::collections::HashMap::new(),
-            }
+            StartupDmHydration::empty()
         }
     };
     if let Ok(mut indices) = ctx.app.active_order_trade_indices.lock() {

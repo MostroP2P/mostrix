@@ -5,6 +5,12 @@ use nostr_sdk::prelude::*;
 
 use crate::util::types::ListKind;
 
+/// GiftWrap events (NIP-59) addressed to `pubkey` as recipient (`p` tag target).
+/// Chain `.since()`, `.limit()`, etc. for subscriptions or `fetch_events`.
+pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
+    Filter::new().pubkey(pubkey).kind(nostr_sdk::Kind::GiftWrap)
+}
+
 /// Create a filter for events from the last 7 days
 pub fn create_seven_days_filter(kind: u16, pubkey: PublicKey) -> Result<Filter> {
     Ok(Filter::new()

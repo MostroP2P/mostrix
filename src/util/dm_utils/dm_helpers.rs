@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
+use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::types::create_expiration_tags;
 
 /// Subscription behavior for GiftWrap filters.
@@ -112,18 +113,15 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
         );
     }
     let filter = match options.mode {
-        GiftWrapSubscriptionMode::StartupCatchUp => Filter::new()
-            .pubkey(pubkey)
-            .kind(nostr_sdk::Kind::GiftWrap)
-            .limit(1),
-        GiftWrapSubscriptionMode::StartupSince(ts) => Filter::new()
-            .pubkey(pubkey)
-            .kind(nostr_sdk::Kind::GiftWrap)
-            .since(Timestamp::from(ts as u64)),
-        GiftWrapSubscriptionMode::LiveOnly => Filter::new()
-            .pubkey(pubkey)
-            .kind(nostr_sdk::Kind::GiftWrap)
-            .since(Timestamp::now()),
+        GiftWrapSubscriptionMode::StartupCatchUp => filter_giftwrap_to_recipient(pubkey).limit(1),
+        GiftWrapSubscriptionMode::StartupSince(ts) => {
+            filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(ts as u64))
+        }
+        // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
+        // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
+        // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
+        // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
+        GiftWrapSubscriptionMode::LiveOnly => filter_giftwrap_to_recipient(pubkey).limit(0),
     };
 
     match client.subscribe(filter, None).await {

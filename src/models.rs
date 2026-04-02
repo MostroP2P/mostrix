@@ -476,7 +476,9 @@ impl Order {
         Ok(())
     }
 
-    pub async fn get_startup_active_orders(pool: &SqlitePool) -> Result<Vec<StartupActiveOrderRecord>> {
+    pub async fn get_startup_active_orders(
+        pool: &SqlitePool,
+    ) -> Result<Vec<StartupActiveOrderRecord>> {
         let rows = sqlx::query_as::<_, StartupActiveOrderRecord>(
             r#"
             SELECT id, status, trade_index, trade_keys, last_seen_dm_ts
