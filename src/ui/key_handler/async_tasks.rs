@@ -258,10 +258,11 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.message_listener_handle.abort();
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
+    ctx.client.unsubscribe_all().await;
 
-    if let Err(e) = connect_client_safely(ctx.client).await {
-        log::warn!("Reconnect: failed to connect Nostr client: {e}");
-    }
+    connect_client_safely(ctx.client)
+        .await
+        .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
 
     ctx.app.currencies_filter = ctx.settings.currencies_filter.clone();
     clear_runtime_session_state(ctx.app);

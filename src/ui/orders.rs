@@ -385,7 +385,7 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
         return message_buy_flow_step_fallback(&action);
     }
     let Some(is_maker) = msg.is_mine else {
-        return message_buy_flow_step_fallback(&action);
+        return message_sell_flow_step_fallback(&action);
     };
     if matches!(&action, Action::Rate | Action::RateReceived) {
         return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
@@ -553,6 +553,27 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
         }
         Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
         _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
+    }
+}
+
+/// Action-only fallback for non-sell listings or unknown role/status.
+fn message_sell_flow_step_fallback(action: &Action) -> FlowStep {
+    match action {
+        Action::AddInvoice | Action::WaitingBuyerInvoice => {
+            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+        }
+        Action::PayInvoice | Action::WaitingSellerToPay => {
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+        }
+        Action::HoldInvoicePaymentAccepted => {
+            FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+        }
+        Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
+        Action::FiatSentOk | Action::Release | Action::Released => {
+            FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
+        }
+        Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
+        _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
     }
 }
 

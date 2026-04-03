@@ -217,7 +217,7 @@ pub const SELL_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
     },
     StepLabel {
         top: "Chat with",
-        bottom: "Buyer",
+        bottom: "Seller",
     },
     StepLabel {
         top: "Send",
