@@ -69,7 +69,7 @@ the future without creating ambiguity.
 | lazydocker | `?` |
 | k9s | `?` |
 
-`Ctrl+H` is not a recognized convention in any major TUI. While it works, users
+`Ctrl+H` is uncommon as a help key in major TUIs. While it works, users
 will not discover it without reading documentation. `?` is what users try first
 instinctively.
 
