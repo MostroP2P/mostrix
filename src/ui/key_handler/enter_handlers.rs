@@ -426,6 +426,7 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 }
+                app.pending_fetch_scheduler_reload = true;
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
                     new_pubkey,
@@ -491,7 +492,7 @@ fn handle_enter_settings_mode(
             if selected_button {
                 // Persist to settings and update in-memory cache.
                 save_currency_to_settings(&currency_string);
-                app.pending_key_reload = true;
+                app.pending_fetch_scheduler_reload = true;
                 let upper = currency_string.trim().to_uppercase();
                 if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
                     app.currencies_filter.push(upper);
@@ -502,7 +503,7 @@ fn handle_enter_settings_mode(
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
                 // YES selected - clear currency filters (both on disk and in cache)
-                app.pending_key_reload = true;
+                app.pending_fetch_scheduler_reload = true;
                 clear_currency_filters();
                 app.currencies_filter.clear();
             }

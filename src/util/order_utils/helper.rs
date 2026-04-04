@@ -109,14 +109,22 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
         }
     };
 
-    let min = take_state.order.min_amount.unwrap_or(0) as f64;
-    let max = take_state.order.max_amount.unwrap_or(0) as f64;
+    let min_opt = take_state.order.min_amount.map(|m| m as f64);
+    let max_opt = take_state.order.max_amount.map(|m| m as f64);
 
-    if amount < min || amount > max {
-        take_state.validation_error = Some(format!(
-            "Amount must be between {} and {} {}",
-            min, max, take_state.order.fiat_code
-        ));
+    let below_min = min_opt.is_some_and(|min| amount < min);
+    let above_max = max_opt.is_some_and(|max| amount > max);
+
+    if below_min || above_max {
+        let fiat = &take_state.order.fiat_code;
+        take_state.validation_error = Some(match (min_opt, max_opt) {
+            (Some(min), Some(max)) => {
+                format!("Amount must be between {} and {} {}", min, max, fiat)
+            }
+            (Some(min), None) => format!("Amount must be at least {} {}", min, fiat),
+            (None, Some(max)) => format!("Amount must be at most {} {}", max, fiat),
+            (None, None) => "Amount is outside allowed range".to_string(),
+        });
     } else {
         take_state.validation_error = None;
     }

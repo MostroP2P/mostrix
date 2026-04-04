@@ -161,6 +161,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         check_column_exists(pool, "admin_disputes", "buyer_shared_key_hex").await?;
     let has_seller_shared_key_hex =
         check_column_exists(pool, "admin_disputes", "seller_shared_key_hex").await?;
+    let has_request_id = check_column_exists(pool, "orders", "request_id").await?;
     let has_trade_index = check_column_exists(pool, "orders", "trade_index").await?;
     let has_last_seen_dm_ts = check_column_exists(pool, "orders", "last_seen_dm_ts").await?;
 
@@ -173,6 +174,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_seller_chat_last_seen
         || !has_buyer_shared_key_hex
         || !has_seller_shared_key_hex
+        || !has_request_id
         || !has_trade_index
         || !has_last_seen_dm_ts
     {
@@ -265,6 +267,16 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             sqlx::query(
                 r#"
                 ALTER TABLE admin_disputes ADD COLUMN seller_shared_key_hex TEXT;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_request_id {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN request_id INTEGER;
                 "#,
             )
             .execute(&mut *tx)

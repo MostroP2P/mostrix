@@ -8,24 +8,24 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
+    admin_chat_keys_for_role, apply_admin_chat_updates, expire_attachment_toast,
+    load_admin_disputes_at_startup,
 };
 use crate::ui::key_handler::{
-    apply_pending_key_reload, create_app_channels, handle_key_event,
+    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
     reload_runtime_session_after_reconnect, spawn_refresh_mostro_info_task, AppChannels,
     RuntimeReconnectContext,
 };
 use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    any_relay_reachable, connect_client_safely, handle_message_notification,
-    handle_operation_result, hydrate_startup_active_order_dm_state, install_background_panic_hook,
-    listen_for_order_messages,
+    any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
+    handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
+    install_background_panic_hook, listen_for_order_messages,
     order_utils::{
         spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
     },
-    seed_admin_chat_last_seen, set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
-    StartupDmHydration,
+    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment, StartupDmHydration,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -154,15 +154,20 @@ async fn main() -> Result<(), anyhow::Error> {
         .parse::<Keys>()
         .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
     let mut client = Client::new(my_keys);
+
+    let configured_relays: Vec<String> = settings
+        .relays
+        .iter()
+        .map(|relay| relay.trim())
+        .filter(|relay| !relay.is_empty())
+        .map(|relay| relay.to_owned())
+        .collect();
+
     // Add relays.
-    for relay in &settings.relays {
-        let relay = relay.trim();
-        if relay.is_empty() {
-            continue;
-        }
+    for relay in &configured_relays {
         client.add_relay(relay).await?;
     }
-    let relays_reachable = any_relay_reachable(&settings.relays).await;
+    let relays_reachable = any_relay_reachable(&configured_relays).await;
     if !relays_reachable {
         log::warn!("No configured relays reachable; nostr connect may fail");
     }
@@ -233,7 +238,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // Background offline monitor: emit status transitions every 5 seconds.
-    spawn_network_status_monitor(settings.relays.clone(), network_status_tx.clone());
+    spawn_network_status_monitor(configured_relays.clone(), network_status_tx.clone());
 
     // Initial Mostro instance info (same path as manual refresh; no startup toast).
     // Only attempt this when at least one relay is reachable, otherwise some
@@ -247,38 +252,9 @@ async fn main() -> Result<(), anyhow::Error> {
         );
     }
 
-    // Load all admin disputes from database if admin mode
-    // (The filter toggle will show InProgress or Finalized based on user selection)
-    if app.user_role == UserRole::Admin {
-        match AdminDispute::get_all(&pool).await {
-            Ok(all_disputes) => {
-                app.admin_disputes_in_progress = all_disputes;
-
-                // Pre-compute chat last seen timestamps for all disputes/parties so that the
-                // background listener can fetch messages incrementally based on
-                // last_seen timestamps stored in the database.
-                if admin_keys.is_some() {
-                    seed_admin_chat_last_seen(&mut app);
-                }
-
-                recover_admin_chat_from_files(
-                    &app.admin_disputes_in_progress,
-                    &mut app.admin_dispute_chats,
-                    &mut app.admin_chat_last_seen,
-                );
-            }
-            Err(e) => {
-                log::warn!("Failed to load admin disputes: {}", e);
-            }
-        }
-    }
-
-    // Admin chat keys (for trade-key send/fetch); only set when admin mode
-    let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
-        admin_keys
-    } else {
-        None
-    };
+    // Load admin disputes at startup
+    load_admin_disputes_at_startup(&pool, &mut app, admin_keys.as_ref()).await;
+    let admin_chat_keys = admin_chat_keys_for_role(app.user_role, admin_keys);
 
     // Spawn background task to listen for messages on active orders
     let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
@@ -305,16 +281,19 @@ async fn main() -> Result<(), anyhow::Error> {
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
     let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
-        listen_for_order_messages(
-            client_for_messages,
-            pool_for_messages,
-            active_order_trade_indices_clone,
-            order_last_seen_dm_ts_clone,
-            messages_clone,
-            message_notification_tx_clone,
-            pending_notifications_clone,
-            dm_subscription_rx,
-        )
+        catch_unwind_request_fatal_restart("trade DM listener", async move {
+            listen_for_order_messages(
+                client_for_messages,
+                pool_for_messages,
+                active_order_trade_indices_clone,
+                order_last_seen_dm_ts_clone,
+                messages_clone,
+                message_notification_tx_clone,
+                pending_notifications_clone,
+                dm_subscription_rx,
+            )
+            .await;
+        })
         .await;
     });
 
@@ -346,6 +325,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 RuntimeReconnectContext {
                                     app: &mut app,
                                     client: &mut client,
+                                    mostro_pubkey: &mut mostro_pubkey,
                                     current_mostro_pubkey: &current_mostro_pubkey,
                                     pool: &pool,
                                     message_listener_handle: &mut message_listener_handle,
@@ -547,8 +527,8 @@ async fn main() -> Result<(), anyhow::Error> {
                         &dm_subscription_tx,
                     ) {
                         Some(true) => {
-                            if app.pending_key_reload {
-                                apply_pending_key_reload(
+                            if app.pending_key_reload || app.pending_fetch_scheduler_reload {
+                                apply_pending_runtime_reloads(
                                     &mut app,
                                     &mut client,
                                     &mut mostro_pubkey,
@@ -556,11 +536,12 @@ async fn main() -> Result<(), anyhow::Error> {
                                     &pool,
                                     &mut message_listener_handle,
                                     &message_notification_tx,
-                                    Arc::clone(&orders),
-                                    Arc::clone(&disputes),
+                                    &orders,
+                                    &disputes,
                                     &mut order_task,
                                     &mut dispute_task,
                                     &mut dm_subscription_tx,
+                                    settings,
                                 )
                                 .await;
                             }

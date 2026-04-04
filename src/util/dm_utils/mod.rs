@@ -106,13 +106,6 @@ fn is_terminal_order_status(status: Status) -> bool {
     )
 }
 
-fn status_str_is_non_terminal(status: Option<&str>) -> bool {
-    match status.and_then(|s| Status::from_str(s).ok()) {
-        Some(parsed) => !is_terminal_order_status(parsed),
-        None => true,
-    }
-}
-
 pub async fn hydrate_startup_active_order_dm_state(
     pool: &sqlx::sqlite::SqlitePool,
 ) -> Result<StartupDmHydration> {
@@ -121,9 +114,6 @@ pub async fn hydrate_startup_active_order_dm_state(
     let mut order_last_seen_dm_ts: HashMap<Uuid, i64> = HashMap::new();
 
     for row in rows {
-        if !status_str_is_non_terminal(row.status.as_deref()) {
-            continue;
-        }
         let Ok(order_id) = Uuid::parse_str(&row.id) else {
             continue;
         };

@@ -143,6 +143,9 @@ pub struct AppState {
     /// Set when the user dismisses BackupNewKeys after runtime rotation.
     /// Main loop performs an in-process runtime reload and clears session state.
     pub pending_key_reload: bool,
+    /// Set when Mostro pubkey or currency filters change: respawn order/dispute subscriptions and
+    /// DM listener without rotating identity keys or clearing the Messages tab.
+    pub pending_fetch_scheduler_reload: bool,
     /// When `take_order` completes while an AddInvoice/PayInvoice popup is open, we stash the
     /// [`OperationResult`] here so the invoice UI is not replaced by the success screen (race).
     /// Applied when the user dismisses the popup (Esc), or cleared when they submit the invoice.
@@ -190,6 +193,7 @@ impl AppState {
             offline_overlay_message: None,
             backup_requires_restart: false,
             pending_key_reload: false,
+            pending_fetch_scheduler_reload: false,
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,
         }

@@ -290,11 +290,12 @@ pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
     }
     let inner = msg.message.get_inner_message_kind();
     if let Some(Payload::Order(order)) = &inner.payload {
-        return match order.kind {
-            Some(mostro_core::order::Kind::Buy) => "BUY",
-            Some(mostro_core::order::Kind::Sell) => "SELL",
-            None => "N/A",
-        };
+        if let Some(kind) = order.kind {
+            return match kind {
+                mostro_core::order::Kind::Buy => "BUY",
+                mostro_core::order::Kind::Sell => "SELL",
+            };
+        }
     }
     match inner.action {
         Action::TakeSell => "SELL",
@@ -448,8 +449,9 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
 fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowStep {
     if is_maker {
         match action {
-            Action::WaitingSellerToPay => FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice),
-            Action::PayInvoice => FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment),
+            Action::WaitingSellerToPay | Action::PayInvoice => {
+                FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+            }
             Action::AddInvoice | Action::WaitingBuyerInvoice => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
             }
@@ -541,8 +543,11 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
         Action::AddInvoice | Action::WaitingBuyerInvoice => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
         }
-        Action::PayInvoice | Action::WaitingSellerToPay | Action::HoldInvoicePaymentAccepted => {
+        Action::PayInvoice | Action::WaitingSellerToPay => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+        }
+        Action::HoldInvoicePaymentAccepted => {
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
         }
         Action::TakeBuy | Action::TakeSell => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
@@ -655,7 +660,7 @@ mod timeline_step_tests {
     }
 
     #[test]
-    fn sell_maker_pay_invoice_maps_to_second_column() {
+    fn sell_maker_pay_invoice_maps_to_buyer_invoice_step() {
         let m = sample_order_message(
             Action::PayInvoice,
             Some(mostro_core::order::Kind::Sell),
@@ -664,7 +669,7 @@ mod timeline_step_tests {
         );
         assert_eq!(
             message_trade_timeline_step(&m),
-            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
         );
     }
 

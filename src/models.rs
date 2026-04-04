@@ -479,11 +479,26 @@ impl Order {
     pub async fn get_startup_active_orders(
         pool: &SqlitePool,
     ) -> Result<Vec<StartupActiveOrderRecord>> {
+        // Match `hydrate_startup_active_order_dm_state` / `status_str_is_non_terminal`: skip orders
+        // whose status is terminal for DM purposes, except `success` (still hydrated for
+        // rating / follow-up DMs). See `mostro_core::order::Status` kebab-case strings.
         let rows = sqlx::query_as::<_, StartupActiveOrderRecord>(
             r#"
             SELECT id, status, trade_index, trade_keys, last_seen_dm_ts
             FROM orders
-            WHERE trade_keys IS NOT NULL AND trade_keys != ''
+            WHERE trade_keys IS NOT NULL
+              AND trade_keys != ''
+              AND (
+                status IS NULL
+                OR lower(status) NOT IN (
+                    'canceled',
+                    'canceled-by-admin',
+                    'settled-by-admin',
+                    'completed-by-admin',
+                    'expired',
+                    'cooperatively-canceled'
+                )
+              )
             "#,
         )
         .fetch_all(pool)

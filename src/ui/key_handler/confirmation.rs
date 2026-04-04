@@ -139,6 +139,7 @@ pub fn handle_confirm_key(
                     return true;
                 }
             }
+            app.pending_fetch_scheduler_reload = true;
             spawn_refresh_mostro_info_task(
                 ctx.client.clone(),
                 new_pubkey,
@@ -185,6 +186,7 @@ pub fn handle_confirm_key(
             if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
                 app.currencies_filter.push(upper);
             }
+            app.pending_fetch_scheduler_reload = true;
             true
         }
         UiMode::ConfirmClearCurrencies(_) => {
@@ -196,6 +198,7 @@ pub fn handle_confirm_key(
             clear_currency_filters();
             // Clear in-memory cache as well.
             app.currencies_filter.clear();
+            app.pending_fetch_scheduler_reload = true;
             app.mode = default_mode;
             true
         }
