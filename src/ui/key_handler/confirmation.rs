@@ -1,3 +1,4 @@
+use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
 use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 
 use crate::ui::key_handler::admin_handlers::{
@@ -226,6 +227,10 @@ pub fn handle_confirm_key(
                 save_admin_key_to_settings,
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
             );
+            hydrate_app_admin_keys_from_privkey(app, &key_string);
+            if app.user_role == UserRole::Admin {
+                app.pending_admin_disputes_reload = true;
+            }
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, _)) => {

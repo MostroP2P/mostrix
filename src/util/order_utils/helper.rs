@@ -102,7 +102,11 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
     }
 
     let amount = match take_state.amount_input.parse::<f64>() {
-        Ok(val) => val,
+        Ok(val) if val.is_finite() => val,
+        Ok(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
         Err(_) => {
             take_state.validation_error = Some("Invalid number format".to_string());
             return;

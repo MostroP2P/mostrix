@@ -116,7 +116,8 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
         GiftWrapSubscriptionMode::StartupCatchUp => filter_giftwrap_to_recipient(pubkey).limit(1),
         GiftWrapSubscriptionMode::StartupSince(ts) => {
             let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_u64());
-            filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(ts))
+            let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+            filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(since_ts))
         }
         // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
         // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created

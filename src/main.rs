@@ -8,8 +8,8 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    admin_chat_keys_for_role, apply_admin_chat_updates, expire_attachment_toast,
-    load_admin_disputes_at_startup,
+    admin_chat_keys_clone_for_role, apply_admin_chat_updates, expire_attachment_toast,
+    hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -187,20 +187,6 @@ async fn main() -> Result<(), anyhow::Error> {
         mut dispute_task,
     } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
 
-    // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
-    let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
-        None
-    } else {
-        match Keys::parse(&settings.admin_privkey) {
-            Ok(keys) => Some(keys),
-            Err(e) => {
-                log::warn!("Invalid admin_privkey in settings: {}", e);
-                None
-            }
-        }
-    };
-    let admin_chat_pubkey: Option<PublicKey> = admin_keys.as_ref().map(Keys::public_key);
-
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
@@ -229,6 +215,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Seed currencies filter cache from settings so UI-side filtering does not
     // need to hit the filesystem on every render.
     app.currencies_filter = settings.currencies_filter.clone();
+    hydrate_app_admin_keys_from_privkey(&mut app, &settings.admin_privkey);
 
     if !relays_reachable {
         app.offline_overlay_message = Some(
@@ -252,9 +239,8 @@ async fn main() -> Result<(), anyhow::Error> {
         );
     }
 
-    // Load admin disputes at startup
-    load_admin_disputes_at_startup(&pool, &mut app, admin_keys.as_ref()).await;
-    let admin_chat_keys = admin_chat_keys_for_role(app.user_role, admin_keys);
+    // Load admin disputes at startup (only when role is admin)
+    load_admin_disputes_at_startup(&pool, &mut app).await;
 
     // Spawn background task to listen for messages on active orders
     let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
@@ -416,10 +402,11 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(result) = admin_chat_result {
                     match result {
                         Ok(updates) => {
+                            let admin_pk = app.admin_keys.as_ref().map(|k| k.public_key());
                             if let Err(e) = apply_admin_chat_updates(
                                 &mut app,
                                 updates,
-                                admin_chat_pubkey.as_ref(),
+                                admin_pk.as_ref(),
                                 &pool,
                             )
                             .await
@@ -508,6 +495,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
+                    let admin_chat_keys_owned = admin_chat_keys_clone_for_role(&app);
+                    let admin_chat_keys = admin_chat_keys_owned.as_ref();
                     match handle_key_event(
                         key_event,
                         &mut app,
@@ -522,7 +511,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &seed_words_tx,
                         &mostro_info_tx,
                         &validate_range_amount,
-                        admin_chat_keys.as_ref(),
+                        admin_chat_keys,
                         Some(&save_attachment_tx),
                         &dm_subscription_tx,
                     ) {
@@ -545,6 +534,10 @@ async fn main() -> Result<(), anyhow::Error> {
                                 )
                                 .await;
                             }
+                            if app.pending_admin_disputes_reload {
+                                app.pending_admin_disputes_reload = false;
+                                load_admin_disputes_at_startup(&pool, &mut app).await;
+                            }
                             while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
                                 spawn_save_attachment(
                                     dispute_id,
@@ -566,7 +559,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Refresh the UI even if there is no input.
             }
             _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
-                if admin_chat_keys.is_some() {
+                if app.admin_keys.is_some() {
                     spawn_admin_chat_fetch(
                         client.clone(),
                         app.admin_disputes_in_progress.clone(),

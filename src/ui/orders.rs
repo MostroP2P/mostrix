@@ -275,6 +275,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::Canceled => "Canceled",
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
+        Action::RateReceived => "Rating Received",
         _ => "Message",
     }
 }

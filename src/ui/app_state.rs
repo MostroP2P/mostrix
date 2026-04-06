@@ -15,6 +15,7 @@ use crate::ui::orders::{
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
+use nostr_sdk::Keys;
 
 #[derive(Debug)]
 pub enum UiMode {
@@ -131,6 +132,10 @@ pub struct AppState {
     pub observer_loading: bool,
     /// Observer mode: last error message (if any).
     pub observer_error: Option<String>,
+    /// Parsed `admin_privkey` from settings (dispute chat, classification). Updated on save / reload.
+    pub admin_keys: Option<Keys>,
+    /// After switching to admin mode (M key) or saving admin key: reload disputes from DB in main.
+    pub pending_admin_disputes_reload: bool,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Cached Mostro instance info (kind 38385 event), if available.
@@ -188,6 +193,8 @@ impl AppState {
             observer_scroll_tracker: None,
             observer_loading: false,
             observer_error: None,
+            admin_keys: None,
+            pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
             mostro_info: None,
             offline_overlay_message: None,

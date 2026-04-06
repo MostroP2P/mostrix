@@ -84,10 +84,12 @@ pub fn handle_mode_switch(app: &mut AppState) {
         UserRole::Admin => UserRole::User,
     };
 
-    // Update app state
     app.switch_role(new_role);
 
-    // Save to settings file
+    if new_role == UserRole::Admin {
+        app.pending_admin_disputes_reload = true;
+    }
+
     let role_string = new_role.to_string();
     save_settings_with(
         |s| s.user_mode = role_string.clone(),

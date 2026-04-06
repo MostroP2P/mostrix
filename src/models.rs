@@ -4,7 +4,7 @@ use mostro_core::prelude::*;
 use nip06::FromMnemonic;
 use nostr_sdk::prelude::*;
 use sqlx::sqlite::SqlitePool;
-use sqlx::Sqlite;
+use sqlx::{QueryBuilder, Sqlite};
 
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct User {
@@ -180,6 +180,20 @@ pub struct StartupActiveOrderRecord {
     pub trade_keys: Option<String>,
     pub last_seen_dm_ts: Option<i64>,
 }
+
+/// Kebab-case order status strings excluded from startup DM hydration ([`Order::get_startup_active_orders`]).
+///
+/// **`success` is intentionally omitted** so post-success trade DMs still hydrate. Must match
+/// [`mostro_core::order::Status`] `Display` for each variant listed; see
+/// `terminal_dm_statuses_match_mostro_core_display` in tests for drift coverage.
+pub const TERMINAL_DM_STATUSES: &[&str] = &[
+    "canceled",
+    "canceled-by-admin",
+    "settled-by-admin",
+    "completed-by-admin",
+    "expired",
+    "cooperatively-canceled",
+];
 
 impl Order {
     /// Create a new order from SmallOrder and save it to the database.
@@ -479,30 +493,22 @@ impl Order {
     pub async fn get_startup_active_orders(
         pool: &SqlitePool,
     ) -> Result<Vec<StartupActiveOrderRecord>> {
-        // Match `hydrate_startup_active_order_dm_state` / `status_str_is_non_terminal`: skip orders
-        // whose status is terminal for DM purposes, except `success` (still hydrated for
-        // rating / follow-up DMs). See `mostro_core::order::Status` kebab-case strings.
-        let rows = sqlx::query_as::<_, StartupActiveOrderRecord>(
-            r#"
-            SELECT id, status, trade_index, trade_keys, last_seen_dm_ts
-            FROM orders
-            WHERE trade_keys IS NOT NULL
-              AND trade_keys != ''
-              AND (
-                status IS NULL
-                OR lower(status) NOT IN (
-                    'canceled',
-                    'canceled-by-admin',
-                    'settled-by-admin',
-                    'completed-by-admin',
-                    'expired',
-                    'cooperatively-canceled'
-                )
-              )
-            "#,
-        )
-        .fetch_all(pool)
-        .await?;
+        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+            "SELECT id, status, trade_index, trade_keys, last_seen_dm_ts FROM orders \
+             WHERE trade_keys IS NOT NULL AND trade_keys != '' \
+             AND (status IS NULL OR lower(status) NOT IN (",
+        );
+        {
+            let mut separated = qb.separated(", ");
+            for s in TERMINAL_DM_STATUSES {
+                separated.push_bind(*s);
+            }
+        }
+        qb.push("))");
+        let rows = qb
+            .build_query_as::<StartupActiveOrderRecord>()
+            .fetch_all(pool)
+            .await?;
         Ok(rows)
     }
 }
@@ -906,5 +912,35 @@ impl AdminDispute {
     /// Returns true if the dispute is not finalized and can be canceled.
     pub fn can_cancel(&self) -> bool {
         !self.is_finalized()
+    }
+}
+
+#[cfg(test)]
+mod terminal_dm_status_tests {
+    use super::TERMINAL_DM_STATUSES;
+    use mostro_core::prelude::Status;
+
+    #[test]
+    fn terminal_dm_statuses_match_mostro_core_display() {
+        let variants = [
+            Status::Canceled,
+            Status::CanceledByAdmin,
+            Status::SettledByAdmin,
+            Status::CompletedByAdmin,
+            Status::Expired,
+            Status::CooperativelyCanceled,
+        ];
+        let expected: Vec<String> = variants
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        let actual: Vec<String> = TERMINAL_DM_STATUSES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            expected, actual,
+            "TERMINAL_DM_STATUSES must match mostro_core::order::Status::to_string()"
+        );
     }
 }

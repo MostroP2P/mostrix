@@ -1,6 +1,7 @@
 use crate::models::User;
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
+use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::FormState;
 use crate::ui::{
@@ -152,6 +153,7 @@ pub async fn apply_pending_key_reload(
                         }
                     }
                     app.currencies_filter = latest_settings.currencies_filter.clone();
+                    hydrate_app_admin_keys_from_privkey(app, &latest_settings.admin_privkey);
                     clear_runtime_session_state(app);
 
                     order_fetch_task.abort();
@@ -313,6 +315,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     }
 
     app.currencies_filter = latest.currencies_filter.clone();
+    hydrate_app_admin_keys_from_privkey(app, &latest.admin_privkey);
 
     let (o, d) = spawn_fetch_scheduler_loops(
         client.clone(),
@@ -475,6 +478,7 @@ pub async fn reload_runtime_session_after_reconnect(
     }
 
     ctx.app.currencies_filter = ctx.settings.currencies_filter.clone();
+    hydrate_app_admin_keys_from_privkey(ctx.app, &ctx.settings.admin_privkey);
     clear_runtime_session_state(ctx.app);
 
     let (o, d) = spawn_fetch_scheduler_loops(

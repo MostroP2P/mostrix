@@ -338,20 +338,32 @@ fn update_last_seen_timestamp(
     }
 }
 
+/// Parse `admin_privkey` text and store in [`AppState::admin_keys`].
+pub fn hydrate_app_admin_keys_from_privkey(app: &mut AppState, admin_privkey: &str) {
+    app.admin_keys = if admin_privkey.trim().is_empty() {
+        None
+    } else {
+        match Keys::parse(admin_privkey.trim()) {
+            Ok(keys) => Some(keys),
+            Err(e) => {
+                log::warn!("Invalid admin_privkey: {e}");
+                None
+            }
+        }
+    };
+}
+
 /// Loads admin disputes from SQLite, seeds per-party chat cursors when admin keys are present,
 /// and restores in-progress chat transcripts from disk. No-op if the app is not in admin mode.
-pub async fn load_admin_disputes_at_startup(
-    pool: &SqlitePool,
-    app: &mut AppState,
-    admin_keys: Option<&Keys>,
-) {
+pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::Admin {
         return;
     }
+    let admin_keys_present = app.admin_keys.is_some();
     match AdminDispute::get_all(pool).await {
         Ok(all_disputes) => {
             app.admin_disputes_in_progress = all_disputes;
-            if admin_keys.is_some() {
+            if admin_keys_present {
                 seed_admin_chat_last_seen(app);
             }
             recover_admin_chat_from_files(
@@ -367,10 +379,11 @@ pub async fn load_admin_disputes_at_startup(
 }
 
 /// Admin Nostr keys for shared-key dispute chat send/fetch when in admin mode.
+/// Clone of admin keys for passing into handlers while holding `&mut AppState` elsewhere.
 #[must_use]
-pub fn admin_chat_keys_for_role(user_role: UserRole, admin_keys: Option<Keys>) -> Option<Keys> {
-    match user_role {
-        UserRole::Admin => admin_keys,
+pub fn admin_chat_keys_clone_for_role(app: &AppState) -> Option<Keys> {
+    match app.user_role {
+        UserRole::Admin => app.admin_keys.clone(),
         UserRole::User => None,
     }
 }

@@ -93,6 +93,8 @@ pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) -> Result<()
     }
 }
 
+/// Full DM-terminal set including [`Status::Success`]. Startup SQL hydration uses
+/// [`crate::models::TERMINAL_DM_STATUSES`] instead, which omits `success` so rating/follow-up DMs still load.
 fn is_terminal_order_status(status: Status) -> bool {
     matches!(
         status,
@@ -106,6 +108,7 @@ fn is_terminal_order_status(status: Status) -> bool {
     )
 }
 
+/// Loads active-order rows for DM bootstrap; status filter is [`crate::models::TERMINAL_DM_STATUSES`].
 pub async fn hydrate_startup_active_order_dm_state(
     pool: &sqlx::sqlite::SqlitePool,
 ) -> Result<StartupDmHydration> {
@@ -772,9 +775,14 @@ async fn dispatch_giftwrap_batch(
 }
 
 /// Look back window for startup GiftWrap replay (in-memory Messages tab has no local DB).
-const STARTUP_TRADE_DM_LOOKBACK_SECS: u64 = 30 * 24 * 60 * 60;
+const STARTUP_TRADE_DM_LOOKBACK_SECS: u64 = 12 * 60 * 60;
 /// Max events per trade key per startup fetch (relay-dependent; cap bandwidth).
-const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 200;
+const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 100;
+/// NIP-01 `since` matches the GiftWrap **envelope** `created_at`, but `last_seen_dm_ts` stores the
+/// decrypted **rumor** `created_at` (`parse_dm_events`). If the rumor clock runs ahead of the
+/// envelope (seen with Mostro), using the raw cursor as `since` drops that GiftWrap on replay and
+/// only newer envelopes (e.g. `waiting-seller-to-pay`) are returned.
+const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 6 * 60 * 60;
 
 /// Snapshot of `listen_for_order_messages` locals passed into startup GiftWrap replay.
 struct DmListenerStartupReplay<'a> {
@@ -795,6 +803,7 @@ struct DmListenerStartupReplay<'a> {
 async fn fetch_and_replay_startup_trade_dms(
     replay: DmListenerStartupReplay<'_>,
     startup_active_orders: &HashMap<Uuid, i64>,
+    order_last_seen_dm_ts: &HashMap<Uuid, i64>,
 ) {
     let DmListenerStartupReplay {
         client,
@@ -809,7 +818,7 @@ async fn fetch_and_replay_startup_trade_dms(
         pubkey_to_subscription,
     } = replay;
 
-    let since_ts = Timestamp::now()
+    let lookback_start = Timestamp::now()
         .as_u64()
         .saturating_sub(STARTUP_TRADE_DM_LOOKBACK_SECS);
 
@@ -833,6 +842,16 @@ async fn fetch_and_replay_startup_trade_dms(
             );
             continue;
         };
+
+        // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
+        // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list) then
+        // widen backward so the last processed DM's GiftWrap is not filtered out.
+        let combined_since = order_last_seen_dm_ts
+            .get(order_id)
+            .and_then(|ts| u64::try_from(*ts).ok())
+            .map(|last_seen| last_seen.min(lookback_start))
+            .unwrap_or(lookback_start);
+        let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
 
         let filter = filter_giftwrap_to_recipient(pubkey)
             .since(Timestamp::from(since_ts))
@@ -875,6 +894,7 @@ async fn fetch_and_replay_startup_trade_dms(
             if parsed_messages.is_empty() {
                 continue;
             }
+
             dispatch_giftwrap_batch(
                 parsed_messages,
                 *order_id,
@@ -1041,6 +1061,8 @@ pub async fn listen_for_order_messages(
             }
         }
     };
+
+    // Bootstrap subscriptions for orders already known at startup.
     for (&order_id, &trade_index) in startup_active_orders.iter() {
         let trade_keys = match user.derive_trade_keys(trade_index) {
             Ok(k) => k,
@@ -1089,6 +1111,7 @@ pub async fn listen_for_order_messages(
             pubkey_to_subscription: &pubkey_to_subscription,
         },
         &startup_active_orders,
+        &order_last_seen_dm_ts,
     )
     .await;
 

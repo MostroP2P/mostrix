@@ -3,12 +3,14 @@ use crate::ui::{AdminMode, AppState, UiMode};
 use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
 use uuid::Uuid;
 
+use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{validate_npub, validate_nsec};
 use crate::ui::orders::OperationResult;
+use crate::ui::UserRole;
 use crate::util::order_utils::execute_take_dispute;
 
 /// Helper function to execute taking a dispute.
@@ -212,6 +214,12 @@ pub(crate) fn handle_enter_admin_mode(
                 save_admin_key_to_settings,
                 |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
             );
+            if selected_button {
+                hydrate_app_admin_keys_from_privkey(app, &key_string);
+                if app.user_role == UserRole::Admin {
+                    app.pending_admin_disputes_reload = true;
+                }
+            }
         }
         _ => {
             // This should not happen, but handle gracefully
