@@ -496,6 +496,7 @@ impl Order {
         let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
             "SELECT id, status, trade_index, trade_keys, last_seen_dm_ts FROM orders \
              WHERE trade_keys IS NOT NULL AND trade_keys != '' \
+             AND (status IS NOT NULL AND status != 'pending') \
              AND (status IS NULL OR lower(status) NOT IN (",
         );
         {
