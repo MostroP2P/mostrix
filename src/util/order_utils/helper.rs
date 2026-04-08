@@ -401,34 +401,6 @@ pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) 
     })
 }
 
-/// Helper function to create OperationResult::Success from form data (fallback)
-#[allow(clippy::too_many_arguments)]
-pub(super) fn create_order_result_from_form(
-    kind: mostro_core::order::Kind,
-    amount: i64,
-    fiat_code: String,
-    fiat_amount: i64,
-    min_amount: Option<i64>,
-    max_amount: Option<i64>,
-    payment_method: String,
-    premium: i64,
-    trade_index: i64,
-) -> OperationResult {
-    OperationResult::Success(OrderSuccess {
-        order_id: None,
-        kind: Some(kind),
-        amount,
-        fiat_code,
-        fiat_amount,
-        min_amount,
-        max_amount,
-        payment_method,
-        premium,
-        status: Some(mostro_core::prelude::Status::Pending),
-        trade_index: Some(trade_index),
-    })
-}
-
 /// Helper function to handle Mostro response and check for errors
 pub(super) fn handle_mostro_response(
     response_message: &Message,
