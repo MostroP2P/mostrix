@@ -160,9 +160,7 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
 /// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
 /// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
 pub fn seed_admin_chat_last_seen(app: &mut AppState) {
-    let disputes = app.admin_disputes_in_progress.clone();
-
-    for dispute in &disputes {
+    for dispute in &app.admin_disputes_in_progress {
         if dispute.buyer_pubkey.is_some() {
             app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Buyer),

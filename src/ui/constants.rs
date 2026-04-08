@@ -135,8 +135,8 @@ pub const BUY_ORDER_FLOW_STEPS_MAKER: [StepLabel; 6] = [
         bottom: "Invoice",
     },
     StepLabel {
-        top: "Chat with",
-        bottom: "Seller",
+        top: "Order",
+        bottom: "Active",
     },
     StepLabel {
         top: "Send",
@@ -162,8 +162,8 @@ pub const BUY_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
         bottom: "Buyer Invoice",
     },
     StepLabel {
-        top: "Chat with",
-        bottom: "Buyer",
+        top: "Order",
+        bottom: "Active",
     },
     StepLabel {
         top: "Wait for",
@@ -189,8 +189,8 @@ pub const SELL_ORDER_FLOW_STEPS_MAKER: [StepLabel; 6] = [
         bottom: "Invoice",
     },
     StepLabel {
-        top: "Chat with",
-        bottom: "Buyer",
+        top: "Order",
+        bottom: "Active",
     },
     StepLabel {
         top: "Wait for",
@@ -216,8 +216,8 @@ pub const SELL_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
         bottom: "Seller",
     },
     StepLabel {
-        top: "Chat with",
-        bottom: "Seller",
+        top: "Order",
+        bottom: "Active",
     },
     StepLabel {
         top: "Send",
@@ -243,8 +243,8 @@ pub const GENERIC_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
         bottom: "Invoice",
     },
     StepLabel {
-        top: "",
-        bottom: "Chat",
+        top: "Order",
+        bottom: "Active",
     },
     StepLabel {
         top: "",

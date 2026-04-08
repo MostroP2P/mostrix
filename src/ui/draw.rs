@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout};
 
+use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 
 /// Main UI draw function, extracted from `ui::mod`.
@@ -49,7 +50,7 @@ pub fn ui_draw(
             tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
-            let messages = match app.messages.lock() {
+            let mut messages = match app.messages.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     crate::util::request_fatal_restart(format!(
@@ -58,6 +59,10 @@ pub fn ui_draw(
                     return;
                 }
             };
+            strip_new_order_messages_and_clamp_selected(
+                &mut messages,
+                &mut app.selected_message_idx,
+            );
             tabs::message_flow_tab::render_messages_tab(
                 f,
                 content_area,

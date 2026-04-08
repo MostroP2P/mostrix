@@ -175,6 +175,18 @@ pub struct OrderMessage {
     pub auto_popup_shown: bool,
 }
 
+/// Drop `new-order` rows and fix selection. Those DMs are not shown in the Messages tab
+/// (order creation ack is handled via `send_new_order` / waiting UI).
+pub fn strip_new_order_messages_and_clamp_selected(
+    messages: &mut Vec<OrderMessage>,
+    selected_message_idx: &mut usize,
+) {
+    messages.retain(|m| !matches!(m.message.get_inner_message_kind().action, Action::NewOrder));
+    if *selected_message_idx >= messages.len() {
+        *selected_message_idx = messages.len().saturating_sub(1);
+    }
+}
+
 /// Notification for a new message
 #[derive(Clone, Debug)]
 pub struct MessageNotification {
@@ -311,7 +323,7 @@ pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
 pub enum StepLabelsBuy {
     StepSellerPayment = 1,
     StepBuyerInvoice = 2,
-    StepChatWithSeller = 3,
+    StepChatActiveOrder = 3,
     StepSendFiat = 4,
     StepReleaseSats = 5,
     StepRate = 6,
@@ -323,7 +335,7 @@ pub enum StepLabelsBuy {
 pub enum StepLabelsSell {
     StepBuyerInvoice = 1,
     StepSellerPayment = 2,
-    StepChatWithSeller = 3,
+    StepChatActiveOrder = 3,
     StepSendFiat = 4,
     StepReleaseSats = 5,
     StepRate = 6,
@@ -411,7 +423,7 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice))
             }
             Status::InProgress | Status::Active => {
-                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller))
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder))
             }
             Status::FiatSent => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat)),
             Status::Success => None,
@@ -431,7 +443,7 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice))
             }
             Status::InProgress | Status::Active => {
-                Some(FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller))
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder))
             }
             Status::FiatSent => Some(FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat)),
             Status::Success => None,
@@ -451,13 +463,13 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
     if is_maker {
         match action {
             Action::WaitingSellerToPay | Action::PayInvoice => {
-                FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+                FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
             }
             Action::AddInvoice | Action::WaitingBuyerInvoice => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
             }
             Action::HoldInvoicePaymentAccepted => {
-                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
             Action::FiatSentOk | Action::Release | Action::Released => {
@@ -465,9 +477,9 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
             }
             Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
             Action::TakeBuy | Action::TakeSell => {
-                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
-            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
+            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder),
         }
     } else {
         match action {
@@ -478,7 +490,7 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
                 FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
             }
             Action::HoldInvoicePaymentAccepted => {
-                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
             Action::FiatSentOk | Action::Release | Action::Released => {
@@ -486,9 +498,9 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
             }
             Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
             Action::TakeBuy | Action::TakeSell => {
-                FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+                FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
-            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
+            _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder),
         }
     }
 }
@@ -502,7 +514,7 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
             }
             Action::PayInvoice => FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment),
             Action::HoldInvoicePaymentAccepted => {
-                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
             Action::FiatSentOk | Action::Release | Action::Released => {
@@ -510,9 +522,9 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
             }
             Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
             Action::TakeBuy | Action::TakeSell => {
-                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
-            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
+            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder),
         }
     } else {
         match action {
@@ -520,7 +532,7 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
             }
             Action::HoldInvoicePaymentAccepted => {
-                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
             Action::WaitingBuyerInvoice | Action::AddInvoice => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
@@ -531,9 +543,9 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
             }
             Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
             Action::TakeBuy | Action::TakeSell => {
-                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
-            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
+            _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder),
         }
     }
 }
@@ -548,17 +560,17 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
         }
         Action::HoldInvoicePaymentAccepted => {
-            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
         }
         Action::TakeBuy | Action::TakeSell => {
-            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller)
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
         }
         Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
         Action::FiatSentOk | Action::Release | Action::Released => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
         }
         Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
-        _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatWithSeller),
+        _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder),
     }
 }
 
@@ -572,14 +584,14 @@ fn message_sell_flow_step_fallback(action: &Action) -> FlowStep {
             FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
         }
         Action::HoldInvoicePaymentAccepted => {
-            FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller)
+            FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
         }
         Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
         Action::FiatSentOk | Action::Release | Action::Released => {
             FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
         }
         Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
-        _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatWithSeller),
+        _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder),
     }
 }
 
@@ -661,7 +673,7 @@ mod timeline_step_tests {
     }
 
     #[test]
-    fn sell_maker_pay_invoice_maps_to_buyer_invoice_step() {
+    fn sell_maker_pay_invoice_maps_to_seller_payment_step() {
         let m = sample_order_message(
             Action::PayInvoice,
             Some(mostro_core::order::Kind::Sell),
@@ -670,7 +682,7 @@ mod timeline_step_tests {
         );
         assert_eq!(
             message_trade_timeline_step(&m),
-            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
         );
     }
 

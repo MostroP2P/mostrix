@@ -1,3 +1,4 @@
+use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
 };
@@ -217,6 +218,10 @@ fn handle_up_key(
                         return;
                     }
                 };
+                strip_new_order_messages_and_clamp_selected(
+                    &mut messages,
+                    &mut app.selected_message_idx,
+                );
                 let messages_len = messages.len();
                 if messages_len == 0 {
                     app.selected_message_idx = 0;
@@ -352,6 +357,10 @@ fn handle_down_key(
                         return;
                     }
                 };
+                strip_new_order_messages_and_clamp_selected(
+                    &mut messages,
+                    &mut app.selected_message_idx,
+                );
                 let messages_len = messages.len();
                 if messages_len == 0 {
                     app.selected_message_idx = 0;
@@ -451,6 +460,10 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
             // Mark all messages as read when entering Messages tab
             match app.messages.lock() {
                 Ok(mut messages) => {
+                    strip_new_order_messages_and_clamp_selected(
+                        &mut messages,
+                        &mut app.selected_message_idx,
+                    );
                     for msg in messages.iter_mut() {
                         msg.read = true;
                     }

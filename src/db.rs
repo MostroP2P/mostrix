@@ -307,6 +307,14 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         log::info!("Migration completed successfully");
     }
 
+    // Builds that added `suppress_next_new_order_dm` must drop it so `SELECT *` matches `Order`.
+    if check_column_exists(pool, "orders", "suppress_next_new_order_dm").await? {
+        sqlx::query(r#"ALTER TABLE orders DROP COLUMN suppress_next_new_order_dm"#)
+            .execute(pool)
+            .await?;
+        log::info!("Dropped obsolete column orders.suppress_next_new_order_dm");
+    }
+
     Ok(())
 }
 

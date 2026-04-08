@@ -4,6 +4,7 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
+use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
@@ -592,7 +593,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
-        let messages_lock = match app.messages.lock() {
+        let mut messages_lock = match app.messages.lock() {
             Ok(g) => g,
             Err(e) => {
                 crate::util::request_fatal_restart(format!(
@@ -601,6 +602,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 return;
             }
         };
+        strip_new_order_messages_and_clamp_selected(
+            &mut messages_lock,
+            &mut app.selected_message_idx,
+        );
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();

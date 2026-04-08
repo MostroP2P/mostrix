@@ -548,7 +548,8 @@ async fn handle_trade_dm_for_order(
                 untrack_decision = TradeUntrackDecision::Untrack;
             }
             CancelOutcome::RevertToPending => {
-                if let Err(e) = update_order_status(pool, &order_id.to_string(), Status::Pending).await
+                if let Err(e) =
+                    update_order_status(pool, &order_id.to_string(), Status::Pending).await
                 {
                     log::warn!(
                         "Failed to revert order {} to pending after action-only cancel: {}",
@@ -599,6 +600,13 @@ async fn handle_trade_dm_for_order(
 
     if matches!(action, Action::PayInvoice) && !is_actionable_notification {
         return TradeUntrackDecision::None;
+    }
+
+    // Do not surface `new-order` in Messages or toasts (relist, book echo, etc.). Persisted status
+    // above still applies. Publish ack for a newly created order uses `send_new_order` / waiting UI.
+    if matches!(action, Action::NewOrder) {
+        remove_order_from_messages(messages, order_id);
+        return untrack_decision;
     }
 
     // Lock `messages` only long enough to extract comparison data, then drop it
