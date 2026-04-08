@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
-use crate::util::db_utils::update_order_status;
+use crate::util::db_utils::{delete_order_by_id, update_order_status};
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::order_utils::{inferred_status_from_trade_action, map_action_to_status};
 use crate::util::types::{determine_message_type, MessageType};
@@ -156,10 +156,52 @@ fn message_has_terminal_order_status(message: &Message) -> bool {
 /// Mostro sends with `payload: null` (e.g. `canceled`).
 fn trade_message_is_terminal(message: &Message) -> bool {
     let kind = message.get_inner_message_kind();
-    if matches!(&kind.action, Action::Canceled | Action::AdminCanceled) {
+    if matches!(&kind.action, Action::AdminCanceled) {
         return true;
     }
     message_has_terminal_order_status(message)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum CancelOutcome {
+    /// Terminal trade: persist a terminal status and stop tracking.
+    Terminal(Status),
+    /// Local state is invalid/stale: delete local row and stop tracking.
+    DeleteLocalRow,
+    /// Trade ended pre-Active; order returned to book. Keep row but revert status and stop tracking.
+    RevertToPending,
+}
+
+fn resolve_action_only_cancel_outcome(
+    is_mine: Option<bool>,
+    prior_status: Option<Status>,
+) -> CancelOutcome {
+    // Action-only `Canceled` can mean different things depending on where we are in the flow.
+    //
+    // If we are still effectively Pending (pre-Active), the *take attempt* was canceled and the
+    // order returns to the public book. For takers, our local row is stale; for makers, the order
+    // remains valid and should revert back to Pending.
+    let effective_prior_status = prior_status.unwrap_or(Status::Pending);
+    let is_pre_active = matches!(
+        effective_prior_status,
+        Status::Pending | Status::WaitingBuyerInvoice | Status::WaitingPayment
+    );
+    if is_pre_active {
+        return match is_mine {
+            Some(false) => CancelOutcome::DeleteLocalRow,
+            Some(true) => CancelOutcome::RevertToPending,
+            None => CancelOutcome::Terminal(Status::Canceled),
+        };
+    }
+
+    CancelOutcome::Terminal(Status::Canceled)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum TradeUntrackDecision {
+    None,
+    /// Stop tracking (unsubscribe/cleanup). Order should be removed from Messages.
+    Untrack,
 }
 
 /// Send a direct message to a receiver
@@ -424,9 +466,15 @@ async fn handle_trade_dm_for_order(
     trade_keys: &Keys,
     // When false (startup relay replay), hydrate Messages without bumping counters or UI toasts.
     notify: bool,
-) {
+) -> TradeUntrackDecision {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
+
+    let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
+    let is_mine_from_db = db_order.as_ref().map(|r| r.is_mine);
+    let status_from_db = db_order
+        .as_ref()
+        .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
 
     let status_from_payment_req = match &inner_kind.payload {
         Some(Payload::PaymentRequest(Some(o), _, _)) => o.status,
@@ -461,8 +509,11 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
-    // Persist status: `Payload::Order`, `PaymentRequest(Some(order), …)`, or action-only messages
-    // (`canceled` + `payload: null` with `id` on [`MessageKind`] — see mostro daemon JSON).
+    // Persist status: `Payload::Order`, `PaymentRequest(Some(order), …)`, or action-only messages.
+    //
+    // Special-case: `Canceled` may arrive with `payload: null`; for taker pre-Active cancel
+    // the order returns to the book and we must discard the local row.
+    let mut untrack_decision = TradeUntrackDecision::None;
     if let Some(order_payload) = small_order_ref_from_payload(&inner_kind.payload) {
         if let Some(status) = map_action_to_status(&action, order_payload) {
             let oid = order_payload.id.or(inner_kind.id).unwrap_or(order_id);
@@ -473,6 +524,55 @@ async fn handle_trade_dm_for_order(
                     action,
                     e
                 );
+            }
+            if is_terminal_order_status(status) {
+                untrack_decision = TradeUntrackDecision::Untrack;
+            }
+        }
+    } else if action == Action::Canceled {
+        let prior_status = status_from_db;
+        match resolve_action_only_cancel_outcome(is_mine_from_db, prior_status) {
+            CancelOutcome::DeleteLocalRow => {
+                if let Err(e) = delete_order_by_id(pool, &order_id.to_string()).await {
+                    log::warn!(
+                        "Failed to delete local order {} after action-only cancel: {}",
+                        order_id,
+                        e
+                    );
+                } else {
+                    log::info!(
+                        "Deleted local order {} after taker pre-Active cancel",
+                        order_id
+                    );
+                }
+                untrack_decision = TradeUntrackDecision::Untrack;
+            }
+            CancelOutcome::RevertToPending => {
+                if let Err(e) = update_order_status(pool, &order_id.to_string(), Status::Pending).await
+                {
+                    log::warn!(
+                        "Failed to revert order {} to pending after action-only cancel: {}",
+                        order_id,
+                        e
+                    );
+                } else {
+                    log::info!(
+                        "Reverted order {} to pending after pre-Active cancel",
+                        order_id
+                    );
+                }
+                untrack_decision = TradeUntrackDecision::Untrack;
+            }
+            CancelOutcome::Terminal(status) => {
+                if let Err(e) = update_order_status(pool, &order_id.to_string(), status).await {
+                    log::warn!(
+                        "Failed to update status for order {} from DM action {:?} (no order payload): {}",
+                        order_id,
+                        action,
+                        e
+                    );
+                }
+                untrack_decision = TradeUntrackDecision::Untrack;
             }
         }
     } else if let Some(status) = inferred_status_from_trade_action(&action) {
@@ -485,6 +585,9 @@ async fn handle_trade_dm_for_order(
                 e
             );
         }
+        if is_terminal_order_status(status) {
+            untrack_decision = TradeUntrackDecision::Untrack;
+        }
     }
 
     // Only show PayInvoice popup/notification when an invoice is actually present.
@@ -495,7 +598,7 @@ async fn handle_trade_dm_for_order(
     };
 
     if matches!(action, Action::PayInvoice) && !is_actionable_notification {
-        return;
+        return TradeUntrackDecision::None;
     }
 
     // Lock `messages` only long enough to extract comparison data, then drop it
@@ -507,7 +610,7 @@ async fn handle_trade_dm_for_order(
                 crate::util::request_fatal_restart(format!(
                     "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
                 ));
-                return;
+                return TradeUntrackDecision::None;
             }
         };
         messages_lock
@@ -576,7 +679,6 @@ async fn handle_trade_dm_for_order(
         .or(prior_order_kind)
         .or(kind_from_take_action);
 
-    let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
     if effective_order_kind.is_none() {
         if let Some(ref row) = db_order {
             effective_order_kind = row
@@ -588,10 +690,6 @@ async fn handle_trade_dm_for_order(
 
     // `Order.is_mine` is `bool` (not `Option<bool>`) so taker (`false`) is never confused with “unknown”.
     let effective_is_mine = db_order.as_ref().map(|r| r.is_mine).or(prior_is_mine);
-
-    let status_from_db = db_order
-        .as_ref()
-        .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
 
     let effective_order_status = status_from_payload
         .or(status_from_db)
@@ -609,7 +707,7 @@ async fn handle_trade_dm_for_order(
                 crate::util::request_fatal_restart(format!(
                     "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
                 ));
-                return;
+                return TradeUntrackDecision::None;
             }
         }
     }
@@ -637,7 +735,7 @@ async fn handle_trade_dm_for_order(
             crate::util::request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
             ));
-            return;
+            return TradeUntrackDecision::None;
         }
     };
     // Keep one row per order, but ensure the newly accepted message is the one kept.
@@ -652,6 +750,8 @@ async fn handle_trade_dm_for_order(
         let notification = order_message_to_notification(&order_message);
         let _ = message_notification_tx.send(notification);
     }
+
+    untrack_decision
 }
 
 /// How terminal order status is handled after each decoded GiftWrap in a batch.
@@ -661,6 +761,19 @@ enum GiftWrapTerminalPolicy<'a> {
     /// Unknown subscription id (e.g. parallel `wait_for_dm`): only local index/pubkey cleanup;
     /// do not unsubscribe (id not ours). Process the full batch like the pre-refactor path.
     UntrackedFallback,
+}
+
+fn remove_order_from_messages(messages: &Arc<Mutex<Vec<OrderMessage>>>, order_id: Uuid) {
+    match messages.lock() {
+        Ok(mut guard) => {
+            guard.retain(|m| m.order_id != Some(order_id));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
 }
 
 /// Shared path for parsed GiftWrap batches: `handle_trade_dm_for_order` plus terminal cleanup.
@@ -689,6 +802,11 @@ async fn dispatch_giftwrap_batch(
 
     for (message, timestamp, sender) in parsed_messages {
         let has_terminal_status = trade_message_is_terminal(&message);
+        log::info!(
+            "order id: {} has_terminal_status: {:?}",
+            order_id,
+            has_terminal_status
+        );
         if log_each_message {
             log::info!(
                 "[dm_listener] Handling message action={:?} ts={} order_id={} trade_index={}",
@@ -698,7 +816,7 @@ async fn dispatch_giftwrap_batch(
                 trade_index
             );
         }
-        handle_trade_dm_for_order(
+        let untrack_decision = handle_trade_dm_for_order(
             messages,
             pending_notifications,
             message_notification_tx,
@@ -722,7 +840,7 @@ async fn dispatch_giftwrap_batch(
             );
         }
 
-        if has_terminal_status {
+        if has_terminal_status || untrack_decision == TradeUntrackDecision::Untrack {
             match terminal_policy {
                 GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
                     log::info!(
@@ -731,6 +849,7 @@ async fn dispatch_giftwrap_batch(
                         trade_index,
                         subscription_id
                     );
+                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -752,6 +871,7 @@ async fn dispatch_giftwrap_batch(
                     break;
                 }
                 GiftWrapTerminalPolicy::UntrackedFallback => {
+                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -782,7 +902,7 @@ const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 100;
 /// decrypted **rumor** `created_at` (`parse_dm_events`). If the rumor clock runs ahead of the
 /// envelope (seen with Mostro), using the raw cursor as `since` drops that GiftWrap on replay and
 /// only newer envelopes (e.g. `waiting-seller-to-pay`) are returned.
-const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 6 * 60 * 60;
+const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 3 * 24 * 60 * 60;
 
 /// Snapshot of `listen_for_order_messages` locals passed into startup GiftWrap replay.
 struct DmListenerStartupReplay<'a> {

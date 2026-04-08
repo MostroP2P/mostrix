@@ -239,6 +239,20 @@ When a terminal message is detected:
   - remove the pubkey from `subscribed_pubkeys`
   - do **not** unsubscribe (we may not own that subscription id)
 
+### Early cancel nuance (pre-Active taker cancel)
+
+`Action::Canceled` can arrive with `payload: null`. Mostrix treats this **contextually**:
+
+- **cancel while still effectively Pending (pre-Active)**: the order is republished back to the book as Pending. Mostrix:
+  - stops tracking/unsubscribes
+  - removes the per-order row from `messages`
+  - **taker**: deletes the local `orders` DB row (stale take-attempt row)
+  - **maker**: reverts the local DB status back to `pending` (order still alive in the book)
+- **all other cancels** (maker cancel pre-Active, or cancels after the trade progressed): Mostrix:
+  - persists a terminal cancel status (`canceled` / payload terminal status when present)
+  - stops tracking/unsubscribes
+  - removes the per-order row from `messages`
+
 ## Mermaid: end-to-end listener flow
 
 ```mermaid
