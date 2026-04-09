@@ -164,9 +164,14 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     );
     f.render_widget(key_input, input_chunks[0]);
 
-    let footer = Paragraph::new(
-        "Ctrl+H: Help | Tab/Shift+Tab: Switch focus | Ctrl+Shift+V: Paste shared key\n\
-Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll",
-    );
+    let paste_hint = if cfg!(windows) {
+        "Shift+Insert / Ctrl+Shift+V / right-click"
+    } else {
+        "Ctrl+Shift+V / middle-click"
+    };
+    let footer = Paragraph::new(format!(
+        "Ctrl+H: Help | Tab/Shift+Tab: Switch focus | Paste shared key ({paste_hint})\n\
+Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
+    ));
     f.render_widget(footer, input_chunks[1]);
 }

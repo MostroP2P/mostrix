@@ -197,6 +197,16 @@ fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode, is
     }
 }
 
+fn read_clipboard_text_best_effort() -> Option<String> {
+    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            log::warn!("Failed to read clipboard text: {}", e);
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -255,6 +265,32 @@ pub fn handle_key_event(
                 return Some(true);
             }
             _ => {}
+        }
+    }
+
+    // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe):
+    // - Shift+Insert (classic Windows paste)
+    // - Ctrl+Shift+V (Windows Terminal-style paste shortcut)
+    // - Ctrl+V when the console delivers it as a key event
+    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+        let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
+        let is_paste_shortcut = match key_event.code {
+            KeyCode::Insert => is_shift,
+            KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
+            _ => false,
+        } || (is_ctrl
+            && is_shift
+            && matches!(key_event.code, KeyCode::Char('v') | KeyCode::Char('V')));
+
+        if is_paste_shortcut {
+            if let Some(text) = read_clipboard_text_best_effort() {
+                let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !filtered.is_empty() {
+                    app.observer_shared_key_input.push_str(&filtered);
+                    return Some(true);
+                }
+            }
         }
     }
 
