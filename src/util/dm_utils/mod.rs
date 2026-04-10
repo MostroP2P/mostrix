@@ -25,9 +25,11 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
-use crate::util::db_utils::update_order_status;
+use crate::util::db_utils::{delete_order_by_id, update_order_status};
 use crate::util::filters::filter_giftwrap_to_recipient;
-use crate::util::order_utils::{inferred_status_from_trade_action, map_action_to_status};
+use crate::util::order_utils::{
+    inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
+};
 use crate::util::types::{determine_message_type, MessageType};
 use crate::SETTINGS;
 
@@ -156,7 +158,10 @@ fn message_has_terminal_order_status(message: &Message) -> bool {
 /// Mostro sends with `payload: null` (e.g. `canceled`).
 fn trade_message_is_terminal(message: &Message) -> bool {
     let kind = message.get_inner_message_kind();
-    if matches!(&kind.action, Action::AdminCanceled) {
+    if matches!(
+        &kind.action,
+        Action::AdminCanceled | Action::Canceled | Action::CooperativeCancelAccepted
+    ) {
         return true;
     }
     message_has_terminal_order_status(message)
@@ -373,6 +378,23 @@ fn small_order_ref_from_payload(payload: &Option<Payload>) -> Option<&SmallOrder
     }
 }
 
+fn resolved_status_candidate(action: &Action, payload: &Option<Payload>) -> Option<Status> {
+    if let Some(order_payload) = small_order_ref_from_payload(payload) {
+        return map_action_to_status(action, order_payload);
+    }
+    inferred_status_from_trade_action(action)
+}
+
+fn is_pre_active_status(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Pending
+            | Status::WaitingPayment
+            | Status::WaitingBuyerInvoice
+            | Status::SettledHoldInvoice
+    )
+}
+
 /// Refreshes the local `orders` row from embedded order data on `add-invoice` / `pay-invoice` DMs.
 async fn upsert_order_from_trade_dm(
     pool: &sqlx::SqlitePool,
@@ -433,13 +455,25 @@ async fn handle_trade_dm_for_order(
         .as_ref()
         .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
 
-    let status_from_payment_req = match &inner_kind.payload {
-        Some(Payload::PaymentRequest(Some(o), _, _)) => o.status,
-        _ => None,
-    };
-    let status_from_payload = small_order_ref_from_payload(&inner_kind.payload)
-        .and_then(|o| o.status)
-        .or(status_from_payment_req);
+    let status_candidate = resolved_status_candidate(&action, &inner_kind.payload);
+
+    // Taker pre-Active cancel returns the order to the book; drop stale local row instead of
+    // keeping it as terminal trade state.
+    if matches!(action, Action::Canceled)
+        && inner_kind.payload.is_none()
+        && db_order.as_ref().map(|r| !r.is_mine).unwrap_or(false)
+        && status_from_db.map(is_pre_active_status).unwrap_or(false)
+    {
+        if let Err(e) = delete_order_by_id(pool, &order_id.to_string()).await {
+            log::warn!(
+                "Failed to delete pre-Active taker-canceled order {}: {}",
+                order_id,
+                e
+            );
+        }
+        remove_order_from_messages(messages, order_id);
+        return;
+    }
 
     upsert_order_from_trade_dm(
         pool,
@@ -465,34 +499,6 @@ async fn handle_trade_dm_for_order(
         },
         _ => (None, None),
     };
-
-    // Persist status: `Payload::Order`, `PaymentRequest(Some(order), …)`, or action-only messages.
-    //
-    // Special-case: `Canceled` may arrive with `payload: null`; for taker pre-Active cancel
-    // the order returns to the book and we must discard the local row.
-    if let Some(order_payload) = small_order_ref_from_payload(&inner_kind.payload) {
-        if let Some(status) = map_action_to_status(&action, order_payload) {
-            let oid = order_payload.id.or(inner_kind.id).unwrap_or(order_id);
-            if let Err(e) = update_order_status(pool, &oid.to_string(), status).await {
-                log::warn!(
-                    "Failed to update status for order {} from DM action {:?}: {}",
-                    oid,
-                    action,
-                    e
-                );
-            }
-        }
-    } else if let Some(status) = inferred_status_from_trade_action(&action) {
-        let oid = inner_kind.id.unwrap_or(order_id);
-        if let Err(e) = update_order_status(pool, &oid.to_string(), status).await {
-            log::warn!(
-                "Failed to update status for order {} from DM action {:?} (no order payload): {}",
-                oid,
-                action,
-                e
-            );
-        }
-    }
 
     // Only show PayInvoice popup/notification when an invoice is actually present.
     let is_actionable_notification = match &action {
@@ -602,9 +608,46 @@ async fn handle_trade_dm_for_order(
     // `Order.is_mine` is `bool` (not `Option<bool>`) so taker (`false`) is never confused with “unknown”.
     let effective_is_mine = db_order.as_ref().map(|r| r.is_mine).or(prior_is_mine);
 
-    let effective_order_status = status_from_payload
-        .or(status_from_db)
-        .or(prior_order_status);
+    let baseline_status = status_from_db.or(prior_order_status);
+    let should_accept_candidate = status_candidate
+        .map(|candidate| {
+            should_apply_status_transition(baseline_status, candidate, effective_order_kind)
+        })
+        .unwrap_or(false);
+    let effective_order_status = if should_accept_candidate {
+        status_candidate.or(baseline_status)
+    } else {
+        baseline_status
+    };
+
+    if let Some(candidate) = status_candidate {
+        let oid = small_order_ref_from_payload(&inner_kind.payload)
+            .and_then(|o| o.id)
+            .or(inner_kind.id)
+            .unwrap_or(order_id);
+        if should_accept_candidate {
+            if baseline_status != Some(candidate) {
+                if let Err(e) = update_order_status(pool, &oid.to_string(), candidate).await {
+                    log::warn!(
+                        "Failed to update status for order {} from DM action {:?}: {}",
+                        oid,
+                        action,
+                        e
+                    );
+                }
+            }
+        } else if let Some(existing_status) = status_from_db {
+            // `upsert_order_from_trade_dm` may have persisted stale payload status; restore monotonic status.
+            if let Err(e) = update_order_status(pool, &oid.to_string(), existing_status).await {
+                log::warn!(
+                    "Failed to restore monotonic status for order {} after stale {:?}: {}",
+                    oid,
+                    action,
+                    e
+                );
+            }
+        }
+    }
 
     let effective_sat_amount = sat_amount.or(prior_sat_amount);
     let effective_invoice = invoice.clone().or(prior_invoice);
@@ -902,47 +945,76 @@ async fn fetch_and_replay_startup_trade_dms(
             continue;
         }
 
-        let mut sorted: Vec<Event> = events.into_iter().collect();
-        sorted.sort_by_key(|ev| ev.created_at);
+        // Fetch the full relay window (same filter as before), then hydrate from the **single**
+        // parsed line with the greatest **rumor** `created_at`. Envelope order can disagree with
+        // rumor time; replaying every line in envelope order could leave the UI on an older step.
+        let event_list: Vec<Event> = events.into_iter().collect();
+        let fetched_n = event_list.len();
 
-        log::info!(
-            "Startup DM replay: order_id={} trade_index={} fetched {} GiftWrap event(s)",
-            order_id,
-            trade_index,
-            sorted.len()
-        );
-
-        for event in sorted {
-            if !subscription_to_order.contains_key(&sub_id) {
-                break;
-            }
-            if nip59::extract_rumor(&trade_keys, &event).await.is_err() {
+        let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
+        for event in &event_list {
+            if nip59::extract_rumor(&trade_keys, event).await.is_err() {
                 continue;
             }
-            let parsed_messages = parse_dm_events_single(&event, &trade_keys).await;
+            let parsed_messages = parse_dm_events_single(event, &trade_keys).await;
             if parsed_messages.is_empty() {
                 continue;
             }
-
-            dispatch_giftwrap_batch(
-                parsed_messages,
-                *order_id,
-                *trade_index,
-                &trade_keys,
-                messages,
-                pending_notifications,
-                message_notification_tx,
-                pool,
-                user,
-                active_order_trade_indices,
-                subscribed_pubkeys,
-                client,
-                subscription_to_order,
-                GiftWrapTerminalPolicy::TrackedSubscription(&sub_id),
-                false,
-            )
-            .await;
+            for triple in parsed_messages {
+                let (ref _msg, ts, ref _sender) = triple;
+                let take = match &best {
+                    None => true,
+                    Some((best_ts, best_eid, _)) => {
+                        ts > *best_ts
+                            || (ts == *best_ts && event.id.as_bytes() > best_eid.as_bytes())
+                    }
+                };
+                if take {
+                    best = Some((ts, event.id, triple));
+                }
+            }
         }
+
+        let Some((max_rumor_ts, _, freshest)) = best else {
+            log::trace!(
+                "Startup DM replay: order_id={} trade_index={} had {} event(s) but none decrypted/parsed",
+                order_id,
+                trade_index,
+                fetched_n
+            );
+            continue;
+        };
+
+        log::info!(
+            "Startup DM replay: order_id={} trade_index={} fetched {} GiftWrap event(s); hydrating newest rumor ts={}",
+            order_id,
+            trade_index,
+            fetched_n,
+            max_rumor_ts
+        );
+
+        if !subscription_to_order.contains_key(&sub_id) {
+            continue;
+        }
+
+        dispatch_giftwrap_batch(
+            vec![freshest],
+            *order_id,
+            *trade_index,
+            &trade_keys,
+            messages,
+            pending_notifications,
+            message_notification_tx,
+            pool,
+            user,
+            active_order_trade_indices,
+            subscribed_pubkeys,
+            client,
+            subscription_to_order,
+            GiftWrapTerminalPolicy::TrackedSubscription(&sub_id),
+            false,
+        )
+        .await;
     }
 }
 
@@ -1441,5 +1513,17 @@ pub async fn listen_for_order_messages(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trade_message_is_terminal;
+    use mostro_core::prelude::{Action, Message};
+
+    #[test]
+    fn action_only_canceled_is_terminal() {
+        let message = Message::new_order(None, None, None, Action::Canceled, None);
+        assert!(trade_message_is_terminal(&message));
     }
 }

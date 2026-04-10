@@ -41,6 +41,11 @@ pub enum OperationResult {
     ObserverChatLoaded(Vec<crate::ui::chat::DisputeChatMessage>),
     /// Observer chat fetch failed.
     ObserverChatError(String),
+    /// Trade ended (e.g. cooperative cancel confirmed); remove order from Messages and show `message`.
+    TradeClosed {
+        order_id: uuid::Uuid,
+        message: String,
+    },
 }
 
 /// Result of an async Mostro instance info fetch (sent from key handlers to main loop).
@@ -198,6 +203,31 @@ pub struct MessageNotification {
     pub invoice: Option<String>,
 }
 
+/// Whether an invoice modal is appropriate for the current trade phase.
+/// `PayInvoice` is only for `waiting-payment`; after the seller pays, status moves to
+/// `waiting-buyer-invoice` and a stale replayed `pay-invoice` DM must not reopen the payment popup.
+#[must_use]
+pub fn invoice_popup_allowed_for_order_status(
+    action: &Action,
+    order_status: Option<mostro_core::order::Status>,
+) -> bool {
+    match action {
+        // Strict: only `waiting-payment` still requires paying the hold invoice.
+        Action::PayInvoice => matches!(
+            order_status,
+            Some(mostro_core::order::Status::WaitingPayment)
+        ),
+        Action::AddInvoice => matches!(
+            order_status,
+            Some(
+                mostro_core::order::Status::WaitingBuyerInvoice
+                    | mostro_core::order::Status::SettledHoldInvoice
+            ) | None
+        ),
+        _ => false,
+    }
+}
+
 /// State for handling invoice input in AddInvoice notifications
 #[derive(Clone, Debug)]
 pub struct InvoiceInputState {
@@ -250,14 +280,15 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
         Action::HoldInvoicePaymentAccepted => {
-            "Hold Invoice Payment Accepted - Press Yes to confirm fiat payment"
+            "Hold invoice payment accepted — confirm fiat was sent?"
         }
         Action::Cancel => "Cancel",
+        Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",
         Action::AdminCanceled => "Order canceled by admin",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::Rate => "Rate Counterparty",
-        Action::RateReceived => "Rate Counterparty received",
+        Action::RateReceived | Action::PurchaseCompleted => "Rate Counterparty completed",
         Action::Release | Action::Released => "Release",
         _ => "Message",
     };
@@ -290,6 +321,26 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::RateReceived => "Rating Received",
         _ => "Message",
     }
+}
+
+/// Status-aware compact label for Messages sidebar/detail.
+/// Keeps terminal statuses from showing stale action text after reboot replay.
+pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static str {
+    if matches!(
+        msg.order_status,
+        Some(
+            mostro_core::order::Status::Success
+                | mostro_core::order::Status::Canceled
+                | mostro_core::order::Status::CanceledByAdmin
+                | mostro_core::order::Status::CooperativelyCanceled
+                | mostro_core::order::Status::Expired
+                | mostro_core::order::Status::SettledByAdmin
+                | mostro_core::order::Status::CompletedByAdmin
+        )
+    ) {
+        return "Trade Completed";
+    }
+    message_action_compact_label(&msg.message.get_inner_message_kind().action)
 }
 
 /// Book order kind for sidebar: prefer persisted [`OrderMessage::order_kind`], then payload,
@@ -377,11 +428,14 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     if msg.order_kind != Some(mostro_core::order::Kind::Buy) {
         return message_buy_flow_step_fallback(&action);
     }
-    let Some(is_maker) = msg.is_mine else {
-        return message_buy_flow_step_fallback(&action);
-    };
+    // Takers often see `is_mine: None` until the local row hydrates; default to taker so the
+    // highlighted column matches [`listing_timeline_labels`] (taker wording per kind).
+    let is_maker = msg.is_mine.unwrap_or(false);
     // Post-`success` phases are action-specific (`rate` vs release); handle before status.
-    if matches!(&action, Action::Rate | Action::RateReceived) {
+    if matches!(
+        &action,
+        Action::Rate | Action::RateReceived | Action::PurchaseCompleted
+    ) {
         return FlowStep::BuyFlowStep(StepLabelsBuy::StepRate);
     }
     if let Some(status) = msg.order_status {
@@ -398,9 +452,7 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     if msg.order_kind != Some(mostro_core::order::Kind::Sell) {
         return message_buy_flow_step_fallback(&action);
     }
-    let Some(is_maker) = msg.is_mine else {
-        return message_sell_flow_step_fallback(&action);
-    };
+    let is_maker = msg.is_mine.unwrap_or(false);
     if matches!(&action, Action::Rate | Action::RateReceived) {
         return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
     }
@@ -426,7 +478,9 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder))
             }
             Status::FiatSent => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat)),
-            Status::Success => None,
+            // On completed trades, keep the timeline in the final column even if the latest
+            // replayed action is an older pre-success DM (relay ordering / reboot hydration).
+            Status::Success => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepRate)),
             Status::Canceled
             | Status::CanceledByAdmin
             | Status::CooperativelyCanceled
@@ -446,7 +500,9 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder))
             }
             Status::FiatSent => Some(FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat)),
-            Status::Success => None,
+            // On completed trades, keep the timeline in the final column even if the latest
+            // replayed action is an older pre-success DM (relay ordering / reboot hydration).
+            Status::Success => Some(FlowStep::SellFlowStep(StepLabelsSell::StepRate)),
             Status::Canceled
             | Status::CanceledByAdmin
             | Status::CooperativelyCanceled
@@ -574,39 +630,17 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
     }
 }
 
-/// Action-only fallback for non-sell listings or unknown role/status.
-fn message_sell_flow_step_fallback(action: &Action) -> FlowStep {
-    match action {
-        Action::AddInvoice | Action::WaitingBuyerInvoice => {
-            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
-        }
-        Action::PayInvoice | Action::WaitingSellerToPay => {
-            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
-        }
-        Action::HoldInvoicePaymentAccepted => {
-            FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
-        }
-        Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
-        Action::FiatSentOk | Action::Release | Action::Released => {
-            FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
-        }
-        Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
-        _ => FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder),
-    }
-}
-
 /// Labels for the six timeline steps (wording); column order matches [`StepLabelsBuy`] / [`StepLabelsSell`].
 pub fn listing_timeline_labels(msg: &OrderMessage) -> [StepLabel; 6] {
     match msg.order_kind {
         Some(mostro_core::order::Kind::Buy) => match msg.is_mine {
             Some(true) => BUY_ORDER_FLOW_STEPS_MAKER,
-            Some(false) => BUY_ORDER_FLOW_STEPS_TAKER,
-            None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+            // Unknown role: use buy-listing taker copy (matches default in [`buy_listing_flow_step`]).
+            Some(false) | None => BUY_ORDER_FLOW_STEPS_TAKER,
         },
         Some(mostro_core::order::Kind::Sell) => match msg.is_mine {
             Some(true) => SELL_ORDER_FLOW_STEPS_MAKER,
-            Some(false) => SELL_ORDER_FLOW_STEPS_TAKER,
-            None => GENERIC_ORDER_FLOW_STEPS_TAKER,
+            Some(false) | None => SELL_ORDER_FLOW_STEPS_TAKER,
         },
         None => GENERIC_ORDER_FLOW_STEPS_TAKER,
     }
@@ -698,6 +732,22 @@ mod timeline_step_tests {
             message_trade_timeline_step(&m),
             FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
         );
+    }
+
+    #[test]
+    fn sell_taker_unknown_role_uses_taker_columns_like_is_mine_false() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            None,
+            None,
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice)
+        );
+        let labels = listing_timeline_labels(&m);
+        assert_eq!(labels[0].as_single_line(), "Add Invoice");
     }
 
     #[test]

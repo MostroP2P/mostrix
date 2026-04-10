@@ -4,7 +4,9 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
-use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
+use crate::ui::orders::{
+    invoice_popup_allowed_for_order_status, strip_new_order_messages_and_clamp_selected,
+};
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
@@ -609,8 +611,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
-            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
-                // Show invoice/payment popup for actionable messages
+            if matches!(action, Action::AddInvoice | Action::PayInvoice)
+                && invoice_popup_allowed_for_order_status(&action, msg.order_status)
+            {
+                // Show invoice/payment popup only when the phase still requires it.
                 let notification = order_message_to_notification(msg);
                 let action = notification.action.clone();
                 let invoice_state = InvoiceInputState {
@@ -622,9 +626,24 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 };
 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+            } else if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+                // Stale replayed invoice/payment DMs after the trade moved on.
+                let info = if matches!(action, Action::PayInvoice)
+                    && matches!(
+                        msg.order_status,
+                        Some(mostro_core::order::Status::WaitingBuyerInvoice)
+                    ) {
+                    "Waiting for the buyer to add their invoice. Hold invoice is already paid."
+                        .to_string()
+                } else {
+                    "Trade already advanced; invoice action no longer required.".to_string()
+                };
+                app.mode = UiMode::OperationResult(OperationResult::Info(info));
             } else if matches!(
                 action,
-                Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+                Action::HoldInvoicePaymentAccepted
+                    | Action::FiatSentOk
+                    | Action::CooperativeCancelInitiatedByPeer
             ) {
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);

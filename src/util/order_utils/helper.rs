@@ -71,6 +71,7 @@ pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
 pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
     match action {
         Action::Canceled => Some(Status::Canceled),
+        Action::CooperativeCancelAccepted => Some(Status::CooperativelyCanceled),
         Action::WaitingBuyerInvoice | Action::AddInvoice => Some(Status::WaitingBuyerInvoice),
         Action::WaitingSellerToPay | Action::PayInvoice => Some(Status::WaitingPayment),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
@@ -92,6 +93,76 @@ pub fn map_action_to_status(action: &Action, order: &SmallOrder) -> Option<Statu
     }
 
     inferred_status_from_trade_action(action)
+}
+
+fn status_phase_rank_for_actor(
+    status: Status,
+    kind: Option<mostro_core::order::Kind>,
+) -> Option<u8> {
+    match status {
+        Status::Pending => Some(0),
+        // Stage ordering follows listing kind progression (same for maker/taker):
+        // Buy listing:  waiting-payment -> waiting-buyer-invoice
+        // Sell listing: waiting-buyer-invoice -> waiting-payment
+        Status::WaitingPayment => match kind {
+            Some(mostro_core::order::Kind::Buy) => Some(1),
+            Some(mostro_core::order::Kind::Sell) => Some(2),
+            None => Some(1),
+        },
+        Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => match kind {
+            Some(mostro_core::order::Kind::Buy) => Some(2),
+            Some(mostro_core::order::Kind::Sell) => Some(1),
+            None => Some(1),
+        },
+        Status::InProgress | Status::Active => Some(3),
+        Status::FiatSent => Some(4),
+        Status::Success => Some(5),
+        _ => None,
+    }
+}
+
+fn is_terminal_trade_status(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin
+            | Status::Expired
+            | Status::CooperativelyCanceled
+            | Status::Success
+    )
+}
+
+/// Guard status writes against backward transitions from stale/out-of-order DMs.
+///
+/// Returns `true` when `candidate` is equal/newer than `current` in the actor-aware phase graph.
+/// Terminal states are sticky: once terminal, only the same terminal status is accepted.
+pub fn should_apply_status_transition(
+    current: Option<Status>,
+    candidate: Status,
+    kind: Option<mostro_core::order::Kind>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if current == candidate {
+        return true;
+    }
+    if is_terminal_trade_status(current) {
+        return false;
+    }
+    if is_terminal_trade_status(candidate) {
+        return true;
+    }
+    match (
+        status_phase_rank_for_actor(current, kind),
+        status_phase_rank_for_actor(candidate, kind),
+    ) {
+        (Some(cur), Some(next)) => next >= cur,
+        // Unknown transition edge: keep existing status (safer than downgrade).
+        _ => false,
+    }
 }
 
 /// Validates the range amount input against min/max limits.
@@ -441,4 +512,40 @@ pub(super) fn handle_mostro_response(
     }
 
     Ok(inner_message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_status_transition;
+    use mostro_core::prelude::Status;
+
+    #[test]
+    fn buy_maker_blocks_waiting_payment_downgrade() {
+        let allow = should_apply_status_transition(
+            Some(Status::WaitingBuyerInvoice),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Buy),
+        );
+        assert!(!allow);
+    }
+
+    #[test]
+    fn sell_maker_allows_waiting_buyer_invoice_to_waiting_payment() {
+        let allow = should_apply_status_transition(
+            Some(Status::WaitingBuyerInvoice),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Sell),
+        );
+        assert!(allow);
+    }
+
+    #[test]
+    fn terminal_status_is_sticky() {
+        let allow = should_apply_status_transition(
+            Some(Status::CooperativelyCanceled),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Buy),
+        );
+        assert!(!allow);
+    }
 }

@@ -184,6 +184,7 @@ pub async fn apply_pending_key_reload(
                     if let Ok(mut indices) = app.active_order_trade_indices.lock() {
                         *indices = startup_dm_hydration.active_order_trade_indices.clone();
                     }
+                    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
                     let active_order_trade_indices_clone =
                         Arc::clone(&app.active_order_trade_indices);
                     let order_last_seen_dm_ts_clone =
@@ -341,6 +342,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     if let Ok(mut indices) = app.active_order_trade_indices.lock() {
         *indices = startup_dm_hydration.active_order_trade_indices.clone();
     }
+    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
     let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let messages_clone = Arc::clone(&app.messages);
@@ -506,6 +508,7 @@ pub async fn reload_runtime_session_after_reconnect(
     if let Ok(mut indices) = ctx.app.active_order_trade_indices.lock() {
         *indices = startup_dm_hydration.active_order_trade_indices.clone();
     }
+    ctx.app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let active_order_trade_indices_clone = Arc::clone(&ctx.app.active_order_trade_indices);
     let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let messages_clone = Arc::clone(&ctx.app.messages);

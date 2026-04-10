@@ -128,10 +128,12 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
 
-    // Check if we need YES/NO buttons (only for FiatSent or Release actions)
+    // YES/NO: same pattern as exit/settings confirms (`helpers::render_yes_no_buttons`).
     let show_buttons = matches!(
         view_state.action,
-        Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+        Action::HoldInvoicePaymentAccepted
+            | Action::FiatSentOk
+            | Action::CooperativeCancelInitiatedByPeer
     );
 
     // Adjust popup height based on whether we show buttons
@@ -205,98 +207,8 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     );
 
     if show_buttons {
-        // Yes/No buttons - center them in the popup
         let button_area = inner_chunks[6];
-
-        // Calculate button width (each button + separator)
-        let button_width = 15; // Width for each button
-        let separator_width = 1;
-        let total_button_width = (button_width * 2) + separator_width;
-
-        // Center the buttons horizontally
-        let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
-        let centered_button_area = Rect {
-            x: button_x,
-            y: button_area.y,
-            width: total_button_width.min(button_area.width),
-            height: button_area.height,
-        };
-
-        let button_chunks = Layout::new(
-            Direction::Horizontal,
-            [
-                Constraint::Length(button_width),
-                Constraint::Length(separator_width), // separator
-                Constraint::Length(button_width),
-            ],
-        )
-        .split(centered_button_area);
-
-        // YES button
-        let yes_style = if view_state.selected_button {
-            Style::default()
-                .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
-        };
-
-        let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
-        f.render_widget(yes_block, button_chunks[0]);
-
-        let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-            .margin(1)
-            .split(button_chunks[0]);
-
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                "✓ YES",
-                Style::default()
-                    .fg(if view_state.selected_button {
-                        Color::Black
-                    } else {
-                        Color::Green
-                    })
-                    .add_modifier(Modifier::BOLD),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            yes_inner[0],
-        );
-
-        // NO button
-        let no_style = if !view_state.selected_button {
-            Style::default()
-                .bg(Color::Red)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-        };
-
-        let no_block = Block::default().borders(Borders::ALL).style(no_style);
-        f.render_widget(no_block, button_chunks[2]);
-
-        let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-            .margin(1)
-            .split(button_chunks[2]);
-
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                "✗ NO",
-                Style::default()
-                    .fg(if !view_state.selected_button {
-                        Color::Black
-                    } else {
-                        Color::Red
-                    })
-                    .add_modifier(Modifier::BOLD),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            no_inner[0],
-        );
+        helpers::render_yes_no_buttons(f, button_area, view_state.selected_button, "✓ YES", "✗ NO");
 
         // Help text for buttons
         f.render_widget(

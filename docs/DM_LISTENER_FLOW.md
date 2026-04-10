@@ -165,7 +165,7 @@ Key behaviors:
 - **Status persistence**  
   Updates the order status in SQLite via `update_order_status` using:
   - status derived from `Payload::Order` / `PaymentRequest(Some(order), ...)` + `map_action_to_status`, or
-  - action-only inference (`inferred_status_from_trade_action`) when payload is absent.
+  - action-only inference (`inferred_status_from_trade_action`) when payload is absent — including **`CooperativeCancelAccepted` → `CooperativelyCanceled`** when Mostro sends an action-only DM.
 
 - **Derive “effective” UI fields with fallbacks**  
   The `OrderMessage` fields like `sat_amount`, `buyer_invoice`, `order_kind`, `is_mine`, `order_status` are computed from a priority order:
@@ -223,7 +223,7 @@ Use payload `Status` when present, otherwise consult DB or infer from `Action`, 
 
 Some messages indicate the trade is over. Terminal detection considers:
 
-- explicit terminal actions even when payload is null (e.g. `canceled`)
+- explicit terminal actions even when payload is null (e.g. `canceled`, **`CooperativeCancelAccepted`**)
 - terminal order statuses when present in the payload (`success`, `canceled`, `expired`, …)
 
 When a terminal message is detected:

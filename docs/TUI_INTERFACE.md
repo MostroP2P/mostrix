@@ -146,7 +146,7 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 
 **Example**: Rendering the `OperationResult` popup.
 
-**Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum).
+**Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum). The enum includes **`TradeClosed { order_id, message }`** for flows that must drop an order from the Messages list before showing a toast; **`handle_operation_result`** (`src/util/dm_utils/order_ch_mng.rs`) normalizes it to **`Info(message)`** after side effects.
 
 ```rust
 // Operation result popup overlay (shared)
@@ -227,7 +227,13 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
 
-**Source**: `src/ui/tab_content.rs` (`render_messages_tab`, `render_rating_order`)
+**`ViewingMessage` (trade confirmations)** — `render_message_view` in `src/ui/tabs/tab_content.rs`:
+
+- Used for actionable DMs that need a **YES/NO** before sending a follow-up to Mostro: **`HoldInvoicePaymentAccepted`**, **`FiatSentOk`**, **`CooperativeCancelInitiatedByPeer`**.
+- Buttons are rendered with **`helpers::render_yes_no_buttons`** (same visual pattern as exit/settings confirms: **✓ YES** / **✗ NO**, **Left/Right** to move selection, **Enter** to confirm, **Esc** to dismiss).
+- Handler: **`handle_enter_viewing_message`** in `src/ui/key_handler/message_handlers.rs` (only proceeds when **YES** is selected). Cooperative cancel completion surfaces **`OperationResult::TradeClosed`**, which **`handle_operation_result`** resolves after removing the row from the Messages list (see **MESSAGE_FLOW_AND_PROTOCOL.md**).
+
+**Source**: `src/ui/tab_content.rs` (`render_messages_tab`, `render_message_view`, `render_rating_order`)
 
 ### 3. Order Form
 

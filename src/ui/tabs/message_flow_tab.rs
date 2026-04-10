@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::ui::orders::{
-    listing_timeline_labels, message_action_compact_label, message_order_kind_label,
+    listing_timeline_labels, message_action_compact_label_for_message, message_order_kind_label,
     message_timeline_warning, message_trade_timeline_step, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -58,8 +58,7 @@ pub fn render_messages_tab(
         .enumerate()
         .map(|(idx, msg)| {
             let kind = message_order_kind_label(msg);
-            let action = msg.message.get_inner_message_kind().action.clone();
-            let action_label = message_action_compact_label(&action);
+            let action_label = message_action_compact_label_for_message(msg);
 
             let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
                 .map(|dt| dt.format("%H:%M:%S").to_string())
@@ -192,7 +191,7 @@ fn render_message_timeline_panel(
         .block(Block::default().title("State").borders(Borders::ALL));
     f.render_widget(state, right_chunks[2]);
 
-    let action_text = message_action_compact_label(selected_action);
+    let action_text = message_action_compact_label_for_message(selected_msg);
     let details = Paragraph::new(vec![
         Line::from(Span::styled(
             "Current action",

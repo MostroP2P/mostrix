@@ -130,6 +130,13 @@ pub async fn execute_send_msg(
                 inner_message.action
             )),
         },
+        Action::Cancel => match inner_message.action {
+            Action::Canceled | Action::CooperativeCancelAccepted => Ok(()),
+            _ => Err(anyhow::anyhow!(
+                "Unexpected action in response: {:?}",
+                inner_message.action
+            )),
+        },
         _ => Err(anyhow::anyhow!("Unsupported action: {:?}", action)),
     }
 }

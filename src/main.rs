@@ -258,6 +258,7 @@ async fn main() -> Result<(), anyhow::Error> {
     } else {
         log::warn!("Failed to seed startup active order map (poisoned lock)");
     }
+    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
 
     let client_for_messages = client.clone();
     let pool_for_messages = pool.clone();

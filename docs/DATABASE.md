@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS orders (
 |-------|------|-------------|
 | `id` | `TEXT` | Primary key. UUID of the order. |
 | `kind` | `TEXT` | Order kind: "Buy" or "Sell". |
-| `status` | `TEXT` | Current order status (e.g., "Pending", "Active", "Dispute"). |
+| `status` | `TEXT` | Current order status. Values follow `mostro_core::order::Status` string forms (e.g. `Pending`, `Active`, `Success`, `Canceled`, `CooperativelyCanceled`). Updated from trade DMs (`update_order_status` / upserts) and, for cooperative cancel confirmation, when the user accepts the peer request in the UI (see **MESSAGE_FLOW_AND_PROTOCOL.md**). |
 | `amount` | `INTEGER` | Amount in satoshis. |
 | `fiat_code` | `TEXT` | Fiat currency code (e.g., "USD", "EUR"). |
 | `min_amount` | `INTEGER` | Minimum amount for range orders (NULL for fixed orders). |
@@ -235,7 +235,7 @@ The `orders` table is essential for:
 #### Data Persistence
 
 - **Trade Keys**: Stored as hex-encoded secret keys. **Critical security data** - these keys are needed to decrypt messages for each trade.
-- **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic.
+- **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic. Status writes are guarded for monotonic progression where applicable (stale/out-of-order DMs should not move an order backward in the trade phase graph); see `should_apply_status_transition` in `src/util/order_utils/helper.rs` and **DM_LISTENER_FLOW.md**.
 - **Maker/Taker persistence**: `save_order(..., is_maker)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow).
 
 **Source**: `src/models.rs:154`

@@ -114,6 +114,9 @@ pub struct AppState {
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
+    /// Per-order startup floor for invoice popups: notifications at or below this rumor timestamp
+    /// are treated as historical and must not auto-open AddInvoice/PayInvoice modal.
+    pub startup_popup_floor_ts: HashMap<uuid::Uuid, i64>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<AdminDispute>, // Taken disputes
@@ -182,6 +185,7 @@ impl AppState {
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
+            startup_popup_floor_ts: HashMap::new(),
             selected_message_idx: 0,
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
