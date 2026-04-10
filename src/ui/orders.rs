@@ -328,9 +328,9 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
 /// Keeps terminal statuses from showing stale action text after reboot replay.
 pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static str {
     match msg.order_status {
-        Some(Status::Success | Status::SettledByAdmin | Status::CompletedByAdmin) => {
-            "Trade Completed"
-        }
+        Some(Status::Success) => "Trade Completed",
+        Some(Status::SettledByAdmin) => "Settled by admin",
+        Some(Status::CompletedByAdmin) => "Completed by admin",
         Some(Status::Canceled) => "Canceled",
         Some(Status::CanceledByAdmin) => "Admin Canceled",
         Some(Status::CooperativelyCanceled) => "Cooperatively Canceled",
