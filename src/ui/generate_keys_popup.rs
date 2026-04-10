@@ -20,7 +20,7 @@ pub fn render_confirm_generate_new_keys(
 Save backup and restart Mostrix after saving."
             .to_string()
     } else {
-        "WARNING: Generating new User keys will change your identity.\n\
+        "WARNING: New User seed replaces identity and clears local order rows.\n\
 Save backup and restart Mostrix after saving."
             .to_string()
     };

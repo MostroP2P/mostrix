@@ -90,6 +90,7 @@ impl User {
 
         let mut tx = pool.begin().await?;
         Self::replace_all_in_tx(&user, &mut tx).await?;
+        Order::delete_all_in_tx(&mut tx).await?;
         tx.commit().await?;
 
         Ok(user)
@@ -196,6 +197,17 @@ pub const TERMINAL_DM_STATUSES: &[&str] = &[
 ];
 
 impl Order {
+    /// Delete every row in `orders`. Used when rotating the user mnemonic so persisted trade keys
+    /// cannot reference the previous seed.
+    pub async fn delete_all_in_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(r#"DELETE FROM orders"#)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
     /// Create a new order from SmallOrder and save it to the database.
     ///
     /// `is_maker`: `true` if the local user **created** the order (maker); `false` if they **took**

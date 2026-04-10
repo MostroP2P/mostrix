@@ -1,4 +1,4 @@
-use crate::models::User;
+use crate::models::{Order, User};
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
@@ -820,6 +820,8 @@ pub fn spawn_key_rotation_task(
                 let new_user = User::from_mnemonic(mnemonic.clone())?;
                 let mut tx = pool.begin().await?;
                 User::replace_all_in_tx(&new_user, &mut tx).await?;
+                Order::delete_all_in_tx(&mut tx).await?;
+                log::info!("User key rotation: cleared orders table (stale trade keys)");
 
                 let mut s = crate::settings::load_settings_from_disk()?;
                 s.nsec_privkey = derived_nsec.clone();

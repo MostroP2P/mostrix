@@ -313,12 +313,13 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::HoldInvoicePaymentAccepted => "Hold Invoice Accepted",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat Confirmed",
-        Action::Release | Action::Released => "Release",
+        Action::Release | Action::Released => "Release sats",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::Canceled => "Canceled",
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rating Received",
+        Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated",
         _ => "Message",
     }
 }
