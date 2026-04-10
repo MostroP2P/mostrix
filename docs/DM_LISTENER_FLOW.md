@@ -61,12 +61,12 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 
 Relay subscriptions alone often **do not** deliver enough stored history into the notification stream to refill the UI. Immediately after the bootstrap `subscribe` loop, the listener runs **`fetch_and_replay_startup_trade_dms`**:
 
-- Builds a **`DmListenerStartupReplay`** struct (same locals as the main loop: `client`, `pool`, `user`, `messages`, notification maps, subscription maps).
-- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` (GiftWrap, trade pubkey, ~30-day lookback, capped batch size).
-- Sorts events by `created_at`, decrypts, `parse_dm_events`, then **`dispatch_giftwrap_batch`** with **`notify: false`** so historical replay does not bump the unread badge or re-trigger invoice popups.
-- Live relay notifications still use **`notify: true`**.
+- Takes a **`DmListenerStartupReplay`** snapshot (same locals as the main loop: `client`, `pool`, `user`, `messages`, notification maps, subscription maps).
+- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` (GiftWrap, trade pubkey, 12-hour lookback, limit 100 — see `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT` in `src/util/dm_utils/mod.rs`).
+- Within that fetched window, decrypts each GiftWrap and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
+- Dispatches **`dispatch_giftwrap_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
 
-**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, `DmListenerStartupReplay`, and the `notify` parameter on `handle_trade_dm_for_order` / `dispatch_giftwrap_batch` in `src/util/dm_utils/mod.rs`.
+**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
 
 ## Command “preferences”: TrackOrder vs Waiter
 

@@ -326,21 +326,18 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
 /// Status-aware compact label for Messages sidebar/detail.
 /// Keeps terminal statuses from showing stale action text after reboot replay.
 pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static str {
-    if matches!(
-        msg.order_status,
-        Some(
-            mostro_core::order::Status::Success
-                | mostro_core::order::Status::Canceled
-                | mostro_core::order::Status::CanceledByAdmin
-                | mostro_core::order::Status::CooperativelyCanceled
-                | mostro_core::order::Status::Expired
-                | mostro_core::order::Status::SettledByAdmin
-                | mostro_core::order::Status::CompletedByAdmin
-        )
-    ) {
-        return "Trade Completed";
+    match msg.order_status {
+        Some(Status::Success | Status::SettledByAdmin | Status::CompletedByAdmin) => {
+            "Trade Completed"
+        }
+        Some(Status::Canceled) => "Canceled",
+        Some(Status::CanceledByAdmin) => "Admin Canceled",
+        Some(Status::CooperativelyCanceled) => "Cooperatively Canceled",
+        Some(Status::Expired) => "Expired",
+        Some(_) | None => {
+            message_action_compact_label(&msg.message.get_inner_message_kind().action)
+        }
     }
-    message_action_compact_label(&msg.message.get_inner_message_kind().action)
 }
 
 /// Book order kind for sidebar: prefer persisted [`OrderMessage::order_kind`], then payload,
@@ -652,6 +649,21 @@ pub fn message_timeline_warning(action: &Action) -> Option<&'static str> {
         Action::Canceled => Some("Trade canceled"),
         Action::AdminCanceled => Some("Trade canceled by admin"),
         Action::Dispute | Action::DisputeInitiatedByYou => Some("Trade in dispute state"),
+        _ => None,
+    }
+}
+
+/// Warning text from persisted [`OrderMessage::order_status`] (preferred over last DM [`Action`] when they disagree).
+pub fn message_timeline_warning_for_order_status(
+    status: Option<mostro_core::order::Status>,
+) -> Option<&'static str> {
+    let s = status?;
+    match s {
+        Status::Canceled => Some("Trade canceled"),
+        Status::CanceledByAdmin => Some("Trade canceled by admin"),
+        Status::CooperativelyCanceled => Some("Trade cooperatively canceled"),
+        Status::Expired => Some("Trade expired"),
+        Status::Dispute => Some("Trade in dispute state"),
         _ => None,
     }
 }

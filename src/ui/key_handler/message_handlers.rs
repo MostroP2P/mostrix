@@ -73,22 +73,27 @@ pub fn handle_enter_viewing_message(
         {
             Ok(_) => {
                 let out = if source_action == Action::CooperativeCancelInitiatedByPeer {
-                    if let Err(e) = update_order_status(
+                    match update_order_status(
                         &pool_clone,
                         &order_id.to_string(),
                         Status::CooperativelyCanceled,
                     )
                     .await
                     {
-                        log::warn!(
-                            "Failed to save CooperativelyCanceled for order {}: {}",
+                        Ok(()) => OperationResult::TradeClosed {
                             order_id,
-                            e
-                        );
-                    }
-                    OperationResult::TradeClosed {
-                        order_id,
-                        message: "Cooperative cancel completed.".to_string(),
+                            message: "Cooperative cancel completed.".to_string(),
+                        },
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to save CooperativelyCanceled for order {}: {}",
+                                order_id,
+                                e
+                            );
+                            OperationResult::Error(format!(
+                                "Failed to mark cooperatively canceled: {e}"
+                            ))
+                        }
                     }
                 } else {
                     OperationResult::Info("Message sent successfully".to_string())

@@ -308,19 +308,109 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     }
 
     // Builds that added `suppress_next_new_order_dm` must drop it so `SELECT *` matches `Order`.
+    // `ALTER TABLE ... DROP COLUMN` requires SQLite 3.35.0+; older runtimes need a table rebuild.
     if check_column_exists(pool, "orders", "suppress_next_new_order_dm").await? {
-        sqlx::query(r#"ALTER TABLE orders DROP COLUMN suppress_next_new_order_dm"#)
-            .execute(pool)
-            .await?;
-        log::info!("Dropped obsolete column orders.suppress_next_new_order_dm");
+        let sqlite_ver = sqlite_runtime_version(pool).await?;
+        if sqlite_version_at_least(&sqlite_ver, 3, 35, 0) {
+            sqlx::query(r#"ALTER TABLE orders DROP COLUMN suppress_next_new_order_dm"#)
+                .execute(pool)
+                .await?;
+            log::info!("Dropped obsolete column orders.suppress_next_new_order_dm (ALTER TABLE DROP COLUMN)");
+        } else {
+            log::info!(
+                "SQLite {sqlite_ver}: rebuilding orders table to drop obsolete column suppress_next_new_order_dm"
+            );
+            orders_table_rebuild_without_suppress_column(pool).await?;
+            log::info!("Dropped obsolete column orders.suppress_next_new_order_dm (table copy)");
+        }
     }
 
+    Ok(())
+}
+
+/// `SELECT sqlite_version()` — e.g. `"3.39.4"`.
+async fn sqlite_runtime_version(pool: &SqlitePool) -> Result<String> {
+    let (ver,): (String,) = sqlx::query_as("SELECT sqlite_version()")
+        .fetch_one(pool)
+        .await?;
+    Ok(ver)
+}
+
+fn sqlite_version_at_least(version: &str, min_major: u32, min_minor: u32, min_patch: u32) -> bool {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch) >= (min_major, min_minor, min_patch)
+}
+
+/// Pre-3.35.0: recreate `orders` without `suppress_next_new_order_dm` (same columns as `init_db`).
+async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE orders_new (
+            id TEXT PRIMARY KEY,
+            kind TEXT,
+            status TEXT,
+            amount INTEGER NOT NULL,
+            fiat_code TEXT NOT NULL,
+            min_amount INTEGER,
+            max_amount INTEGER,
+            fiat_amount INTEGER NOT NULL,
+            payment_method TEXT NOT NULL,
+            premium INTEGER NOT NULL,
+            trade_keys TEXT,
+            counterparty_pubkey TEXT,
+            is_mine INTEGER NOT NULL,
+            buyer_invoice TEXT,
+            request_id INTEGER,
+            trade_index INTEGER,
+            created_at INTEGER,
+            expires_at INTEGER,
+            last_seen_dm_ts INTEGER
+        );
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO orders_new (
+            id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
+            payment_method, premium, trade_keys, counterparty_pubkey, is_mine, buyer_invoice,
+            request_id, trade_index, created_at, expires_at, last_seen_dm_ts
+        )
+        SELECT
+            id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
+            payment_method, premium, trade_keys, counterparty_pubkey, is_mine, buyer_invoice,
+            request_id, trade_index, created_at, expires_at, last_seen_dm_ts
+        FROM orders;
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(r#"DROP TABLE orders;"#)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(r#"ALTER TABLE orders_new RENAME TO orders;"#)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_version_at_least_matches_drop_column_requirement() {
+        assert!(sqlite_version_at_least("3.35.0", 3, 35, 0));
+        assert!(sqlite_version_at_least("3.40.1", 3, 35, 0));
+        assert!(!sqlite_version_at_least("3.34.1", 3, 35, 0));
+        assert!(!sqlite_version_at_least("3.34.0", 3, 35, 0));
+    }
 
     #[tokio::test]
     async fn test_init_db() {

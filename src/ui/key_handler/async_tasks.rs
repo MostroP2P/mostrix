@@ -294,9 +294,9 @@ pub async fn apply_pending_fetch_scheduler_reload(
     dispute_fetch_task.abort();
     client.unsubscribe_all().await;
 
-    if let Err(e) = connect_client_safely(client).await {
-        log::warn!("Fetch scheduler reload: failed to reconnect Nostr client: {e}");
-    }
+    connect_client_safely(client)
+        .await
+        .map_err(|e| format!("Fetch scheduler reload: failed to reconnect Nostr client: {e}"))?;
 
     *mostro_pubkey = new_mostro_pubkey;
     match current_mostro_pubkey.lock() {
@@ -415,8 +415,7 @@ pub async fn apply_pending_runtime_reloads(
         )
         .await;
     } else if app.pending_fetch_scheduler_reload {
-        app.pending_fetch_scheduler_reload = false;
-        if let Err(e) = apply_pending_fetch_scheduler_reload(
+        match apply_pending_fetch_scheduler_reload(
             app,
             client,
             mostro_pubkey,
@@ -433,7 +432,13 @@ pub async fn apply_pending_runtime_reloads(
         )
         .await
         {
-            log::warn!("{e}");
+            Ok(()) => {
+                app.pending_fetch_scheduler_reload = false;
+            }
+            Err(e) => {
+                log::warn!("{e}");
+                // Keep `pending_fetch_scheduler_reload` set so a later tick can retry after relays/connectivity recover.
+            }
         }
     }
 }

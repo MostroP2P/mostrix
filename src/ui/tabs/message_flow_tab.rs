@@ -1,7 +1,6 @@
 //! Messages tab: order list sidebar and trade timeline detail panel.
 
 use chrono::{DateTime, Utc};
-use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,7 +8,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::ui::orders::{
     listing_timeline_labels, message_action_compact_label_for_message, message_order_kind_label,
-    message_timeline_warning, message_trade_timeline_step, FlowStep, StepLabel,
+    message_timeline_warning, message_timeline_warning_for_order_status,
+    message_trade_timeline_step, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -39,7 +39,6 @@ pub fn render_messages_tab(
 
     let selected_idx = selected_idx.min(messages.len().saturating_sub(1));
     let selected_msg = &messages[selected_idx];
-    let selected_action = selected_msg.message.get_inner_message_kind().action.clone();
 
     let columns = Layout::new(
         Direction::Horizontal,
@@ -126,15 +125,10 @@ pub fn render_messages_tab(
     .block(Block::default().borders(Borders::ALL).title("Controls"));
     f.render_widget(help, left_chunks[1]);
 
-    render_message_timeline_panel(f, columns[1], selected_msg, &selected_action);
+    render_message_timeline_panel(f, columns[1], selected_msg);
 }
 
-fn render_message_timeline_panel(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    selected_msg: &OrderMessage,
-    selected_action: &Action,
-) {
+fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
     let right_chunks = Layout::new(
         Direction::Vertical,
         [
@@ -176,10 +170,12 @@ fn render_message_timeline_panel(
         &step_labels,
     );
 
-    let warning = message_timeline_warning(selected_action)
-        .unwrap_or("Trade is on normal path")
-        .to_string();
-    let warning_style = if message_timeline_warning(selected_action).is_some() {
+    let warning_from_status = message_timeline_warning_for_order_status(selected_msg.order_status);
+    let warning_opt = warning_from_status.or_else(|| {
+        message_timeline_warning(&selected_msg.message.get_inner_message_kind().action)
+    });
+    let warning = warning_opt.unwrap_or("Trade is on normal path").to_string();
+    let warning_style = if warning_opt.is_some() {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)

@@ -1,4 +1,5 @@
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
+use crate::ui::orders::OperationResult;
 use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 
 use crate::ui::key_handler::admin_handlers::{
@@ -8,8 +9,8 @@ use crate::ui::key_handler::async_tasks::{spawn_add_relay_task, spawn_refresh_mo
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
-    clear_currency_filters, save_admin_key_to_settings, save_currency_to_settings,
-    save_mostro_pubkey_to_settings, save_relay_to_settings,
+    clear_currency_filters, save_currency_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings, try_save_admin_key_to_settings,
 };
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
@@ -220,16 +221,18 @@ pub fn handle_confirm_key(
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
                 UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
             };
-            app.mode = handle_confirmation_enter(
-                true, // 'y' key means YES
-                &key_string,
-                default_mode,
-                save_admin_key_to_settings,
-                |input| UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input))),
-            );
-            hydrate_app_admin_keys_from_privkey(app, &key_string);
-            if app.user_role == UserRole::Admin {
-                app.pending_admin_disputes_reload = true;
+            match try_save_admin_key_to_settings(&key_string) {
+                Ok(()) => {
+                    hydrate_app_admin_keys_from_privkey(app, &key_string);
+                    if app.user_role == UserRole::Admin {
+                        app.pending_admin_disputes_reload = true;
+                    }
+                    app.mode = default_mode;
+                }
+                Err(e) => {
+                    log::error!("{e}");
+                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                }
             }
             true
         }

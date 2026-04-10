@@ -107,12 +107,12 @@ fn status_phase_rank_for_actor(
         Status::WaitingPayment => match kind {
             Some(mostro_core::order::Kind::Buy) => Some(1),
             Some(mostro_core::order::Kind::Sell) => Some(2),
-            None => Some(1),
+            None => None,
         },
         Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => match kind {
             Some(mostro_core::order::Kind::Buy) => Some(2),
             Some(mostro_core::order::Kind::Sell) => Some(1),
-            None => Some(1),
+            None => None,
         },
         Status::InProgress | Status::Active => Some(3),
         Status::FiatSent => Some(4),

@@ -105,7 +105,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
 
 Migrations are automatically executed when an existing database is detected during startup.
 
-For the **`orders`** table, migrations may add **`trade_index`** and **`last_seen_dm_ts`** when upgrading older databases that predate those columns (`src/db.rs`, `migrate_db`).
+For the **`orders`** table, **`migrate_db`** in **`src/db.rs`** may add **`request_id`**, **`trade_index`**, and **`last_seen_dm_ts`** when upgrading older databases that predate those columns.
 
 ## Mode Separation
 
