@@ -13,5 +13,3 @@ currencies_filter = ["VES", "ARS", "USD"]
 nsec_privkey = 'nsec1_privkey_format'
 # User mode: "user" or "admin"
 user_mode = "user"
-# Proof-of-work difficulty
-pow = 0

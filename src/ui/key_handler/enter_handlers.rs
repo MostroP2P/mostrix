@@ -291,6 +291,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                             &app.admin_chat_input,
                             ctx.client,
                             ctx.admin_chat_keys,
+                            ctx.mostro_info.clone(),
                         );
 
                         message_counter(app, &dispute_id_key);

@@ -29,7 +29,7 @@ pub use fatal::{
 pub use filters::{create_filter, create_seven_days_filter, filter_giftwrap_to_recipient};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,
-    mostro_info_from_tags, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
+    mostro_info_from_tags, nostr_pow_from_instance, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
 };
 pub use network::{any_relay_reachable, connect_client_safely};
 pub use order_utils::{fetch_events_list, get_disputes, get_orders, send_new_order, take_order};

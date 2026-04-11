@@ -5,6 +5,7 @@ use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
 use crate::util::dm_utils::send_dm;
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::SETTINGS;
 
 /// Add a new solver to the Mostro network
@@ -13,6 +14,7 @@ pub async fn execute_admin_add_solver(
     solver_pubkey: &str,
     client: &Client,
     mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // Get admin keys from settings
     let settings = SETTINGS
@@ -46,6 +48,7 @@ pub async fn execute_admin_add_solver(
         add_solver_message,
         None,
         false,
+        mostro_instance,
     )
     .await?;
 

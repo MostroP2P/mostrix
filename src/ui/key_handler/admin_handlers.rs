@@ -37,12 +37,14 @@ pub(crate) fn execute_take_dispute_action(
     let client_clone = ctx.client.clone();
     let result_tx = ctx.order_result_tx.clone();
     let pool_clone = ctx.pool.clone();
+    let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
         match execute_take_dispute(
             &dispute_id,
             &client_clone,
             current_mostro_pubkey,
             &pool_clone,
+            mostro_info.as_ref(),
         )
         .await
         {
@@ -86,9 +88,15 @@ pub(crate) fn execute_add_solver_action(
         return;
     };
 
+    let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
-        match execute_admin_add_solver(&solver_pubkey_clone, &client_clone, current_mostro_pubkey)
-            .await
+        match execute_admin_add_solver(
+            &solver_pubkey_clone,
+            &client_clone,
+            current_mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
         {
             Ok(_) => {
                 let _ = result_tx.send(OperationResult::Info(
@@ -128,6 +136,7 @@ pub(crate) fn execute_finalize_dispute_action(
     let client_clone = ctx.client.clone();
     let result_tx = ctx.order_result_tx.clone();
     let pool_clone = ctx.pool.clone();
+    let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
         match execute_finalize_dispute(
             &dispute_id,
@@ -135,6 +144,7 @@ pub(crate) fn execute_finalize_dispute_action(
             current_mostro_pubkey,
             &pool_clone,
             is_settle,
+            mostro_info.as_ref(),
         )
         .await
         {

@@ -17,6 +17,7 @@ use crate::ui::{
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
 };
+use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
@@ -39,6 +40,8 @@ pub struct EnterKeyContext<'a> {
     pub key_rotation_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub seed_words_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
+    /// Cached kind 38385 instance info (PoW bits for outbound events).
+    pub mostro_info: Option<MostroInstanceInfo>,
     pub admin_chat_keys: Option<&'a Keys>,
     pub dm_subscription_tx: &'a UnboundedSender<OrderDmSubscriptionCmd>,
 }
@@ -741,6 +744,7 @@ pub fn handle_key_event(
                 key_rotation_tx,
                 seed_words_tx,
                 mostro_info_tx,
+                mostro_info: app.mostro_info.clone(),
                 admin_chat_keys,
                 dm_subscription_tx,
             };

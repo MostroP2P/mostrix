@@ -100,6 +100,7 @@ pub fn handle_confirm_key(
                 ctx.mostro_pubkey,
                 ctx.order_result_tx,
                 ctx.dm_subscription_tx,
+                ctx.mostro_info.clone(),
             );
             true
         }

@@ -646,6 +646,7 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
     let dm_subscription_tx = ctx.dm_subscription_tx.clone();
     let fallback_mostro_pubkey = ctx.mostro_pubkey;
     let current_mostro_pubkey = Arc::clone(ctx.current_mostro_pubkey);
+    let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
         let mostro_pubkey = match current_mostro_pubkey.lock() {
             Ok(guard) => *guard,
@@ -662,6 +663,7 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
             mostro_pubkey,
             form,
             Some(&dm_subscription_tx),
+            mostro_info.as_ref(),
         )
         .await
         {
@@ -680,24 +682,24 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
 pub fn spawn_take_order_task(
     pool: SqlitePool,
     client: Client,
-    settings: Settings,
     mostro_pubkey: PublicKey,
     take_state: TakeOrderState,
     amount: Option<i64>,
     invoice: Option<String>,
     result_tx: UnboundedSender<OperationResult>,
     dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
+    mostro_info: Option<crate::util::MostroInstanceInfo>,
 ) {
     tokio::spawn(async move {
         match crate::util::take_order(
             &pool,
             &client,
-            &settings,
             mostro_pubkey,
             &take_state.order,
             amount,
             invoice,
             Some(&dm_subscription_tx),
+            mostro_info.as_ref(),
         )
         .await
         {

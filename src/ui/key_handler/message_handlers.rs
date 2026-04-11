@@ -60,6 +60,7 @@ pub fn handle_enter_viewing_message(
     let mostro_pubkey = ctx.mostro_pubkey;
     let result_tx = ctx.order_result_tx.clone();
     let source_action = view_state.action.clone();
+    let mostro_info = ctx.mostro_info.clone();
 
     tokio::spawn(async move {
         match execute_send_msg(
@@ -68,6 +69,7 @@ pub fn handle_enter_viewing_message(
             &pool_clone,
             &client_clone,
             mostro_pubkey,
+            mostro_info.as_ref(),
         )
         .await
         {
@@ -135,6 +137,7 @@ pub fn handle_enter_message_notification(
                     let pool_clone = ctx.pool.clone();
                     let client_clone = ctx.client.clone();
                     let mostro_pubkey = ctx.mostro_pubkey;
+                    let mostro_info = ctx.mostro_info.clone();
                     tokio::spawn(async move {
                         match execute_add_invoice(
                             &order_id,
@@ -142,6 +145,7 @@ pub fn handle_enter_message_notification(
                             &pool_clone,
                             &client_clone,
                             mostro_pubkey,
+                            mostro_info.as_ref(),
                         )
                         .await
                         {
@@ -187,9 +191,18 @@ pub fn handle_enter_rating_order(
     let client_clone = ctx.client.clone();
     let mostro_pubkey = ctx.mostro_pubkey;
     let result_tx = ctx.order_result_tx.clone();
+    let mostro_info = ctx.mostro_info.clone();
 
     tokio::spawn(async move {
-        match execute_rate_user(&order_id, rating, &pool_clone, &client_clone, mostro_pubkey).await
+        match execute_rate_user(
+            &order_id,
+            rating,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
         {
             Ok(()) => {
                 let _ = result_tx.send(OperationResult::Info(
