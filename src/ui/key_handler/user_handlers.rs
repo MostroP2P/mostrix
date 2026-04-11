@@ -50,6 +50,7 @@ pub fn handle_enter_taking_order(
 ///
 /// This avoids code duplication between Enter key and 'y' key handlers.
 /// Validates the take_state, sets the UI mode to waiting, and spawns an async task to take the order.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_take_order_action(
     app: &mut AppState,
     take_state: TakeOrderState,

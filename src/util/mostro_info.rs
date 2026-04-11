@@ -314,13 +314,27 @@ mod tests {
 
     #[test]
     fn nostr_pow_from_instance_uses_tag_and_clamps() {
-        let mut info = MostroInstanceInfo::default();
-        info.pow = Some(0);
-        assert_eq!(nostr_pow_from_instance(Some(&info)), 0);
-        info.pow = Some(8);
-        assert_eq!(nostr_pow_from_instance(Some(&info)), 8);
-        info.pow = Some(u32::MAX);
-        assert_eq!(nostr_pow_from_instance(Some(&info)), u8::MAX);
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(0),
+                ..Default::default()
+            })),
+            0
+        );
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(8),
+                ..Default::default()
+            })),
+            8
+        );
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(u32::MAX),
+                ..Default::default()
+            })),
+            u8::MAX
+        );
     }
 
     // Fetch tests would require a mock or test double for nostr_sdk::Client

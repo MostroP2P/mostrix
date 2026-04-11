@@ -13,6 +13,10 @@ Mostrix uses two Nostr protocols for secure communication:
 1. **NIP-59 (Gift Wrap)**: Primary method for communicating with the Mostro daemon. Provides encryption and authentication.
 2. **NIP-44 (Encrypted Direct Messages)**: Alternative method for peer-to-peer communication (used in some scenarios).
 
+### Proof-of-work (NIP-13)
+
+Required difficulty comes from the Mostro **instance status** event (kind **38385**, tag `pow`), not from `settings.toml`. Mostrix derives mining bits with `nostr_pow_from_instance`, threads cached `AppState.mostro_info` into `send_dm` and related publishers, and applies PoW to the **published** event—including the **outer** Gift Wrap (kind 1059), via a local helper that extends the rust-nostr `gift_wrap` path. See **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)** for implementation details and file pointers.
+
 ## Order Creation Flow
 
 When a user creates a new order through the TUI, the following sequence occurs:

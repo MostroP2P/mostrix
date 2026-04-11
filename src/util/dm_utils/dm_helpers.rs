@@ -19,7 +19,8 @@ fn gift_wrap_from_seal_with_pow(
     seal: &Event,
     extra_tags: impl IntoIterator<Item = Tag>,
     pow: u8,
-) -> Result<Event> { // or map to anyhow in create_gift_wrap_event
+) -> Result<Event> {
+    // or map to anyhow in create_gift_wrap_event
     if seal.kind != nostr_sdk::Kind::Seal {
         // same validation as upstream, or map_err to anyhow
         return Err(anyhow::anyhow!("Invalid kind"));
@@ -40,7 +41,8 @@ fn gift_wrap_from_seal_with_pow(
         .tags(tags)
         .custom_created_at(Timestamp::tweaked(nip59::RANGE_RANDOM_TIMESTAMP_TWEAK))
         .pow(pow) // <-- this is what the SDK’s gift_wrap path does NOT do
-        .sign_with_keys(&ephem).map_err(|e| anyhow::anyhow!("Failed to sign gift wrap: {e}"))
+        .sign_with_keys(&ephem)
+        .map_err(|e| anyhow::anyhow!("Failed to sign gift wrap: {e}"))
 }
 
 /// Subscription behavior for GiftWrap filters.
@@ -118,11 +120,11 @@ pub(crate) async fn create_gift_wrap_event(
     };
 
     let seal: Event = EventBuilder::seal(signer_keys, receiver_pubkey, rumor)
-    .await?
-    .sign(signer_keys)
-    .await?;
-   
-    Ok(gift_wrap_from_seal_with_pow(receiver_pubkey, &seal, tags, pow)?)
+        .await?
+        .sign(signer_keys)
+        .await?;
+
+    gift_wrap_from_seal_with_pow(receiver_pubkey, &seal, tags, pow)
 }
 
 /// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.

@@ -27,10 +27,10 @@ use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::{delete_order_by_id, update_order_status};
 use crate::util::filters::filter_giftwrap_to_recipient;
+use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
 };
-use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::types::{determine_message_type, MessageType};
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -168,6 +168,7 @@ fn trade_message_is_terminal(message: &Message) -> bool {
 }
 
 /// Send a direct message to a receiver
+#[allow(clippy::too_many_arguments)]
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
