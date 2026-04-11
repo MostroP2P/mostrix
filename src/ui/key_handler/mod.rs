@@ -295,6 +295,8 @@ pub fn handle_key_event(
                     return Some(true);
                 }
             }
+        }
+    }
     // Rate counterparty: 1..=5 stars (Left/Right or +/-).
     if let UiMode::RatingOrder(ref mut s) = app.mode {
         match code {

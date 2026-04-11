@@ -165,9 +165,9 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     f.render_widget(key_input, input_chunks[0]);
 
     let paste_hint = if cfg!(windows) {
-        "Shift+Insert / Ctrl+Shift+V / right-click"
+        "Shift+Insert / Ctrl+V / Ctrl+Shift+V / right-click"
     } else {
-        "Ctrl+Shift+V / middle-click"
+        "Ctrl+V / Ctrl+Shift+V / middle-click"
     };
     let footer = Paragraph::new(format!(
         "Ctrl+H: Help | Tab/Shift+Tab: Switch focus | Paste shared key ({paste_hint})\n\
