@@ -108,3 +108,154 @@ pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
 pub const FOOTER_NAV_CHAT: &str = "↑↓: Navigate Chat";
 pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
+
+/// Step label for the buy order flow
+///
+/// Describes the top and bottom of the step label of the orders flow in UI
+#[derive(Copy, Clone, Debug)]
+pub struct StepLabel {
+    pub top: &'static str,
+    pub bottom: &'static str,
+}
+
+impl StepLabel {
+    #[must_use]
+    pub fn as_single_line(self) -> String {
+        format!("{} {}", self.top, self.bottom).trim().to_string()
+    }
+}
+
+pub const BUY_ORDER_FLOW_STEPS_MAKER: [StepLabel; 6] = [
+    StepLabel {
+        top: "Wait for",
+        bottom: "Seller",
+    },
+    StepLabel {
+        top: "Paste",
+        bottom: "Invoice",
+    },
+    StepLabel {
+        top: "Order",
+        bottom: "Active",
+    },
+    StepLabel {
+        top: "Send",
+        bottom: "Fiat",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Sats",
+    },
+    StepLabel {
+        top: "Rate",
+        bottom: "Counterparty",
+    },
+];
+
+pub const BUY_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
+    StepLabel {
+        top: "Pay Hold",
+        bottom: "Invoice",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Buyer Invoice",
+    },
+    StepLabel {
+        top: "Order",
+        bottom: "Active",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Fiat",
+    },
+    StepLabel {
+        top: "Release",
+        bottom: "Sats",
+    },
+    StepLabel {
+        top: "Rate",
+        bottom: "Counterparty",
+    },
+];
+
+pub const SELL_ORDER_FLOW_STEPS_MAKER: [StepLabel; 6] = [
+    StepLabel {
+        top: "Wait for",
+        bottom: "Buyer",
+    },
+    StepLabel {
+        top: "Pay Hold",
+        bottom: "Invoice",
+    },
+    StepLabel {
+        top: "Order",
+        bottom: "Active",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Fiat",
+    },
+    StepLabel {
+        top: "Release",
+        bottom: "Sats",
+    },
+    StepLabel {
+        top: "Rate",
+        bottom: "Counterparty",
+    },
+];
+
+pub const SELL_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
+    StepLabel {
+        top: "Add",
+        bottom: "Invoice",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Seller",
+    },
+    StepLabel {
+        top: "Order",
+        bottom: "Active",
+    },
+    StepLabel {
+        top: "Send",
+        bottom: "Fiat",
+    },
+    StepLabel {
+        top: "Wait for",
+        bottom: "Sats",
+    },
+    StepLabel {
+        top: "Rate",
+        bottom: "Counterparty",
+    },
+];
+
+pub const GENERIC_ORDER_FLOW_STEPS_TAKER: [StepLabel; 6] = [
+    StepLabel {
+        top: "Payment",
+        bottom: "/ Wait",
+    },
+    StepLabel {
+        top: "",
+        bottom: "Invoice",
+    },
+    StepLabel {
+        top: "Order",
+        bottom: "Active",
+    },
+    StepLabel {
+        top: "",
+        bottom: "Fiat",
+    },
+    StepLabel {
+        top: "",
+        bottom: "Sats",
+    },
+    StepLabel {
+        top: "",
+        bottom: "Rate",
+    },
+];

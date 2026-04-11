@@ -9,12 +9,16 @@ use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
+use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::types::create_expiration_tags;
 
 /// Subscription behavior for GiftWrap filters.
 pub(crate) enum GiftWrapSubscriptionMode {
     /// Startup catch-up: request the latest retained event for this pubkey.
     StartupCatchUp,
+    /// Startup catch-up from the persisted cursor timestamp.
+    StartupSince(i64),
     /// Live-only stream: no backlog replay, only events after subscription.
     LiveOnly,
 }
@@ -108,16 +112,19 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             pubkey
         );
     }
-    // get the limit for the subscription
-    let limit = match options.mode {
-        GiftWrapSubscriptionMode::StartupCatchUp => 1,
-        GiftWrapSubscriptionMode::LiveOnly => 0,
+    let filter = match options.mode {
+        GiftWrapSubscriptionMode::StartupCatchUp => filter_giftwrap_to_recipient(pubkey).limit(1),
+        GiftWrapSubscriptionMode::StartupSince(ts) => {
+            let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_u64());
+            let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+            filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(since_ts))
+        }
+        // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
+        // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
+        // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
+        // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
+        GiftWrapSubscriptionMode::LiveOnly => filter_giftwrap_to_recipient(pubkey).limit(0),
     };
-
-    let filter = Filter::new()
-        .pubkey(pubkey)
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .limit(limit);
 
     match client.subscribe(filter, None).await {
         Ok(output) => {
@@ -146,6 +153,29 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             subscribed_pubkeys.remove(&pubkey);
             pubkey_to_subscription.remove(&pubkey);
             false
+        }
+    }
+}
+
+/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
+/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
+pub fn seed_admin_chat_last_seen(app: &mut AppState) {
+    for dispute in &app.admin_disputes_in_progress {
+        if dispute.buyer_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Buyer),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.buyer_chat_last_seen,
+                },
+            );
+        }
+        if dispute.seller_pubkey.is_some() {
+            app.admin_chat_last_seen.insert(
+                (dispute.dispute_id.clone(), ChatParty::Seller),
+                AdminChatLastSeen {
+                    last_seen_timestamp: dispute.seller_chat_last_seen,
+                },
+            );
         }
     }
 }

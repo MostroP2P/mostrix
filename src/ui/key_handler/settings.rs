@@ -21,13 +21,16 @@ where
     }
 }
 
-/// Save admin key to settings file
-pub fn save_admin_key_to_settings(key_string: &str) {
-    save_settings_with(
-        |s| s.admin_privkey = key_string.to_string(),
-        "Failed to save admin key to settings",
-        "Admin key saved to settings file",
-    );
+/// Save admin key to settings file; returns `Ok(())` only after a successful disk write.
+pub fn try_save_admin_key_to_settings(key_string: &str) -> Result<(), String> {
+    match crate::settings::load_settings_from_disk() {
+        Ok(mut current_settings) => {
+            current_settings.admin_privkey = key_string.to_string();
+            crate::settings::save_settings(&current_settings)
+                .map_err(|e| format!("Failed to save admin key to settings: {e}"))
+        }
+        Err(e) => Err(format!("Failed to load settings for update: {e}")),
+    }
 }
 
 /// Save Mostro pubkey to settings file
@@ -84,10 +87,12 @@ pub fn handle_mode_switch(app: &mut AppState) {
         UserRole::Admin => UserRole::User,
     };
 
-    // Update app state
     app.switch_role(new_role);
 
-    // Save to settings file
+    if new_role == UserRole::Admin {
+        app.pending_admin_disputes_reload = true;
+    }
+
     let role_string = new_role.to_string();
     save_settings_with(
         |s| s.user_mode = role_string.clone(),

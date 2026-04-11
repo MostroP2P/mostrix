@@ -96,6 +96,7 @@ pub async fn execute_add_invoice(
     let inner_message = handle_mostro_response(response_message, request_id)?;
     match inner_message.action {
         Action::WaitingSellerToPay => Ok(()),
+        Action::HoldInvoicePaymentAccepted => Ok(()),
         _ => Err(anyhow::anyhow!(
             "Unexpected action: {:?}",
             inner_message.action

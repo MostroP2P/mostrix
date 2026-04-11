@@ -28,6 +28,12 @@ $ git clone https://github.com/MostroP2P/mostrix.git
 $ cd mostrix
 ```
 
+## Documentation
+
+The **documentation index** is **[docs/README.md](docs/README.md)** — architecture, boot sequence, DM router, protocol, SQLite schema, TUI flows, admin disputes, and coding standards. Use it as the entry point for contributors and AI-assisted development.
+
+**Quick links:** [Startup & config](docs/STARTUP_AND_CONFIG.md) · [DM listener / Messages sync](docs/DM_LISTENER_FLOW.md) · [Database](docs/DATABASE.md) · [Message flow & protocol](docs/MESSAGE_FLOW_AND_PROTOCOL.md) · [Key management](docs/KEY_MANAGEMENT.md) · [Coding standards](docs/CODING_STANDARDS.md)
+
 ### Settings (`settings.toml`)
 
 Mostrix is configured via a TOML file called `settings.toml`.
@@ -142,7 +148,7 @@ Example migration:
 + currencies_filter = ["USD", "EUR"]
 ```
 
-**Note:** Mostrix will not start if the old `currencies` field is present. You must rename it to `currencies_filter` in your `settings.toml`.*** End Patch`"]}>>();
+**Note:** Mostrix will not start if the old `currencies` field is present. You must rename it to `currencies_filter` in your `settings.toml`.
 
 ### Admin features
 

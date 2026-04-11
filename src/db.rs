@@ -49,8 +49,10 @@ pub async fn init_db() -> Result<SqlitePool> {
                 is_mine INTEGER NOT NULL,
                 buyer_invoice TEXT,
                 request_id INTEGER,
+                trade_index INTEGER,
                 created_at INTEGER,
-                expires_at INTEGER
+                expires_at INTEGER,
+                last_seen_dm_ts INTEGER
             );
             CREATE TABLE IF NOT EXISTS users (
                 i0_pubkey char(64) PRIMARY KEY,
@@ -116,10 +118,14 @@ pub async fn init_db() -> Result<SqlitePool> {
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
     // Check if columns exist by attempting to query them and checking for specific SQLite errors
-    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+    async fn check_column_exists(
+        pool: &SqlitePool,
+        table_name: &str,
+        column_name: &str,
+    ) -> Result<bool> {
         let result = sqlx::query(&format!(
-            "SELECT {} FROM admin_disputes LIMIT 1",
-            column_name
+            "SELECT {} FROM {} LIMIT 1",
+            column_name, table_name
         ))
         .fetch_optional(pool)
         .await;
@@ -142,14 +148,22 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     }
 
     // Check if columns exist
-    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
-    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
-    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
-    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
-    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
-    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
-    let has_buyer_shared_key_hex = check_column_exists(pool, "buyer_shared_key_hex").await?;
-    let has_seller_shared_key_hex = check_column_exists(pool, "seller_shared_key_hex").await?;
+    let has_initiator_info = check_column_exists(pool, "admin_disputes", "initiator_info").await?;
+    let has_counterpart_info =
+        check_column_exists(pool, "admin_disputes", "counterpart_info").await?;
+    let has_fiat_code = check_column_exists(pool, "admin_disputes", "fiat_code").await?;
+    let has_dispute_id = check_column_exists(pool, "admin_disputes", "dispute_id").await?;
+    let has_buyer_chat_last_seen =
+        check_column_exists(pool, "admin_disputes", "buyer_chat_last_seen").await?;
+    let has_seller_chat_last_seen =
+        check_column_exists(pool, "admin_disputes", "seller_chat_last_seen").await?;
+    let has_buyer_shared_key_hex =
+        check_column_exists(pool, "admin_disputes", "buyer_shared_key_hex").await?;
+    let has_seller_shared_key_hex =
+        check_column_exists(pool, "admin_disputes", "seller_shared_key_hex").await?;
+    let has_request_id = check_column_exists(pool, "orders", "request_id").await?;
+    let has_trade_index = check_column_exists(pool, "orders", "trade_index").await?;
+    let has_last_seen_dm_ts = check_column_exists(pool, "orders", "last_seen_dm_ts").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -160,6 +174,9 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_seller_chat_last_seen
         || !has_buyer_shared_key_hex
         || !has_seller_shared_key_hex
+        || !has_request_id
+        || !has_trade_index
+        || !has_last_seen_dm_ts
     {
         log::info!("Running migration: Adding missing columns to admin_disputes table");
 
@@ -256,16 +273,144 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             .await?;
         }
 
+        if !has_request_id {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN request_id INTEGER;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_trade_index {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN trade_index INTEGER;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !has_last_seen_dm_ts {
+            sqlx::query(
+                r#"
+                ALTER TABLE orders ADD COLUMN last_seen_dm_ts INTEGER;
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
     }
 
+    // Builds that added `suppress_next_new_order_dm` must drop it so `SELECT *` matches `Order`.
+    // `ALTER TABLE ... DROP COLUMN` requires SQLite 3.35.0+; older runtimes need a table rebuild.
+    if check_column_exists(pool, "orders", "suppress_next_new_order_dm").await? {
+        let sqlite_ver = sqlite_runtime_version(pool).await?;
+        if sqlite_version_at_least(&sqlite_ver, 3, 35, 0) {
+            sqlx::query(r#"ALTER TABLE orders DROP COLUMN suppress_next_new_order_dm"#)
+                .execute(pool)
+                .await?;
+            log::info!("Dropped obsolete column orders.suppress_next_new_order_dm (ALTER TABLE DROP COLUMN)");
+        } else {
+            log::info!(
+                "SQLite {sqlite_ver}: rebuilding orders table to drop obsolete column suppress_next_new_order_dm"
+            );
+            orders_table_rebuild_without_suppress_column(pool).await?;
+            log::info!("Dropped obsolete column orders.suppress_next_new_order_dm (table copy)");
+        }
+    }
+
+    Ok(())
+}
+
+/// `SELECT sqlite_version()` — e.g. `"3.39.4"`.
+async fn sqlite_runtime_version(pool: &SqlitePool) -> Result<String> {
+    let (ver,): (String,) = sqlx::query_as("SELECT sqlite_version()")
+        .fetch_one(pool)
+        .await?;
+    Ok(ver)
+}
+
+fn sqlite_version_at_least(version: &str, min_major: u32, min_minor: u32, min_patch: u32) -> bool {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch) >= (min_major, min_minor, min_patch)
+}
+
+/// Pre-3.35.0: recreate `orders` without `suppress_next_new_order_dm` (same columns as `init_db`).
+async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE orders_new (
+            id TEXT PRIMARY KEY,
+            kind TEXT,
+            status TEXT,
+            amount INTEGER NOT NULL,
+            fiat_code TEXT NOT NULL,
+            min_amount INTEGER,
+            max_amount INTEGER,
+            fiat_amount INTEGER NOT NULL,
+            payment_method TEXT NOT NULL,
+            premium INTEGER NOT NULL,
+            trade_keys TEXT,
+            counterparty_pubkey TEXT,
+            is_mine INTEGER NOT NULL,
+            buyer_invoice TEXT,
+            request_id INTEGER,
+            trade_index INTEGER,
+            created_at INTEGER,
+            expires_at INTEGER,
+            last_seen_dm_ts INTEGER
+        );
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO orders_new (
+            id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
+            payment_method, premium, trade_keys, counterparty_pubkey, is_mine, buyer_invoice,
+            request_id, trade_index, created_at, expires_at, last_seen_dm_ts
+        )
+        SELECT
+            id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
+            payment_method, premium, trade_keys, counterparty_pubkey, is_mine, buyer_invoice,
+            request_id, trade_index, created_at, expires_at, last_seen_dm_ts
+        FROM orders;
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(r#"DROP TABLE orders;"#)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(r#"ALTER TABLE orders_new RENAME TO orders;"#)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_version_at_least_matches_drop_column_requirement() {
+        assert!(sqlite_version_at_least("3.35.0", 3, 35, 0));
+        assert!(sqlite_version_at_least("3.40.1", 3, 35, 0));
+        assert!(!sqlite_version_at_least("3.34.1", 3, 35, 0));
+        assert!(!sqlite_version_at_least("3.34.0", 3, 35, 0));
+    }
 
     #[tokio::test]
     async fn test_init_db() {

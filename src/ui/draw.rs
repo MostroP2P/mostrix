@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Direction, Layout};
 
+use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 
 /// Main UI draw function, extracted from `ui::mod`.
@@ -49,7 +50,7 @@ pub fn ui_draw(
             tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
-            let messages = match app.messages.lock() {
+            let mut messages = match app.messages.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     crate::util::request_fatal_restart(format!(
@@ -58,7 +59,11 @@ pub fn ui_draw(
                     return;
                 }
             };
-            tabs::tab_content::render_messages_tab(
+            strip_new_order_messages_and_clamp_selected(
+                &mut messages,
+                &mut app.selected_message_idx,
+            );
+            tabs::message_flow_tab::render_messages_tab(
                 f,
                 content_area,
                 &messages,
@@ -371,5 +376,14 @@ pub fn ui_draw(
     // Viewing message popup overlay
     if let UiMode::ViewingMessage(view_state) = &app.mode {
         tabs::tab_content::render_message_view(f, view_state);
+    }
+
+    if let UiMode::RatingOrder(state) = &app.mode {
+        tabs::tab_content::render_rating_order(f, state);
+    }
+
+    // Non-blocking offline overlay (does not affect current mode).
+    if let Some(message) = app.offline_overlay_message.as_deref() {
+        offline_overlay::render_offline_overlay(f, message);
     }
 }

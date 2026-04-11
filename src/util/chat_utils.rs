@@ -8,6 +8,7 @@ use nostr_sdk::prelude::*;
 use crate::models::AdminDispute;
 use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
+use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::SETTINGS;
 
 /// Messages grouped by (dispute_id, party); value is (content, timestamp, sender_pubkey).
@@ -154,9 +155,7 @@ pub async fn fetch_gift_wraps_for_shared_key(
     let wide_since = now.saturating_sub(seven_days_secs);
 
     let shared_pubkey = shared_keys.public_key();
-    let filter = Filter::new()
-        .kind(Kind::GiftWrap)
-        .pubkey(shared_pubkey)
+    let filter = filter_giftwrap_to_recipient(shared_pubkey)
         .since(Timestamp::from(wide_since))
         .limit(100);
 

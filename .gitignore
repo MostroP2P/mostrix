@@ -3,6 +3,7 @@
 *log
 # ide
 .cursorrules
+# ignore .cursor content
 .cursor/
 .vscode/
 # Opensats reports

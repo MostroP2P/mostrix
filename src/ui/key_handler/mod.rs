@@ -44,7 +44,11 @@ pub struct EnterKeyContext<'a> {
 }
 
 // Re-export public functions
-pub use async_tasks::{apply_pending_key_reload, create_app_channels, AppChannels};
+pub use async_tasks::{
+    apply_pending_fetch_scheduler_reload, apply_pending_key_reload, apply_pending_runtime_reloads,
+    create_app_channels, reload_runtime_session_after_reconnect, spawn_refresh_mostro_info_task,
+    AppChannels, RuntimeReconnectContext,
+};
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
@@ -291,6 +295,26 @@ pub fn handle_key_event(
                     return Some(true);
                 }
             }
+    // Rate counterparty: 1..=5 stars (Left/Right or +/-).
+    if let UiMode::RatingOrder(ref mut s) = app.mode {
+        match code {
+            KeyCode::Left => {
+                s.selected_rating = s.selected_rating.saturating_sub(1).max(MIN_RATING);
+                return Some(true);
+            }
+            KeyCode::Right => {
+                s.selected_rating = (s.selected_rating + 1).min(MAX_RATING);
+                return Some(true);
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                s.selected_rating = (s.selected_rating + 1).min(MAX_RATING);
+                return Some(true);
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                s.selected_rating = s.selected_rating.saturating_sub(1).max(MIN_RATING);
+                return Some(true);
+            }
+            _ => {}
         }
     }
 

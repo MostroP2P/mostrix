@@ -8,17 +8,24 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    apply_admin_chat_updates, expire_attachment_toast, recover_admin_chat_from_files,
+    admin_chat_keys_clone_for_role, apply_admin_chat_updates, expire_attachment_toast,
+    hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
 };
 use crate::ui::key_handler::{
-    apply_pending_key_reload, create_app_channels, handle_key_event, AppChannels,
+    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
+    reload_runtime_session_after_reconnect, spawn_refresh_mostro_info_task, AppChannels,
+    RuntimeReconnectContext,
 };
-use crate::ui::{AdminChatLastSeen, ChatParty, MostroInfoFetchResult, OperationResult};
+use crate::ui::network_status::spawn_network_status_monitor;
+use crate::ui::{MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    fetch_mostro_instance_info, handle_message_notification, handle_operation_result,
-    listen_for_order_messages,
-    order_utils::{spawn_admin_chat_fetch, start_fetch_scheduler, FetchSchedulerResult},
-    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment,
+    any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
+    handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
+    install_background_panic_hook, listen_for_order_messages,
+    order_utils::{
+        spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
+    },
+    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment, StartupDmHydration,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -49,7 +56,7 @@ use zeroize::Zeroizing;
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, TakeOrderState, UiMode, UserRole};
+use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -74,59 +81,6 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
-}
-
-/// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
-/// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
-fn seed_admin_chat_last_seen(app: &mut AppState, _admin_chat_keys: &Keys) {
-    let disputes = app.admin_disputes_in_progress.clone();
-
-    for dispute in &disputes {
-        if dispute.buyer_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Buyer),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.buyer_chat_last_seen,
-                },
-            );
-        }
-        if dispute.seller_pubkey.is_some() {
-            app.admin_chat_last_seen.insert(
-                (dispute.dispute_id.clone(), ChatParty::Seller),
-                AdminChatLastSeen {
-                    last_seen_timestamp: dispute.seller_chat_last_seen,
-                },
-            );
-        }
-    }
-}
-
-/// Validates the range amount input against min/max limits
-fn validate_range_amount(take_state: &mut TakeOrderState) {
-    if take_state.amount_input.is_empty() {
-        take_state.validation_error = None;
-        return;
-    }
-
-    let amount = match take_state.amount_input.parse::<f64>() {
-        Ok(val) => val,
-        Err(_) => {
-            take_state.validation_error = Some("Invalid number format".to_string());
-            return;
-        }
-    };
-
-    let min = take_state.order.min_amount.unwrap_or(0) as f64;
-    let max = take_state.order.max_amount.unwrap_or(0) as f64;
-
-    if amount < min || amount > max {
-        take_state.validation_error = Some(format!(
-            "Amount must be between {} and {} {}",
-            min, max, take_state.order.fiat_code
-        ));
-    } else {
-        take_state.validation_error = None;
-    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -179,12 +133,15 @@ async fn main() -> Result<(), anyhow::Error> {
         mut mostro_info_rx,
         mut dm_subscription_tx,
         dm_subscription_rx,
+        network_status_tx,
+        mut network_status_rx,
         fatal_error_tx,
         mut fatal_error_rx,
     } = create_app_channels();
 
     // Set fatal error tx for the app channels
     set_fatal_error_tx(fatal_error_tx).map_err(|msg| anyhow::anyhow!(msg))?;
+    install_background_panic_hook();
 
     // Set dm subscription tx for the app channels
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
@@ -197,11 +154,26 @@ async fn main() -> Result<(), anyhow::Error> {
         .parse::<Keys>()
         .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
     let mut client = Client::new(my_keys);
+
+    let configured_relays: Vec<String> = settings
+        .relays
+        .iter()
+        .map(|relay| relay.trim())
+        .filter(|relay| !relay.is_empty())
+        .map(|relay| relay.to_owned())
+        .collect();
+
     // Add relays.
-    for relay in &settings.relays {
+    for relay in &configured_relays {
         client.add_relay(relay).await?;
     }
-    client.connect().await;
+    let relays_reachable = any_relay_reachable(&configured_relays).await;
+    if !relays_reachable {
+        log::warn!("No configured relays reachable; nostr connect may fail");
+    }
+    if let Err(e) = connect_client_safely(&client).await {
+        log::warn!("Failed to connect Nostr client at startup: {e}");
+    }
 
     let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
         .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
@@ -214,20 +186,6 @@ async fn main() -> Result<(), anyhow::Error> {
         mut order_task,
         mut dispute_task,
     } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
-
-    // Parse admin key once; reuse for pubkey (message classification), seeding, and chat fetch.
-    let admin_keys: Option<Keys> = if settings.admin_privkey.is_empty() {
-        None
-    } else {
-        match Keys::parse(&settings.admin_privkey) {
-            Ok(keys) => Some(keys),
-            Err(e) => {
-                log::warn!("Invalid admin_privkey in settings: {}", e);
-                None
-            }
-        }
-    };
-    let admin_chat_pubkey: Option<PublicKey> = admin_keys.as_ref().map(Keys::public_key);
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
@@ -257,70 +215,72 @@ async fn main() -> Result<(), anyhow::Error> {
     // Seed currencies filter cache from settings so UI-side filtering does not
     // need to hit the filesystem on every render.
     app.currencies_filter = settings.currencies_filter.clone();
+    hydrate_app_admin_keys_from_privkey(&mut app, &settings.admin_privkey);
 
-    // Fetch initial Mostro instance info for the current Mostro pubkey.
-    match fetch_mostro_instance_info(&client, mostro_pubkey).await {
-        Ok(Some(info)) => {
-            app.mostro_info = Some(info);
-        }
-        Ok(None) => {
-            log::info!("No Mostro instance info event found for current Mostro pubkey");
-        }
-        Err(e) => {
-            log::warn!("Failed to fetch Mostro instance info: {}", e);
-        }
+    if !relays_reachable {
+        app.offline_overlay_message = Some(
+            "No internet / relays unreachable. Mostrix is retrying connection automatically."
+                .to_string(),
+        );
     }
 
-    // Load all admin disputes from database if admin mode
-    // (The filter toggle will show InProgress or Finalized based on user selection)
-    if app.user_role == UserRole::Admin {
-        match AdminDispute::get_all(&pool).await {
-            Ok(all_disputes) => {
-                app.admin_disputes_in_progress = all_disputes;
+    // Background offline monitor: emit status transitions every 5 seconds.
+    spawn_network_status_monitor(configured_relays.clone(), network_status_tx.clone());
 
-                // Pre-compute chat last seen timestamps for all disputes/parties so that the
-                // background listener can fetch messages incrementally based on
-                // last_seen timestamps stored in the database.
-                if let Some(ref keys) = admin_keys {
-                    seed_admin_chat_last_seen(&mut app, keys);
-                }
-
-                recover_admin_chat_from_files(
-                    &app.admin_disputes_in_progress,
-                    &mut app.admin_dispute_chats,
-                    &mut app.admin_chat_last_seen,
-                );
-            }
-            Err(e) => {
-                log::warn!("Failed to load admin disputes: {}", e);
-            }
-        }
+    // Initial Mostro instance info (same path as manual refresh; no startup toast).
+    // Only attempt this when at least one relay is reachable, otherwise some
+    // nostr client paths may panic on machines without network.
+    if relays_reachable {
+        spawn_refresh_mostro_info_task(
+            client.clone(),
+            mostro_pubkey,
+            mostro_info_tx.clone(),
+            false,
+        );
     }
 
-    // Admin chat keys (for trade-key send/fetch); only set when admin mode
-    let admin_chat_keys: Option<Keys> = if app.user_role == UserRole::Admin {
-        admin_keys
-    } else {
-        None
-    };
+    // Load admin disputes at startup (only when role is admin)
+    load_admin_disputes_at_startup(&pool, &mut app).await;
 
     // Spawn background task to listen for messages on active orders
+    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!(
+                "Failed to hydrate startup active order DM state from DB: {}",
+                e
+            );
+            StartupDmHydration::empty()
+        }
+    };
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+    } else {
+        log::warn!("Failed to seed startup active order map (poisoned lock)");
+    }
+    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
+
     let client_for_messages = client.clone();
     let pool_for_messages = pool.clone();
     let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
     let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
-        listen_for_order_messages(
-            client_for_messages,
-            pool_for_messages,
-            active_order_trade_indices_clone,
-            messages_clone,
-            message_notification_tx_clone,
-            pending_notifications_clone,
-            dm_subscription_rx,
-        )
+        catch_unwind_request_fatal_restart("trade DM listener", async move {
+            listen_for_order_messages(
+                client_for_messages,
+                pool_for_messages,
+                active_order_trade_indices_clone,
+                order_last_seen_dm_ts_clone,
+                messages_clone,
+                message_notification_tx_clone,
+                pending_notifications_clone,
+                dm_subscription_rx,
+            )
+            .await;
+        })
         .await;
     });
 
@@ -334,6 +294,50 @@ async fn main() -> Result<(), anyhow::Error> {
                     message_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                }
+            }
+            net = network_status_rx.recv() => {
+                if let Some(status) = net {
+                    match status {
+                        crate::ui::NetworkStatus::Offline(msg) => {
+                            app.offline_overlay_message = Some(format!(
+                                "{msg}. Mostrix will retry connection every 5 seconds."
+                            ));
+                        }
+                        crate::ui::NetworkStatus::Online(_msg) => {
+                            // Attempt reconnect + full runtime reload (mirrors key reload path).
+                            let latest_settings = crate::settings::load_settings_from_disk()
+                                .unwrap_or_else(|_| settings.clone());
+                            match reload_runtime_session_after_reconnect(
+                                RuntimeReconnectContext {
+                                    app: &mut app,
+                                    client: &mut client,
+                                    mostro_pubkey: &mut mostro_pubkey,
+                                    current_mostro_pubkey: &current_mostro_pubkey,
+                                    pool: &pool,
+                                    message_listener_handle: &mut message_listener_handle,
+                                    message_notification_tx: &message_notification_tx,
+                                    orders: Arc::clone(&orders),
+                                    disputes: Arc::clone(&disputes),
+                                    order_fetch_task: &mut order_task,
+                                    dispute_fetch_task: &mut dispute_task,
+                                    dm_subscription_tx: &mut dm_subscription_tx,
+                                    settings: &latest_settings,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    app.offline_overlay_message = None;
+                                }
+                                Err(e) => {
+                                    app.offline_overlay_message = Some(format!(
+                                        "Reconnect failed: {e}. Retrying every 5 seconds."
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             result = order_result_rx.recv() => {
@@ -399,10 +403,11 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(result) = admin_chat_result {
                     match result {
                         Ok(updates) => {
+                            let admin_pk = app.admin_keys.as_ref().map(|k| k.public_key());
                             if let Err(e) = apply_admin_chat_updates(
                                 &mut app,
                                 updates,
-                                admin_chat_pubkey.as_ref(),
+                                admin_pk.as_ref(),
                                 &pool,
                             )
                             .await
@@ -424,6 +429,9 @@ async fn main() -> Result<(), anyhow::Error> {
                             app.mode = crate::ui::UiMode::OperationResult(
                                 crate::ui::OperationResult::Info(message),
                             );
+                        }
+                        MostroInfoFetchResult::Applied { info } => {
+                            app.mostro_info = *info;
                         }
                         MostroInfoFetchResult::Err(e) => {
                             app.mostro_info = None;
@@ -488,6 +496,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle key events
                 if let Event::Key(key_event @ KeyEvent { kind: crossterm::event::KeyEventKind::Press, .. }) = event {
+                    let admin_chat_keys_owned = admin_chat_keys_clone_for_role(&app);
+                    let admin_chat_keys = admin_chat_keys_owned.as_ref();
                     match handle_key_event(
                         key_event,
                         &mut app,
@@ -502,13 +512,13 @@ async fn main() -> Result<(), anyhow::Error> {
                         &seed_words_tx,
                         &mostro_info_tx,
                         &validate_range_amount,
-                        admin_chat_keys.as_ref(),
+                        admin_chat_keys,
                         Some(&save_attachment_tx),
                         &dm_subscription_tx,
                     ) {
                         Some(true) => {
-                            if app.pending_key_reload {
-                                apply_pending_key_reload(
+                            if app.pending_key_reload || app.pending_fetch_scheduler_reload {
+                                apply_pending_runtime_reloads(
                                     &mut app,
                                     &mut client,
                                     &mut mostro_pubkey,
@@ -516,13 +526,18 @@ async fn main() -> Result<(), anyhow::Error> {
                                     &pool,
                                     &mut message_listener_handle,
                                     &message_notification_tx,
-                                    Arc::clone(&orders),
-                                    Arc::clone(&disputes),
+                                    &orders,
+                                    &disputes,
                                     &mut order_task,
                                     &mut dispute_task,
                                     &mut dm_subscription_tx,
+                                    settings,
                                 )
                                 .await;
+                            }
+                            if app.pending_admin_disputes_reload {
+                                app.pending_admin_disputes_reload = false;
+                                load_admin_disputes_at_startup(&pool, &mut app).await;
                             }
                             while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
                                 spawn_save_attachment(
@@ -545,7 +560,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 // Refresh the UI even if there is no input.
             }
             _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
-                if admin_chat_keys.is_some() {
+                if app.admin_keys.is_some() {
                     spawn_admin_chat_fetch(
                         client.clone(),
                         app.admin_disputes_in_progress.clone(),

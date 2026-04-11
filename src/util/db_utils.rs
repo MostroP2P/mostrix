@@ -5,6 +5,23 @@ use sqlx::sqlite::SqlitePool;
 
 use crate::models::{Order, User};
 
+/// Delete an order row from the local database.
+///
+/// Used when the local state should be discarded (e.g. taker cancels pre-Active and the order
+/// returns to the public book as Pending).
+pub async fn delete_order_by_id(pool: &SqlitePool, order_id: &str) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM orders
+        WHERE id = ?
+        "#,
+    )
+    .bind(order_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Save an order to the database (ported from mostro-cli).
 ///
 /// `is_maker`: `true` when the user published the order (maker), `false` when they took an order (taker).
@@ -16,7 +33,15 @@ pub async fn save_order(
     pool: &SqlitePool,
     is_maker: bool,
 ) -> Result<()> {
-    if let Ok(order) = Order::new(pool, order, trade_keys, Some(request_id as i64), is_maker).await
+    if let Ok(order) = Order::new(
+        pool,
+        order,
+        trade_keys,
+        Some(request_id as i64),
+        trade_index,
+        is_maker,
+    )
+    .await
     {
         if let Some(order_id) = order.id {
             log::info!("Order {} created", order_id);

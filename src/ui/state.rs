@@ -7,5 +7,5 @@ pub use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 pub use crate::ui::orders::{
     apply_kind_color, order_message_to_notification, FormState, InvoiceInputState, KeyInputState,
     MessageNotification, MessageViewState, MostroInfoFetchResult, OperationResult, OrderMessage,
-    OrderSuccess, TakeOrderState,
+    OrderSuccess, RatingOrderState, TakeOrderState,
 };
