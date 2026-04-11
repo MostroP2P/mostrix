@@ -4,10 +4,10 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 
 use crate::models::User;
-use crate::settings::Settings;
 use crate::ui::OperationResult;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -40,12 +40,12 @@ fn create_take_order_payload(
 pub async fn take_order(
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
-    _settings: &Settings,
     mostro_pubkey: PublicKey,
     order: &SmallOrder,
     amount: Option<i64>,
     invoice: Option<String>,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<crate::ui::OperationResult, anyhow::Error> {
     // Determine action based on order kind
     let action = match order.kind {
@@ -127,6 +127,7 @@ pub async fn take_order(
         message_json,
         None,
         false,
+        mostro_instance,
     );
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)

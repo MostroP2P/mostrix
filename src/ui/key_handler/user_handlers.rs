@@ -34,6 +34,7 @@ pub fn handle_enter_taking_order(
             ctx.mostro_pubkey,
             ctx.order_result_tx,
             ctx.dm_subscription_tx,
+            ctx.mostro_info.clone(),
         );
     } else {
         // NO selected - cancel and return to the appropriate normal mode
@@ -49,6 +50,7 @@ pub fn handle_enter_taking_order(
 ///
 /// This avoids code duplication between Enter key and 'y' key handlers.
 /// Validates the take_state, sets the UI mode to waiting, and spawns an async task to take the order.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_take_order_action(
     app: &mut AppState,
     take_state: TakeOrderState,
@@ -57,6 +59,7 @@ pub(crate) fn execute_take_order_action(
     mostro_pubkey: nostr_sdk::PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
     dm_subscription_tx: &UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
+    mostro_info: Option<crate::util::MostroInstanceInfo>,
 ) -> bool {
     // Validate range order if needed
     if take_state.is_range_order {
@@ -86,27 +89,17 @@ pub(crate) fn execute_take_order_action(
     // For buy orders (taking sell), we'd need invoice, but for now we'll pass None
     // TODO: Add invoice input for buy orders
     let invoice = None;
-    let runtime_settings = match crate::settings::load_settings_from_disk() {
-        Ok(s) => s,
-        Err(e) => {
-            app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(format!(
-                "Failed to load settings for taking order: {}",
-                e
-            )));
-            return false;
-        }
-    };
 
     spawn_take_order_task(
         pool.clone(),
         client.clone(),
-        runtime_settings,
         mostro_pubkey,
         take_state_clone,
         amount,
         invoice,
         order_result_tx.clone(),
         dm_subscription_tx.clone(),
+        mostro_info,
     );
 
     true

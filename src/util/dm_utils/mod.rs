@@ -27,11 +27,11 @@ use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::{delete_order_by_id, update_order_status};
 use crate::util::filters::filter_giftwrap_to_recipient;
+use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
 };
 use crate::util::types::{determine_message_type, MessageType};
-use crate::SETTINGS;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -168,6 +168,7 @@ fn trade_message_is_terminal(message: &Message) -> bool {
 }
 
 /// Send a direct message to a receiver
+#[allow(clippy::too_many_arguments)]
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
@@ -176,13 +177,9 @@ pub async fn send_dm(
     payload: String,
     expiration: Option<Timestamp>,
     to_user: bool,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    let pow: u8 = SETTINGS
-        .get()
-        .ok_or_else(|| {
-            anyhow::anyhow!("Settings not initialized. Please restart the application.")
-        })?
-        .pow;
+    let pow = nostr_pow_from_instance(mostro_instance);
     let message_type = determine_message_type(to_user, false);
 
     let event = match message_type {

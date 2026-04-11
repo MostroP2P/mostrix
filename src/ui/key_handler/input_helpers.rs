@@ -105,6 +105,7 @@ pub fn send_admin_chat_message_via_shared_key(
     message_content: &str,
     client: &Client,
     admin_chat_keys: Option<&Keys>,
+    mostro_instance: Option<crate::util::MostroInstanceInfo>,
 ) {
     let Some(admin_keys) = admin_chat_keys else {
         log::warn!(
@@ -137,6 +138,7 @@ pub fn send_admin_chat_message_via_shared_key(
             &admin_keys,
             &shared_keys,
             &message_content,
+            mostro_instance.as_ref(),
         )
         .await
         {

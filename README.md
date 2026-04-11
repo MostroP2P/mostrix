@@ -74,10 +74,6 @@ currencies_filter = []
 
 # User mode: "user" or "admin" (controls available actions and UI)
 user_mode = "user"
-
-# Proof-of-work difficulty for events (0 = disabled, higher = more work)
-# Not managed from tui at the moment
-pow = 0
 ```
 
 > **Note**: On first run, Mostrix generates a complete `settings.toml` with a fresh keypair. The example above shows the default values used.
@@ -117,10 +113,6 @@ pow = 0
 - **`user_mode`**  
   - `"user"` (default): normal user interface and actions.  
   - `"admin"`: enables admin-specific capabilities; typically used with `admin_privkey`.
-
-- **`pow`**  
-  - Required proof-of-work difficulty for Nostr events created by Mostrix.  
-  - `0` disables additional PoW; higher values increase CPU cost per event but can help with relay anti-spam policies.
 
 #### Fiat currencies and Mostro instance info
 

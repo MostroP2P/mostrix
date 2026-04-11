@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::models::{Order, User};
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;
 
 async fn create_msg_payload(
@@ -47,6 +48,7 @@ pub async fn execute_send_msg(
     pool: &sqlx::SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // Get order from database
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
@@ -92,6 +94,7 @@ pub async fn execute_send_msg(
         message_json,
         None,
         false,
+        mostro_instance,
     );
 
     // Wait for the DM response from Mostro
@@ -148,6 +151,7 @@ pub async fn execute_rate_user(
     pool: &sqlx::SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     if !(MIN_RATING..=MAX_RATING).contains(&rating) {
         return Err(anyhow::anyhow!(
@@ -186,6 +190,7 @@ pub async fn execute_rate_user(
         message_json,
         None,
         false,
+        mostro_instance,
     );
 
     let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;

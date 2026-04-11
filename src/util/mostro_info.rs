@@ -92,6 +92,15 @@ impl MostroInstanceInfo {
     }
 }
 
+/// NIP-13 difficulty bits for outbound events from cached Mostro instance info (kind 38385 tag `pow`).
+/// Returns `0` when info is missing or the tag is absent. Values above `u8::MAX` clamp to 255.
+pub fn nostr_pow_from_instance(instance: Option<&MostroInstanceInfo>) -> u8 {
+    instance
+        .and_then(|i| i.pow)
+        .map(|n| (n.min(u8::MAX as u32)) as u8)
+        .unwrap_or(0)
+}
+
 /// Build a `MostroInstanceInfo` from the tags of a kind 38385 event.
 ///
 /// Unknown tags are ignored. Missing tags simply leave the corresponding
@@ -292,6 +301,40 @@ mod tests {
         assert_eq!(result.mostro_version.as_deref(), Some("0.1.0"));
         assert_eq!(result.max_order_amount, Some(1_000_000));
         assert_eq!(result.fiat_currencies_accepted, vec!["USD", "EUR"]);
+    }
+
+    #[test]
+    fn nostr_pow_from_instance_none_or_missing_tag_is_zero() {
+        assert_eq!(nostr_pow_from_instance(None), 0);
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo::default())),
+            0
+        );
+    }
+
+    #[test]
+    fn nostr_pow_from_instance_uses_tag_and_clamps() {
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(0),
+                ..Default::default()
+            })),
+            0
+        );
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(8),
+                ..Default::default()
+            })),
+            8
+        );
+        assert_eq!(
+            nostr_pow_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(u32::MAX),
+                ..Default::default()
+            })),
+            u8::MAX
+        );
     }
 
     // Fetch tests would require a mock or test double for nostr_sdk::Client

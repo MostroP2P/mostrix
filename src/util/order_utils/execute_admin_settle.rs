@@ -5,6 +5,7 @@ use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
 use crate::util::dm_utils::send_dm;
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::SETTINGS;
 
 /// Settle a dispute in favor of the buyer (AdminSettle action).
@@ -39,6 +40,7 @@ pub async fn execute_admin_settle(
     order_id: &Uuid,
     client: &Client,
     mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // Get admin keys from settings
     let settings = SETTINGS
@@ -67,6 +69,7 @@ pub async fn execute_admin_settle(
         settle_message,
         None,
         false,
+        mostro_instance,
     )
     .await?;
 

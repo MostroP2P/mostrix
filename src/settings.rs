@@ -17,7 +17,6 @@ pub struct Settings {
     pub relays: Vec<String>,
     pub log_level: String,
     pub currencies_filter: Vec<String>,
-    pub pow: u8,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
 }
@@ -42,7 +41,6 @@ impl Default for Settings {
             relays: Vec::new(),
             log_level: "info".to_string(),
             currencies_filter: Vec::new(),
-            pow: 0,
             user_mode: "user".to_string(),
         }
     }
@@ -221,7 +219,6 @@ with your real keys before running Mostrix again.",
     settings.nsec_privkey = nsec;
     settings.relays = vec!["wss://relay.mostro.network".to_string()];
     settings.user_mode = "user".to_string();
-    settings.pow = 0;
     settings.currencies_filter = Vec::new();
     settings.mostro_pubkey = MOSTRO_STAGING_PUBKEY.to_string();
 
@@ -353,7 +350,6 @@ mod tests {
             relays = ["wss://relay.example.com"]
             log_level = "info"
             currencies = ["USD", "EUR"]
-            pow = 0
         "#;
         // Direct deserialization (bypassing validate_currencies_config) should now fail
         // because the Settings struct no longer has a serde alias for `currencies`.

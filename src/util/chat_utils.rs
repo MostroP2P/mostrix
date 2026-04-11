@@ -9,7 +9,7 @@ use crate::models::AdminDispute;
 use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::filter_giftwrap_to_recipient;
-use crate::SETTINGS;
+use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 
 /// Messages grouped by (dispute_id, party); value is (content, timestamp, sender_pubkey).
 type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, i64, PublicKey)>>;
@@ -58,6 +58,7 @@ async fn build_custom_wrap_event(
     sender: &Keys,
     recipient_pubkey: &PublicKey,
     message: &str,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<Event> {
     // Message is just sent inside rumor as per https://mostro.network/protocol/chat.html please check that.
     let inner_message = EventBuilder::text_note(message)
@@ -77,13 +78,7 @@ async fn build_custom_wrap_event(
     // Build tags for the wrapper event, the recipient pubkey is the shared key pubkey
     let tag = Tag::public_key(*recipient_pubkey);
 
-    // Get the pow from the settings
-    let pow: u8 = SETTINGS
-        .get()
-        .ok_or_else(|| {
-            anyhow::anyhow!("Settings not initialized. Please restart the application.")
-        })?
-        .pow;
+    let pow = nostr_pow_from_instance(mostro_instance);
     // Build the wrapped event
     let wrapped_event = EventBuilder::new(Kind::GiftWrap, encrypted_content)
         .tag(tag)
@@ -106,13 +101,15 @@ pub async fn send_admin_chat_message_via_shared_key(
     admin_keys: &Keys,
     shared_keys: &Keys,
     content: &str,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     let content = content.trim();
     if content.is_empty() {
         return Err(anyhow::anyhow!("Cannot send empty admin chat message"));
     }
     let recipient_pubkey = shared_keys.public_key();
-    let event = build_custom_wrap_event(admin_keys, &recipient_pubkey, content).await?;
+    let event =
+        build_custom_wrap_event(admin_keys, &recipient_pubkey, content, mostro_instance).await?;
     // Send the event to the relay
     client
         .send_event(&event)

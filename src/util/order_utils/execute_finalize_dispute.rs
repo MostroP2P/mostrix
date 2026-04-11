@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
+use crate::util::mostro_info::MostroInstanceInfo;
 
 use super::{execute_admin_cancel, execute_admin_settle};
 
@@ -48,6 +49,7 @@ pub async fn execute_finalize_dispute(
     mostro_pubkey: PublicKey,
     pool: &SqlitePool,
     is_settle: bool,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // First, fetch the dispute and check if it's already finalized
     let dispute_id_str = dispute_id.to_string();
@@ -92,9 +94,9 @@ pub async fn execute_finalize_dispute(
 
     // Execute the appropriate action (settle or cancel) using the order ID
     let result = if is_settle {
-        execute_admin_settle(&order_id, client, mostro_pubkey).await
+        execute_admin_settle(&order_id, client, mostro_pubkey, mostro_instance).await
     } else {
-        execute_admin_cancel(&order_id, client, mostro_pubkey).await
+        execute_admin_cancel(&order_id, client, mostro_pubkey, mostro_instance).await
     };
 
     result?; // Propagate error if action failed

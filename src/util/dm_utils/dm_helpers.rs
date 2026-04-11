@@ -13,6 +13,43 @@ use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::types::create_expiration_tags;
 
+/// Builds the published NIP-59 **Gift Wrap** (kind 1059) from a signed **Seal** event.
+///
+/// Rust-nostr’s `EventBuilder::gift_wrap` seals and wraps but does not apply NIP-13 PoW to the
+/// outer Gift Wrap; Mostro may require that difficulty on the relay-visible event. This helper
+/// mirrors the SDK’s seal→wrap steps: reject non-seal inputs, encrypt the seal JSON to `receiver`
+/// with NIP-44 using an **ephemeral** key pair, attach `p` and optional tags, set
+/// [`nip59::RANGE_RANDOM_TIMESTAMP_TWEAK`]-style `created_at`, mine with [`EventBuilder::pow`],
+/// then sign the wrap with the ephemeral keys.
+fn gift_wrap_from_seal_with_pow(
+    receiver: &PublicKey,
+    seal: &Event,
+    extra_tags: impl IntoIterator<Item = Tag>,
+    pow: u8,
+) -> Result<Event> {
+    if seal.kind != nostr_sdk::Kind::Seal {
+        return Err(anyhow::anyhow!("Invalid kind"));
+    }
+
+    let ephem = Keys::generate();
+    let content = nip44::encrypt(
+        ephem.secret_key(),
+        receiver,
+        seal.as_json(),
+        nip44::Version::default(),
+    )?;
+
+    let mut tags: Vec<Tag> = extra_tags.into_iter().collect();
+    tags.push(Tag::public_key(*receiver));
+
+    EventBuilder::new(nostr_sdk::Kind::GiftWrap, content)
+        .tags(tags)
+        .custom_created_at(Timestamp::tweaked(nip59::RANGE_RANDOM_TIMESTAMP_TWEAK))
+        .pow(pow)
+        .sign_with_keys(&ephem)
+        .map_err(|e| anyhow::anyhow!("Failed to sign gift wrap: {e}"))
+}
+
 /// Subscription behavior for GiftWrap filters.
 pub(crate) enum GiftWrapSubscriptionMode {
     /// Startup catch-up: request the latest retained event for this pubkey.
@@ -87,7 +124,12 @@ pub(crate) async fn create_gift_wrap_event(
         trade_keys
     };
 
-    Ok(EventBuilder::gift_wrap(signer_keys, receiver_pubkey, rumor, tags).await?)
+    let seal: Event = EventBuilder::seal(signer_keys, receiver_pubkey, rumor)
+        .await?
+        .sign(signer_keys)
+        .await?;
+
+    gift_wrap_from_seal_with_pow(receiver_pubkey, &seal, tags, pow)
 }
 
 /// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.

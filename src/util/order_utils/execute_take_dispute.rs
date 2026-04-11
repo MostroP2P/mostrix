@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::models::AdminDispute;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
 use crate::SETTINGS;
 
@@ -46,6 +47,7 @@ pub async fn execute_take_dispute(
     client: &Client,
     mostro_pubkey: PublicKey,
     pool: &SqlitePool,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // Get admin keys from settings
     let settings = SETTINGS
@@ -78,6 +80,7 @@ pub async fn execute_take_dispute(
         take_dispute_message,
         None,
         false,
+        mostro_instance,
     );
 
     // Wait for incoming DM response

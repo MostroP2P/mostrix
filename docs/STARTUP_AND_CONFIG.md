@@ -85,8 +85,8 @@ The TUI uses `ratatui` with the `crossterm` backend.
 
 The `Settings` struct defines all available configuration options.
 
-**Source**: `src/settings.rs:8`
-```8:19:src/settings.rs
+**Source**: `src/settings.rs`
+```rust
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Settings {
     pub mostro_pubkey: String,
@@ -95,7 +95,6 @@ pub struct Settings {
     pub relays: Vec<String>,
     pub log_level: String,
     pub currencies_filter: Vec<String>,
-    pub pow: u8,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
 }
@@ -110,8 +109,9 @@ pub struct Settings {
 - **`currencies_filter`**: Optional list of fiat currency **filters** (ISO codes).  
   - When empty, all currencies published by the Mostro instance are shown.  
   - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
-- **`pow`**: Proof-of-work difficulty requirement for publishing events.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
+
+Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 
 ## Nostr & Background Tasks
 

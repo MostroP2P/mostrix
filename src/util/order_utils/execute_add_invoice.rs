@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;
 
 /// Verify if an invoice is valid
@@ -28,6 +29,7 @@ pub async fn execute_add_invoice(
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     // Get order from order id
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
@@ -80,6 +82,7 @@ pub async fn execute_add_invoice(
         message_json,
         None,
         false,
+        mostro_instance,
     );
 
     // Wait for the DM to be sent from mostro
