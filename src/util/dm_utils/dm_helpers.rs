@@ -13,16 +13,21 @@ use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::types::create_expiration_tags;
 
-// nip59::RANGE_RANDOM_TIMESTAMP_TWEAK — you already use `nip59::` elsewhere in the project
+/// Builds the published NIP-59 **Gift Wrap** (kind 1059) from a signed **Seal** event.
+///
+/// Rust-nostr’s `EventBuilder::gift_wrap` seals and wraps but does not apply NIP-13 PoW to the
+/// outer Gift Wrap; Mostro may require that difficulty on the relay-visible event. This helper
+/// mirrors the SDK’s seal→wrap steps: reject non-seal inputs, encrypt the seal JSON to `receiver`
+/// with NIP-44 using an **ephemeral** key pair, attach `p` and optional tags, set
+/// [`nip59::RANGE_RANDOM_TIMESTAMP_TWEAK`]-style `created_at`, mine with [`EventBuilder::pow`],
+/// then sign the wrap with the ephemeral keys.
 fn gift_wrap_from_seal_with_pow(
     receiver: &PublicKey,
     seal: &Event,
     extra_tags: impl IntoIterator<Item = Tag>,
     pow: u8,
 ) -> Result<Event> {
-    // or map to anyhow in create_gift_wrap_event
     if seal.kind != nostr_sdk::Kind::Seal {
-        // same validation as upstream, or map_err to anyhow
         return Err(anyhow::anyhow!("Invalid kind"));
     }
 
@@ -40,7 +45,7 @@ fn gift_wrap_from_seal_with_pow(
     EventBuilder::new(nostr_sdk::Kind::GiftWrap, content)
         .tags(tags)
         .custom_created_at(Timestamp::tweaked(nip59::RANGE_RANDOM_TIMESTAMP_TWEAK))
-        .pow(pow) // <-- this is what the SDK’s gift_wrap path does NOT do
+        .pow(pow)
         .sign_with_keys(&ephem)
         .map_err(|e| anyhow::anyhow!("Failed to sign gift wrap: {e}"))
 }
