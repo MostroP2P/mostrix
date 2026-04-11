@@ -2,6 +2,10 @@
 
 This guide explains how Mostrix communicates with the Mostro daemon and handles the flow of orders and messages through the Nostr network.
 
+See also **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for the background `listen_for_order_messages` task: relay subscriptions, waiter vs tracked-order routing, and the in-memory Messages list.
+
+**Restart / Messages tab:** the UI message list is rebuilt from relays at startup (`fetch_events` replay per active trade key), not from a local message table. The database stores order rows, `trade_index`, and an optional **`last_seen_dm_ts`** cursor for subscription/sync; see **DATABASE.md** and **DM_LISTENER_FLOW.md** (“Startup bootstrap”).
+
 ## Communication Protocols
 
 Mostrix uses two Nostr protocols for secure communication:
@@ -122,6 +126,10 @@ The `wait_for_dm` function now uses the shared DM router:
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
 4. The background DM listener decrypt-checks incoming GiftWrap events against pending waiters and delivers the first match to `wait_for_dm`
+
+Waiter subscription detail:
+- `RegisterWaiter` uses a live-only GiftWrap filter with `.limit(0)` (not `since(now)`), which
+  avoids same-second timestamp edge cases that can miss immediate Mostro responses.
 
 ### 6. Parsing and Handling Response
 **Source**: `src/util/order_utils/send_new_order.rs:145`
@@ -245,6 +253,8 @@ Similar to order creation, the client waits for Mostro's response, which may inc
 ## Background Message Listening
 
 Mostrix runs a background task that continuously monitors relay notifications and routes trade DMs in real time.
+
+For a detailed, code-level walkthrough of the DM router/listener (including how the in-memory `Vec<OrderMessage>` is built, how `TrackOrder` vs waiters work, and how `Action`/`Status`/DB updates relate), see [DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md).
 
 ```mermaid
 sequenceDiagram
@@ -415,6 +425,34 @@ Key points:
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
 - For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism
+- For **`Action::Cancel`**, a successful response may be **`Canceled`** or **`CooperativeCancelAccepted`** (`execute_send_msg` in `src/util/order_utils/execute_send_msg.rs`).
+
+### Cooperative cancel (peer request)
+
+When the counterparty initiates cooperative cancel, Mostrix receives a trade DM whose **`action`** is **`CooperativeCancelInitiatedByPeer`**. The user can confirm from the Messages tab:
+
+1. **Enter** opens **`UiMode::ViewingMessage`** with the same **YES/NO** chrome as other confirms (`helpers::render_yes_no_buttons` in `src/ui/tabs/tab_content.rs`).
+2. **YES + Enter** runs **`execute_send_msg`** with **`Action::Cancel`**, which waits for Mostro’s DM response.
+3. On success, the client:
+   - persists **`CooperativelyCanceled`** on the **`orders`** row (`update_order_status` from `src/ui/key_handler/message_handlers.rs`);
+   - sends **`OperationResult::TradeClosed`** so the main loop removes the order from the in-memory Messages list and clears **`active_order_trade_indices`** (`handle_operation_result` in `src/util/dm_utils/order_ch_mng.rs` — the UI then shows a short success **Info** toast).
+
+When the relay later delivers **`CooperativeCancelAccepted`**, the DM listener treats it as **terminal** (`trade_message_is_terminal`), may update status again if needed, and performs the usual subscription cleanup. See **DM_LISTENER_FLOW.md** (terminal cleanup, status inference).
+
+### Rating the counterparty (`RateUser`)
+
+After a successful trade, Mostro may prompt with a DM whose **`action`** is **`rate`** and **`payload`** is **`null`**, while the local DB row may still show **`success`**. The client must not infer the UI step from **`Status::Success` alone** for that message.
+
+- **UI**: **`UiMode::RatingOrder`** (`src/ui/app_state.rs`) — star row **1–5** (`mostro_core::MIN_RATING` / `MAX_RATING`), **Left/Right** or **+/-** to adjust, **Enter** to submit, **Esc** to dismiss. Rendered in **`src/ui/tabs/tab_content.rs`** (`render_rating_order`), opened from Messages **Enter** when the selected message’s action is **`Rate`** (`src/ui/key_handler/enter_handlers.rs`).
+- **Send path**: **`execute_rate_user`** in **`src/util/order_utils/execute_send_msg.rs`** builds **`Message::new_order`** with **`Action::RateUser`**, **`Payload::RatingUser(rating)`**, and the trade **`order_id`**; **identity + trade keys** and **`send_dm` / `wait_for_dm`** match other trade messages. The response is expected to be **`Action::RateReceived`**. No counterparty pubkey is sent — Mostro resolves the peer server-side.
+
+## Messages tab: trade timeline stepper (buy and sell listings)
+
+The Messages detail panel shows a **six-step** timeline for trades with known **`order_kind`**. The highlighted column comes from **`message_trade_timeline_step`** → **`FlowStep`** (`src/ui/orders.rs`): **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**, each with discriminants **1…6** for UI columns (sell swaps the first two phase columns vs buy). Resolution dispatches to **`buy_listing_flow_step`** or **`sell_listing_flow_step`**, combining **`OrderMessage::order_status`**, **`is_mine`** (maker/taker), and **`action`**, via **`listing_step_from_status(order_kind, status)`** (kind-specific status mapping) and kind-specific **`_flow_step_from_action`**. **`Action::Rate`** / **`RateReceived`** are handled before status so **`rate`** DMs without a full order payload still highlight the final step.
+
+Step **wording** (strings per column) lives in **`src/ui/constants.rs`** (`StepLabel`, buy/sell step arrays); **`listing_timeline_labels`** selects the array by kind and role.
+
+See **[buy order flow.md](buy%20order%20flow.md)** and **[sell order flow.md](sell%20order%20flow.md)** for product context and **[TUI_INTERFACE.md](TUI_INTERFACE.md)** for **`UiMode`** overlays.
 
 ## Error Handling Patterns
 

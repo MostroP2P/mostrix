@@ -168,14 +168,16 @@ Use `mod.rs` files to re-export commonly used items:
 
 **Source**: `src/util/mod.rs:7`
 
-```7:14:src/util/mod.rs
-// Re-export commonly used items
+```text
+// Re-export commonly used items (see src/util/mod.rs)
 pub use db_utils::save_order;
 pub use dm_utils::{
-    handle_message_notification, handle_order_result, listen_for_order_messages, parse_dm_events,
-    send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
+    listen_for_order_messages, parse_dm_events, seed_admin_chat_last_seen, send_dm,
+    set_dm_router_cmd_tx, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
+    FETCH_EVENTS_TIMEOUT,
 };
-pub use filters::{create_filter, create_seven_days_filter};
+pub use filters::{create_filter, create_seven_days_filter, filter_giftwrap_to_recipient};
 pub use order_utils::{fetch_events_list, get_orders, send_new_order, take_order};
 pub use types::{get_cant_do_description, Event, ListKind};
 ```

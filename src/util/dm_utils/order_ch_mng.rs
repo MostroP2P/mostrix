@@ -1,12 +1,45 @@
 // Order channel manager - handles order result messages from async tasks
-use crate::ui::orders::OrderSuccess;
+use crate::ui::orders::{strip_new_order_messages_and_clamp_selected, OrderSuccess};
 use crate::ui::{
     AppState, InvoiceInputState, MessageNotification, OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
+use uuid::Uuid;
+
+fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            messages.retain(|m| m.order_id != Some(order_id));
+            strip_new_order_messages_and_clamp_selected(
+                &mut messages,
+                &mut app.selected_message_idx,
+            );
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+    match app.active_order_trade_indices.lock() {
+        Ok(mut indices) => {
+            indices.remove(&order_id);
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
 
 /// Handle order result from the order result channel
-pub fn handle_operation_result(result: OperationResult, app: &mut AppState) {
+pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
+    if let OperationResult::TradeClosed { order_id, message } = result {
+        remove_closed_trade_from_messages_tab(app, order_id);
+        result = OperationResult::Info(message);
+    }
+
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
         order,

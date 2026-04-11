@@ -19,6 +19,8 @@ pub mod key_handler;
 pub mod key_input_popup;
 pub mod message_notification;
 pub(crate) mod navigation;
+pub mod network_status;
+pub mod offline_overlay;
 pub mod operation_result;
 pub mod order_confirm;
 pub mod order_form;
@@ -33,11 +35,12 @@ pub mod waiting;
 
 pub use admin_state::AdminMode;
 pub use draw::ui_draw;
+pub use network_status::NetworkStatus;
 pub use state::{
     apply_kind_color, order_message_to_notification, AdminChatLastSeen, AdminChatUpdate, AdminTab,
     AppState, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender, DisputeChatMessage,
     DisputeFilter, FormState, InvoiceInputState, KeyInputState, MessageNotification,
-    MessageViewState, MostroInfoFetchResult, OperationResult, OrderMessage, Tab, TakeOrderState,
-    UiMode, UserRole, UserTab,
+    MessageViewState, MostroInfoFetchResult, OperationResult, OrderMessage, RatingOrderState, Tab,
+    TakeOrderState, UiMode, UserRole, UserTab,
 };
 pub use user_state::UserMode;

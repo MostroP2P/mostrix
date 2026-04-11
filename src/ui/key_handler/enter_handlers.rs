@@ -4,9 +4,13 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
+use crate::ui::orders::{
+    invoice_popup_allowed_for_order_status, strip_new_order_messages_and_clamp_selected,
+};
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
-    MessageViewState, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab,
+    MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
+    UserRole, UserTab,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -60,7 +64,7 @@ use crate::ui::key_handler::admin_handlers::{
 
 // Message handlers moved to message_handlers.rs
 use crate::ui::key_handler::message_handlers::{
-    handle_enter_message_notification, handle_enter_viewing_message,
+    handle_enter_message_notification, handle_enter_rating_order, handle_enter_viewing_message,
 };
 
 /// Handle Enter key - dispatches to mode-specific handlers
@@ -135,6 +139,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     | Tab::Admin(AdminTab::Observer)
                     | Tab::User(UserTab::MostroInfo)
                     | Tab::Admin(AdminTab::MostroInfo)
+                    | Tab::User(UserTab::Messages)
             ) {
                 app.active_tab = Tab::first(app.user_role);
             }
@@ -155,6 +160,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Enter confirms the selected button (YES or NO)
             handle_enter_viewing_message(app, &view_state, ctx);
             // Mode is updated inside handle_enter_viewing_message
+            true
+        }
+        UiMode::RatingOrder(state) => {
+            handle_enter_rating_order(app, &state, ctx);
             true
         }
         UiMode::AdminMode(AdminMode::AddSolver(_))
@@ -420,10 +429,12 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 }
+                app.pending_fetch_scheduler_reload = true;
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
                     new_pubkey,
                     ctx.mostro_info_tx.clone(),
+                    true,
                 );
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Fetching Mostro instance info...".to_string(),
@@ -484,7 +495,7 @@ fn handle_enter_settings_mode(
             if selected_button {
                 // Persist to settings and update in-memory cache.
                 save_currency_to_settings(&currency_string);
-                app.pending_key_reload = true;
+                app.pending_fetch_scheduler_reload = true;
                 let upper = currency_string.trim().to_uppercase();
                 if !upper.is_empty() && !app.currencies_filter.contains(&upper) {
                     app.currencies_filter.push(upper);
@@ -495,7 +506,7 @@ fn handle_enter_settings_mode(
         UiMode::ConfirmClearCurrencies(selected_button) => {
             if selected_button {
                 // YES selected - clear currency filters (both on disk and in cache)
-                app.pending_key_reload = true;
+                app.pending_fetch_scheduler_reload = true;
                 clear_currency_filters();
                 app.currencies_filter.clear();
             }
@@ -584,7 +595,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {
-        let messages_lock = match app.messages.lock() {
+        let mut messages_lock = match app.messages.lock() {
             Ok(g) => g,
             Err(e) => {
                 crate::util::request_fatal_restart(format!(
@@ -593,11 +604,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 return;
             }
         };
+        strip_new_order_messages_and_clamp_selected(
+            &mut messages_lock,
+            &mut app.selected_message_idx,
+        );
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
-            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
-                // Show invoice/payment popup for actionable messages
+            if matches!(action, Action::AddInvoice | Action::PayInvoice)
+                && invoice_popup_allowed_for_order_status(&action, msg.order_status)
+            {
+                // Show invoice/payment popup only when the phase still requires it.
                 let notification = order_message_to_notification(msg);
                 let action = notification.action.clone();
                 let invoice_state = InvoiceInputState {
@@ -609,9 +626,24 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 };
 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+            } else if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+                // Stale replayed invoice/payment DMs after the trade moved on.
+                let info = if matches!(action, Action::PayInvoice)
+                    && matches!(
+                        msg.order_status,
+                        Some(mostro_core::order::Status::WaitingBuyerInvoice)
+                    ) {
+                    "Waiting for the buyer to add their invoice. Hold invoice is already paid."
+                        .to_string()
+                } else {
+                    "Trade already advanced; invoice action no longer required.".to_string()
+                };
+                app.mode = UiMode::OperationResult(OperationResult::Info(info));
             } else if matches!(
                 action,
-                Action::HoldInvoicePaymentAccepted | Action::FiatSentOk
+                Action::HoldInvoicePaymentAccepted
+                    | Action::FiatSentOk
+                    | Action::CooperativeCancelInitiatedByPeer
             ) {
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
@@ -622,6 +654,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     selected_button: true, // Default to YES
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
+            } else if matches!(action, Action::Rate) {
+                if let Some(oid) = msg.order_id {
+                    app.mode = UiMode::RatingOrder(RatingOrderState {
+                        order_id: oid,
+                        selected_rating: 3,
+                    });
+                } else {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "No order ID for rating".to_string(),
+                    ));
+                }
             } else {
                 // Non-actionable messages: show info popup (no "send" semantics).
                 let notification = order_message_to_notification(msg);

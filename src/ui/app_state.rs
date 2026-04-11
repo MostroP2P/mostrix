@@ -11,16 +11,19 @@ use crate::ui::chat::{AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeF
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
     InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
-    OrderMessage,
+    OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
+use nostr_sdk::Keys;
 
 #[derive(Debug)]
 pub enum UiMode {
     // Shared modes (available to both user and admin)
     Normal,
     ViewingMessage(MessageViewState), // Simple message popup with yes/no options
+    /// Rate the trade counterparty (1–5); Mostro resolves peer from order id.
+    RatingOrder(RatingOrderState),
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
@@ -53,6 +56,7 @@ impl Clone for UiMode {
         match self {
             UiMode::Normal => UiMode::Normal,
             UiMode::ViewingMessage(view_state) => UiMode::ViewingMessage(view_state.clone()),
+            UiMode::RatingOrder(state) => UiMode::RatingOrder(state.clone()),
             UiMode::NewMessageNotification(notification, action, invoice_state) => {
                 UiMode::NewMessageNotification(
                     notification.clone(),
@@ -110,6 +114,9 @@ pub struct AppState {
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
+    /// Per-order startup floor for invoice popups: notifications at or below this rumor timestamp
+    /// are treated as historical and must not auto-open AddInvoice/PayInvoice modal.
+    pub startup_popup_floor_ts: HashMap<uuid::Uuid, i64>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<AdminDispute>, // Taken disputes
@@ -128,16 +135,25 @@ pub struct AppState {
     pub observer_loading: bool,
     /// Observer mode: last error message (if any).
     pub observer_error: Option<String>,
+    /// Parsed `admin_privkey` from settings (dispute chat, classification). Updated on save / reload.
+    pub admin_keys: Option<Keys>,
+    /// After switching to admin mode (M key) or saving admin key: reload disputes from DB in main.
+    pub pending_admin_disputes_reload: bool,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Cached Mostro instance info (kind 38385 event), if available.
     pub mostro_info: Option<MostroInstanceInfo>,
+    /// Non-blocking overlay shown when relays are unreachable.
+    pub offline_overlay_message: Option<String>,
     /// True only when BackupNewKeys was opened after runtime key rotation.
     /// In that case, app must restart to reload in-memory keys safely.
     pub backup_requires_restart: bool,
     /// Set when the user dismisses BackupNewKeys after runtime rotation.
     /// Main loop performs an in-process runtime reload and clears session state.
     pub pending_key_reload: bool,
+    /// Set when Mostro pubkey or currency filters change: respawn order/dispute subscriptions and
+    /// DM listener without rotating identity keys or clearing the Messages tab.
+    pub pending_fetch_scheduler_reload: bool,
     /// When `take_order` completes while an AddInvoice/PayInvoice popup is open, we stash the
     /// [`OperationResult`] here so the invoice UI is not replaced by the success screen (race).
     /// Applied when the user dismisses the popup (Esc), or cleared when they submit the invoice.
@@ -169,6 +185,7 @@ impl AppState {
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
+            startup_popup_floor_ts: HashMap::new(),
             selected_message_idx: 0,
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
@@ -180,10 +197,14 @@ impl AppState {
             observer_scroll_tracker: None,
             observer_loading: false,
             observer_error: None,
+            admin_keys: None,
+            pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
             mostro_info: None,
+            offline_overlay_message: None,
             backup_requires_restart: false,
             pending_key_reload: false,
+            pending_fetch_scheduler_reload: false,
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,
         }
@@ -217,6 +238,7 @@ impl AppState {
         self.selected_in_progress_idx = 0;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
+        self.offline_overlay_message = None;
         // Clear observer state when switching roles so sensitive data does not linger
         self.clear_observer_secrets();
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,

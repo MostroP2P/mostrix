@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::ui::state::{OperationResult, OrderSuccess};
+use crate::ui::state::{OperationResult, OrderSuccess, TakeOrderState};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
@@ -71,6 +71,9 @@ pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
 pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
     match action {
         Action::Canceled => Some(Status::Canceled),
+        Action::CooperativeCancelAccepted => Some(Status::CooperativelyCanceled),
+        Action::WaitingBuyerInvoice | Action::AddInvoice => Some(Status::WaitingBuyerInvoice),
+        Action::WaitingSellerToPay | Action::PayInvoice => Some(Status::WaitingPayment),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::Success),
         Action::Release | Action::Released => Some(Status::Success),
@@ -90,6 +93,116 @@ pub fn map_action_to_status(action: &Action, order: &SmallOrder) -> Option<Statu
     }
 
     inferred_status_from_trade_action(action)
+}
+
+fn status_phase_rank_for_actor(
+    status: Status,
+    kind: Option<mostro_core::order::Kind>,
+) -> Option<u8> {
+    match status {
+        Status::Pending => Some(0),
+        // Stage ordering follows listing kind progression (same for maker/taker):
+        // Buy listing:  waiting-payment -> waiting-buyer-invoice
+        // Sell listing: waiting-buyer-invoice -> waiting-payment
+        Status::WaitingPayment => match kind {
+            Some(mostro_core::order::Kind::Buy) => Some(1),
+            Some(mostro_core::order::Kind::Sell) => Some(2),
+            None => None,
+        },
+        Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => match kind {
+            Some(mostro_core::order::Kind::Buy) => Some(2),
+            Some(mostro_core::order::Kind::Sell) => Some(1),
+            None => None,
+        },
+        Status::InProgress | Status::Active => Some(3),
+        Status::FiatSent => Some(4),
+        Status::Success => Some(5),
+        _ => None,
+    }
+}
+
+fn is_terminal_trade_status(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin
+            | Status::Expired
+            | Status::CooperativelyCanceled
+            | Status::Success
+    )
+}
+
+/// Guard status writes against backward transitions from stale/out-of-order DMs.
+///
+/// Returns `true` when `candidate` is equal/newer than `current` in the actor-aware phase graph.
+/// Terminal states are sticky: once terminal, only the same terminal status is accepted.
+pub fn should_apply_status_transition(
+    current: Option<Status>,
+    candidate: Status,
+    kind: Option<mostro_core::order::Kind>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if current == candidate {
+        return true;
+    }
+    if is_terminal_trade_status(current) {
+        return false;
+    }
+    if is_terminal_trade_status(candidate) {
+        return true;
+    }
+    match (
+        status_phase_rank_for_actor(current, kind),
+        status_phase_rank_for_actor(candidate, kind),
+    ) {
+        (Some(cur), Some(next)) => next >= cur,
+        // Unknown transition edge: keep existing status (safer than downgrade).
+        _ => false,
+    }
+}
+
+/// Validates the range amount input against min/max limits.
+pub fn validate_range_amount(take_state: &mut TakeOrderState) {
+    if take_state.amount_input.is_empty() {
+        take_state.validation_error = None;
+        return;
+    }
+
+    let amount = match take_state.amount_input.parse::<f64>() {
+        Ok(val) if val.is_finite() => val,
+        Ok(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
+        Err(_) => {
+            take_state.validation_error = Some("Invalid number format".to_string());
+            return;
+        }
+    };
+
+    let min_opt = take_state.order.min_amount.map(|m| m as f64);
+    let max_opt = take_state.order.max_amount.map(|m| m as f64);
+
+    let below_min = min_opt.is_some_and(|min| amount < min);
+    let above_max = max_opt.is_some_and(|max| amount > max);
+
+    if below_min || above_max {
+        let fiat = &take_state.order.fiat_code;
+        take_state.validation_error = Some(match (min_opt, max_opt) {
+            (Some(min), Some(max)) => {
+                format!("Amount must be between {} and {} {}", min, max, fiat)
+            }
+            (Some(min), None) => format!("Amount must be at least {} {}", min, fiat),
+            (None, Some(max)) => format!("Amount must be at most {} {}", max, fiat),
+            (None, None) => "Amount is outside allowed range".to_string(),
+        });
+    } else {
+        take_state.validation_error = None;
+    }
 }
 
 /// Parse dispute from nostr tags
@@ -359,34 +472,6 @@ pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) 
     })
 }
 
-/// Helper function to create OperationResult::Success from form data (fallback)
-#[allow(clippy::too_many_arguments)]
-pub(super) fn create_order_result_from_form(
-    kind: mostro_core::order::Kind,
-    amount: i64,
-    fiat_code: String,
-    fiat_amount: i64,
-    min_amount: Option<i64>,
-    max_amount: Option<i64>,
-    payment_method: String,
-    premium: i64,
-    trade_index: i64,
-) -> OperationResult {
-    OperationResult::Success(OrderSuccess {
-        order_id: None,
-        kind: Some(kind),
-        amount,
-        fiat_code,
-        fiat_amount,
-        min_amount,
-        max_amount,
-        payment_method,
-        premium,
-        status: Some(mostro_core::prelude::Status::Pending),
-        trade_index: Some(trade_index),
-    })
-}
-
 /// Helper function to handle Mostro response and check for errors
 pub(super) fn handle_mostro_response(
     response_message: &Message,
@@ -427,4 +512,40 @@ pub(super) fn handle_mostro_response(
     }
 
     Ok(inner_message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_status_transition;
+    use mostro_core::prelude::Status;
+
+    #[test]
+    fn buy_maker_blocks_waiting_payment_downgrade() {
+        let allow = should_apply_status_transition(
+            Some(Status::WaitingBuyerInvoice),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Buy),
+        );
+        assert!(!allow);
+    }
+
+    #[test]
+    fn sell_maker_allows_waiting_buyer_invoice_to_waiting_payment() {
+        let allow = should_apply_status_transition(
+            Some(Status::WaitingBuyerInvoice),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Sell),
+        );
+        assert!(allow);
+    }
+
+    #[test]
+    fn terminal_status_is_sticky() {
+        let allow = should_apply_status_transition(
+            Some(Status::CooperativelyCanceled),
+            Status::WaitingPayment,
+            Some(mostro_core::order::Kind::Buy),
+        );
+        assert!(!allow);
+    }
 }

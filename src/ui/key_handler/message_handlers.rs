@@ -1,7 +1,11 @@
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
-use crate::ui::{AdminMode, AppState, MessageViewState, UiMode, UserMode, UserRole};
-use crate::util::order_utils::{execute_add_invoice, execute_send_msg};
+use crate::ui::{
+    AdminMode, AppState, MessageViewState, RatingOrderState, UiMode, UserMode, UserRole,
+};
+use crate::util::db_utils::update_order_status;
+use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
+use mostro_core::order::Status;
 use mostro_core::prelude::*;
 use uuid::Uuid;
 
@@ -21,6 +25,7 @@ pub fn handle_enter_viewing_message(
     let action_to_send = match view_state.action {
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
+        Action::CooperativeCancelInitiatedByPeer => Action::Cancel,
         _ => {
             // This view is sometimes used as a generic "view message" popup; if the message
             // doesn't map to a sendable action, just dismiss without error.
@@ -54,6 +59,7 @@ pub fn handle_enter_viewing_message(
     let client_clone = ctx.client.clone();
     let mostro_pubkey = ctx.mostro_pubkey;
     let result_tx = ctx.order_result_tx.clone();
+    let source_action = view_state.action.clone();
 
     tokio::spawn(async move {
         match execute_send_msg(
@@ -66,9 +72,33 @@ pub fn handle_enter_viewing_message(
         .await
         {
             Ok(_) => {
-                let _ = result_tx.send(OperationResult::Info(
-                    "Message sent successfully".to_string(),
-                ));
+                let out = if source_action == Action::CooperativeCancelInitiatedByPeer {
+                    match update_order_status(
+                        &pool_clone,
+                        &order_id.to_string(),
+                        Status::CooperativelyCanceled,
+                    )
+                    .await
+                    {
+                        Ok(()) => OperationResult::TradeClosed {
+                            order_id,
+                            message: "Cooperative cancel completed.".to_string(),
+                        },
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to save CooperativelyCanceled for order {}: {}",
+                                order_id,
+                                e
+                            );
+                            OperationResult::Error(format!(
+                                "Failed to mark cooperatively canceled: {e}"
+                            ))
+                        }
+                    }
+                } else {
+                    OperationResult::Info("Message sent successfully".to_string())
+                };
+                let _ = result_tx.send(out);
             }
             Err(e) => {
                 log::error!("Failed to send message: {}", e);
@@ -137,4 +167,39 @@ pub fn handle_enter_message_notification(
                 .send(OperationResult::Error("Invalid action".to_string()));
         }
     }
+}
+
+/// Confirm and send the selected star rating (`RateUser`).
+pub fn handle_enter_rating_order(
+    app: &mut AppState,
+    state: &RatingOrderState,
+    ctx: &EnterKeyContext<'_>,
+) {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+    app.mode = default_mode;
+
+    let order_id = state.order_id;
+    let rating = state.selected_rating;
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let result_tx = ctx.order_result_tx.clone();
+
+    tokio::spawn(async move {
+        match execute_rate_user(&order_id, rating, &pool_clone, &client_clone, mostro_pubkey).await
+        {
+            Ok(()) => {
+                let _ = result_tx.send(OperationResult::Info(
+                    "Rating sent successfully".to_string(),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to send rating: {}", e);
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
 }

@@ -14,7 +14,9 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         OperationResult::PaymentRequestRequired { .. }
         | OperationResult::ObserverChatLoaded(_)
         | OperationResult::ObserverChatError(_) => 8,
-        OperationResult::Error(_) | OperationResult::Info(_) => 8,
+        OperationResult::Error(_)
+        | OperationResult::Info(_)
+        | OperationResult::TradeClosed { .. } => 8,
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -166,7 +168,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OperationResult::Info(message) => {
+        OperationResult::Info(message) | OperationResult::TradeClosed { message, .. } => {
             let block = Block::default()
                 .title("✅ Operation Successful")
                 .borders(Borders::ALL)

@@ -25,8 +25,10 @@ pub async fn create_test_db() -> Result<SqlitePool> {
             is_mine INTEGER NOT NULL,
             buyer_invoice TEXT,
             request_id INTEGER,
+            trade_index INTEGER,
             created_at INTEGER,
-            expires_at INTEGER
+            expires_at INTEGER,
+            last_seen_dm_ts INTEGER
         );
         CREATE TABLE IF NOT EXISTS users (
             i0_pubkey char(64) PRIMARY KEY,

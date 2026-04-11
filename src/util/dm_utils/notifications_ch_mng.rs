@@ -1,4 +1,5 @@
 // Notifications channel manager - handles message notifications from async tasks
+use crate::ui::orders::invoice_popup_allowed_for_order_status;
 use crate::ui::{AppState, InvoiceInputState, MessageNotification, UiMode};
 use mostro_core::prelude::Action;
 
@@ -6,6 +7,21 @@ use mostro_core::prelude::Action;
 /// The message is guaranteed to exist in the vector because listen_for_order_messages
 /// adds it before sending the notification.
 fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppState) -> bool {
+    if let Some(order_id) = notification.order_id {
+        if let Some(floor_ts) = app.startup_popup_floor_ts.get(&order_id) {
+            if notification.timestamp <= *floor_ts {
+                log::debug!(
+                    "[popup] suppressed historical {:?} popup for order_id={} (notification_ts={} <= startup_floor_ts={})",
+                    notification.action,
+                    order_id,
+                    notification.timestamp,
+                    floor_ts
+                );
+                return false;
+            }
+        }
+    }
+
     // Acquire lock on the messages vector
     let mut messages = match app.messages.lock() {
         Ok(g) => g,
@@ -24,6 +40,15 @@ fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppS
             .iter_mut()
             .find(|m| m.order_id == Some(order_id))
             .expect("Message should exist in vector when notification is received");
+
+        if !invoice_popup_allowed_for_order_status(&notification.action, order_msg.order_status) {
+            log::debug!(
+                "[popup] suppressed invoice modal for {:?} (order_status={:?})",
+                notification.action,
+                order_msg.order_status
+            );
+            return false;
+        }
 
         if order_msg.auto_popup_shown {
             return false;

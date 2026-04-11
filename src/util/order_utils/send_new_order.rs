@@ -9,9 +9,7 @@ use crate::models::User;
 use crate::ui::FormState;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
-use crate::util::order_utils::helper::{
-    create_order_result_from_form, create_order_result_success, handle_mostro_response,
-};
+use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
 use crate::util::OrderDmSubscriptionCmd;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -186,16 +184,14 @@ pub async fn send_new_order(
 
                                 Ok(create_order_result_success(order, next_idx))
                             } else {
-                                Ok(create_order_result_from_form(
-                                    kind_checked,
-                                    amount,
-                                    fiat_code,
-                                    fiat_amount,
-                                    min_amount,
-                                    max_amount,
-                                    payment_method,
-                                    premium,
+                                log::error!(
+                                    "Mostro replied with Action::NewOrder but payload is missing/invalid. request_id={:?} trade_index={} payload={:?}",
+                                    inner_message.request_id,
                                     next_idx,
+                                    inner_message.payload
+                                );
+                                Err(anyhow::anyhow!(
+                                    "Mostro replied with NewOrder but no order payload was provided"
                                 ))
                             }
                         }
@@ -234,16 +230,15 @@ pub async fn send_new_order(
 
                     Ok(create_order_result_success(order, next_idx))
                 } else {
-                    Ok(create_order_result_from_form(
-                        kind_checked,
-                        amount,
-                        fiat_code,
-                        fiat_amount,
-                        min_amount,
-                        max_amount,
-                        payment_method,
-                        premium,
+                    log::error!(
+                        "Mostro replied with Action::{:?} but payload is missing/invalid. request_id={:?} trade_index={} payload={:?}",
+                        inner_message.action,
+                        inner_message.request_id,
                         next_idx,
+                        inner_message.payload
+                    );
+                    Err(anyhow::anyhow!(
+                        "Mostro replied but no order payload was provided"
                     ))
                 }
             }

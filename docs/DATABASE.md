@@ -105,6 +105,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
 
 Migrations are automatically executed when an existing database is detected during startup.
 
+For the **`orders`** table, **`migrate_db`** in **`src/db.rs`** may add **`request_id`**, **`trade_index`**, and **`last_seen_dm_ts`** when upgrading older databases that predate those columns.
+
 ## Mode Separation
 
 Mostrix operates in two distinct modes, each using different database tables:
@@ -188,12 +190,14 @@ CREATE TABLE IF NOT EXISTS orders (
     is_mine INTEGER NOT NULL,
     buyer_invoice TEXT,
     request_id INTEGER,
+    trade_index INTEGER,
     created_at INTEGER,
-    expires_at INTEGER
+    expires_at INTEGER,
+    last_seen_dm_ts INTEGER
 );
 ```
 
-**Source**: `src/db.rs:36`
+**Source**: `src/db.rs` (`init_db` creates the table; `migrate_db` adds `trade_index` / `last_seen_dm_ts` if missing on older DBs)
 
 #### Order Table Fields
 
@@ -201,7 +205,7 @@ CREATE TABLE IF NOT EXISTS orders (
 |-------|------|-------------|
 | `id` | `TEXT` | Primary key. UUID of the order. |
 | `kind` | `TEXT` | Order kind: "Buy" or "Sell". |
-| `status` | `TEXT` | Current order status (e.g., "Pending", "Active", "Dispute"). |
+| `status` | `TEXT` | Current order status. Values follow `mostro_core::order::Status` string forms (e.g. `Pending`, `Active`, `Success`, `Canceled`, `CooperativelyCanceled`). Updated from trade DMs (`update_order_status` / upserts) and, for cooperative cancel confirmation, when the user accepts the peer request in the UI (see **MESSAGE_FLOW_AND_PROTOCOL.md**). |
 | `amount` | `INTEGER` | Amount in satoshis. |
 | `fiat_code` | `TEXT` | Fiat currency code (e.g., "USD", "EUR"). |
 | `min_amount` | `INTEGER` | Minimum amount for range orders (NULL for fixed orders). |
@@ -214,22 +218,24 @@ CREATE TABLE IF NOT EXISTS orders (
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
+| `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |
 | `created_at` | `INTEGER` | Unix timestamp when the order was created. |
 | `expires_at` | `INTEGER` | Unix timestamp when the order expires (if applicable). |
+| `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade GiftWrap for this order. Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
 
 #### Purpose
 
 The `orders` table is essential for:
 
 - **Trade Key Persistence**: Stores the trade keys needed to decrypt messages and sign actions for each active trade
-- **Order Recovery**: Allows the client to recover active orders on startup
+- **Order Recovery**: Allows the client to recover active orders on startup (`Order::get_startup_active_orders`, `hydrate_startup_active_order_dm_state`)
 - **State Synchronization**: Enables the "fetch-on-startup" strategy to sync with Mostro daemon
 - **Trade History**: Maintains a local record of orders and trades
 
 #### Data Persistence
 
 - **Trade Keys**: Stored as hex-encoded secret keys. **Critical security data** - these keys are needed to decrypt messages for each trade.
-- **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic.
+- **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic. Status writes are guarded for monotonic progression where applicable (stale/out-of-order DMs should not move an order backward in the trade phase graph); see `should_apply_status_transition` in `src/util/order_utils/helper.rs` and **DM_LISTENER_FLOW.md**.
 - **Maker/Taker persistence**: `save_order(..., is_maker)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow).
 
 **Source**: `src/models.rs:154`

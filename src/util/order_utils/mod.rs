@@ -17,7 +17,7 @@ pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_admin_cancel::execute_admin_cancel;
 pub use execute_admin_settle::execute_admin_settle;
 pub use execute_finalize_dispute::execute_finalize_dispute;
-pub use execute_send_msg::execute_send_msg;
+pub use execute_send_msg::{execute_rate_user, execute_send_msg};
 pub use execute_take_dispute::execute_take_dispute;
 pub use fetch_scheduler::{
     spawn_admin_chat_fetch, spawn_fetch_scheduler_loops, start_fetch_scheduler,
@@ -26,7 +26,8 @@ pub use fetch_scheduler::{
 pub use helper::{
     dispute_from_tags, fetch_events_list, get_disputes, get_orders,
     inferred_status_from_trade_action, map_action_to_status, order_from_tags,
-    parse_disputes_events, parse_orders_events,
+    parse_disputes_events, parse_orders_events, should_apply_status_transition,
+    validate_range_amount,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;
