@@ -163,6 +163,8 @@ pub struct Order {
     pub premium: i64,
     pub trade_keys: Option<String>,
     pub counterparty_pubkey: Option<String>,
+    /// ECDH shared secret for P2P order chat (hex), derived once when both trade pubkeys are known.
+    pub order_chat_shared_key_hex: Option<String>,
     /// Maker (`true`) vs taker (`false`). Matches `orders.is_mine` INTEGER NOT NULL (0/1).
     pub is_mine: bool,
     pub buyer_invoice: Option<String>,
@@ -245,6 +247,7 @@ impl Order {
             premium: order.premium,
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
             is_mine: is_maker,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
@@ -282,8 +285,8 @@ impl Order {
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
             fiat_code, fiat_amount, payment_method, premium, is_mine,
-            trade_keys, counterparty_pubkey, buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            trade_keys, counterparty_pubkey, order_chat_shared_key_hex, buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -299,6 +302,7 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.order_chat_shared_key_hex)
         .bind(&self.buyer_invoice)
         .bind(self.request_id)
         .bind(self.trade_index)
@@ -316,7 +320,7 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, buyer_invoice = ?,
+                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ?
             "#,
@@ -333,6 +337,7 @@ impl Order {
         .bind(self.is_mine)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
+        .bind(&self.order_chat_shared_key_hex)
         .bind(&self.buyer_invoice)
         .bind(self.request_id)
         .bind(self.trade_index)
@@ -348,10 +353,21 @@ impl Order {
     fn build_order_from_small_order(
         id: String,
         small_order: &mostro_core::prelude::SmallOrder,
-        trade_keys_hex: String,
+        trade_keys: &nostr_sdk::prelude::Keys,
         existing: Option<&Order>,
         message_request_id: Option<i64>,
     ) -> Order {
+        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
+        let (counterparty_pubkey, order_chat_shared_key_hex) =
+            match crate::util::chat_utils::order_chat_counterparty_and_shared_hex(trade_keys, small_order)
+            {
+                Some((cp, sk)) => (Some(cp), Some(sk)),
+                None => (
+                    existing.and_then(|e| e.counterparty_pubkey.clone()),
+                    existing.and_then(|e| e.order_chat_shared_key_hex.clone()),
+                ),
+            };
+
         Order {
             id: Some(id),
             kind: small_order.kind.as_ref().map(|k| k.to_string()),
@@ -364,7 +380,8 @@ impl Order {
             payment_method: small_order.payment_method.clone(),
             premium: small_order.premium,
             trade_keys: Some(trade_keys_hex),
-            counterparty_pubkey: existing.and_then(|e| e.counterparty_pubkey.clone()),
+            counterparty_pubkey,
+            order_chat_shared_key_hex,
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
@@ -399,7 +416,7 @@ impl Order {
         let order_row = Self::build_order_from_small_order(
             id_str.clone(),
             &small_order,
-            trade_keys.secret_key().to_secret_hex(),
+            trade_keys,
             existing.as_ref(),
             message_request_id,
         );
@@ -430,7 +447,7 @@ impl Order {
                     let updated = Self::build_order_from_small_order(
                         id_str,
                         &small_order,
-                        trade_keys.secret_key().to_secret_hex(),
+                        trade_keys,
                         Some(&ex),
                         message_request_id,
                     );

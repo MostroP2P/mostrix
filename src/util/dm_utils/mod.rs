@@ -392,7 +392,8 @@ fn is_pre_active_status(status: Status) -> bool {
     )
 }
 
-/// Refreshes the local `orders` row from embedded order data on `add-invoice` / `pay-invoice` DMs.
+/// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
+/// `SmallOrder` (e.g. `add-invoice`, `pay-invoice`, `buyer-took-order`, `hold-invoice-payment-accepted`).
 async fn upsert_order_from_trade_dm(
     pool: &sqlx::SqlitePool,
     order_id: Uuid,
@@ -405,6 +406,10 @@ async fn upsert_order_from_trade_dm(
         (Action::AddInvoice, Some(Payload::Order(o))) => ("AddInvoice", o.clone()),
         (Action::PayInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
             ("PayInvoice", o.clone())
+        }
+        (Action::BuyerTookOrder, Some(Payload::Order(o))) => ("BuyerTookOrder", o.clone()),
+        (Action::HoldInvoicePaymentAccepted, Some(Payload::Order(o))) => {
+            ("HoldInvoicePaymentAccepted", o.clone())
         }
         _ => return,
     };

@@ -600,18 +600,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 Some(sk) => sk,
                 None => return,
             };
-            let counterparty = match order
-                .counterparty_pubkey
-                .as_deref()
-                .and_then(|v| PublicKey::parse(v).ok())
-            {
-                Some(pk) => pk,
-                None => return,
-            };
             let trade_keys = Keys::new(trade_sk);
-            let Some(shared_keys) =
-                crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&counterparty))
-            else {
+            let shared_keys = order
+                .order_chat_shared_key_hex
+                .as_deref()
+                .and_then(crate::util::chat_utils::keys_from_shared_hex)
+                .or_else(|| {
+                    let cp = order.counterparty_pubkey.as_deref()?;
+                    let pk = PublicKey::parse(cp).ok()?;
+                    crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&pk))
+                });
+            let Some(shared_keys) = shared_keys else {
                 return;
             };
             if let Err(e) = crate::util::chat_utils::send_user_order_chat_message_via_shared_key(
