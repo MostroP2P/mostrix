@@ -10,9 +10,11 @@ use tokio::time::{interval_at, Duration, Instant};
 
 use crate::models::AdminDispute;
 use crate::settings::Settings;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, OrderChatLastSeen, OrderChatUpdate,
+};
 use crate::util::catch_unwind_request_fatal_restart;
-use crate::util::chat_utils::fetch_admin_chat_updates;
+use crate::util::chat_utils::{fetch_admin_chat_updates, fetch_user_order_chat_updates};
 
 use super::{get_disputes, get_orders};
 
@@ -388,6 +390,29 @@ pub fn spawn_admin_chat_fetch(
     tokio::spawn(async move {
         catch_unwind_request_fatal_restart("admin chat fetch", async move {
             let result = fetch_admin_chat_updates(&client, &disputes, &admin_chat_last_seen).await;
+            CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
+            let _ = tx.send(result);
+        })
+        .await;
+    });
+}
+
+/// Spawns a one-off background task to fetch user order chat updates.
+pub fn spawn_user_order_chat_fetch(
+    client: Client,
+    pool: sqlx::SqlitePool,
+    order_chat_last_seen: HashMap<String, OrderChatLastSeen>,
+    tx: UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+) {
+    if CHAT_MESSAGES_SEMAPHORE
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        catch_unwind_request_fatal_restart("user order chat fetch", async move {
+            let result = fetch_user_order_chat_updates(&client, &pool, &order_chat_last_seen).await;
             CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
             let _ = tx.send(result);
         })

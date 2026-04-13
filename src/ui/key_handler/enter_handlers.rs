@@ -1,3 +1,4 @@
+use crate::ui::helpers::save_order_chat_message;
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
@@ -24,8 +25,9 @@ use crate::ui::key_handler::user_handlers::{
 use bip39::Mnemonic;
 use mostro_core::prelude::*;
 use nostr_sdk::nips::nip06::FromMnemonic;
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
@@ -545,6 +547,85 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         app.mode = UiMode::OperationResult(OperationResult::Info(
             "Fetching Mostro instance info...".to_string(),
         ));
+    } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        let selected_order_id = match app.messages.lock() {
+            Ok(g) => {
+                let mut ids: BTreeSet<String> = BTreeSet::new();
+                for msg in g.iter() {
+                    if let Some(id) = msg.order_id {
+                        ids.insert(id.to_string());
+                    }
+                }
+                ids.into_iter().nth(app.selected_order_chat_idx)
+            }
+            Err(_) => None,
+        };
+        let Some(order_id) = selected_order_id else {
+            return;
+        };
+        let content = app.order_chat_input.trim().to_string();
+        if content.is_empty() || !app.order_chat_input_enabled {
+            return;
+        }
+        let local_msg = crate::ui::UserOrderChatMessage {
+            sender: crate::ui::UserChatSender::You,
+            content: content.clone(),
+            timestamp: chrono::Utc::now().timestamp(),
+            attachment: None,
+        };
+        app.order_chats
+            .entry(order_id.clone())
+            .or_default()
+            .push(local_msg.clone());
+        save_order_chat_message(&order_id, &local_msg);
+        app.order_chat_input.clear();
+        app.order_chat_input_enabled = true;
+
+        let client = ctx.client.clone();
+        let pool = ctx.pool.clone();
+        let mostro_info = ctx.mostro_info.clone();
+        tokio::spawn(async move {
+            let order = match crate::models::Order::get_by_id(&pool, &order_id).await {
+                Ok(o) => o,
+                Err(e) => {
+                    log::warn!("order chat send skipped (order not found): {}", e);
+                    return;
+                }
+            };
+            let trade_sk = match order
+                .trade_keys
+                .as_deref()
+                .and_then(|h| SecretKey::from_str(h).ok())
+            {
+                Some(sk) => sk,
+                None => return,
+            };
+            let counterparty = match order
+                .counterparty_pubkey
+                .as_deref()
+                .and_then(|v| PublicKey::parse(v).ok())
+            {
+                Some(pk) => pk,
+                None => return,
+            };
+            let trade_keys = Keys::new(trade_sk);
+            let Some(shared_keys) =
+                crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&counterparty))
+            else {
+                return;
+            };
+            if let Err(e) = crate::util::chat_utils::send_user_order_chat_message_via_shared_key(
+                &client,
+                &trade_keys,
+                &shared_keys,
+                &content,
+                mostro_info.as_ref(),
+            )
+            .await
+            {
+                log::warn!("Failed to send user order chat: {}", e);
+            }
+        });
     } else if let Tab::User(UserTab::Orders) = app.active_tab {
         // Show take order popup when Enter is pressed in Orders tab (user mode only)
         let orders_lock = match ctx.orders.lock() {

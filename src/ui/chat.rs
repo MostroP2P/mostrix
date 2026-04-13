@@ -32,6 +32,13 @@ pub enum ChatSender {
     Seller,
 }
 
+/// Sender role in user-to-user order chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserChatSender {
+    You,
+    Peer,
+}
+
 /// Type of file attachment (Mostro Mobile image_encrypted / file_encrypted).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatAttachmentType {
@@ -62,6 +69,15 @@ pub struct DisputeChatMessage {
     pub attachment: Option<ChatAttachment>,
 }
 
+/// A chat message in the user order-in-progress chat.
+#[derive(Clone, Debug)]
+pub struct UserOrderChatMessage {
+    pub sender: UserChatSender,
+    pub content: String,
+    pub timestamp: i64, // Unix timestamp
+    pub attachment: Option<ChatAttachment>,
+}
+
 /// Per-(dispute, party) last-seen timestamp for admin chat.
 /// Used to filter incoming buyer/seller messages so we only process new ones.
 #[derive(Clone, Debug)]
@@ -75,6 +91,20 @@ pub struct AdminChatLastSeen {
 pub struct AdminChatUpdate {
     pub dispute_id: String,
     pub party: ChatParty,
+    /// (content, timestamp, sender_pubkey)
+    pub messages: Vec<(String, i64, PublicKey)>,
+}
+
+/// Per-order last-seen timestamp for user order chat.
+#[derive(Clone, Debug)]
+pub struct OrderChatLastSeen {
+    pub last_seen_timestamp: Option<i64>,
+}
+
+/// Result of polling for user order chat messages.
+#[derive(Clone, Debug)]
+pub struct OrderChatUpdate {
+    pub order_id: String,
     /// (content, timestamp, sender_pubkey)
     pub messages: Vec<(String, i64, PublicKey)>,
 }

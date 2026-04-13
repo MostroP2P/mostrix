@@ -21,7 +21,7 @@ impl Display for UserTab {
             "{}",
             match self {
                 UserTab::Orders => "Orders",
-                UserTab::MyTrades => "My Trades",
+                UserTab::MyTrades => "Order Chat",
                 UserTab::Messages => "Messages",
                 UserTab::MostroInfo => "Mostro Info",
                 UserTab::Settings => "Settings",

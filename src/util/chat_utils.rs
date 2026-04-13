@@ -5,8 +5,11 @@ use anyhow::Result;
 use mostro_core::prelude::DisputeStatus;
 use nostr_sdk::prelude::*;
 
-use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
+use crate::models::{AdminDispute, Order};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage,
+    OrderChatLastSeen, OrderChatUpdate,
+};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
@@ -325,6 +328,75 @@ pub async fn fetch_observer_chat(
     }
 
     Ok(messages)
+}
+
+/// Send one user order chat message using shared-key wrapping.
+pub async fn send_user_order_chat_message_via_shared_key(
+    client: &Client,
+    trade_keys: &Keys,
+    shared_keys: &Keys,
+    content: &str,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<()> {
+    send_admin_chat_message_via_shared_key(
+        client,
+        trade_keys,
+        shared_keys,
+        content,
+        mostro_instance,
+    )
+    .await
+}
+
+/// Poll order chats by deriving shared key from local trade key + counterparty pubkey.
+pub async fn fetch_user_order_chat_updates(
+    client: &Client,
+    pool: &sqlx::SqlitePool,
+    order_chat_last_seen: &HashMap<String, OrderChatLastSeen>,
+) -> Result<Vec<OrderChatUpdate>, anyhow::Error> {
+    let rows = Order::get_startup_active_orders(pool).await?;
+    let mut updates: Vec<OrderChatUpdate> = Vec::new();
+
+    for row in rows {
+        let order = match Order::get_by_id(pool, &row.id).await {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let trade_keys_hex = match order.trade_keys.as_deref() {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        let counterparty = match order.counterparty_pubkey.as_deref() {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        let trade_keys = match SecretKey::from_str(trade_keys_hex).ok().map(Keys::new) {
+            Some(k) => k,
+            None => continue,
+        };
+        let cp_pubkey = match PublicKey::parse(counterparty) {
+            Ok(pk) => pk,
+            Err(_) => continue,
+        };
+        let shared_keys = match derive_shared_keys(Some(&trade_keys), Some(&cp_pubkey)) {
+            Some(k) => k,
+            None => continue,
+        };
+        let last_seen = order_chat_last_seen
+            .get(&row.id)
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+        let mut messages = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
+        messages.retain(|(_, ts, _)| *ts >= last_seen);
+        if !messages.is_empty() {
+            updates.push(OrderChatUpdate {
+                order_id: row.id,
+                messages,
+            });
+        }
+    }
+
+    Ok(updates)
 }
 
 #[cfg(test)]

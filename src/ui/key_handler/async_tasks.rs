@@ -6,7 +6,7 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::FormState;
 use crate::ui::{
     AdminChatUpdate, AppState, ChatAttachment, MessageNotification, MostroInfoFetchResult,
-    NetworkStatus, OperationResult, TakeOrderState, UiMode,
+    NetworkStatus, OperationResult, OrderChatUpdate, TakeOrderState, UiMode,
 };
 use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
@@ -582,6 +582,8 @@ pub struct AppChannels {
     pub message_notification_rx: UnboundedReceiver<MessageNotification>,
     pub admin_chat_updates_tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
     pub admin_chat_updates_rx: UnboundedReceiver<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    pub user_order_chat_updates_tx: UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    pub user_order_chat_updates_rx: UnboundedReceiver<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
     pub save_attachment_tx: UnboundedSender<(String, ChatAttachment)>,
     pub save_attachment_rx: UnboundedReceiver<(String, ChatAttachment)>,
     pub mostro_info_tx: UnboundedSender<MostroInfoFetchResult>,
@@ -605,6 +607,8 @@ pub fn create_app_channels() -> AppChannels {
         tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
     let (admin_chat_updates_tx, admin_chat_updates_rx) =
         tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+    let (user_order_chat_updates_tx, user_order_chat_updates_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Vec<OrderChatUpdate>, anyhow::Error>>();
     let (save_attachment_tx, save_attachment_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
     let (mostro_info_tx, mostro_info_rx) =
@@ -626,6 +630,8 @@ pub fn create_app_channels() -> AppChannels {
         message_notification_rx,
         admin_chat_updates_tx,
         admin_chat_updates_rx,
+        user_order_chat_updates_tx,
+        user_order_chat_updates_rx,
         save_attachment_tx,
         save_attachment_rx,
         mostro_info_tx,

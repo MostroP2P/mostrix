@@ -1,4 +1,4 @@
-use crate::models::AdminDispute;
+use crate::models::{AdminDispute, Order};
 use crate::util::seed_admin_chat_last_seen;
 use chrono::DateTime;
 use mostro_core::prelude::UserInfo;
@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Borders, ListItem, Paragraph};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::PathBuf;
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -15,17 +16,41 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use nostr_sdk::serde_json::{from_str as json_from_str, Value};
 use sqlx::SqlitePool;
 
 use super::{
     AdminChatLastSeen, AdminChatUpdate, AppState, ChatAttachment, ChatAttachmentType, ChatParty,
-    ChatSender, DisputeChatMessage, UserRole, PRIMARY_COLOR,
+    ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage, UserRole, PRIMARY_COLOR,
 };
 
 /// Toast expiry duration for attachment notification.
 const ATTACHMENT_TOAST_DURATION: Duration = Duration::from_secs(8);
+const DISPUTES_CHAT_DIR: &str = "disputes_chat";
+const ORDERS_CHAT_DIR: &str = "orders_chat";
+
+#[derive(Clone, Copy)]
+enum ChatStorageKind {
+    Disputes,
+    Orders,
+}
+
+impl ChatStorageKind {
+    fn folder_name(self) -> &'static str {
+        match self {
+            ChatStorageKind::Disputes => DISPUTES_CHAT_DIR,
+            ChatStorageKind::Orders => ORDERS_CHAT_DIR,
+        }
+    }
+
+    fn log_label(self) -> &'static str {
+        match self {
+            ChatStorageKind::Disputes => "dispute chat",
+            ChatStorageKind::Orders => "order chat",
+        }
+    }
+}
 
 /// Placeholder text written to transcript file for attachment messages (no blob persisted).
 fn attachment_placeholder(att: &ChatAttachment) -> String {
@@ -255,6 +280,28 @@ fn parse_one_message_block(block: &str) -> Option<(ChatSender, Option<ChatParty>
     Some((sender, target_party, ts, content_block))
 }
 
+fn parse_one_order_message_block(block: &str) -> Option<(UserChatSender, i64, String)> {
+    let mut lines = block.lines();
+    let header = lines.next()?;
+    let parts: Vec<&str> = header.splitn(3, " - ").collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let sender = match parts[0].trim() {
+        "You" => UserChatSender::You,
+        "Peer" => UserChatSender::Peer,
+        // Backward compatibility with previous shared labels in old files.
+        "Admin" | "Admin to Buyer" | "Admin to Seller" => UserChatSender::You,
+        "Buyer" | "Seller" => UserChatSender::Peer,
+        _ => return None,
+    };
+    let date = chrono::NaiveDate::parse_from_str(parts[1].trim(), "%d-%m-%Y").ok()?;
+    let time = chrono::NaiveTime::parse_from_str(parts[2].trim(), "%H:%M:%S").ok()?;
+    let ts = date.and_time(time).and_utc().timestamp();
+    let content = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Some((sender, ts, content))
+}
+
 /// Parses the last message block from file content (blocks separated by "\n\n").
 fn parse_last_message_block(content: &str) -> Option<(ChatSender, Option<ChatParty>, i64, String)> {
     let blocks: Vec<&str> = content
@@ -264,16 +311,23 @@ fn parse_last_message_block(content: &str) -> Option<(ChatSender, Option<ChatPar
     parse_one_message_block(blocks.last()?)
 }
 
-/// Loads chat messages from ~/.mostrix/dispute_id.txt if the file exists.
-/// Returns messages in file order. On IO/parse error returns None and logs.
-pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> {
-    if uuid::Uuid::parse_str(dispute_id).is_err() {
+fn chat_file_path(kind: ChatStorageKind, chat_id: &str) -> Option<PathBuf> {
+    if uuid::Uuid::parse_str(chat_id).is_err() {
         return None;
     }
     let home_dir = dirs::home_dir()?;
-    let file_path = home_dir
+    Some(
+        home_dir
         .join(".mostrix")
-        .join(format!("{}.txt", dispute_id));
+            .join(kind.folder_name())
+            .join(format!("{}.txt", chat_id)),
+    )
+}
+
+/// Loads chat messages from `~/.mostrix/<chat-folder>/<id>.txt` if the file exists.
+/// Returns messages in file order. On IO/parse error returns None and logs.
+fn load_chat_from_file_by_kind(kind: ChatStorageKind, chat_id: &str) -> Option<Vec<DisputeChatMessage>> {
+    let file_path = chat_file_path(kind, chat_id)?;
     let content = fs::read_to_string(&file_path).ok()?;
     let mut messages = Vec::new();
     for block in content.split("\n\n").filter(|s| !s.trim().is_empty()) {
@@ -291,6 +345,34 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
         return None;
     }
     Some(messages)
+}
+
+fn load_order_chat_from_file_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+) -> Option<Vec<UserOrderChatMessage>> {
+    let file_path = chat_file_path(kind, chat_id)?;
+    let content = fs::read_to_string(&file_path).ok()?;
+    let mut messages = Vec::new();
+    for block in content.split("\n\n").filter(|s| !s.trim().is_empty()) {
+        if let Some((sender, ts, content_block)) = parse_one_order_message_block(block) {
+            messages.push(UserOrderChatMessage {
+                sender,
+                content: content_block,
+                timestamp: ts,
+                attachment: None,
+            });
+        }
+    }
+    if messages.is_empty() {
+        return None;
+    }
+    Some(messages)
+}
+
+/// Loads dispute chat messages from `~/.mostrix/disputes_chat/<dispute_id>.txt`.
+pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> {
+    load_chat_from_file_by_kind(ChatStorageKind::Disputes, dispute_id)
 }
 
 /// Get max timestamp for buyer and seller.
@@ -413,6 +495,155 @@ pub fn recover_admin_chat_from_files(
             // Update last-seen timestamps for buyer and seller
             update_last_seen_timestamp(buyer_max, seller_max, dispute, admin_chat_last_seen);
         }
+    }
+}
+
+/// Persist one user order chat message into `~/.mostrix/orders_chat/<order_id>.txt`.
+pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
+    let file_path = match chat_file_path(ChatStorageKind::Orders, order_id) {
+        Some(path) => path,
+        None => {
+            log::warn!("Invalid order chat id format, skipping save: {}", order_id);
+            return;
+        }
+    };
+    let Some(chat_dir) = file_path.parent() else {
+        log::warn!("Failed to resolve order chat folder for id {}", order_id);
+        return;
+    };
+    if let Err(e) = fs::create_dir_all(chat_dir) {
+        log::warn!("Failed to create order chat folder {:?}: {}", chat_dir, e);
+        return;
+    }
+
+    let content_block = match &message.attachment {
+        Some(att) => attachment_placeholder(att),
+        None => wrap_text_to_lines(&message.content, 80).join("\n"),
+    };
+    if let Ok(existing) = fs::read_to_string(&file_path) {
+        let blocks: Vec<&str> = existing
+            .split("\n\n")
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        if let Some(last_block) = blocks.last() {
+            if let Some((last_sender, last_ts, last_content)) = parse_one_order_message_block(last_block)
+            {
+                if last_sender == message.sender && last_ts == message.timestamp && last_content == content_block {
+                    return;
+                }
+            }
+        }
+    }
+    let (date_str, time_str) = DateTime::from_timestamp(message.timestamp, 0)
+        .map(|dt| {
+            let date = dt.format("%d-%m-%Y").to_string();
+            let time = dt.format("%H:%M:%S").to_string();
+            (date, time)
+        })
+        .unwrap_or_else(|| ("??-??-????".to_string(), "??:??:??".to_string()));
+    let sender_label = match message.sender {
+        UserChatSender::You => "You",
+        UserChatSender::Peer => "Peer",
+    };
+    let formatted_message = format!(
+        "{} - {} - {}\n{}\n\n",
+        sender_label, date_str, time_str, content_block
+    );
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(formatted_message.as_bytes()) {
+                log::warn!("Failed to write order chat message to file: {}", e);
+            } else {
+                log::debug!("Saved order chat message to {:?}", file_path);
+            }
+        }
+        Err(e) => log::warn!("Failed to open order chat file {:?}: {}", file_path, e),
+    }
+}
+
+/// Load cached user order chat from `~/.mostrix/orders_chat/<order_id>.txt`.
+pub fn load_order_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMessage>> {
+    load_order_chat_from_file_by_kind(ChatStorageKind::Orders, order_id)
+}
+
+/// Load user order chat at startup:
+/// 1) recover saved transcript from `.mostrix`
+/// 2) backfill from relays when counterparty/shared key is available.
+pub async fn load_user_order_chats_at_startup(
+    client: &Client,
+    pool: &SqlitePool,
+    app: &mut AppState,
+) {
+    if app.user_role != UserRole::User {
+        return;
+    }
+    let Ok(rows) = Order::get_startup_active_orders(pool).await else {
+        return;
+    };
+
+    for row in rows {
+        let order_id = row.id.clone();
+        if let Some(messages) = load_order_chat_from_file(&order_id) {
+            let max_ts = messages.iter().map(|m| m.timestamp).max().unwrap_or(0);
+            app.order_chats.insert(order_id.clone(), messages);
+            app.order_chat_last_seen.insert(
+                order_id.clone(),
+                crate::ui::OrderChatLastSeen {
+                    last_seen_timestamp: Some(max_ts),
+                },
+            );
+        }
+    }
+
+    let updates = crate::util::chat_utils::fetch_user_order_chat_updates(
+        client,
+        pool,
+        &app.order_chat_last_seen,
+    )
+    .await
+    .unwrap_or_default();
+    apply_user_order_chat_updates(app, updates);
+}
+
+/// Merge fetched user order chat updates into app state and persist them to file.
+pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui::OrderChatUpdate>) {
+    for update in updates {
+        let order_id = update.order_id.clone();
+        let messages_vec = app.order_chats.entry(order_id.clone()).or_default();
+        let mut max_ts = app
+            .order_chat_last_seen
+            .get(&order_id)
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+        for (content, ts, _sender_pubkey) in update.messages {
+            let msg = UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content,
+                timestamp: ts,
+                attachment: None,
+            };
+            let duplicated = messages_vec
+                .iter()
+                .any(|m| m.timestamp == msg.timestamp && m.content == msg.content);
+            if duplicated {
+                continue;
+            }
+            save_order_chat_message(&order_id, &msg);
+            messages_vec.push(msg);
+            if ts > max_ts {
+                max_ts = ts;
+            }
+        }
+        app.order_chat_last_seen.insert(
+            order_id,
+            crate::ui::OrderChatLastSeen {
+                last_seen_timestamp: Some(max_ts),
+            },
+        );
     }
 }
 
@@ -617,34 +848,42 @@ pub async fn apply_admin_chat_updates(
     Ok(())
 }
 
-/// Saves a chat message to a text file in ~/.mostrix/dispute_id.txt
+/// Saves a dispute chat message to a text file in `~/.mostrix/disputes_chat/<dispute_id>.txt`.
 /// Creates the directory and file if they don't exist, appends if they do.
 /// Idempotent: skips append if the last message in the file already matches (avoids duplicates when refetching from relay).
 pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
-    // Validate dispute_id to prevent path traversal attacks
-    if uuid::Uuid::parse_str(dispute_id).is_err() {
-        log::warn!(
-            "Invalid dispute_id format, skipping chat save: {}",
-            dispute_id
-        );
-        return;
-    }
+    save_chat_message_by_kind(ChatStorageKind::Disputes, dispute_id, message);
+}
 
-    let home_dir = match dirs::home_dir() {
-        Some(dir) => dir,
+fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &DisputeChatMessage) {
+    let file_path = match chat_file_path(kind, chat_id) {
+        Some(path) => path,
         None => {
-            log::warn!("Could not find home directory, skipping chat save");
+            log::warn!(
+                "Invalid {} id format, skipping save: {}",
+                kind.log_label(),
+                chat_id
+            );
             return;
         }
     };
-
-    let mostrix_dir = home_dir.join(".mostrix");
-    if let Err(e) = fs::create_dir_all(&mostrix_dir) {
-        log::warn!("Failed to create .mostrix directory: {}", e);
+    let Some(chat_dir) = file_path.parent() else {
+        log::warn!(
+            "Failed to resolve {} folder for id {}",
+            kind.log_label(),
+            chat_id
+        );
+        return;
+    };
+    if let Err(e) = fs::create_dir_all(chat_dir) {
+        log::warn!(
+            "Failed to create {} folder {:?}: {}",
+            kind.log_label(),
+            chat_dir,
+            e
+        );
         return;
     }
-
-    let file_path = mostrix_dir.join(format!("{}.txt", dispute_id));
 
     // Content to write: placeholder for attachments, wrapped text for plain messages
     let content_block = match &message.attachment {
@@ -675,12 +914,18 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
         })
         .unwrap_or_else(|| ("??-??-????".to_string(), "??:??:??".to_string()));
 
-    let sender_label = match (&message.sender, message.target_party) {
-        (ChatSender::Admin, Some(ChatParty::Buyer)) => "Admin to Buyer",
-        (ChatSender::Admin, Some(ChatParty::Seller)) => "Admin to Seller",
-        (ChatSender::Admin, None) => "Admin",
-        (ChatSender::Buyer, _) => "Buyer",
-        (ChatSender::Seller, _) => "Seller",
+    let sender_label = match kind {
+        ChatStorageKind::Disputes => match (&message.sender, message.target_party) {
+            (ChatSender::Admin, Some(ChatParty::Buyer)) => "Admin to Buyer",
+            (ChatSender::Admin, Some(ChatParty::Seller)) => "Admin to Seller",
+            (ChatSender::Admin, None) => "Admin",
+            (ChatSender::Buyer, _) => "Buyer",
+            (ChatSender::Seller, _) => "Seller",
+        },
+        ChatStorageKind::Orders => match message.sender {
+            ChatSender::Admin => "You",
+            ChatSender::Buyer | ChatSender::Seller => "Peer",
+        },
     };
     let formatted_message = format!(
         "{} - {} - {}\n{}\n\n",
@@ -694,13 +939,18 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
     {
         Ok(mut file) => {
             if let Err(e) = file.write_all(formatted_message.as_bytes()) {
-                log::warn!("Failed to write chat message to file: {}", e);
+                log::warn!("Failed to write {} message to file: {}", kind.log_label(), e);
             } else {
-                log::debug!("Chat message saved to {:?}", file_path);
+                log::debug!("Saved {} message to {:?}", kind.log_label(), file_path);
             }
         }
         Err(e) => {
-            log::warn!("Failed to open chat file {:?}: {}", file_path, e);
+            log::warn!(
+                "Failed to open {} file {:?}: {}",
+                kind.log_label(),
+                file_path,
+                e
+            );
         }
     }
 }

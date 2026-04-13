@@ -106,6 +106,36 @@ fn handle_admin_chat_input(
     None
 }
 
+fn handle_user_order_chat_input(
+    app: &mut AppState,
+    code: KeyCode,
+    key_event: &crossterm::event::KeyEvent,
+) -> Option<bool> {
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) && app.order_chat_input_enabled {
+            if (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
+                && key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+            {
+                return None;
+            }
+            match code {
+                KeyCode::Char(c) => {
+                    app.order_chat_input.push(c);
+                    return Some(true);
+                }
+                KeyCode::Backspace => {
+                    app.order_chat_input.pop();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Handle clipboard copy for invoice
 fn handle_clipboard_copy(invoice: String) -> bool {
     #[cfg(target_os = "linux")]
@@ -589,10 +619,23 @@ pub fn handle_key_event(
         }
     }
 
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        if has_shift && (code == KeyCode::Char('i') || code == KeyCode::Char('I')) {
+            app.order_chat_input_enabled = !app.order_chat_input_enabled;
+            return Some(true);
+        }
+    }
+
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
     // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
     if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
+        return Some(result);
+    }
+    if let Some(result) = handle_user_order_chat_input(app, code, &key_event) {
         return Some(result);
     }
 

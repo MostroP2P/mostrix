@@ -47,7 +47,7 @@ pub fn ui_draw(
             app,
         ),
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
-            tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
+            tabs::order_in_progress_tab::render_order_in_progress(f, content_area, app)
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
             let mut messages = match app.messages.lock() {

@@ -20,7 +20,7 @@ pub const HELP_TITLE_SETTINGS_ADMIN: &str = "Settings (Admin) — Shortcuts";
 pub const HELP_TITLE_SETTINGS_USER: &str = "Settings (User) — Shortcuts";
 pub const HELP_TITLE_EXIT: &str = "Exit — Shortcuts";
 pub const HELP_TITLE_ORDERS: &str = "Orders — Shortcuts";
-pub const HELP_TITLE_MY_TRADES: &str = "My Trades — Shortcuts";
+pub const HELP_TITLE_MY_TRADES: &str = "Order Chat — Shortcuts";
 pub const HELP_TITLE_MESSAGES: &str = "Messages — Shortcuts";
 pub const HELP_TITLE_CREATE_NEW_ORDER: &str = "Create New Order — Shortcuts";
 
@@ -79,7 +79,7 @@ pub const HELP_ORDERS_ENTER_TAKE: &str = "Enter: Take selected order";
 pub const HELP_ORDERS_SELECT: &str = "↑↓: Select order";
 
 // Help popup lines (My Trades)
-pub const HELP_MY_TRADES_NAV: &str = "↑↓: Navigate (when available)";
+pub const HELP_MY_TRADES_NAV: &str = "↑↓: Select order | Enter: Send | Shift+I: Toggle input";
 
 // Help popup lines (Messages)
 pub const HELP_MSG_ENTER_OPEN: &str = "Enter: Open selected message";
