@@ -480,7 +480,10 @@ mod tests {
         let (cp_from_seller, sk_seller) =
             order_chat_counterparty_and_shared_hex(&seller, &small_order).expect("seller side");
         assert_eq!(cp_from_seller, buyer_hex);
-        assert_eq!(sk_buyer, sk_seller, "ECDH shared secret matches for both peers");
+        assert_eq!(
+            sk_buyer, sk_seller,
+            "ECDH shared secret matches for both peers"
+        );
     }
 
     #[test]

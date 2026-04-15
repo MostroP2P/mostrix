@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::HELP_KEY;
-use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::UserOrderChatMessage;
+use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::{Payload, Status};
 
@@ -17,8 +17,15 @@ use mostro_core::prelude::{Payload, Status};
 struct OrderChatListItem {
     order_id: String,
     status: Option<Status>,
+    kind: Option<String>,
     amount: Option<i64>,
     fiat: Option<(i64, String)>,
+    created_at: Option<i64>,
+    trade_index: Option<i64>,
+    payment_method: Option<String>,
+    premium: Option<i64>,
+    initiator_pubkey: Option<String>,
+    is_mine: Option<bool>,
 }
 
 fn status_from_message(msg: &crate::ui::OrderMessage) -> Option<Status> {
@@ -54,21 +61,43 @@ fn build_active_orders(messages: &[crate::ui::OrderMessage]) -> Vec<OrderChatLis
                     {
                         entry.amount = Some(order.amount);
                         entry.fiat = Some((order.fiat_amount, order.fiat_code.clone()));
+                        entry.kind = order.kind.map(|k| k.to_string());
+                        entry.created_at = order.created_at;
+                        entry.trade_index = Some(msg.trade_index);
+                        entry.payment_method = Some(order.payment_method.clone());
+                        entry.premium = Some(order.premium);
+                        entry.initiator_pubkey = Some(msg.sender.to_string());
+                        entry.is_mine = msg.is_mine;
                     }
                 }
             })
             .or_insert_with(|| {
                 let mut amount = None;
                 let mut fiat = None;
+                let mut kind = None;
+                let mut created_at = None;
+                let mut payment_method = None;
+                let mut premium = None;
                 if let Some(Payload::Order(order)) = &msg.message.get_inner_message_kind().payload {
                     amount = Some(order.amount);
                     fiat = Some((order.fiat_amount, order.fiat_code.clone()));
+                    kind = order.kind.map(|k| k.to_string());
+                    created_at = order.created_at;
+                    payment_method = Some(order.payment_method.clone());
+                    premium = Some(order.premium);
                 }
                 OrderChatListItem {
                     order_id: key,
                     status: status_from_message(msg),
+                    kind,
                     amount,
                     fiat,
+                    created_at,
+                    trade_index: Some(msg.trade_index),
+                    payment_method,
+                    premium,
+                    initiator_pubkey: Some(msg.sender.to_string()),
+                    is_mine: msg.is_mine,
                 }
             });
     }
@@ -85,8 +114,43 @@ fn build_order_chat_content(
     messages: &[UserOrderChatMessage],
     content_width: u16,
 ) -> (Vec<Line<'static>>, u16, Vec<usize>) {
+    fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
+        if max_width == 0 {
+            return vec![String::new()];
+        }
+        let mut wrapped = Vec::new();
+        let mut current = String::new();
+        for word in content.split_whitespace() {
+            let pending_len = if current.is_empty() {
+                word.len()
+            } else {
+                current.len() + 1 + word.len()
+            };
+            if pending_len > max_width as usize && !current.is_empty() {
+                wrapped.push(current);
+                current = word.to_string();
+            } else if current.is_empty() {
+                current = word.to_string();
+            } else {
+                current.push(' ');
+                current.push_str(word);
+            }
+        }
+        if wrapped.is_empty() && current.is_empty() && !content.is_empty() {
+            return vec![content.to_string()];
+        }
+        if !current.is_empty() {
+            wrapped.push(current);
+        }
+        if wrapped.is_empty() {
+            wrapped.push(String::new());
+        }
+        wrapped
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
+    let max_content_width = (content_width / 2).max(1);
     for msg in messages {
         starts.push(lines.len());
         let sender = msg.sender;
@@ -101,14 +165,21 @@ fn build_order_chat_content(
         let ts = DateTime::from_timestamp(msg.timestamp, 0)
             .map(|dt| dt.format("%d-%m-%Y %H:%M").to_string())
             .unwrap_or_else(|| "unknown time".to_string());
-        lines.push(Line::from(vec![Span::styled(
-            format!("{label} - {ts}"),
-            Style::default().fg(color),
-        )]));
-        lines.push(Line::from(Span::styled(
-            msg.content.clone(),
-            Style::default().fg(color),
-        )));
+        let header = Span::styled(format!("{label} - {ts}"), Style::default().fg(color));
+        let wrapped_lines = wrap_text_to_lines(&msg.content, max_content_width);
+        let peer_is_right_aligned = matches!(sender, UserChatSender::Peer);
+        if peer_is_right_aligned {
+            lines.push(header.into_right_aligned_line());
+            for line in wrapped_lines {
+                lines
+                    .push(Span::styled(line, Style::default().fg(color)).into_right_aligned_line());
+            }
+        } else {
+            lines.push(Line::from(header));
+            for line in wrapped_lines {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(color))));
+            }
+        }
         lines.push(Line::from(""));
     }
     if lines.is_empty() {
@@ -148,20 +219,26 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .style(Style::default().bg(BACKGROUND_COLOR));
     if active_orders.is_empty() {
         f.render_widget(
-            Paragraph::new("No actionable orders yet")
+            Paragraph::new("No active orders yet")
                 .block(sidebar_block)
                 .alignment(ratatui::layout::Alignment::Center),
             sidebar_area,
         );
+        let empty_main_chunks = Layout::new(
+            Direction::Vertical,
+            [Constraint::Min(0), Constraint::Length(1)],
+        )
+        .split(main_area);
         f.render_widget(
-            Paragraph::new("Select an order from sidebar when available.\nCtrl+H: Help").block(
+            Paragraph::new("Select an order from sidebar when available.").block(
                 Block::default()
                     .title("Order Chat")
                     .borders(Borders::ALL)
                     .style(Style::default().bg(BACKGROUND_COLOR)),
             ),
-            main_area,
+            empty_main_chunks[0],
         );
+        f.render_widget(Paragraph::new(HELP_KEY), empty_main_chunks[1]);
         return;
     }
 
@@ -188,7 +265,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let main_chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(5),
+            Constraint::Length(7),
             Constraint::Min(0),
             Constraint::Length(3),
             Constraint::Length(1),
@@ -200,6 +277,38 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .status
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    let order_kind = selected.kind.as_deref().unwrap_or("Unknown");
+    let created_str = selected
+        .created_at
+        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let truncate_pubkey = |pubkey: &str| -> String {
+        if pubkey.len() > 16 {
+            format!("{}...{}", &pubkey[..8], &pubkey[pubkey.len() - 8..])
+        } else {
+            pubkey.to_string()
+        }
+    };
+    let initiator_pubkey_display = selected
+        .initiator_pubkey
+        .as_deref()
+        .map(truncate_pubkey)
+        .unwrap_or_else(|| "Unknown".to_string());
+    let initiator_role = match selected.is_mine {
+        Some(true) => "Maker",
+        Some(false) => "Taker",
+        None => "Initiator",
+    };
+    let trade_id = selected
+        .trade_index
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let payment_method = selected.payment_method.as_deref().unwrap_or("Unknown");
+    let premium_text = selected
+        .premium
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "Unknown".to_string());
     let amount_line = match (selected.amount, &selected.fiat) {
         (Some(sats), Some((fiat_amount, fiat_code))) => {
             format!("{sats} sats | {fiat_amount} {fiat_code}")
@@ -212,14 +321,48 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             Line::from(vec![
                 Span::styled("Order: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(selected.order_id.clone()),
+                Span::raw("  "),
+                Span::styled("Trade: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(trade_id),
+                Span::raw("  "),
+                Span::styled("Type: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(order_kind.to_string()),
             ]),
             Line::from(vec![
                 Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(status_label),
+                Span::raw("  "),
+                Span::styled("Initiator: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{initiator_role} {initiator_pubkey_display}")),
+                Span::raw("  "),
+                Span::styled("Created: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(created_str),
             ]),
             Line::from(vec![
                 Span::styled("Amount: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(amount_line),
+                Span::raw("  |  "),
+                Span::styled("Privacy: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("Buyer - Unknown  Seller - Unknown"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Buyer Rating: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Unknown"),
+                Span::raw("  |  "),
+                Span::styled(
+                    "Seller Rating: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Unknown"),
+                Span::raw("  |  "),
+                Span::styled("Payment: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(payment_method.to_string()),
+                Span::raw("  "),
+                Span::styled("Premium: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(premium_text),
             ]),
         ])
         .block(
@@ -241,8 +384,10 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[1].height.saturating_sub(2),
     ))
     .scrollbars_visibility(ScrollbarVisibility::Always);
-    let (chat_lines, content_width, line_starts) =
-        build_order_chat_content(&chat_messages, main_chunks[1].width.saturating_sub(4).max(1));
+    let (chat_lines, content_width, line_starts) = build_order_chat_content(
+        &chat_messages,
+        main_chunks[1].width.saturating_sub(4).max(1),
+    );
     app.order_chat_line_starts = line_starts;
     scroll_view.render_widget(
         Paragraph::new(chat_lines.clone()).wrap(Wrap { trim: true }),

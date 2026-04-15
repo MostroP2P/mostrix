@@ -426,7 +426,7 @@ This approach keeps the core message flow largely stateless while giving admin c
 
 For more details, see:
 
-- `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers.rs`.
+- `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers/startup.rs`.
 - `update_chat_last_seen_by_dispute_id` in `src/models.rs` (unified DB update with row-affected verification).
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#stateless-recovery) for protocol‑level behavior.
 

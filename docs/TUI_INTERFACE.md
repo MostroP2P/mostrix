@@ -241,6 +241,17 @@ A stateful form for creating new orders. It supports both fixed amounts and fiat
 
 **Source**: `src/ui/order_form.rs`
 
+### My Trades (Order In Progress) updates
+
+The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows richer order context and cleaner chat readability:
+
+- **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, payment method, and premium.
+- **Chat rendering**: user/peer messages are wrapped to fit pane width and peer messages are right-aligned for better sender separation.
+- **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
+- **Data extraction**: active-order list rows now retain extra fields (kind, created_at, trade_index, payment_method, premium, initiator metadata) so rendering does not need to re-derive them later.
+
+**Source**: `src/ui/tabs/order_in_progress_tab.rs`
+
 ### 4. Color Coding
 
 Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
@@ -260,6 +271,19 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 **Status**: ✅ **Fully Implemented (NIP‑59 + Shared Keys)**
 
 The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys derived between the admin key and each party’s trade pubkey.
+
+#### Helper module organization (readability refactor)
+
+The previous monolithic helper file was split into focused modules under `src/ui/helpers/`:
+
+- `mod.rs`: compatibility re-export layer (`crate::ui::helpers::...`) for existing call sites.
+- `layout.rs`: popup/help/button rendering helpers.
+- `formatting.rs`: UI formatting helpers (ratings, order id labels, finalized status check).
+- `chat_visibility.rs`: per-party visibility and selection helpers.
+- `chat_render.rs`: wrapped line formatting plus list/scrollview builders.
+- `chat_storage.rs`: transcript parse/load/save logic for disputes and user order chat.
+- `attachments.rs`: attachment JSON parsing, placeholders, and toast expiration/building.
+- `startup.rs`: startup hydration/recovery and applying chat updates to app state.
 
 #### Data Structures
 

@@ -359,8 +359,10 @@ impl Order {
     ) -> Order {
         let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
         let (counterparty_pubkey, order_chat_shared_key_hex) =
-            match crate::util::chat_utils::order_chat_counterparty_and_shared_hex(trade_keys, small_order)
-            {
+            match crate::util::chat_utils::order_chat_counterparty_and_shared_hex(
+                trade_keys,
+                small_order,
+            ) {
                 Some((cp, sk)) => (Some(cp), Some(sk)),
                 None => (
                     existing.and_then(|e| e.counterparty_pubkey.clone()),
