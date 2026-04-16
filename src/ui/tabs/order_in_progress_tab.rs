@@ -39,15 +39,13 @@ fn status_from_message(msg: &crate::ui::OrderMessage) -> Option<Status> {
 }
 
 fn is_order_chat_actionable(status: Option<Status>) -> bool {
-    matches!(
-        status,
-        Some(Status::WaitingPayment)
-            | Some(Status::WaitingBuyerInvoice)
-            | Some(Status::SettledHoldInvoice)
-            | Some(Status::InProgress)
-            | Some(Status::Active)
-            | Some(Status::FiatSent)
-    )
+    matches!(status, |Some(Status::SettledHoldInvoice)| Some(
+        Status::Active
+    ) | Some(
+        Status::FiatSent
+    ) | Some(
+        Status::Success
+    ))
 }
 
 fn build_active_orders(messages: &[crate::ui::OrderMessage]) -> Vec<OrderChatListItem> {

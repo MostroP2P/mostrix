@@ -120,11 +120,11 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
 /// Resolve the currently selected order id for the MyTrades (Order Chat) tab.
 pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
     app.active_order_trade_indices.lock().ok().and_then(|map| {
-        map.keys()
-            .copied()
-            .collect::<Vec<Uuid>>()
-            .get(app.selected_order_chat_idx)
-            .copied()
+        // HashMap iteration order is arbitrary; sort keys to match the
+        // stable ordering used in the MyTrades sidebar (by order_id UUID).
+        let mut order_ids: Vec<Uuid> = map.keys().copied().collect();
+        order_ids.sort();
+        order_ids.get(app.selected_order_chat_idx).copied()
     })
 }
 

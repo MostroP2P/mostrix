@@ -130,6 +130,7 @@ fn resolve_selected_order_chat_target(
             order.status == Some(Status::Active)
                 || order.status == Some(Status::FiatSent)
                 || order.status == Some(Status::SettledHoldInvoice)
+                || order.status == Some(Status::Success)
         })
         .collect();
 
