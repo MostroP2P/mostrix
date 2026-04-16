@@ -932,7 +932,7 @@ The status bar now provides comprehensive information about current settings and
 
 The status bar displays 3 separate lines:
 
-1. **Mostro Pubkey**: Shows the current Mostro instance pubkey (truncated if long)
+1. **Mostro Name + Pubkey**: Shows the current Mostro instance alias (Lightning node alias) and pubkey
 2. **Relays List**: Shows all active relays (comma-separated, truncated if many)
 3. **Currencies List**: Shows active currency filters (comma-separated, or "All" if none)
 

@@ -266,13 +266,27 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     f.render_widget(List::new(items).block(sidebar_block), sidebar_area);
 
     let selected = &active_orders[selected_idx];
+    let header_height: u16 = 7;
+    let input_height: u16 = 3;
+    let wants_two_line_footer = main_area.width >= 90;
+    let can_fit_two_line_footer = main_area
+        .height
+        .saturating_sub(header_height.saturating_add(input_height))
+        >= 2;
+    let footer_height: u16 = if wants_two_line_footer && can_fit_two_line_footer {
+        2
+    } else {
+        1
+    };
+    let allow_two_line_footer = footer_height >= 2;
+
     let main_chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(7),
+            Constraint::Length(header_height),
             Constraint::Min(0),
-            Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(input_height),
+            Constraint::Length(footer_height),
         ],
     )
     .split(main_area);
@@ -458,7 +472,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let footer_width = footer_area.width;
     let (footer_line1, footer_line2) = if footer_width < 50 {
         (HELP_KEY.to_string(), None)
-    } else if footer_width < 90 {
+    } else if footer_width < 90 || !allow_two_line_footer {
         // Single-line compact footer
         let base = if app.order_chat_input_enabled {
             format!(

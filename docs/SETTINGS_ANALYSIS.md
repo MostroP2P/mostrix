@@ -32,7 +32,7 @@ Proof-of-work for **published Nostr events** is **not** configured in the Settin
 
 ### 4. Status Bar Improvements
 - **Multi-line Display**: Status bar now displays 3 separate lines:
-  - Mostro pubkey
+  - Mostro name (Lightning node alias) + Mostro pubkey
   - Relays list
   - Currencies list
 - **Dynamic Updates**: Status bar reloads settings from disk on each draw cycle

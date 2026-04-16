@@ -63,7 +63,7 @@ The screen is divided into three horizontal chunks using `ratatui` layouts. The 
 
 1. **Header (3 lines)**: Renders the navigation tabs. The tab list is determined by the `UserRole` (User vs Admin).
 2. **Body (remaining space)**: Renders the active tab content or forms.
-3. **Footer (1 line)**: Renders the status bar with connection details.
+3. **Footer / Status bar (3 lines)**: Renders the multi-line status bar with settings + connection details.
 
 ## Roles and Navigation
 
@@ -229,7 +229,7 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 **`ViewingMessage` (trade confirmations)** — `render_message_view` in `src/ui/tabs/tab_content.rs`:
 
-- Used for actionable DMs that need a **YES/NO** before sending a follow-up to Mostro: **`HoldInvoicePaymentAccepted`**, **`FiatSentOk`**, **`CooperativeCancelInitiatedByPeer`**.
+- Used for actionable events that need a **YES/NO** before sending a follow-up to Mostro: **`HoldInvoicePaymentAccepted`**, **`FiatSentOk`**, **`CooperativeCancelInitiatedByPeer`**, plus explicit user-triggered actions from **My Trades** (**`Cancel`**, **`FiatSent`**, **`Release`**).
 - Buttons are rendered with **`helpers::render_yes_no_buttons`** (same visual pattern as exit/settings confirms: **✓ YES** / **✗ NO**, **Left/Right** to move selection, **Enter** to confirm, **Esc** to dismiss).
 - Handler: **`handle_enter_viewing_message`** in `src/ui/key_handler/message_handlers.rs` (only proceeds when **YES** is selected). Cooperative cancel completion surfaces **`OperationResult::TradeClosed`**, which **`handle_operation_result`** resolves after removing the row from the Messages list (see **MESSAGE_FLOW_AND_PROTOCOL.md**).
 
@@ -248,6 +248,13 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, payment method, and premium.
 - **Chat rendering**: user/peer messages are wrapped to fit pane width and peer messages are right-aligned for better sender separation.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
+- **Footer shortcuts (width-aware)**:
+  - **Shift+I** toggles chat input.
+  - **Shift+C** cooperative cancel (YES/NO popup).
+  - **Shift+F** mark fiat sent (YES/NO popup).
+  - **Shift+R** release sats (YES/NO popup).
+  - **Shift+V** rate counterparty (opens 1–5 star rating picker).
+  - **Shift+H** opens the shortcuts popup for the current tab.
 - **Data extraction**: active-order list rows now retain extra fields (kind, created_at, trade_index, payment_method, premium, initiator metadata) so rendering does not need to re-derive them later.
 
 **Source**: `src/ui/tabs/order_in_progress_tab.rs`
