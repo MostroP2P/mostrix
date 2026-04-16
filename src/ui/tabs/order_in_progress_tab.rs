@@ -17,6 +17,24 @@ use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// `Order ID: …` for the sidebar — same style as disputes; shows the full id when it fits the column.
+fn sidebar_order_list_label(order_id: &str, inner_width: u16) -> String {
+    const PREFIX: &str = "Order ID: ";
+    let w = inner_width as usize;
+    if w == 0 {
+        return String::new();
+    }
+    let full = format!("{PREFIX}{order_id}");
+    if full.chars().count() <= w {
+        return full;
+    }
+    if w <= 3 {
+        return ".".repeat(w);
+    }
+    let head: String = full.chars().take(w.saturating_sub(3)).collect();
+    format!("{head}...")
+}
+
 fn build_order_chat_content(
     messages: &[UserOrderChatMessage],
     content_width: u16,
@@ -165,6 +183,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         return;
     }
 
+    let sidebar_text_width = sidebar_block.inner(sidebar_area).width.max(1);
     let items: Vec<ListItem> = active_orders
         .iter()
         .enumerate()
@@ -174,12 +193,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             } else {
                 Style::default().fg(Color::White)
             };
-            let short_id = if row.order_id.len() > 16 {
-                format!("{}...", &row.order_id[..16])
-            } else {
-                row.order_id.clone()
-            };
-            ListItem::new(Line::from(Span::styled(short_id, style)))
+            let label = sidebar_order_list_label(&row.order_id, sidebar_text_width);
+            ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
     f.render_widget(List::new(items).block(sidebar_block), sidebar_area);
