@@ -245,8 +245,9 @@ A stateful form for creating new orders. It supports both fixed amounts and fiat
 
 The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows richer order context and cleaner chat readability:
 
-- **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, payment method, and premium.
-- **Chat rendering**: user/peer messages are wrapped to fit pane width and peer messages are right-aligned for better sender separation.
+- **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, amount, payment method, and premium.
+- **Privacy / ratings**: there is no placeholder row for **`Privacy:`** / **`Buyer -`** / **`Seller -`** until trade privacy can be sourced from the same context as disputes (DM `SmallOrder` does not carry those flags). **Buyer Rating:** / **Seller Rating:** lines are shown only when reputation exists: `helpers::build_active_order_chat_list` merges `Payload::Peer` with `UserInfo` when `peer.pubkey` matches `buyer_trade_pubkey` / `seller_trade_pubkey` from `Payload::Order`, and the header uses `helpers::format_user_rating` for display.
+- **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Footer shortcuts (width-aware)**:
   - **Shift+I** toggles chat input.
@@ -291,7 +292,7 @@ The previous monolithic helper file was split into focused modules under `src/ui
 - `chat_render.rs`: wrapped line formatting plus list/scrollview builders.
 - `chat_storage.rs`: transcript parse/load/save logic for disputes and user order chat.
 - `attachments.rs`: attachment JSON parsing, placeholders, and toast expiration/building.
-- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution).
+- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution); merges `Payload::Order` fields and attributes `Payload::Peer` reputation to buyer/seller when pubkeys match trade pubkeys.
 - `startup.rs`: startup hydration/recovery and applying chat updates to app state.
 
 #### Data Structures

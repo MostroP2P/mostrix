@@ -12,7 +12,7 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
     HELP_KEY,
 };
-use crate::ui::helpers::build_active_order_chat_list;
+use crate::ui::helpers::{build_active_order_chat_list, format_user_rating};
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -25,22 +25,38 @@ fn build_order_chat_content(
         if max_width == 0 {
             return vec![String::new()];
         }
+        let max = max_width as usize;
         let mut wrapped = Vec::new();
         let mut current = String::new();
+
+        fn chunks_for_word(word: &str, max: usize) -> Vec<String> {
+            if word.chars().count() <= max {
+                return vec![word.to_string()];
+            }
+            word.chars()
+                .collect::<Vec<_>>()
+                .chunks(max)
+                .map(|chunk| chunk.iter().collect())
+                .collect()
+        }
+
         for word in content.split_whitespace() {
-            let pending_len = if current.is_empty() {
-                word.len()
-            } else {
-                current.len() + 1 + word.len()
-            };
-            if pending_len > max_width as usize && !current.is_empty() {
-                wrapped.push(current);
-                current = word.to_string();
-            } else if current.is_empty() {
-                current = word.to_string();
-            } else {
-                current.push(' ');
-                current.push_str(word);
+            for chunk in chunks_for_word(word, max) {
+                let chunk_len = chunk.chars().count();
+                let pending_len = if current.is_empty() {
+                    chunk_len
+                } else {
+                    current.chars().count() + 1 + chunk_len
+                };
+                if pending_len > max && !current.is_empty() {
+                    wrapped.push(current);
+                    current = chunk;
+                } else if current.is_empty() {
+                    current = chunk;
+                } else {
+                    current.push(' ');
+                    current.push_str(&chunk);
+                }
             }
         }
         if wrapped.is_empty() && current.is_empty() && !content.is_empty() {
@@ -169,30 +185,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     f.render_widget(List::new(items).block(sidebar_block), sidebar_area);
 
     let selected = &active_orders[selected_idx];
-    let header_height: u16 = 7;
     let input_height: u16 = 3;
-    let wants_two_line_footer = main_area.width >= 90;
-    let can_fit_two_line_footer = main_area
-        .height
-        .saturating_sub(header_height.saturating_add(input_height))
-        >= 2;
-    let footer_height: u16 = if wants_two_line_footer && can_fit_two_line_footer {
-        2
-    } else {
-        1
-    };
-    let allow_two_line_footer = footer_height >= 2;
-
-    let main_chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(header_height),
-            Constraint::Min(0),
-            Constraint::Length(input_height),
-            Constraint::Length(footer_height),
-        ],
-    )
-    .split(main_area);
 
     let status_label = selected
         .status
@@ -238,7 +231,11 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         _ => "amount N/A".to_string(),
     };
 
-    let header_lines = vec![
+    // TODO(My Trades header): Wire "Privacy:", "Buyer -", "Seller -" from trade privacy / full-privacy
+    // signals once available on DM payloads or local `orders` (see dispute UI + `Order::is_full_privacy_order`).
+    // Omit that row until then — avoid static "Unknown" placeholders.
+
+    let mut header_lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
             Span::styled(
@@ -285,29 +282,63 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  |  "),
-            Span::styled("Privacy: ", Style::default().fg(Color::Gray)),
-            Span::styled("Buyer - Unknown", Style::default().fg(Color::White)),
-            Span::raw("  "),
-            Span::styled("Seller - Unknown", Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled("Buyer Rating: ", Style::default().fg(Color::Gray)),
-            Span::styled("Unknown", Style::default().fg(Color::Yellow)),
-            Span::raw("  |  "),
-            Span::styled("Seller Rating: ", Style::default().fg(Color::Gray)),
-            Span::styled("Unknown", Style::default().fg(Color::Yellow)),
-            Span::raw("  |  "),
-            Span::styled("Payment: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                payment_method.to_string(),
-                Style::default().fg(Color::White),
-            ),
-            Span::raw("  "),
-            Span::styled("Premium: ", Style::default().fg(Color::Gray)),
-            Span::styled(premium_text, Style::default().fg(Color::Yellow)),
         ]),
     ];
+
+    let gray = Style::default().fg(Color::Gray);
+    let yellow = Style::default().fg(Color::Yellow);
+    let mut payment_row: Vec<Span> = Vec::new();
+    let mut any_rating = false;
+    if let Some(ref info) = selected.buyer_reputation {
+        payment_row.push(Span::styled("Buyer Rating: ", gray));
+        payment_row.push(Span::styled(format_user_rating(Some(info)), yellow));
+        any_rating = true;
+    }
+    if let Some(ref info) = selected.seller_reputation {
+        if any_rating {
+            payment_row.push(Span::raw("  |  "));
+        }
+        payment_row.push(Span::styled("Seller Rating: ", gray));
+        payment_row.push(Span::styled(format_user_rating(Some(info)), yellow));
+        any_rating = true;
+    }
+    if any_rating {
+        payment_row.push(Span::raw("  |  "));
+    }
+    payment_row.push(Span::styled("Payment: ", gray));
+    payment_row.push(Span::styled(
+        payment_method.to_string(),
+        Style::default().fg(Color::White),
+    ));
+    payment_row.push(Span::raw("  "));
+    payment_row.push(Span::styled("Premium: ", gray));
+    payment_row.push(Span::styled(premium_text, yellow));
+    header_lines.push(Line::from(payment_row));
+
+    let header_height = header_lines.len() as u16;
+
+    let wants_two_line_footer = main_area.width >= 90;
+    let can_fit_two_line_footer = main_area
+        .height
+        .saturating_sub(header_height.saturating_add(input_height))
+        >= 2;
+    let footer_height: u16 = if wants_two_line_footer && can_fit_two_line_footer {
+        2
+    } else {
+        1
+    };
+    let allow_two_line_footer = footer_height >= 2;
+
+    let main_chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(header_height),
+            Constraint::Min(0),
+            Constraint::Length(input_height),
+            Constraint::Length(footer_height),
+        ],
+    )
+    .split(main_area);
     f.render_widget(
         Paragraph::new(header_lines).block(
             Block::default()
