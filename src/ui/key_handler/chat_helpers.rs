@@ -1,7 +1,10 @@
 use crate::ui::{
-    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, OperationResult, UiMode,
+    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
+    OperationResult, RatingOrderState, UiMode,
 };
+use mostro_core::prelude::Action;
 use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
 
 /// Filter messages by active chat party and return the count of visible messages.
 ///
@@ -112,6 +115,42 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
     app.admin_chat_scrollview_state.scroll_to_bottom();
     app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
     true
+}
+
+/// Resolve the currently selected order id for the MyTrades (Order Chat) tab.
+pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
+    app.active_order_trade_indices.lock().ok().and_then(|map| {
+        map.keys()
+            .copied()
+            .collect::<Vec<Uuid>>()
+            .get(app.selected_order_chat_idx)
+            .copied()
+    })
+}
+
+/// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release).
+pub fn build_order_action_view_state(
+    order_id: Uuid,
+    action: Action,
+    message_content: String,
+) -> MessageViewState {
+    MessageViewState {
+        message_content,
+        order_id: Some(order_id),
+        action,
+        selected_button: true, // default to YES
+    }
+}
+
+/// Build a rating state for the currently selected order in MyTrades.
+pub fn build_rating_state_for_mytrades(
+    app: &AppState,
+    default_rating: u8,
+) -> Option<RatingOrderState> {
+    resolve_selected_mytrades_order_id(app).map(|order_id| RatingOrderState {
+        order_id,
+        selected_rating: default_rating,
+    })
 }
 
 /// Finalization popup button index: 0 = Pay Buyer, 1 = Refund Seller, 2 = Exit.

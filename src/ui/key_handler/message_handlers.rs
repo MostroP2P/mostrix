@@ -31,6 +31,8 @@ pub fn handle_enter_viewing_message(
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
         Action::CooperativeCancelInitiatedByPeer => Action::Cancel,
+        // For Shift+C/F/R confirmations, the action is already the one we want to send.
+        Action::Cancel | Action::FiatSent | Action::Release => view_state.action.clone(),
         _ => {
             // This view is sometimes used as a generic "view message" popup; if the message
             // doesn't map to a sendable action, just dismiss without error.

@@ -7,7 +7,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
-use crate::ui::constants::HELP_KEY;
+use crate::ui::constants::{
+    FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+    FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL,
+    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_I_DISABLE,
+    FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
+    HELP_KEY,
+};
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -316,58 +322,86 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         (Some(sats), None) => format!("{sats} sats"),
         _ => "amount N/A".to_string(),
     };
+
+    let header_lines = vec![
+        Line::from(vec![
+            Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                selected.order_id.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("Trade ID: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                trade_id,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("Type: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                order_kind.to_string(),
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(status_label, Style::default().add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("Initiator: {initiator_role} "),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(initiator_pubkey_display, Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("Created: ", Style::default().fg(Color::Gray)),
+            Span::styled(created_str, Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![
+            Span::styled("Amount: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                amount_line,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  |  "),
+            Span::styled("Privacy: ", Style::default().fg(Color::Gray)),
+            Span::styled("Buyer - Unknown", Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled("Seller - Unknown", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Buyer Rating: ", Style::default().fg(Color::Gray)),
+            Span::styled("Unknown", Style::default().fg(Color::Yellow)),
+            Span::raw("  |  "),
+            Span::styled("Seller Rating: ", Style::default().fg(Color::Gray)),
+            Span::styled("Unknown", Style::default().fg(Color::Yellow)),
+            Span::raw("  |  "),
+            Span::styled("Payment: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                payment_method.to_string(),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw("  "),
+            Span::styled("Premium: ", Style::default().fg(Color::Gray)),
+            Span::styled(premium_text, Style::default().fg(Color::Yellow)),
+        ]),
+    ];
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("Order: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(selected.order_id.clone()),
-                Span::raw("  "),
-                Span::styled("Trade: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(trade_id),
-                Span::raw("  "),
-                Span::styled("Type: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(order_kind.to_string()),
-            ]),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(status_label),
-                Span::raw("  "),
-                Span::styled("Initiator: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{initiator_role} {initiator_pubkey_display}")),
-                Span::raw("  "),
-                Span::styled("Created: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(created_str),
-            ]),
-            Line::from(vec![
-                Span::styled("Amount: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(amount_line),
-                Span::raw("  |  "),
-                Span::styled("Privacy: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("Buyer - Unknown  Seller - Unknown"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Buyer Rating: ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("Unknown"),
-                Span::raw("  |  "),
-                Span::styled(
-                    "Seller Rating: ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("Unknown"),
-                Span::raw("  |  "),
-                Span::styled("Payment: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(payment_method.to_string()),
-                Span::raw("  "),
-                Span::styled("Premium: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(premium_text),
-            ]),
-        ])
-        .block(
+        Paragraph::new(header_lines).block(
             Block::default()
-                .title("Order details")
+                .title(Span::styled(
+                    "📋 Order Info",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         ),
@@ -421,15 +455,85 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[2],
     );
 
-    let footer = if app.order_chat_input_enabled {
-        format!(
-            "↑↓: Select order | Enter: Send | Shift+I: Disable | {}",
-            HELP_KEY
-        )
+    // Footer (width-aware, similar to disputes footer)
+    let footer_area = main_chunks[3];
+    let footer_width = footer_area.width;
+    let (footer_line1, footer_line2) = if footer_width < 50 {
+        (HELP_KEY.to_string(), None)
+    } else if footer_width < 90 {
+        // Single-line compact footer
+        let base = if app.order_chat_input_enabled {
+            format!(
+                "{} | {} | {} | {} | {}",
+                HELP_KEY,
+                FOOTER_MYTRADES_SELECT_ORDER,
+                FOOTER_MYTRADES_ENTER_SEND,
+                FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                FOOTER_MYTRADES_SHIFT_C_CANCEL
+            )
+        } else {
+            format!(
+                "{} | {} | {} | {}",
+                HELP_KEY,
+                FOOTER_MYTRADES_SELECT_ORDER,
+                FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                FOOTER_MYTRADES_SHIFT_C_CANCEL
+            )
+        };
+        (base, None)
     } else {
-        format!("↑↓: Select order | Shift+I: Enable | {}", HELP_KEY)
+        // Two-line rich footer when wide enough
+        if app.order_chat_input_enabled {
+            (
+                format!(
+                    "{} | {} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_ENTER_SEND,
+                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT
+                ),
+                Some(format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE
+                )),
+            )
+        } else {
+            (
+                format!(
+                    "{} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT
+                ),
+                Some(format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE
+                )),
+            )
+        }
     };
-    f.render_widget(Paragraph::new(footer), main_chunks[3]);
+
+    if let Some(line2) = footer_line2 {
+        let footer_chunks = Layout::new(
+            Direction::Vertical,
+            [Constraint::Length(1), Constraint::Length(1)],
+        )
+        .split(footer_area);
+        f.render_widget(Paragraph::new(footer_line1), footer_chunks[0]);
+        f.render_widget(Paragraph::new(line2), footer_chunks[1]);
+    } else {
+        f.render_widget(Paragraph::new(footer_line1), footer_area);
+    }
 }
 
 pub fn push_local_order_chat_message(

@@ -308,13 +308,16 @@ pub async fn apply_admin_chat_updates(
         }
 
         if max_ts > 0 {
-            AdminDispute::update_chat_last_seen_by_dispute_id(
+            if let Err(e) = AdminDispute::update_chat_last_seen_by_dispute_id(
                 pool,
                 &dispute_key,
                 max_ts,
                 party == ChatParty::Buyer,
             )
-            .await?;
+            .await
+            {
+                log::warn!("Failed to update chat last seen: {e}");
+            }
         }
     }
 

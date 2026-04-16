@@ -6,11 +6,12 @@ use crate::models::AdminDispute;
 /// Rating must be in 0-5 range. Returns formatted string with stars and stats.
 pub fn format_user_rating(info: Option<&UserInfo>) -> String {
     if let Some(info) = info {
-        let star_count = (info.rating.round() as usize).min(5);
+        let rating = info.rating.clamp(0.0, 5.0);
+        let star_count = rating.round() as usize;
         let stars = "⭐".repeat(star_count);
         format!(
             "{} {:.1}/5 ({} trades completed, {} days)",
-            stars, info.rating, info.reviews, info.operating_days
+            stars, rating, info.reviews, info.operating_days
         )
     } else {
         "No rating available".to_string()

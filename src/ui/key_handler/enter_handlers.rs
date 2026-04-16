@@ -27,7 +27,6 @@ use mostro_core::prelude::*;
 use nostr_sdk::nips::nip06::FromMnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
-use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
@@ -57,6 +56,227 @@ fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<Str
         .secret_key()
         .to_bech32()
         .map_err(|e| e.to_string())
+}
+
+#[derive(Clone)]
+struct DisputeChatTarget {
+    dispute_id_key: String,
+    shared_key_hex: Option<String>,
+}
+
+#[derive(Clone)]
+struct OrderChatTarget {
+    order_id: String,
+}
+
+struct EnterChatSendConfig {
+    mode_after_send: UiMode,
+    input_enabled: bool,
+    content: String,
+}
+
+/// Generic Enter-to-send pipeline used by dispute and user order chat.
+fn run_enter_chat_send_flow<T, ResolveTarget, ApplyLocal, SpawnRemote, ResetInput>(
+    app: &mut AppState,
+    config: EnterChatSendConfig,
+    resolve_target: ResolveTarget,
+    apply_local: ApplyLocal,
+    spawn_remote: SpawnRemote,
+    reset_input: ResetInput,
+) where
+    ResolveTarget: FnOnce(&mut AppState) -> Option<T>,
+    ApplyLocal: FnOnce(&mut AppState, &T, &str),
+    SpawnRemote: FnOnce(T, String),
+    ResetInput: FnOnce(&mut AppState),
+{
+    let EnterChatSendConfig {
+        mode_after_send,
+        input_enabled,
+        content,
+    } = config;
+
+    app.mode = mode_after_send.clone();
+    if content.is_empty() || !input_enabled {
+        return;
+    }
+
+    let Some(target) = resolve_target(app) else {
+        return;
+    };
+
+    apply_local(app, &target, &content);
+    reset_input(app);
+    app.mode = mode_after_send;
+    spawn_remote(target, content);
+}
+
+fn resolve_selected_order_chat_target(
+    app: &AppState,
+    ctx: &super::EnterKeyContext<'_>,
+) -> Option<OrderChatTarget> {
+    let orders_lock = match ctx.orders.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+            ));
+            return None;
+        }
+    };
+
+    let active_orders: Vec<&SmallOrder> = orders_lock
+        .iter()
+        .filter(|order| {
+            order.status == Some(Status::Active)
+                || order.status == Some(Status::FiatSent)
+                || order.status == Some(Status::SettledHoldInvoice)
+        })
+        .collect();
+
+    active_orders
+        .get(app.selected_order_chat_idx)
+        .and_then(|order| {
+            order.id.map(|id| OrderChatTarget {
+                order_id: id.to_string(),
+            })
+        })
+}
+
+fn spawn_user_order_chat_send_task(
+    ctx: &super::EnterKeyContext<'_>,
+    order_id: String,
+    content: String,
+) {
+    let client = ctx.client.clone();
+    let pool = ctx.pool.clone();
+    let mostro_info = ctx.mostro_info.clone();
+    tokio::spawn(async move {
+        let order = match crate::models::Order::get_by_id(&pool, &order_id).await {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("order chat send skipped (order not found): {}", e);
+                return;
+            }
+        };
+        let trade_sk = match order
+            .trade_keys
+            .as_deref()
+            .and_then(|h| SecretKey::from_str(h).ok())
+        {
+            Some(sk) => sk,
+            None => return,
+        };
+        let trade_keys = Keys::new(trade_sk);
+        let shared_keys = order
+            .order_chat_shared_key_hex
+            .as_deref()
+            .and_then(crate::util::chat_utils::keys_from_shared_hex)
+            .or_else(|| {
+                let cp = order.counterparty_pubkey.as_deref()?;
+                let pk = PublicKey::parse(cp).ok()?;
+                crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&pk))
+            });
+        let Some(shared_keys) = shared_keys else {
+            return;
+        };
+        if let Err(e) = crate::util::chat_utils::send_user_order_chat_message_via_shared_key(
+            &client,
+            &trade_keys,
+            &shared_keys,
+            &content,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            log::warn!("Failed to send user order chat: {}", e);
+        }
+    });
+}
+
+fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
+    let mode_after_send = UiMode::AdminMode(AdminMode::ManagingDispute);
+    if !matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+        app.mode = mode_after_send;
+        return;
+    }
+
+    let content = app.admin_chat_input.trim().to_string();
+    let input_enabled = app.admin_chat_input_enabled;
+    run_enter_chat_send_flow(
+        app,
+        EnterChatSendConfig {
+            mode_after_send,
+            input_enabled,
+            content,
+        },
+        |app| {
+            app.admin_disputes_in_progress
+                .get(app.selected_in_progress_idx)
+                .map(|selected_dispute| {
+                    let shared_key_hex = match app.active_chat_party {
+                        ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
+                        ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
+                    };
+                    DisputeChatTarget {
+                        dispute_id_key: selected_dispute.dispute_id.clone(),
+                        shared_key_hex,
+                    }
+                })
+        },
+        |app, target, content| {
+            prepare_admin_chat_message(&target.dispute_id_key, content, app);
+            message_counter(app, &target.dispute_id_key);
+        },
+        |target, content| {
+            send_admin_chat_message_via_shared_key(
+                &target.dispute_id_key,
+                target.shared_key_hex.as_deref(),
+                &content,
+                ctx.client,
+                ctx.admin_chat_keys,
+                ctx.mostro_info.clone(),
+            );
+        },
+        |app| {
+            app.admin_chat_input.clear();
+            app.admin_chat_input_enabled = true;
+        },
+    );
+}
+
+fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
+    let mode_after_send = app.mode.clone();
+    let content = app.order_chat_input.trim().to_string();
+    let input_enabled = app.order_chat_input_enabled;
+    run_enter_chat_send_flow(
+        app,
+        EnterChatSendConfig {
+            mode_after_send,
+            input_enabled,
+            content,
+        },
+        |app| resolve_selected_order_chat_target(app, ctx),
+        |app, target, content| {
+            let local_msg = crate::ui::UserOrderChatMessage {
+                sender: crate::ui::UserChatSender::You,
+                content: content.to_string(),
+                timestamp: chrono::Utc::now().timestamp(),
+                attachment: None,
+            };
+            app.order_chats
+                .entry(target.order_id.clone())
+                .or_default()
+                .push(local_msg.clone());
+            save_order_chat_message(&target.order_id, &local_msg);
+        },
+        |target, content| {
+            spawn_user_order_chat_send_task(ctx, target.order_id, content);
+        },
+        |app| {
+            app.order_chat_input.clear();
+            app.order_chat_input_enabled = true;
+        },
+    );
 }
 
 // Admin handlers moved to admin_handlers.rs
@@ -265,55 +485,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
-            // Handle Enter in Disputes in Progress tab
-            if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                // IMPORTANT: Restore mode immediately to prevent any state issues
-                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-
-                // Check if chat input has content and is enabled - send message
-                // If input is empty, do nothing (don't disable input, don't trigger any action)
-                if !app.admin_chat_input.trim().is_empty() && app.admin_chat_input_enabled {
-                    if let Some(selected_dispute) = app
-                        .admin_disputes_in_progress
-                        .get(app.selected_in_progress_idx)
-                    {
-                        // Copy needed fields so we can release the borrow before calling prepare_admin_chat_message
-                        let dispute_id_key = selected_dispute.dispute_id.clone();
-                        let shared_key_hex = match app.active_chat_party {
-                            ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
-                            ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
-                        };
-
-                        // Prepare admin chat message for sending via inputbox in admin disputes in progress tab
-                        prepare_admin_chat_message(&dispute_id_key, app);
-
-                        send_admin_chat_message_via_shared_key(
-                            &dispute_id_key,
-                            shared_key_hex.as_deref(),
-                            &app.admin_chat_input,
-                            ctx.client,
-                            ctx.admin_chat_keys,
-                            ctx.mostro_info.clone(),
-                        );
-
-                        message_counter(app, &dispute_id_key);
-                    }
-
-                    // Clear the input and keep focus
-                    app.admin_chat_input.clear();
-                    // IMPORTANT: Stay in ManagingDispute mode to keep input focus and enabled
-                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                    // Ensure input remains enabled after sending message
-                    app.admin_chat_input_enabled = true;
-                } else {
-                    // If input is empty or disabled, keep the current enabled state
-                    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-                }
-                // (finalization is now triggered by Shift+F, not Enter)
-            } else {
-                // Not in Disputes in Progress tab, restore mode anyway
-                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-            }
+            handle_enter_admin_managing_dispute_chat(app, ctx);
             true
         }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
@@ -548,83 +720,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             "Fetching Mostro instance info...".to_string(),
         ));
     } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-        let selected_order_id = match app.messages.lock() {
-            Ok(g) => {
-                let mut ids: BTreeSet<String> = BTreeSet::new();
-                for msg in g.iter() {
-                    if let Some(id) = msg.order_id {
-                        ids.insert(id.to_string());
-                    }
-                }
-                ids.into_iter().nth(app.selected_order_chat_idx)
-            }
-            Err(_) => None,
-        };
-        let Some(order_id) = selected_order_id else {
-            return;
-        };
-        let content = app.order_chat_input.trim().to_string();
-        if content.is_empty() || !app.order_chat_input_enabled {
-            return;
-        }
-        let local_msg = crate::ui::UserOrderChatMessage {
-            sender: crate::ui::UserChatSender::You,
-            content: content.clone(),
-            timestamp: chrono::Utc::now().timestamp(),
-            attachment: None,
-        };
-        app.order_chats
-            .entry(order_id.clone())
-            .or_default()
-            .push(local_msg.clone());
-        save_order_chat_message(&order_id, &local_msg);
-        app.order_chat_input.clear();
-        app.order_chat_input_enabled = true;
-
-        let client = ctx.client.clone();
-        let pool = ctx.pool.clone();
-        let mostro_info = ctx.mostro_info.clone();
-        tokio::spawn(async move {
-            let order = match crate::models::Order::get_by_id(&pool, &order_id).await {
-                Ok(o) => o,
-                Err(e) => {
-                    log::warn!("order chat send skipped (order not found): {}", e);
-                    return;
-                }
-            };
-            let trade_sk = match order
-                .trade_keys
-                .as_deref()
-                .and_then(|h| SecretKey::from_str(h).ok())
-            {
-                Some(sk) => sk,
-                None => return,
-            };
-            let trade_keys = Keys::new(trade_sk);
-            let shared_keys = order
-                .order_chat_shared_key_hex
-                .as_deref()
-                .and_then(crate::util::chat_utils::keys_from_shared_hex)
-                .or_else(|| {
-                    let cp = order.counterparty_pubkey.as_deref()?;
-                    let pk = PublicKey::parse(cp).ok()?;
-                    crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&pk))
-                });
-            let Some(shared_keys) = shared_keys else {
-                return;
-            };
-            if let Err(e) = crate::util::chat_utils::send_user_order_chat_message_via_shared_key(
-                &client,
-                &trade_keys,
-                &shared_keys,
-                &content,
-                mostro_info.as_ref(),
-            )
-            .await
-            {
-                log::warn!("Failed to send user order chat: {}", e);
-            }
-        });
+        handle_enter_user_order_chat(app, ctx);
     } else if let Tab::User(UserTab::Orders) = app.active_tab {
         // Show take order popup when Enter is pressed in Orders tab (user mode only)
         let orders_lock = match ctx.orders.lock() {

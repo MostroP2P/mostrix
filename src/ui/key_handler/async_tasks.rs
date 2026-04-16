@@ -8,6 +8,7 @@ use crate::ui::{
     AdminChatUpdate, AppState, ChatAttachment, MessageNotification, MostroInfoFetchResult,
     NetworkStatus, OperationResult, OrderChatUpdate, TakeOrderState, UiMode,
 };
+use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
 use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
@@ -50,7 +51,7 @@ fn clear_runtime_session_state(app: &mut AppState) {
     match app.messages.lock() {
         Ok(mut messages) => messages.clear(),
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
             ));
             app.fatal_exit_on_close = true;
@@ -63,7 +64,7 @@ fn clear_runtime_session_state(app: &mut AppState) {
     match app.active_order_trade_indices.lock() {
         Ok(mut active) => active.clear(),
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
             ));
             app.fatal_exit_on_close = true;
@@ -76,7 +77,7 @@ fn clear_runtime_session_state(app: &mut AppState) {
     match app.pending_notifications.lock() {
         Ok(mut pending) => *pending = 0,
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
             ));
             app.fatal_exit_on_close = true;
@@ -141,7 +142,7 @@ pub async fn apply_pending_key_reload(
                             *active_pubkey = new_mostro_pubkey;
                         }
                         Err(e) => {
-                            crate::util::request_fatal_restart(format!(
+                            request_fatal_restart(format!(
                                 "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
                             ));
                             app.pending_key_reload = false;
@@ -304,7 +305,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
             *active_pubkey = new_mostro_pubkey;
         }
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
             ));
             app.fatal_exit_on_close = true;
@@ -477,7 +478,7 @@ pub async fn reload_runtime_session_after_reconnect(
             *active_pubkey = new_mostro_pubkey;
         }
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
             ));
             return Err("Internal error. Please restart Mostrix.".to_string());
@@ -545,7 +546,7 @@ pub async fn reload_runtime_session_after_reconnect(
     let mostro_pubkey = match ctx.current_mostro_pubkey.lock() {
         Ok(pk) => *pk,
         Err(e) => {
-            crate::util::request_fatal_restart(format!(
+            request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
             ));
             return Err("Internal error. Please restart Mostrix.".to_string());
