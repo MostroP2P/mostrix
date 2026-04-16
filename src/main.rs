@@ -672,8 +672,20 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
+        // Mostro name (Lightning node alias) from instance info
+        let mostro_alias = match app.mostro_info.as_ref() {
+            Some(info) => info
+                .lnd_node_alias
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string(),
+            None => "unknown".to_string(),
+        };
         let status_lines = vec![
-            format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
+            format!(
+                "🧌 Mostro name: {} | Pubkey: {}",
+                mostro_alias, &current_settings.mostro_pubkey
+            ),
             format!("🔗 Relays: {}", relays_str),
             format!(
                 "💱 Currencies: {} - Filters: {}",
