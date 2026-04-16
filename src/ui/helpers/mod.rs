@@ -4,6 +4,7 @@ mod chat_storage;
 mod chat_visibility;
 mod formatting;
 mod layout;
+mod order_chat_projection;
 mod startup;
 
 pub use attachments::expire_attachment_toast;
@@ -21,6 +22,7 @@ pub use chat_visibility::{
 };
 pub use formatting::{format_order_id, format_user_rating, is_dispute_finalized};
 pub use layout::{create_centered_popup, render_help_text, render_yes_no_buttons};
+pub use order_chat_projection::{build_active_order_chat_list, OrderChatListItem};
 pub use startup::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,

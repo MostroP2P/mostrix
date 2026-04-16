@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,105 +12,10 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
     HELP_KEY,
 };
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
-use mostro_core::prelude::{Payload, Status};
-
-#[derive(Clone)]
-struct OrderChatListItem {
-    order_id: String,
-    status: Option<Status>,
-    kind: Option<String>,
-    amount: Option<i64>,
-    fiat: Option<(i64, String)>,
-    created_at: Option<i64>,
-    trade_index: Option<i64>,
-    payment_method: Option<String>,
-    premium: Option<i64>,
-    initiator_pubkey: Option<String>,
-    is_mine: Option<bool>,
-}
-
-fn status_from_message(msg: &crate::ui::OrderMessage) -> Option<Status> {
-    msg.order_status
-}
-
-fn is_order_chat_actionable(status: Option<Status>) -> bool {
-    matches!(
-        status,
-        Some(Status::SettledHoldInvoice)
-            | Some(Status::Active)
-            | Some(Status::FiatSent)
-            | Some(Status::Success)
-    )
-}
-
-fn build_active_orders(messages: &[crate::ui::OrderMessage]) -> Vec<OrderChatListItem> {
-    let mut by_order: HashMap<String, OrderChatListItem> = HashMap::new();
-    for msg in messages {
-        let Some(order_id) = msg.order_id else {
-            continue;
-        };
-        let key = order_id.to_string();
-        by_order
-            .entry(key.clone())
-            .and_modify(|entry| {
-                entry.status = status_from_message(msg).or(entry.status);
-                if entry.amount.is_none() {
-                    if let Some(Payload::Order(order)) =
-                        &msg.message.get_inner_message_kind().payload
-                    {
-                        entry.amount = Some(order.amount);
-                        entry.fiat = Some((order.fiat_amount, order.fiat_code.clone()));
-                        entry.kind = order.kind.map(|k| k.to_string());
-                        entry.created_at = order.created_at;
-                        entry.trade_index = Some(msg.trade_index);
-                        entry.payment_method = Some(order.payment_method.clone());
-                        entry.premium = Some(order.premium);
-                        entry.initiator_pubkey = Some(msg.sender.to_string());
-                        entry.is_mine = msg.is_mine;
-                    }
-                }
-            })
-            .or_insert_with(|| {
-                let mut amount = None;
-                let mut fiat = None;
-                let mut kind = None;
-                let mut created_at = None;
-                let mut payment_method = None;
-                let mut premium = None;
-                if let Some(Payload::Order(order)) = &msg.message.get_inner_message_kind().payload {
-                    amount = Some(order.amount);
-                    fiat = Some((order.fiat_amount, order.fiat_code.clone()));
-                    kind = order.kind.map(|k| k.to_string());
-                    created_at = order.created_at;
-                    payment_method = Some(order.payment_method.clone());
-                    premium = Some(order.premium);
-                }
-                OrderChatListItem {
-                    order_id: key,
-                    status: status_from_message(msg),
-                    kind,
-                    amount,
-                    fiat,
-                    created_at,
-                    trade_index: Some(msg.trade_index),
-                    payment_method,
-                    premium,
-                    initiator_pubkey: Some(msg.sender.to_string()),
-                    is_mine: msg.is_mine,
-                }
-            });
-    }
-
-    let mut rows: Vec<OrderChatListItem> = by_order
-        .into_values()
-        .filter(|row| is_order_chat_actionable(row.status))
-        .collect();
-    rows.sort_by(|a, b| a.order_id.cmp(&b.order_id));
-    rows
-}
 
 fn build_order_chat_content(
     messages: &[UserOrderChatMessage],
@@ -200,7 +103,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         Ok(g) => g.clone(),
         Err(_) => Vec::new(),
     };
-    let active_orders = build_active_orders(&messages_snapshot);
+    let active_orders = build_active_order_chat_list(&messages_snapshot);
 
     let chunks = Layout::new(
         Direction::Horizontal,

@@ -308,6 +308,7 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 - **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats` and seeds `order_chat_last_seen` before relay backfill.
 - **Incremental merge**: `apply_user_order_chat_updates` deduplicates by `(timestamp, content)`, persists new entries, and advances per-order cursors.
 - **Compatibility parsing**: legacy sender labels from older files (`Admin`, `Admin to Buyer`, `Admin to Seller`, `Buyer`, `Seller`) are mapped to `You/Peer` when loading.
+- **UI selection safety**: the "My Trades" sidebar and Enter/send handlers resolve the active order list from the same shared projection (`helpers::build_active_order_chat_list`), ensuring `selected_order_chat_idx` cannot target a different order than the highlighted row.
 
 **Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/util/chat_utils.rs`
 

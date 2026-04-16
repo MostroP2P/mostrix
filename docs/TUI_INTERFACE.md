@@ -256,6 +256,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
   - **Shift+H** opens the shortcuts popup for the current tab.
 - **Data extraction**: active-order list rows now retain extra fields (kind, created_at, trade_index, payment_method, premium, initiator metadata) so rendering does not need to re-derive them later.
+- **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row.
 
 **Source**: `src/ui/tabs/order_in_progress_tab.rs`
 
@@ -290,6 +291,7 @@ The previous monolithic helper file was split into focused modules under `src/ui
 - `chat_render.rs`: wrapped line formatting plus list/scrollview builders.
 - `chat_storage.rs`: transcript parse/load/save logic for disputes and user order chat.
 - `attachments.rs`: attachment JSON parsing, placeholders, and toast expiration/building.
+- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution).
 - `startup.rs`: startup hydration/recovery and applying chat updates to app state.
 
 #### Data Structures

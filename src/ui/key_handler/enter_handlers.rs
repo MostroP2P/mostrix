@@ -1,4 +1,4 @@
-use crate::ui::helpers::save_order_chat_message;
+use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
@@ -110,36 +110,21 @@ fn run_enter_chat_send_flow<T, ResolveTarget, ApplyLocal, SpawnRemote, ResetInpu
     spawn_remote(target, content);
 }
 
-fn resolve_selected_order_chat_target(
-    app: &AppState,
-    ctx: &super::EnterKeyContext<'_>,
-) -> Option<OrderChatTarget> {
-    let orders_lock = match ctx.orders.lock() {
-        Ok(g) => g,
+fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget> {
+    let messages_snapshot = match app.messages.lock() {
+        Ok(g) => g.clone(),
         Err(e) => {
             crate::util::request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
             ));
             return None;
         }
     };
 
-    let active_orders: Vec<&SmallOrder> = orders_lock
-        .iter()
-        .filter(|order| {
-            order.status == Some(Status::Active)
-                || order.status == Some(Status::FiatSent)
-                || order.status == Some(Status::SettledHoldInvoice)
-                || order.status == Some(Status::Success)
-        })
-        .collect();
-
-    active_orders
+    build_active_order_chat_list(&messages_snapshot)
         .get(app.selected_order_chat_idx)
-        .and_then(|order| {
-            order.id.map(|id| OrderChatTarget {
-                order_id: id.to_string(),
-            })
+        .map(|row| OrderChatTarget {
+            order_id: row.order_id.clone(),
         })
 }
 
@@ -256,7 +241,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
             input_enabled,
             content,
         },
-        |app| resolve_selected_order_chat_target(app, ctx),
+        |app| resolve_selected_order_chat_target(app),
         |app, target, content| {
             let local_msg = crate::ui::UserOrderChatMessage {
                 sender: crate::ui::UserChatSender::You,
