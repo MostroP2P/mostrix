@@ -145,11 +145,11 @@ Several background tasks are spawned to keep the UI and data in sync:
    - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
    - Fetches NIP‑59 `GiftWrap` events addressed to each shared key's public key (ECDH-derived, same model as `mostro-chat`).
    - Uses per‑party `last_seen_timestamp` values to request only new events.
-   - Delegates application of updates to `ui::helpers::apply_admin_chat_updates`, which:
+   - Delegates application of updates to `ui::helpers::apply_admin_chat_updates` (implemented in `src/ui/helpers/startup.rs`), which:
      - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
      - Persists updated buyer/seller chat cursors in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`).
 
-**Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers.rs` (`apply_admin_chat_updates`)
+**Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers/startup.rs` (`apply_admin_chat_updates`)
 
 5. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.

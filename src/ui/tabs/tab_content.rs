@@ -134,6 +134,9 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
         Action::HoldInvoicePaymentAccepted
             | Action::FiatSentOk
             | Action::CooperativeCancelInitiatedByPeer
+            | Action::Cancel
+            | Action::FiatSent
+            | Action::Release
     );
 
     // Adjust popup height based on whether we show buttons

@@ -3,6 +3,7 @@ pub mod disputes_tab;
 pub mod message_flow_tab;
 pub mod mostro_info_tab;
 pub mod observer_tab;
+pub mod order_in_progress_tab;
 pub mod orders_tab;
 pub mod settings_tab;
 pub mod tab_bar;

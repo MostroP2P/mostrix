@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
+use crate::util::fatal::request_fatal_restart;
 
 /// Main UI draw function, extracted from `ui::mod`.
 pub fn ui_draw(
@@ -47,13 +48,13 @@ pub fn ui_draw(
             app,
         ),
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
-            tabs::tab_content::render_coming_soon(f, content_area, "My Trades")
+            tabs::order_in_progress_tab::render_order_in_progress(f, content_area, app)
         }
         (Tab::User(UserTab::Messages), UserRole::User) => {
             let mut messages = match app.messages.lock() {
                 Ok(g) => g,
                 Err(e) => {
-                    crate::util::request_fatal_restart(format!(
+                    request_fatal_restart(format!(
                         "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
                     ));
                     return;
@@ -126,7 +127,7 @@ pub fn ui_draw(
         let pending_count = match app.pending_notifications.lock() {
             Ok(g) => *g,
             Err(e) => {
-                crate::util::request_fatal_restart(format!(
+                request_fatal_restart(format!(
                     "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
                 ));
                 0

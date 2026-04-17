@@ -63,7 +63,7 @@ The screen is divided into three horizontal chunks using `ratatui` layouts. The 
 
 1. **Header (3 lines)**: Renders the navigation tabs. The tab list is determined by the `UserRole` (User vs Admin).
 2. **Body (remaining space)**: Renders the active tab content or forms.
-3. **Footer (1 line)**: Renders the status bar with connection details.
+3. **Footer / Status bar (3 lines)**: Renders the multi-line status bar with settings + connection details.
 
 ## Roles and Navigation
 
@@ -229,7 +229,7 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 **`ViewingMessage` (trade confirmations)** — `render_message_view` in `src/ui/tabs/tab_content.rs`:
 
-- Used for actionable DMs that need a **YES/NO** before sending a follow-up to Mostro: **`HoldInvoicePaymentAccepted`**, **`FiatSentOk`**, **`CooperativeCancelInitiatedByPeer`**.
+- Used for actionable events that need a **YES/NO** before sending a follow-up to Mostro: **`HoldInvoicePaymentAccepted`**, **`FiatSentOk`**, **`CooperativeCancelInitiatedByPeer`**, plus explicit user-triggered actions from **My Trades** (**`Cancel`**, **`FiatSent`**, **`Release`**).
 - Buttons are rendered with **`helpers::render_yes_no_buttons`** (same visual pattern as exit/settings confirms: **✓ YES** / **✗ NO**, **Left/Right** to move selection, **Enter** to confirm, **Esc** to dismiss).
 - Handler: **`handle_enter_viewing_message`** in `src/ui/key_handler/message_handlers.rs` (only proceeds when **YES** is selected). Cooperative cancel completion surfaces **`OperationResult::TradeClosed`**, which **`handle_operation_result`** resolves after removing the row from the Messages list (see **MESSAGE_FLOW_AND_PROTOCOL.md**).
 
@@ -240,6 +240,26 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 A stateful form for creating new orders. It supports both fixed amounts and fiat ranges.
 
 **Source**: `src/ui/order_form.rs`
+
+### My Trades (Order In Progress) updates
+
+The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows richer order context and cleaner chat readability:
+
+- **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, amount, payment method, and premium.
+- **Privacy / ratings**: there is no placeholder row for **`Privacy:`** / **`Buyer -`** / **`Seller -`** until trade privacy can be sourced from the same context as disputes (DM `SmallOrder` does not carry those flags). **Buyer Rating:** / **Seller Rating:** lines are shown only when reputation exists: `helpers::build_active_order_chat_list` merges `Payload::Peer` with `UserInfo` when `peer.pubkey` matches `buyer_trade_pubkey` / `seller_trade_pubkey` from `Payload::Order`, and the header uses `helpers::format_user_rating` for display.
+- **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
+- **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
+- **Footer shortcuts (width-aware)**:
+  - **Shift+I** toggles chat input.
+  - **Shift+C** cooperative cancel (YES/NO popup).
+  - **Shift+F** mark fiat sent (YES/NO popup).
+  - **Shift+R** release sats (YES/NO popup).
+  - **Shift+V** rate counterparty (opens 1–5 star rating picker).
+  - **Shift+H** opens the shortcuts popup for the current tab.
+- **Data extraction**: active-order list rows now retain extra fields (kind, created_at, trade_index, payment_method, premium, initiator metadata) so rendering does not need to re-derive them later.
+- **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row.
+
+**Source**: `src/ui/tabs/order_in_progress_tab.rs`
 
 ### 4. Color Coding
 
@@ -260,6 +280,20 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 **Status**: ✅ **Fully Implemented (NIP‑59 + Shared Keys)**
 
 The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys derived between the admin key and each party’s trade pubkey.
+
+#### Helper module organization (readability refactor)
+
+The previous monolithic helper file was split into focused modules under `src/ui/helpers/`:
+
+- `mod.rs`: compatibility re-export layer (`crate::ui::helpers::...`) for existing call sites.
+- `layout.rs`: popup/help/button rendering helpers.
+- `formatting.rs`: UI formatting helpers (ratings, order id labels, finalized status check).
+- `chat_visibility.rs`: per-party visibility and selection helpers.
+- `chat_render.rs`: wrapped line formatting plus list/scrollview builders.
+- `chat_storage.rs`: transcript parse/load/save logic for disputes and user order chat.
+- `attachments.rs`: attachment JSON parsing, placeholders, and toast expiration/building.
+- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution); merges `Payload::Order` fields and attributes `Payload::Peer` reputation to buyer/seller when pubkeys match trade pubkeys.
+- `startup.rs`: startup hydration/recovery and applying chat updates to app state.
 
 #### Data Structures
 

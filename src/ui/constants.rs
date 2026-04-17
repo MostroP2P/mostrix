@@ -20,7 +20,7 @@ pub const HELP_TITLE_SETTINGS_ADMIN: &str = "Settings (Admin) — Shortcuts";
 pub const HELP_TITLE_SETTINGS_USER: &str = "Settings (User) — Shortcuts";
 pub const HELP_TITLE_EXIT: &str = "Exit — Shortcuts";
 pub const HELP_TITLE_ORDERS: &str = "Orders — Shortcuts";
-pub const HELP_TITLE_MY_TRADES: &str = "My Trades — Shortcuts";
+pub const HELP_TITLE_MY_TRADES: &str = "Order Chat — Shortcuts";
 pub const HELP_TITLE_MESSAGES: &str = "Messages — Shortcuts";
 pub const HELP_TITLE_CREATE_NEW_ORDER: &str = "Create New Order — Shortcuts";
 
@@ -79,7 +79,22 @@ pub const HELP_ORDERS_ENTER_TAKE: &str = "Enter: Take selected order";
 pub const HELP_ORDERS_SELECT: &str = "↑↓: Select order";
 
 // Help popup lines (My Trades)
-pub const HELP_MY_TRADES_NAV: &str = "↑↓: Navigate (when available)";
+pub const HELP_MY_TRADES_NAV: &str = "↑↓: Select order";
+pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
+pub const HELP_MY_TRADES_SHIFT_I: &str = "Shift+I: Enable/disable message input";
+pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order (cooperative cancel)";
+pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (FiatSent message)";
+pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
+pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
+pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
+
+// Confirmation messages for My Trades actions
+pub const HELP_MY_TRADES_CANCEL_MSG: &str =
+    "Cancel this order? This sends a cooperative Cancel request.";
+pub const HELP_MY_TRADES_FIAT_SENT_MSG: &str =
+    "Confirm fiat sent for this order? This sends a FiatSent message.";
+pub const HELP_MY_TRADES_RELEASE_MSG: &str =
+    "Release sats for this order? This sends a Release message.";
 
 // Help popup lines (Messages)
 pub const HELP_MSG_ENTER_OPEN: &str = "Enter: Open selected message";
@@ -108,6 +123,19 @@ pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
 pub const FOOTER_NAV_CHAT: &str = "↑↓: Navigate Chat";
 pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
+
+// --- Footer (My Trades / Order Chat) ---
+
+pub const FOOTER_MYTRADES_SELECT_ORDER: &str = "↑↓: Select order";
+pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";
+pub const FOOTER_MYTRADES_SHIFT_I_DISABLE: &str = "Shift+I: Disable input";
+pub const FOOTER_MYTRADES_SHIFT_I_ENABLE: &str = "Shift+I: Enable input";
+pub const FOOTER_MYTRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order";
+pub const FOOTER_MYTRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat sent";
+pub const FOOTER_MYTRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats";
+pub const FOOTER_MYTRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty";
+pub const FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
+pub const FOOTER_MYTRADES_END_BOTTOM: &str = "End: Bottom";
 
 /// Step label for the buy order flow
 ///

@@ -12,6 +12,10 @@ mod settings;
 mod user_handlers;
 mod validation;
 
+use crate::ui::key_handler::chat_helpers::{
+    build_order_action_view_state, build_rating_state_for_mytrades,
+    resolve_selected_mytrades_order_id,
+};
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
@@ -100,6 +104,52 @@ fn handle_admin_chat_input(
                     }
                     _ => {} // For other keys, continue to normal handling
                 }
+            }
+        }
+    }
+    None
+}
+
+fn handle_user_order_chat_input(
+    app: &mut AppState,
+    code: KeyCode,
+    key_event: &crossterm::event::KeyEvent,
+) -> Option<bool> {
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) && app.order_chat_input_enabled {
+            let has_shift = key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT);
+            if has_shift {
+                // Let Shift+I/C/F/R/V/H be handled by shortcut logic
+                if matches!(
+                    code,
+                    KeyCode::Char('i')
+                        | KeyCode::Char('I')
+                        | KeyCode::Char('c')
+                        | KeyCode::Char('C')
+                        | KeyCode::Char('f')
+                        | KeyCode::Char('F')
+                        | KeyCode::Char('r')
+                        | KeyCode::Char('R')
+                        | KeyCode::Char('v')
+                        | KeyCode::Char('V')
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('H')
+                ) {
+                    return None;
+                }
+            }
+            match code {
+                KeyCode::Char(c) => {
+                    app.order_chat_input.push(c);
+                    return Some(true);
+                }
+                KeyCode::Backspace => {
+                    app.order_chat_input.pop();
+                    return Some(true);
+                }
+                _ => {}
             }
         }
     }
@@ -589,10 +639,81 @@ pub fn handle_key_event(
         }
     }
 
+    if let Tab::User(UserTab::MyTrades) = app.active_tab {
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        if has_shift {
+            match code {
+                KeyCode::Char('i') | KeyCode::Char('I') => {
+                    app.order_chat_input_enabled = !app.order_chat_input_enabled;
+                    return Some(true);
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
+                    let can_open = matches!(
+                        app.mode,
+                        UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                    );
+                    if can_open {
+                        let previous = app.mode.clone();
+                        app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        let msg = crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG;
+                        let view_state = build_order_action_view_state(
+                            order_id,
+                            Action::Cancel,
+                            msg.to_string(),
+                        );
+                        app.mode = UiMode::ViewingMessage(view_state);
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        let msg = crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG;
+                        let view_state = build_order_action_view_state(
+                            order_id,
+                            Action::FiatSent,
+                            msg.to_string(),
+                        );
+                        app.mode = UiMode::ViewingMessage(view_state);
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        let msg = crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG;
+                        let view_state = build_order_action_view_state(
+                            order_id,
+                            Action::Release,
+                            msg.to_string(),
+                        );
+                        app.mode = UiMode::ViewingMessage(view_state);
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    if let Some(state) = build_rating_state_for_mytrades(app, 5) {
+                        app.mode = UiMode::RatingOrder(state);
+                        return Some(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
     // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
     if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
+        return Some(result);
+    }
+    if let Some(result) = handle_user_order_chat_input(app, code, &key_event) {
         return Some(result);
     }
 

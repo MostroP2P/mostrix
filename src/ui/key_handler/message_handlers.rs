@@ -15,9 +15,14 @@ pub fn handle_enter_viewing_message(
     view_state: &MessageViewState,
     ctx: &EnterKeyContext<'_>,
 ) {
+    let default_mode = match app.user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    };
+
     // Only proceed if YES is selected
     if !view_state.selected_button {
-        app.mode = UiMode::Normal;
+        app.mode = default_mode;
         return;
     }
 
@@ -26,10 +31,12 @@ pub fn handle_enter_viewing_message(
         Action::HoldInvoicePaymentAccepted => Action::FiatSent,
         Action::FiatSentOk => Action::Release,
         Action::CooperativeCancelInitiatedByPeer => Action::Cancel,
+        // For Shift+C/F/R confirmations, the action is already the one we want to send.
+        Action::Cancel | Action::FiatSent | Action::Release => view_state.action.clone(),
         _ => {
             // This view is sometimes used as a generic "view message" popup; if the message
             // doesn't map to a sendable action, just dismiss without error.
-            app.mode = UiMode::Normal;
+            app.mode = default_mode;
             return;
         }
     };
@@ -48,11 +55,11 @@ pub fn handle_enter_viewing_message(
     };
 
     // Set waiting mode based on user role
-    let default_mode = match app.user_role {
+    let waiting_mode = match app.user_role {
         UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
-    app.mode = default_mode;
+    app.mode = waiting_mode;
 
     // Spawn async task to send message
     let pool_clone = ctx.pool.clone();

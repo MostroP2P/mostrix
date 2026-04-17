@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `premium` | `INTEGER` | Premium amount in satoshis. |
 | `trade_keys` | `TEXT` | **Critical**: The trade keys (secret key in hex) for this order. Used to decrypt messages and sign actions for this specific trade. |
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
+| `order_chat_shared_key_hex` | `TEXT` | Hex-encoded shared key used for user order chat cache/restore flow. |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
@@ -426,7 +427,7 @@ This approach keeps the core message flow largely stateless while giving admin c
 
 For more details, see:
 
-- `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers.rs`.
+- `recover_admin_chat_from_files` and `apply_admin_chat_updates` in `src/ui/helpers/startup.rs`.
 - `update_chat_last_seen_by_dispute_id` in `src/models.rs` (unified DB update with row-affected verification).
 - [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#stateless-recovery) for protocol‑level behavior.
 

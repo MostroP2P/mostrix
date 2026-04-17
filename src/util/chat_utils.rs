@@ -3,10 +3,14 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use mostro_core::prelude::DisputeStatus;
+use mostro_core::prelude::SmallOrder;
 use nostr_sdk::prelude::*;
 
-use crate::models::AdminDispute;
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
+use crate::models::{AdminDispute, Order};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage,
+    OrderChatLastSeen, OrderChatUpdate,
+};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
@@ -49,6 +53,37 @@ pub fn derive_shared_key_hex(
 pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
     let secret = SecretKey::from_str(hex).ok()?;
     Some(Keys::new(secret))
+}
+
+/// Resolve counterparty trade pubkey and ECDH shared-key hex for order P2P chat when `SmallOrder`
+/// includes both `buyer_trade_pubkey` and `seller_trade_pubkey`. Returns `None` if pubkeys are
+/// missing, parsing fails, or local trade key matches neither side.
+pub fn order_chat_counterparty_and_shared_hex(
+    trade_keys: &Keys,
+    small_order: &SmallOrder,
+) -> Option<(String, String)> {
+    let buyer_s = small_order.buyer_trade_pubkey.as_deref()?;
+    let seller_s = small_order.seller_trade_pubkey.as_deref()?;
+    if buyer_s.is_empty() || seller_s.is_empty() {
+        return None;
+    }
+    let my_pk = trade_keys.public_key();
+    let buyer_pk = PublicKey::parse(buyer_s).ok()?;
+    let seller_pk = PublicKey::parse(seller_s).ok()?;
+    let counterparty_str = if my_pk == buyer_pk {
+        seller_s.to_string()
+    } else if my_pk == seller_pk {
+        buyer_s.to_string()
+    } else {
+        log::warn!(
+            "Order chat: trade key pubkey {} matches neither buyer nor seller trade pubkey for order {:?}",
+            my_pk,
+            small_order.id
+        );
+        return None;
+    };
+    let shared_hex = derive_shared_key_hex(Some(trade_keys), Some(counterparty_str.as_str()))?;
+    Some((counterparty_str, shared_hex))
 }
 
 /// Build a NIP-59 gift wrap event to a recipient pubkey (e.g. shared key pubkey).
@@ -327,6 +362,76 @@ pub async fn fetch_observer_chat(
     Ok(messages)
 }
 
+/// Send one user order chat message using shared-key wrapping.
+pub async fn send_user_order_chat_message_via_shared_key(
+    client: &Client,
+    trade_keys: &Keys,
+    shared_keys: &Keys,
+    content: &str,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<()> {
+    send_admin_chat_message_via_shared_key(
+        client,
+        trade_keys,
+        shared_keys,
+        content,
+        mostro_instance,
+    )
+    .await
+}
+
+/// Poll order chats using persisted `order_chat_shared_key_hex` when set, otherwise ECDH from
+/// local trade key + `counterparty_pubkey`.
+pub async fn fetch_user_order_chat_updates(
+    client: &Client,
+    pool: &sqlx::SqlitePool,
+    order_chat_last_seen: &HashMap<String, OrderChatLastSeen>,
+) -> Result<Vec<OrderChatUpdate>, anyhow::Error> {
+    let rows = Order::get_startup_active_orders(pool).await?;
+    let mut updates: Vec<OrderChatUpdate> = Vec::new();
+
+    for row in rows {
+        let order = match Order::get_by_id(pool, &row.id).await {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let trade_keys_hex = match order.trade_keys.as_deref() {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        let trade_keys = match SecretKey::from_str(trade_keys_hex).ok().map(Keys::new) {
+            Some(k) => k,
+            None => continue,
+        };
+        let shared_keys = order
+            .order_chat_shared_key_hex
+            .as_deref()
+            .and_then(keys_from_shared_hex)
+            .or_else(|| {
+                let counterparty = order.counterparty_pubkey.as_deref()?;
+                let cp_pubkey = PublicKey::parse(counterparty).ok()?;
+                derive_shared_keys(Some(&trade_keys), Some(&cp_pubkey))
+            });
+        let Some(shared_keys) = shared_keys else {
+            continue;
+        };
+        let last_seen = order_chat_last_seen
+            .get(&row.id)
+            .and_then(|s| s.last_seen_timestamp)
+            .unwrap_or(0);
+        let mut messages = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
+        messages.retain(|(_, ts, _)| *ts >= last_seen);
+        if !messages.is_empty() {
+            updates.push(OrderChatUpdate {
+                order_id: row.id,
+                messages,
+            });
+        }
+    }
+
+    Ok(updates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +460,42 @@ mod tests {
             seller_hex.as_deref(),
             "shared keys for different users must differ"
         );
+    }
+
+    #[test]
+    fn order_chat_counterparty_is_other_trade_side() {
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let buyer_hex = buyer.public_key().to_string();
+        let seller_hex = seller.public_key().to_string();
+        let small_order = SmallOrder {
+            buyer_trade_pubkey: Some(buyer_hex.clone()),
+            seller_trade_pubkey: Some(seller_hex.clone()),
+            ..Default::default()
+        };
+
+        let (cp_from_buyer, sk_buyer) =
+            order_chat_counterparty_and_shared_hex(&buyer, &small_order).expect("buyer side");
+        assert_eq!(cp_from_buyer, seller_hex);
+        let (cp_from_seller, sk_seller) =
+            order_chat_counterparty_and_shared_hex(&seller, &small_order).expect("seller side");
+        assert_eq!(cp_from_seller, buyer_hex);
+        assert_eq!(
+            sk_buyer, sk_seller,
+            "ECDH shared secret matches for both peers"
+        );
+    }
+
+    #[test]
+    fn order_chat_counterparty_none_when_trade_key_unknown() {
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let other = Keys::generate();
+        let small_order = SmallOrder {
+            buyer_trade_pubkey: Some(buyer.public_key().to_string()),
+            seller_trade_pubkey: Some(seller.public_key().to_string()),
+            ..Default::default()
+        };
+        assert!(order_chat_counterparty_and_shared_hex(&other, &small_order).is_none());
     }
 }

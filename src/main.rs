@@ -8,8 +8,9 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    admin_chat_keys_clone_for_role, apply_admin_chat_updates, expire_attachment_toast,
-    hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
+    admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
+    expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
+    load_user_order_chats_at_startup,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -23,7 +24,8 @@ use crate::util::{
     handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
     install_background_panic_hook, listen_for_order_messages,
     order_utils::{
-        spawn_admin_chat_fetch, start_fetch_scheduler, validate_range_amount, FetchSchedulerResult,
+        spawn_admin_chat_fetch, spawn_user_order_chat_fetch, start_fetch_scheduler,
+        validate_range_amount, FetchSchedulerResult,
     },
     set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment, StartupDmHydration,
 };
@@ -127,6 +129,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut message_notification_rx,
         admin_chat_updates_tx,
         mut admin_chat_updates_rx,
+        user_order_chat_updates_tx,
+        mut user_order_chat_updates_rx,
         save_attachment_tx,
         mut save_attachment_rx,
         mostro_info_tx,
@@ -241,6 +245,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Load admin disputes at startup (only when role is admin)
     load_admin_disputes_at_startup(&pool, &mut app).await;
+    load_user_order_chats_at_startup(&client, &pool, &mut app).await;
 
     // Spawn background task to listen for messages on active orders
     let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
@@ -421,6 +426,18 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
+            user_order_chat_result = user_order_chat_updates_rx.recv() => {
+                if let Some(result) = user_order_chat_result {
+                    match result {
+                        Ok(updates) => {
+                            apply_user_order_chat_updates(&mut app, updates);
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to fetch user order chat updates: {}", e);
+                        }
+                    }
+                }
+            }
             mostro_info_result = mostro_info_rx.recv() => {
                 if let Some(res) = mostro_info_result {
                     match res {
@@ -559,13 +576,22 @@ async fn main() -> Result<(), anyhow::Error> {
             _ = refresh_interval.tick() => {
                 // Refresh the UI even if there is no input.
             }
-            _ = admin_chat_interval.tick(), if app.user_role == UserRole::Admin => {
-                if app.admin_keys.is_some() {
-                    spawn_admin_chat_fetch(
+            _ = admin_chat_interval.tick() => {
+                if app.user_role == UserRole::Admin {
+                    if app.admin_keys.is_some() {
+                        spawn_admin_chat_fetch(
+                            client.clone(),
+                            app.admin_disputes_in_progress.clone(),
+                            app.admin_chat_last_seen.clone(),
+                            admin_chat_updates_tx.clone(),
+                        );
+                    }
+                } else if app.user_role == UserRole::User {
+                    spawn_user_order_chat_fetch(
                         client.clone(),
-                        app.admin_disputes_in_progress.clone(),
-                        app.admin_chat_last_seen.clone(),
-                        admin_chat_updates_tx.clone(),
+                        pool.clone(),
+                        app.order_chat_last_seen.clone(),
+                        user_order_chat_updates_tx.clone(),
                     );
                 }
             }
@@ -646,8 +672,20 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
+        // Mostro name (Lightning node alias) from instance info
+        let mostro_alias = match app.mostro_info.as_ref() {
+            Some(info) => info
+                .lnd_node_alias
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string(),
+            None => "unknown".to_string(),
+        };
         let status_lines = vec![
-            format!("🧌 Mostro Pubkey: {}", &current_settings.mostro_pubkey),
+            format!(
+                "🧌 Mostro name: {} | Pubkey: {}",
+                mostro_alias, &current_settings.mostro_pubkey
+            ),
             format!("🔗 Relays: {}", relays_str),
             format!(
                 "💱 Currencies: {} - Filters: {}",

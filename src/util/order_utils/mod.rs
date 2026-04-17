@@ -20,8 +20,8 @@ pub use execute_finalize_dispute::execute_finalize_dispute;
 pub use execute_send_msg::{execute_rate_user, execute_send_msg};
 pub use execute_take_dispute::execute_take_dispute;
 pub use fetch_scheduler::{
-    spawn_admin_chat_fetch, spawn_fetch_scheduler_loops, start_fetch_scheduler,
-    FetchSchedulerResult,
+    spawn_admin_chat_fetch, spawn_fetch_scheduler_loops, spawn_user_order_chat_fetch,
+    start_fetch_scheduler, FetchSchedulerResult,
 };
 pub use helper::{
     dispute_from_tags, fetch_events_list, get_disputes, get_orders,

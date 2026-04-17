@@ -300,6 +300,19 @@ This task:
 4. Falls back to decrypting against active tracked trade keys when `subscription_id` is unknown
 5. Parses/decrypts with `parse_dm_events`, updates order state, and emits UI notifications
 
+### User order chat local cache (My Trades)
+
+In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcript cache for user-to-user order chat:
+
+- **Path**: `~/.mostrix/orders_chat/<order_id>.txt`
+- **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats` and seeds `order_chat_last_seen` before relay backfill.
+- **Incremental merge**: `apply_user_order_chat_updates` deduplicates by `(timestamp, content)`, persists new entries, and advances per-order cursors.
+- **Compatibility parsing**: legacy sender labels from older files (`Admin`, `Admin to Buyer`, `Admin to Seller`, `Buyer`, `Seller`) are mapped to `You/Peer` when loading.
+- **UI selection safety**: the "My Trades" sidebar and Enter/send handlers resolve the active order list from the same shared projection (`helpers::build_active_order_chat_list`), ensuring `selected_order_chat_idx` cannot target a different order than the highlighted row.
+- **Header fields from DMs**: that projection walks `AppState.messages` per order and merges `Payload::Order` (trade pubkeys, amounts, etc.) with `Payload::Peer` so counterparty **`UserInfo`** can populate buyer/seller rating display when the daemon includes peer reputation events.
+
+**Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/util/chat_utils.rs`
+
 ### Message Parsing
 **Source**: `src/util/dm_utils/mod.rs:137`
 ```137:159:src/util/dm_utils/mod.rs

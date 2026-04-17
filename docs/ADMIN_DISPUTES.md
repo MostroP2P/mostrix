@@ -686,7 +686,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
   - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared operation result popup. When a party later provides the corresponding shared key, the admin can use the **Observer** tab to fetch and view the full chat from relays, including any attachments.
 - **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download.
 
-**Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers.rs` (attachment parsing, placeholder, list styling).
+**Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers/attachments.rs` (attachment parsing and placeholder), `src/ui/helpers/chat_storage.rs` (transcript placeholder persistence), `src/ui/helpers/chat_render.rs` (chat list/line styling).
 
 ##### NIP-59 Chat Flow (Admin ↔ Parties — Shared Key Model)
 
@@ -784,7 +784,11 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
 - `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key, Ctrl+S open save-attachment popup and popup key handling (Up/Down/Enter/Esc)
 - `src/ui/save_attachment_popup.rs` - Save attachment popup rendering (centered list, selection highlight, footer hint)
-- `src/ui/helpers.rs` - Scrollbar rendering, chat transcript parsing, attachment parsing/placeholder, list styling
+- `src/ui/helpers/mod.rs` - Compatibility re-export layer for helper APIs used across UI modules
+- `src/ui/helpers/startup.rs` - Startup hydration, admin/user chat update application, and last-seen cursor updates
+- `src/ui/helpers/chat_storage.rs` - Chat transcript parsing/loading/saving and idempotent append logic
+- `src/ui/helpers/attachments.rs` - Attachment parsing, placeholder text, and attachment toast helpers
+- `src/ui/helpers/chat_render.rs` / `src/ui/helpers/chat_visibility.rs` - Chat list/scrollview rendering and party visibility filtering
 - `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
@@ -928,7 +932,7 @@ The status bar now provides comprehensive information about current settings and
 
 The status bar displays 3 separate lines:
 
-1. **Mostro Pubkey**: Shows the current Mostro instance pubkey (truncated if long)
+1. **Mostro Name + Pubkey**: Shows the current Mostro instance alias (Lightning node alias) and pubkey
 2. **Relays List**: Shows all active relays (comma-separated, truncated if many)
 3. **Currencies List**: Shows active currency filters (comma-separated, or "All" if none)
 

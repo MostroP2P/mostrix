@@ -66,11 +66,15 @@ pub fn handle_key_input(code: KeyCode, key_state: &mut KeyInputState) -> bool {
     handle_text_input(code, key_state)
 }
 
-/// Prepare admin chat message for sending via inputbox in admin disputes in progress tab
-pub fn prepare_admin_chat_message(dispute_id_key: &str, app: &mut AppState) -> String {
+/// Prepare admin chat message for sending via inputbox in admin disputes in progress tab.
+pub fn prepare_admin_chat_message(
+    dispute_id_key: &str,
+    message_content: &str,
+    app: &mut AppState,
+) -> String {
     // Use dispute_id as the key for chat messages
     let dispute_id_key = dispute_id_key.to_string();
-    let message_content = app.admin_chat_input.trim().to_string();
+    let message_content = message_content.trim().to_string();
     let timestamp = chrono::Utc::now().timestamp();
 
     // Add admin's message (track which party it was sent to)

@@ -67,13 +67,13 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = if let Some(r) = app.pending_post_take_operation_result.take() {
                 UiMode::OperationResult(r)
             } else {
-                UiMode::Normal
+                default_mode.clone()
             };
             true
         }
         UiMode::ViewingMessage(_) => {
             // Dismiss message view popup
-            app.mode = UiMode::Normal;
+            app.mode = default_mode.clone();
             true
         }
         UiMode::RatingOrder(_) => {

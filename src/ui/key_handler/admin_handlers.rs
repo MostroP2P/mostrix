@@ -1,5 +1,6 @@
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::{AdminMode, AppState, UiMode};
+use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
 use uuid::Uuid;
 
@@ -27,7 +28,7 @@ pub(crate) fn execute_take_dispute_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        crate::util::request_fatal_restart(
+        request_fatal_restart(
             "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
                 .to_string(),
         );
@@ -81,7 +82,7 @@ pub(crate) fn execute_add_solver_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        crate::util::request_fatal_restart(
+        request_fatal_restart(
             "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
                 .to_string(),
         );
@@ -126,7 +127,7 @@ pub(crate) fn execute_finalize_dispute_action(
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
         *active_pubkey
     } else {
-        crate::util::request_fatal_restart(
+        request_fatal_restart(
             "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
                 .to_string(),
         );
