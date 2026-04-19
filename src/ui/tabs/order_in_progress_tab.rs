@@ -337,8 +337,10 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let spare_below_header_input = main_area
         .height
         .saturating_sub(header_height.saturating_add(input_height));
-    let can_fit_three_line_footer = spare_below_header_input >= 3;
-    let can_fit_two_line_footer = spare_below_header_input >= 2;
+    // Bias toward keeping at least one row for chat: don't take a tall footer unless spare exceeds
+    // footer height (e.g. spare 3 + 3-line footer ⇒ 0 chat rows with the old >=3 / >=2 thresholds).
+    let can_fit_three_line_footer = spare_below_header_input >= 4;
+    let can_fit_two_line_footer = spare_below_header_input >= 3;
     // Prefer 3 rows for My Trades hints (many shortcuts); wrap needs one Paragraph over full height
     // — never split into per-line widgets of height 1 or wrapped text has nowhere to go.
     let footer_height: u16 = if main_area.width < 50 {
@@ -439,14 +441,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_I_DISABLE,
                 )),
                 Line::from(format!(
-                    "{} | {}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    "{} | {} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {} | {}",
+                    "{} | {} | {}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
                 )),
             ])
@@ -457,14 +460,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
                 )),
                 Line::from(format!(
-                    "{} | {}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    "{} | {} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {} | {}",
+                    "{} | {} | {}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
                 )),
             ])
