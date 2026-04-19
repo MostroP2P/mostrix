@@ -30,6 +30,8 @@ pub enum UiMode {
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
     OperationResult(OperationResult), // Show operation result (success or error)
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
+    /// Full descriptions for every Settings menu item (Shift+H on Settings); 2nd = mode to restore on close
+    SettingsInstructionsPopup(UserRole, Box<UiMode>),
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
     SaveAttachmentPopup(usize),
     /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
@@ -70,6 +72,9 @@ impl Clone for UiMode {
             UiMode::OperationResult(result) => UiMode::OperationResult(result.clone()),
             UiMode::HelpPopup(tab, previous_mode) => {
                 UiMode::HelpPopup(*tab, Box::new((**previous_mode).clone()))
+            }
+            UiMode::SettingsInstructionsPopup(role, previous_mode) => {
+                UiMode::SettingsInstructionsPopup(*role, Box::new((**previous_mode).clone()))
             }
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
@@ -149,7 +154,7 @@ pub struct AppState {
     pub observer_error: Option<String>,
     /// Parsed `admin_privkey` from settings (dispute chat, classification). Updated on save / reload.
     pub admin_keys: Option<Keys>,
-    /// After switching to admin mode (M key) or saving admin key: reload disputes from DB in main.
+    /// After switching to admin mode (Settings → Switch Mode) or saving admin key: reload disputes from DB in main.
     pub pending_admin_disputes_reload: bool,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,

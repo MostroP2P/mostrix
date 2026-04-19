@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
@@ -332,17 +332,22 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
 
     let header_height = header_lines.len() as u16;
 
-    let wants_two_line_footer = main_area.width >= 90;
-    let can_fit_two_line_footer = main_area
+    let spare_below_header_input = main_area
         .height
-        .saturating_sub(header_height.saturating_add(input_height))
-        >= 2;
-    let footer_height: u16 = if wants_two_line_footer && can_fit_two_line_footer {
+        .saturating_sub(header_height.saturating_add(input_height));
+    let can_fit_three_line_footer = spare_below_header_input >= 3;
+    let can_fit_two_line_footer = spare_below_header_input >= 2;
+    // Prefer 3 rows for My Trades hints (many shortcuts); wrap needs one Paragraph over full height
+    // — never split into per-line widgets of height 1 or wrapped text has nowhere to go.
+    let footer_height: u16 = if main_area.width < 50 {
+        1
+    } else if can_fit_three_line_footer {
+        3
+    } else if can_fit_two_line_footer {
         2
     } else {
         1
     };
-    let allow_two_line_footer = footer_height >= 2;
 
     let main_chunks = Layout::new(
         Direction::Vertical,
@@ -416,13 +421,92 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[2],
     );
 
-    // Footer (width-aware, similar to disputes footer)
+    // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
     let footer_area = main_chunks[3];
     let footer_width = footer_area.width;
-    let (footer_line1, footer_line2) = if footer_width < 50 {
-        (HELP_KEY.to_string(), None)
-    } else if footer_width < 90 || !allow_two_line_footer {
-        // Single-line compact footer
+    let footer_text: Text<'static> = if footer_width < 50 {
+        Text::raw(HELP_KEY)
+    } else if footer_height >= 3 {
+        if app.order_chat_input_enabled {
+            Text::from(vec![
+                Line::from(format!(
+                    "{} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_ENTER_SEND,
+                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                )),
+                Line::from(format!(
+                    "{} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                )),
+                Line::from(format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                )),
+            ])
+        } else {
+            Text::from(vec![
+                Line::from(format!(
+                    "{} | {} | {}",
+                    HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                )),
+                Line::from(format!(
+                    "{} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                )),
+                Line::from(format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                )),
+            ])
+        }
+    } else if footer_height == 2 {
+        if app.order_chat_input_enabled {
+            Text::from(vec![
+                Line::from(format!(
+                    "{} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_ENTER_SEND,
+                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                )),
+                Line::from(format!(
+                    "{} | {} | {} | {} | {}",
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                )),
+            ])
+        } else {
+            Text::from(vec![
+                Line::from(format!(
+                    "{} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                )),
+                Line::from(format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                )),
+            ])
+        }
+    } else {
         let base = if app.order_chat_input_enabled {
             format!(
                 "{} | {} | {} | {} | {}",
@@ -441,60 +525,13 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 FOOTER_MYTRADES_SHIFT_C_CANCEL
             )
         };
-        (base, None)
-    } else {
-        // Two-line rich footer when wide enough
-        if app.order_chat_input_enabled {
-            (
-                format!(
-                    "{} | {} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_ENTER_SEND,
-                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT
-                ),
-                Some(format!(
-                    "{} | {} | {} | {}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE
-                )),
-            )
-        } else {
-            (
-                format!(
-                    "{} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT
-                ),
-                Some(format!(
-                    "{} | {} | {} | {}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE
-                )),
-            )
-        }
+        Text::raw(base)
     };
 
-    if let Some(line2) = footer_line2 {
-        let footer_chunks = Layout::new(
-            Direction::Vertical,
-            [Constraint::Length(1), Constraint::Length(1)],
-        )
-        .split(footer_area);
-        f.render_widget(Paragraph::new(footer_line1), footer_chunks[0]);
-        f.render_widget(Paragraph::new(line2), footer_chunks[1]);
-    } else {
-        f.render_widget(Paragraph::new(footer_line1), footer_area);
-    }
+    f.render_widget(
+        Paragraph::new(footer_text).wrap(Wrap { trim: true }),
+        footer_area,
+    );
 }
 
 pub fn push_local_order_chat_message(

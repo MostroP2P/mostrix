@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use mostro_core::prelude::{Payload, Peer, SmallOrder, Status, UserInfo};
@@ -124,6 +125,15 @@ pub fn build_active_order_chat_list(messages: &[OrderMessage]) -> Vec<OrderChatL
         .into_values()
         .filter(|row| is_order_chat_actionable(row.status))
         .collect();
-    rows.sort_by(|a, b| a.order_id.cmp(&b.order_id));
+    // Newest trades first: higher NIP-06 trade index ⇒ more recently allocated key.
+    rows.sort_by(|a, b| match (a.trade_index, b.trade_index) {
+        (Some(ia), Some(ib)) => match ib.cmp(&ia) {
+            Ordering::Equal => a.order_id.cmp(&b.order_id),
+            o => o,
+        },
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.order_id.cmp(&b.order_id),
+    });
     rows
 }

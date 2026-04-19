@@ -302,6 +302,21 @@ pub fn handle_key_event(
         return Some(true); // consume all other keys while help is open
     }
 
+    // Settings instructions (Shift+H): close like help (also Shift+H toggles)
+    if let UiMode::SettingsInstructionsPopup(_, ref previous_mode) = &app.mode {
+        let shift_h = key_event.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(code, KeyCode::Char('h') | KeyCode::Char('H'));
+        if shift_h
+            || (key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('h'))
+            || code == KeyCode::Esc
+            || code == KeyCode::Enter
+        {
+            app.mode = (**previous_mode).clone();
+            return Some(true);
+        }
+        return Some(true);
+    }
+
     // PayInvoice popup: allow scrolling the (wrapped) invoice text.
     if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
         match code {
@@ -520,6 +535,27 @@ pub fn handle_key_event(
         if can_open {
             let previous = app.mode.clone();
             app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
+            return Some(true);
+        }
+    }
+
+    // Shift+H on Settings tab: explain every menu option (admin vs user text)
+    if key_event.modifiers.contains(KeyModifiers::SHIFT)
+        && matches!(code, KeyCode::Char('h') | KeyCode::Char('H'))
+        && matches!(
+            app.active_tab,
+            Tab::Admin(AdminTab::Settings) | Tab::User(UserTab::Settings)
+        )
+    {
+        let can_open = matches!(
+            app.mode,
+            UiMode::Normal
+                | UiMode::UserMode(UserMode::Normal)
+                | UiMode::AdminMode(AdminMode::Normal)
+        );
+        if can_open {
+            let previous = app.mode.clone();
+            app.mode = UiMode::SettingsInstructionsPopup(app.user_role, Box::new(previous));
             return Some(true);
         }
     }
@@ -898,16 +934,6 @@ pub fn handle_key_event(
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
             Some(true)
-        }
-        KeyCode::Char('m') | KeyCode::Char('M') => {
-            // Switch mode when in Settings tab
-            match app.active_tab {
-                Tab::User(UserTab::Settings) | Tab::Admin(AdminTab::Settings) => {
-                    handle_mode_switch(app);
-                    Some(true)
-                }
-                _ => None, // Not in settings, continue normally
-            }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
             // In Observer tab, Ctrl+C clears inputs and decrypted content

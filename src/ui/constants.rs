@@ -67,9 +67,14 @@ pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)
-pub const HELP_SETTINGS_M_MODE: &str = "M: Switch User/Admin mode";
+pub const HELP_SETTINGS_SWITCH_FROM_MENU: &str =
+    "Enter on \"Switch Mode\": Toggle User/Admin (saved to settings.toml)";
+pub const HELP_SETTINGS_SHIFT_H_FULL: &str = "Shift+H: Explain every settings option";
 pub const HELP_SETTINGS_SELECT_OPTION: &str = "↑↓: Select option";
 pub const HELP_SETTINGS_ENTER_OPEN: &str = "Enter: Open selected option";
+
+/// Footer for the Settings instructions overlay (Shift+H).
+pub const SETTINGS_INSTRUCTIONS_CLOSE_HINT: &str = "Esc, Enter, Shift+H or Ctrl+H to close";
 
 // Help popup lines (Exit)
 pub const HELP_EXIT_ENTER_CONFIRM: &str = "Enter: Confirm exit (then Yes/No)";

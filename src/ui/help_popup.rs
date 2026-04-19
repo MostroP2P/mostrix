@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::ui::navigation::{AdminTab, Tab, UserTab};
+use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H).
 pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
@@ -51,6 +51,178 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     )));
     let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
     f.render_widget(paragraph, inner);
+}
+
+/// Full reference for every Settings menu row (Shift+H on Settings).
+pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: UserRole) {
+    let area = f.area();
+    let (title, mut lines) = settings_instruction_lines(user_role);
+
+    let intro = Line::from(vec![
+        Span::styled(
+            "Each block matches one Settings list row. ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("↑/↓", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" move · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" runs it.", Style::default().fg(Color::DarkGray)),
+    ]);
+    lines.insert(0, intro);
+    lines.insert(1, Line::from(""));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        SETTINGS_INSTRUCTIONS_CLOSE_HINT,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let line_count = lines.len().max(1);
+    let popup_width = 78u16;
+    let popup_height = (line_count as u16 + 4).min(area.height.saturating_sub(2));
+
+    let popup = {
+        let [p] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [p] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(p);
+        p
+    };
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    f.render_widget(paragraph, inner);
+}
+
+fn settings_instruction_block_style() -> (Style, Style) {
+    let title = Style::default()
+        .fg(PRIMARY_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let body = Style::default().fg(Color::Gray);
+    (title, body)
+}
+
+/// One menu option: title row + indented body; optional blank line after (between entries).
+fn push_settings_instruction_entry(
+    lines: &mut Vec<Line<'static>>,
+    name: &str,
+    description: &str,
+    add_spacing_after: bool,
+) {
+    let (title_style, body_style) = settings_instruction_block_style();
+    lines.push(Line::from(Span::styled(format!("  ▸ {name}"), title_style)));
+    lines.push(Line::from(Span::styled(
+        format!("      {description}"),
+        body_style,
+    )));
+    if add_spacing_after {
+        lines.push(Line::from(""));
+    }
+}
+
+fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>>) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let title = match user_role {
+        UserRole::Admin => "Settings (Admin) — All options",
+        UserRole::User => "Settings (User) — All options",
+    }
+    .to_string();
+
+    let admin_entries: &[(&str, &str)] = &[
+        (
+            "Switch Mode (User ↔ Admin)",
+            "Toggle User vs Admin UI. Saves user_mode in settings.toml, reloads tabs, and may reload admin disputes.",
+        ),
+        (
+            "Change Mostro Pubkey",
+            "Set the Mostro daemon hex pubkey used for subscriptions and orders.",
+        ),
+        (
+            "Add Nostr Relay",
+            "Append a wss:// relay; duplicates are skipped.",
+        ),
+        (
+            "Add Currency Filter",
+            "Add a fiat code (e.g. USD). The order book only shows matching orders.",
+        ),
+        (
+            "Clear Currency Filters",
+            "Remove all filters so every configured currency can appear again.",
+        ),
+        (
+            "View Seed Words",
+            "Show your BIP-39 mnemonic from the local database. Treat as highly sensitive.",
+        ),
+        (
+            "Add Dispute Solver",
+            "Enter a solver npub to register with Mostro for dispute routing.",
+        ),
+        (
+            "Change Admin Key",
+            "Update admin_privkey in settings (dispute chat and classification).",
+        ),
+        (
+            "Generate New Keys",
+            "Rotate identity/trade keys. Confirm prompts and back up any new mnemonic.",
+        ),
+    ];
+
+    let user_entries: &[(&str, &str)] = &[
+        (
+            "Switch Mode (User ↔ Admin)",
+            "Switch to Admin when you need dispute tools. Saves user_mode and reloads tabs.",
+        ),
+        (
+            "Change Mostro Pubkey",
+            "Set the Mostro daemon hex pubkey used for subscriptions and orders.",
+        ),
+        (
+            "Add Nostr Relay",
+            "Append a wss:// relay; duplicates are skipped.",
+        ),
+        (
+            "Add Currency Filter",
+            "Add a fiat code (e.g. USD). The order book only shows matching orders.",
+        ),
+        (
+            "Clear Currency Filters",
+            "Remove all filters so every configured currency can appear again.",
+        ),
+        (
+            "View Seed Words",
+            "Show your BIP-39 mnemonic from the local database. Treat as highly sensitive.",
+        ),
+        (
+            "Generate New Keys",
+            "Rotate identity/trade keys. Confirm prompts and back up any new mnemonic.",
+        ),
+    ];
+
+    let entries = match user_role {
+        UserRole::Admin => admin_entries,
+        UserRole::User => user_entries,
+    };
+    let n = entries.len();
+    for (i, (name, desc)) in entries.iter().enumerate() {
+        push_settings_instruction_entry(&mut lines, name, desc, i + 1 < n);
+    }
+
+    (title, lines)
 }
 
 fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
@@ -102,7 +274,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
         Tab::Admin(AdminTab::Settings) => (
             HELP_TITLE_SETTINGS_ADMIN.to_string(),
             vec![
-                HELP_SETTINGS_M_MODE.to_string(),
+                HELP_SETTINGS_SWITCH_FROM_MENU.to_string(),
+                HELP_SETTINGS_SHIFT_H_FULL.to_string(),
                 HELP_SETTINGS_SELECT_OPTION.to_string(),
                 HELP_SETTINGS_ENTER_OPEN.to_string(),
             ],
@@ -150,7 +323,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
         Tab::User(UserTab::Settings) => (
             HELP_TITLE_SETTINGS_USER.to_string(),
             vec![
-                HELP_SETTINGS_M_MODE.to_string(),
+                HELP_SETTINGS_SWITCH_FROM_MENU.to_string(),
+                HELP_SETTINGS_SHIFT_H_FULL.to_string(),
                 HELP_SETTINGS_SELECT_OPTION.to_string(),
                 HELP_SETTINGS_ENTER_OPEN.to_string(),
             ],
