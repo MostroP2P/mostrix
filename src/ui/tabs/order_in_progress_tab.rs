@@ -1,3 +1,5 @@
+//! My Trades / order chat UI. Ctrl+H and Shift+H help overlays are styled in [`crate::ui::help_popup`].
+
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};

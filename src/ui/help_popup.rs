@@ -1,19 +1,32 @@
 use ratatui::layout::{Constraint, Flex, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
-/// Renders the context-aware keyboard shortcuts popup (Ctrl+H).
+/// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
 pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let area = f.area();
-    let (title, lines) = help_content(app, tab);
-    let line_count = lines.len().max(1);
-    let popup_width = 64u16;
-    let popup_height = (line_count as u16 + 4).min(area.height.saturating_sub(2));
+    let (title, plain_lines) = help_content(app, tab);
+
+    // Match Settings Shift+H: compact rows, styled shortcut + description, full viewport height.
+    let compact_chrome = matches!(
+        tab,
+        Tab::Admin(AdminTab::DisputesInProgress) | Tab::User(UserTab::MyTrades)
+    );
+
+    let (popup_width, popup_height) = if compact_chrome {
+        (78u16.min(area.width), area.height.saturating_sub(2).max(6))
+    } else {
+        let line_count = plain_lines.len().max(1);
+        (
+            64u16,
+            (line_count as u16 + 4).min(area.height.saturating_sub(2)),
+        )
+    };
 
     let popup = {
         let [p] = Layout::horizontal([Constraint::Length(popup_width)])
@@ -39,18 +52,36 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let content: Vec<Line> = lines
-        .into_iter()
-        .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::White))))
-        .collect();
-    let mut all = content;
-    all.push(Line::from(""));
-    all.push(Line::from(Span::styled(
-        HELP_CLOSE_HINT,
-        Style::default().fg(Color::DarkGray),
-    )));
-    let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
-    f.render_widget(paragraph, inner);
+    if compact_chrome {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+            lines.push(help_disputes_in_progress_intro());
+        } else {
+            lines.push(help_my_trades_intro());
+        }
+        for s in plain_lines {
+            lines.push(help_shortcut_line(&s));
+        }
+        lines.push(Line::from(Span::styled(
+            HELP_CLOSE_HINT,
+            Style::default().fg(Color::DarkGray),
+        )));
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
+        f.render_widget(paragraph, inner);
+    } else {
+        let content: Vec<Line> = plain_lines
+            .into_iter()
+            .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::White))))
+            .collect();
+        let mut all = content;
+        all.push(Line::from(""));
+        all.push(Line::from(Span::styled(
+            HELP_CLOSE_HINT,
+            Style::default().fg(Color::DarkGray),
+        )));
+        let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
+        f.render_widget(paragraph, inner);
+    }
 }
 
 /// Full reference for every Settings menu row (Shift+H on Settings).
@@ -60,7 +91,7 @@ pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: Use
 
     let intro = Line::from(vec![
         Span::styled(
-            "Each block matches one Settings list row. ",
+            "Each row below matches one Settings list item. ",
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled("↑/↓", Style::default().fg(PRIMARY_COLOR)),
@@ -69,17 +100,17 @@ pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: Use
         Span::styled(" runs it.", Style::default().fg(Color::DarkGray)),
     ]);
     lines.insert(0, intro);
-    lines.insert(1, Line::from(""));
 
-    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         SETTINGS_INSTRUCTIONS_CLOSE_HINT,
         Style::default().fg(Color::DarkGray),
     )));
 
-    let line_count = lines.len().max(1);
-    let popup_width = 78u16;
-    let popup_height = (line_count as u16 + 4).min(area.height.saturating_sub(2));
+    // Use (nearly) the full viewport height so wrapped text has room on short terminals. A naive
+    // `line_count + borders` cap undersizes the block when there are few logical lines but long
+    // wrapped rows, which made content clip on e.g. 24-row terminals.
+    let popup_width = 78u16.min(area.width);
+    let popup_height = area.height.saturating_sub(2).max(6);
 
     let popup = {
         let [p] = Layout::horizontal([Constraint::Length(popup_width)])
@@ -105,7 +136,8 @@ pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: Use
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: true });
     f.render_widget(paragraph, inner);
 }
 
@@ -117,22 +149,58 @@ fn settings_instruction_block_style() -> (Style, Style) {
     (title, body)
 }
 
-/// One menu option: title row + indented body; optional blank line after (between entries).
-fn push_settings_instruction_entry(
-    lines: &mut Vec<Line<'static>>,
-    name: &str,
-    description: &str,
-    add_spacing_after: bool,
-) {
+fn help_disputes_in_progress_intro() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "Sidebar: pick a dispute · ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("↑/↓", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Tab", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" party · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Shift+C", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" filter.", Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+fn help_my_trades_intro() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "Sidebar: pick an order · ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("Shift+I", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" chat · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Ctrl+H", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Shift+H", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" for this panel.", Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// Split `Key: description` help strings into bold key + gray body (same as Settings Shift+H rows).
+fn help_shortcut_line(s: &str) -> Line<'static> {
     let (title_style, body_style) = settings_instruction_block_style();
-    lines.push(Line::from(Span::styled(format!("  ▸ {name}"), title_style)));
-    lines.push(Line::from(Span::styled(
-        format!("      {description}"),
-        body_style,
-    )));
-    if add_spacing_after {
-        lines.push(Line::from(""));
+    match s.split_once(": ") {
+        Some((key, rest)) => Line::from(vec![
+            Span::styled(format!("▸ {key}: "), title_style),
+            Span::styled(rest.to_string(), body_style),
+        ]),
+        None => Line::from(Span::styled(
+            s.to_string(),
+            Style::default().fg(Color::White),
+        )),
     }
+}
+
+/// One menu option as a single wrapped line: bold title prefix + body (compact for small terminals).
+fn push_settings_instruction_line(lines: &mut Vec<Line<'static>>, name: &str, description: &str) {
+    let (title_style, body_style) = settings_instruction_block_style();
+    lines.push(Line::from(vec![
+        Span::styled(format!("▸ {name}: "), title_style),
+        Span::styled(description.to_string(), body_style),
+    ]));
 }
 
 fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>>) {
@@ -217,9 +285,8 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         UserRole::Admin => admin_entries,
         UserRole::User => user_entries,
     };
-    let n = entries.len();
-    for (i, (name, desc)) in entries.iter().enumerate() {
-        push_settings_instruction_entry(&mut lines, name, desc, i + 1 < n);
+    for (name, desc) in entries.iter() {
+        push_settings_instruction_line(&mut lines, name, desc);
     }
 
     (title, lines)

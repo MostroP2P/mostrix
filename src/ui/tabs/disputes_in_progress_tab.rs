@@ -1,3 +1,5 @@
+//! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
+
 use std::str::FromStr;
 
 use chrono::DateTime;
