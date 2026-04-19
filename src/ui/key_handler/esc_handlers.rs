@@ -29,7 +29,8 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
-        UiMode::HelpPopup(_, ref previous_mode) => {
+        UiMode::HelpPopup(_, ref previous_mode)
+        | UiMode::SettingsInstructionsPopup(_, ref previous_mode) => {
             app.mode = (**previous_mode).clone();
             true
         }

@@ -80,7 +80,7 @@ pub fn clear_currency_filters() {
     );
 }
 
-/// Handle mode switching (M key in Settings tab)
+/// Toggle User/Admin from Settings (Enter on "Switch Mode").
 pub fn handle_mode_switch(app: &mut AppState) {
     let new_role = match app.user_role {
         UserRole::User => UserRole::Admin,

@@ -33,8 +33,8 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    clear_currency_filters, save_currency_to_settings, save_mostro_pubkey_to_settings,
-    save_relay_to_settings,
+    clear_currency_filters, handle_mode_switch, save_currency_to_settings,
+    save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
@@ -319,8 +319,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
-        UiMode::HelpPopup(..) => {
-            // Close help popup (mode restored in key_handler/mod.rs)
+        UiMode::HelpPopup(..) | UiMode::SettingsInstructionsPopup(..) => {
+            // Close help / settings reference (mode restored in key_handler/mod.rs)
             true
         }
         UiMode::SaveAttachmentPopup(_) => {
@@ -896,48 +896,51 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
 
         match app.selected_settings_option {
             0 => {
+                handle_mode_switch(app);
+            }
+            1 => {
                 // Add Mostro Pubkey (Common for both roles)
                 app.mode = UiMode::AddMostroPubkey(key_state);
             }
-            1 => {
+            2 => {
                 // Add Relay (Common for both roles)
                 app.mode = UiMode::AddRelay(key_state);
             }
-            2 => {
+            3 => {
                 // Add Currency Filter (Common for both roles)
                 app.mode = UiMode::AddCurrency(key_state);
             }
-            3 => {
+            4 => {
                 // Clear Currency Filters (Common for both roles) - show confirmation
                 app.mode = UiMode::ConfirmClearCurrencies(true);
             }
-            4 if app.user_role == UserRole::User => {
+            5 if app.user_role == UserRole::User => {
                 // View current seed words (User)
                 spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Loading seed words...".to_string(),
                 ));
             }
-            5 if app.user_role == UserRole::User => {
+            6 if app.user_role == UserRole::User => {
                 // Generate new keys for current role (user)
                 app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }
-            4 if app.user_role == UserRole::Admin => {
+            5 if app.user_role == UserRole::Admin => {
                 // View current seed words (Admin mode still uses user identity seed)
                 spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Loading seed words...".to_string(),
                 ));
             }
-            5 if app.user_role == UserRole::Admin => {
+            6 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
             }
-            6 if app.user_role == UserRole::Admin => {
+            7 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
             }
-            7 if app.user_role == UserRole::Admin => {
+            8 if app.user_role == UserRole::Admin => {
                 // Generate new keys for current role (admin)
                 app.mode = UiMode::ConfirmGenerateNewKeys(true);
             }

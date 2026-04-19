@@ -187,6 +187,11 @@ pub fn ui_draw(
         help_popup::render_help_popup(f, app, *tab);
     }
 
+    // Settings: full option reference (Shift+H)
+    if let UiMode::SettingsInstructionsPopup(role, _) = &app.mode {
+        help_popup::render_settings_instructions_popup(f, *role);
+    }
+
     // Save attachment popup (Ctrl+S in dispute chat)
     if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
         save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);

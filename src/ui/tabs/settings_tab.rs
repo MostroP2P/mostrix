@@ -6,10 +6,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Number of settings options for Admin role
-pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 8; // + View Seed Words + Generate New Keys
+pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 9; // Switch Mode + … + Generate New Keys
 
 /// Number of settings options for User role
-pub const USER_SETTINGS_OPTIONS_COUNT: usize = 6; // + View Seed Words + Generate New Keys
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = 7; // Switch Mode + … + Generate New Keys
 
 /// Render the Settings tab UI
 ///
@@ -63,6 +63,7 @@ pub fn render_settings_tab(
     // Options based on user role
     let options = if user_role == UserRole::Admin {
         vec![
+            "Switch Mode (User ↔ Admin)",
             "Change Mostro Pubkey",
             "Add Nostr Relay",
             "Add Currency Filter",
@@ -74,6 +75,7 @@ pub fn render_settings_tab(
         ]
     } else {
         vec![
+            "Switch Mode (User ↔ Admin)",
             "Change Mostro Pubkey",
             "Add Nostr Relay",
             "Add Currency Filter",
@@ -135,11 +137,12 @@ pub fn render_settings_tab(
     // Footer hint
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Use ", Style::default().fg(Color::White)),
             Span::styled("↑/↓", Style::default().fg(PRIMARY_COLOR)),
-            Span::styled(" to navigate, ", Style::default().fg(Color::White)),
+            Span::styled(" navigate · ", Style::default().fg(Color::White)),
             Span::styled("Enter", Style::default().fg(PRIMARY_COLOR)),
-            Span::styled(" to select", Style::default().fg(Color::White)),
+            Span::styled(" select · ", Style::default().fg(Color::White)),
+            Span::styled("Shift+H", Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(" all options", Style::default().fg(Color::White)),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
         chunks[4],
