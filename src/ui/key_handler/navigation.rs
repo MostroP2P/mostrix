@@ -1,6 +1,7 @@
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
+    ViewingMessageButtonSelection,
 };
 use crossterm::event::KeyCode;
 use mostro_core::prelude::*;
@@ -60,8 +61,14 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             take_state.selected_button = true;
         }
         UiMode::ViewingMessage(ref mut view_state) => {
-            // Switch to YES button (left side)
-            view_state.selected_button = true;
+            match &mut view_state.button_selection {
+                ViewingMessageButtonSelection::Two { yes_selected } => {
+                    *yes_selected = true;
+                }
+                ViewingMessageButtonSelection::Three { selected } => {
+                    *selected = (*selected + 2) % 3;
+                }
+            }
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
@@ -122,8 +129,14 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             take_state.selected_button = false;
         }
         UiMode::ViewingMessage(ref mut view_state) => {
-            // Switch to NO button (right side)
-            view_state.selected_button = false;
+            match &mut view_state.button_selection {
+                ViewingMessageButtonSelection::Two { yes_selected } => {
+                    *yes_selected = false;
+                }
+                ViewingMessageButtonSelection::Three { selected } => {
+                    *selected = (*selected + 1) % 3;
+                }
+            }
         }
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))

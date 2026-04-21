@@ -101,6 +101,19 @@ pub const HELP_MY_TRADES_FIAT_SENT_MSG: &str =
 pub const HELP_MY_TRADES_RELEASE_MSG: &str =
     "Release sats for this order? This sends a Release message.";
 
+/// Multi-line body for Messages-tab confirmation when Mostro reports hold invoice paid (`HoldInvoicePaymentAccepted`).
+/// Last line matches [`HELP_MY_TRADES_CANCEL_MSG`] (cooperative cancel).
+pub const VIEW_MESSAGE_HOLD_INVOICE_PREVIEW: &str = concat!(
+    "Hold invoice payment accepted — confirm fiat was sent?\n",
+    "\n",
+    "YES — Send FiatSent (you sent fiat).\n",
+    "NO — Close without sending.\n",
+    "CANCEL — Start cooperative cancel (both sides must agree; same as My Trades Shift+C).\n",
+    "\n",
+    "Cancel path: ",
+    "Cancel this order? This sends a cooperative Cancel request.",
+);
+
 // Help popup lines (Messages)
 pub const HELP_MSG_ENTER_OPEN: &str = "Enter: Open selected message";
 pub const HELP_MSG_SELECT: &str = "↑↓: Select message";

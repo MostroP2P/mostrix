@@ -11,7 +11,7 @@ use crate::ui::orders::{
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
-    UserRole, UserTab,
+    UserRole, UserTab, ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -810,11 +810,16 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             ) {
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
+                let button_selection = if matches!(action, Action::HoldInvoicePaymentAccepted) {
+                    ViewingMessageButtonSelection::Three { selected: 0 }
+                } else {
+                    ViewingMessageButtonSelection::Two { yes_selected: true }
+                };
                 let view_state = MessageViewState {
                     message_content: notification.message_preview,
                     order_id: notification.order_id,
                     action: notification.action,
-                    selected_button: true, // Default to YES
+                    button_selection,
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
             } else if matches!(action, Action::Rate) {

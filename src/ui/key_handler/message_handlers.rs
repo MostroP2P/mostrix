@@ -2,6 +2,7 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
 use crate::ui::{
     AdminMode, AppState, MessageViewState, RatingOrderState, UiMode, UserMode, UserRole,
+    ViewingMessageButtonSelection,
 };
 use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
@@ -20,15 +21,25 @@ pub fn handle_enter_viewing_message(
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
     };
 
-    // Only proceed if YES is selected
-    if !view_state.selected_button {
-        app.mode = default_mode;
-        return;
+    // NO / dismiss without sending
+    match &view_state.button_selection {
+        ViewingMessageButtonSelection::Two { yes_selected: false } => {
+            app.mode = default_mode;
+            return;
+        }
+        ViewingMessageButtonSelection::Three { selected: 1 } => {
+            app.mode = default_mode;
+            return;
+        }
+        _ => {}
     }
 
     // Map the action from the message to the action we need to send
-    let action_to_send = match view_state.action {
-        Action::HoldInvoicePaymentAccepted => Action::FiatSent,
+    let action_to_send = match &view_state.action {
+        Action::HoldInvoicePaymentAccepted => match &view_state.button_selection {
+            ViewingMessageButtonSelection::Three { selected: 2 } => Action::Cancel,
+            _ => Action::FiatSent,
+        },
         Action::FiatSentOk => Action::Release,
         Action::CooperativeCancelInitiatedByPeer => Action::Cancel,
         // For Shift+C/F/R confirmations, the action is already the one we want to send.
@@ -68,6 +79,9 @@ pub fn handle_enter_viewing_message(
     let result_tx = ctx.order_result_tx.clone();
     let source_action = view_state.action.clone();
     let mostro_info = ctx.mostro_info.clone();
+    let sent_cooperative_cancel_from_hold_invoice =
+        matches!(view_state.action, Action::HoldInvoicePaymentAccepted)
+            && matches!(action_to_send, Action::Cancel);
 
     tokio::spawn(async move {
         match execute_send_msg(
@@ -104,6 +118,8 @@ pub fn handle_enter_viewing_message(
                             ))
                         }
                     }
+                } else if sent_cooperative_cancel_from_hold_invoice {
+                    OperationResult::Info("Cooperative cancel request sent.".to_string())
                 } else {
                     OperationResult::Info("Message sent successfully".to_string())
                 };

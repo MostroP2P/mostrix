@@ -1,5 +1,6 @@
 use crate::ui::{
     helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
+    ViewingMessageButtonSelection,
     OperationResult, RatingOrderState, UiMode,
 };
 use mostro_core::prelude::Action;
@@ -138,7 +139,7 @@ pub fn build_order_action_view_state(
         message_content,
         order_id: Some(order_id),
         action,
-        selected_button: true, // default to YES
+        button_selection: ViewingMessageButtonSelection::Two { yes_selected: true },
     }
 }
 

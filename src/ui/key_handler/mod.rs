@@ -20,6 +20,7 @@ use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
+    ViewingMessageButtonSelection,
 };
 use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
@@ -793,7 +794,18 @@ pub fn handle_key_event(
                     return Some(true);
                 }
                 UiMode::ViewingMessage(ref mut view_state) => {
-                    view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
+                    match &mut view_state.button_selection {
+                        ViewingMessageButtonSelection::Two { yes_selected } => {
+                            *yes_selected = !*yes_selected;
+                        }
+                        ViewingMessageButtonSelection::Three { selected } => {
+                            if code == KeyCode::Left {
+                                *selected = (*selected + 2) % 3;
+                            } else {
+                                *selected = (*selected + 1) % 3;
+                            }
+                        }
+                    }
                     return Some(true);
                 }
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {

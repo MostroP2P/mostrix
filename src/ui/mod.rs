@@ -41,6 +41,7 @@ pub use state::{
     AppState, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender, DisputeChatMessage,
     DisputeFilter, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, MostroInfoFetchResult, OperationResult, OrderChatLastSeen, OrderChatUpdate,
+    ViewingMessageButtonSelection,
     OrderMessage, RatingOrderState, Tab, TakeOrderState, UiMode, UserChatSender,
     UserOrderChatMessage, UserRole, UserTab,
 };

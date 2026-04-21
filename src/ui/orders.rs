@@ -247,13 +247,22 @@ pub struct KeyInputState {
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
 }
 
+/// YES/NO selection for `ViewingMessage` popups (FiatSentOk, My Trades actions, etc.).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewingMessageButtonSelection {
+    /// `true` = YES highlighted, `false` = NO.
+    Two { yes_selected: bool },
+    /// Hold-invoice confirmation only: `0` = YES, `1` = NO, `2` = CANCEL (cooperative cancel).
+    Three { selected: u8 },
+}
+
 /// State for viewing a simple message popup
 #[derive(Clone, Debug)]
 pub struct MessageViewState {
     pub message_content: String, // The message content to display
     pub order_id: Option<uuid::Uuid>,
     pub action: Action,
-    pub selected_button: bool, // true for YES, false for NO
+    pub button_selection: ViewingMessageButtonSelection,
 }
 
 /// Rate counterparty after Mostro prompts with `action: rate` (daemon resolves peer by order id).
@@ -279,9 +288,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::HoldInvoicePaymentAccepted => {
-            "Hold invoice payment accepted — confirm fiat was sent?"
-        }
+        Action::HoldInvoicePaymentAccepted => crate::ui::constants::VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
         Action::Cancel => "Cancel",
         Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",
