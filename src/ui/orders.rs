@@ -288,7 +288,9 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::HoldInvoicePaymentAccepted => crate::ui::constants::VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
+        Action::HoldInvoicePaymentAccepted => {
+            crate::ui::constants::VIEW_MESSAGE_HOLD_INVOICE_PREVIEW
+        }
         Action::Cancel => "Cancel",
         Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",

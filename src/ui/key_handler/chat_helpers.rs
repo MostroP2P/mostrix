@@ -1,7 +1,6 @@
 use crate::ui::{
     helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
-    ViewingMessageButtonSelection,
-    OperationResult, RatingOrderState, UiMode,
+    OperationResult, RatingOrderState, UiMode, ViewingMessageButtonSelection,
 };
 use mostro_core::prelude::Action;
 use tokio::sync::mpsc::UnboundedSender;

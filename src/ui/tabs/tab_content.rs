@@ -142,13 +142,11 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             | Action::Release
     );
 
-    let hold_invoice_trinary = matches!(
-        view_state.action,
-        Action::HoldInvoicePaymentAccepted
-    ) && matches!(
-        view_state.button_selection,
-        ViewingMessageButtonSelection::Three { .. }
-    );
+    let hold_invoice_trinary = matches!(view_state.action, Action::HoldInvoicePaymentAccepted)
+        && matches!(
+            view_state.button_selection,
+            ViewingMessageButtonSelection::Three { .. }
+        );
 
     // Hold-invoice: one Line per logical row so newlines render; fixed height avoids a huge Min() gap.
     let trinary_line_count = if hold_invoice_trinary {
@@ -245,16 +243,12 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     );
 
     // Message content (multi-line Text so `\n` in the string becomes real line breaks in ratatui)
-    let body_style = Style::default()
-        .bg(BACKGROUND_COLOR)
-        .fg(PRIMARY_COLOR);
+    let body_style = Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR);
     let message_paragraph = if hold_invoice_trinary {
         let lines: Vec<Line> = view_state
             .message_content
             .lines()
-            .map(|line| {
-                Line::from(vec![Span::styled(line, body_style)])
-            })
+            .map(|line| Line::from(vec![Span::styled(line, body_style)]))
             .collect();
         Paragraph::new(Text::from(lines))
             .alignment(Alignment::Left)

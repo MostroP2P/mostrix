@@ -60,16 +60,14 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to YES button (left side)
             take_state.selected_button = true;
         }
-        UiMode::ViewingMessage(ref mut view_state) => {
-            match &mut view_state.button_selection {
-                ViewingMessageButtonSelection::Two { yes_selected } => {
-                    *yes_selected = true;
-                }
-                ViewingMessageButtonSelection::Three { selected } => {
-                    *selected = (*selected + 2) % 3;
-                }
+        UiMode::ViewingMessage(ref mut view_state) => match &mut view_state.button_selection {
+            ViewingMessageButtonSelection::Two { yes_selected } => {
+                *yes_selected = true;
             }
-        }
+            ViewingMessageButtonSelection::Three { selected } => {
+                *selected = (*selected + 2) % 3;
+            }
+        },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
@@ -128,16 +126,14 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to NO button (right side)
             take_state.selected_button = false;
         }
-        UiMode::ViewingMessage(ref mut view_state) => {
-            match &mut view_state.button_selection {
-                ViewingMessageButtonSelection::Two { yes_selected } => {
-                    *yes_selected = false;
-                }
-                ViewingMessageButtonSelection::Three { selected } => {
-                    *selected = (*selected + 1) % 3;
-                }
+        UiMode::ViewingMessage(ref mut view_state) => match &mut view_state.button_selection {
+            ViewingMessageButtonSelection::Two { yes_selected } => {
+                *yes_selected = false;
             }
-        }
+            ViewingMessageButtonSelection::Three { selected } => {
+                *selected = (*selected + 1) % 3;
+            }
+        },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {

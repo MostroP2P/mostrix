@@ -23,7 +23,9 @@ pub fn handle_enter_viewing_message(
 
     // NO / dismiss without sending
     match &view_state.button_selection {
-        ViewingMessageButtonSelection::Two { yes_selected: false } => {
+        ViewingMessageButtonSelection::Two {
+            yes_selected: false,
+        } => {
             app.mode = default_mode;
             return;
         }

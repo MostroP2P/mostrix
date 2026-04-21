@@ -154,46 +154,52 @@ pub fn render_yes_no_cancel_buttons(
     )
     .split(area);
 
-    let mut render_one = |idx: u8,
-                      chunk: Rect,
-                      label: &str,
-                      current: u8,
-                      base_fg: Color,
-                      selected_bg: Color| {
-        let is_on = current == idx;
-        let block_style = if is_on {
-            Style::default()
-                .bg(selected_bg)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(base_fg).add_modifier(Modifier::BOLD)
-        };
-        let block = ratatui::widgets::Block::default()
-            .borders(Borders::ALL)
-            .style(block_style);
-        f.render_widget(block, chunk);
-        let inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-            .margin(1)
-            .split(chunk);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                label,
+    let mut render_one =
+        |idx: u8, chunk: Rect, label: &str, current: u8, base_fg: Color, selected_bg: Color| {
+            let is_on = current == idx;
+            let block_style = if is_on {
                 Style::default()
-                    .fg(if is_on {
-                        Color::Black
-                    } else {
-                        base_fg
-                    })
-                    .add_modifier(Modifier::BOLD),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            inner[0],
-        );
-    };
+                    .bg(selected_bg)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(base_fg).add_modifier(Modifier::BOLD)
+            };
+            let block = ratatui::widgets::Block::default()
+                .borders(Borders::ALL)
+                .style(block_style);
+            f.render_widget(block, chunk);
+            let inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+                .margin(1)
+                .split(chunk);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    label,
+                    Style::default()
+                        .fg(if is_on { Color::Black } else { base_fg })
+                        .add_modifier(Modifier::BOLD),
+                )]))
+                .alignment(ratatui::layout::Alignment::Center),
+                inner[0],
+            );
+        };
 
-    render_one(0, button_chunks[0], yes_label, selected, Color::Green, Color::Green);
-    render_one(1, button_chunks[1], no_label, selected, Color::Red, Color::Red);
+    render_one(
+        0,
+        button_chunks[0],
+        yes_label,
+        selected,
+        Color::Green,
+        Color::Green,
+    );
+    render_one(
+        1,
+        button_chunks[1],
+        no_label,
+        selected,
+        Color::Red,
+        Color::Red,
+    );
     render_one(
         2,
         button_chunks[2],
