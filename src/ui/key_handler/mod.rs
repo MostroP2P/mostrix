@@ -796,7 +796,11 @@ pub fn handle_key_event(
                 UiMode::ViewingMessage(ref mut view_state) => {
                     match &mut view_state.button_selection {
                         ViewingMessageButtonSelection::Two { yes_selected } => {
-                            *yes_selected = !*yes_selected;
+                            if code == KeyCode::Left {
+                                *yes_selected = true;
+                            } else if code == KeyCode::Right {
+                                *yes_selected = false;
+                            }
                         }
                         ViewingMessageButtonSelection::Three { selected } => {
                             if code == KeyCode::Left {

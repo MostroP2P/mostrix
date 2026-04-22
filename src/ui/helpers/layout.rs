@@ -147,9 +147,13 @@ pub fn render_yes_no_cancel_buttons(
     let button_chunks = Layout::new(
         Direction::Horizontal,
         [
+            // spacer to avoid buttons from touching the frame border
+            Constraint::Length(2),
             Constraint::Percentage(33),
             Constraint::Percentage(34),
             Constraint::Percentage(33),
+            // spacer to avoid buttons from touching the frame border
+            Constraint::Length(2),
         ],
     )
     .split(area);
@@ -186,7 +190,7 @@ pub fn render_yes_no_cancel_buttons(
 
     render_one(
         0,
-        button_chunks[0],
+        button_chunks[1],
         yes_label,
         selected,
         Color::Green,
@@ -194,7 +198,7 @@ pub fn render_yes_no_cancel_buttons(
     );
     render_one(
         1,
-        button_chunks[1],
+        button_chunks[2],
         no_label,
         selected,
         Color::Red,
@@ -202,7 +206,7 @@ pub fn render_yes_no_cancel_buttons(
     );
     render_one(
         2,
-        button_chunks[2],
+        button_chunks[3],
         cancel_label,
         selected,
         Color::Yellow,

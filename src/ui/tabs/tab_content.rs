@@ -251,7 +251,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             .map(|line| Line::from(vec![Span::styled(line, body_style)]))
             .collect();
         Paragraph::new(Text::from(lines))
-            .alignment(Alignment::Left)
+            .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .padding(Padding::horizontal(1))

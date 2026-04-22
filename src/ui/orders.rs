@@ -4,7 +4,7 @@ use ratatui::style::{Color, Style};
 
 use crate::ui::constants::{
     BUY_ORDER_FLOW_STEPS_MAKER, BUY_ORDER_FLOW_STEPS_TAKER, GENERIC_ORDER_FLOW_STEPS_TAKER,
-    SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
+    SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
 };
 
 pub use crate::ui::constants::StepLabel;
@@ -288,9 +288,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::HoldInvoicePaymentAccepted => {
-            crate::ui::constants::VIEW_MESSAGE_HOLD_INVOICE_PREVIEW
-        }
+        Action::HoldInvoicePaymentAccepted => VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
         Action::Cancel => "Cancel",
         Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",
