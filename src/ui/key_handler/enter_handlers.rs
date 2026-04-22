@@ -1,5 +1,5 @@
-use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
+use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
@@ -28,8 +28,8 @@ use mostro_core::prelude::*;
 use nostr_sdk::nips::nip06::FromMnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
-use std::str::FromStr;
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -226,7 +226,11 @@ fn spawn_bulk_history_cleanup_task(
                         .map(|status| allowed.contains(&status.to_lowercase().as_str()))
                         .unwrap_or(false)
                 })
-                .filter_map(|row| row.id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok()))
+                .filter_map(|row| {
+                    row.id
+                        .as_deref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                })
                 .collect();
         }
 

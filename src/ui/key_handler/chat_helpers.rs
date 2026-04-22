@@ -1,8 +1,8 @@
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::{
     helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
     OperationResult, RatingOrderState, UiMode, ViewingMessageButtonSelection,
 };
-use crate::ui::helpers::build_active_order_chat_list;
 use mostro_core::prelude::{Action, Status};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
@@ -127,8 +127,11 @@ pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
 pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, Option<Status>)> {
     let messages_snapshot = app.messages.lock().ok()?.clone();
     let rows = build_active_order_chat_list(&messages_snapshot);
-    rows.get(app.selected_order_chat_idx)
-        .and_then(|row| Uuid::parse_str(&row.order_id).ok().map(|id| (id, row.status)))
+    rows.get(app.selected_order_chat_idx).and_then(|row| {
+        Uuid::parse_str(&row.order_id)
+            .ok()
+            .map(|id| (id, row.status))
+    })
 }
 
 /// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release).

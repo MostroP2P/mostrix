@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage, OrderMessage,
-    OrderChatLastSeen, UserChatSender, UserOrderChatMessage, UserRole,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
+    OrderChatLastSeen, OrderMessage, UserChatSender, UserOrderChatMessage, UserRole,
 };
 use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
 
@@ -153,7 +153,10 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
     let trade_index = order.trade_index?;
-    let status = order.status.as_deref().and_then(|s| Status::from_str(s).ok());
+    let status = order
+        .status
+        .as_deref()
+        .and_then(|s| Status::from_str(s).ok());
     let kind = order
         .kind
         .as_deref()

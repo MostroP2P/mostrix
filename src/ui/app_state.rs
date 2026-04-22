@@ -94,7 +94,9 @@ impl Clone for UiMode {
             UiMode::ConfirmDeleteHistoryOrder(order_id, selected) => {
                 UiMode::ConfirmDeleteHistoryOrder(*order_id, *selected)
             }
-            UiMode::ConfirmBulkDeleteHistory(selected) => UiMode::ConfirmBulkDeleteHistory(*selected),
+            UiMode::ConfirmBulkDeleteHistory(selected) => {
+                UiMode::ConfirmBulkDeleteHistory(*selected)
+            }
             UiMode::ConfirmExit(selected) => UiMode::ConfirmExit(*selected),
             UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
             // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.
