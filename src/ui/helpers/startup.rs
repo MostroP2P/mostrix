@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use mostro_core::prelude::{Action, Kind as OrderKind, Message, Payload, SmallOrder, Status};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
-use crate::models::{AdminDispute, Order};
+use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage, OrderMessage,
     OrderChatLastSeen, UserChatSender, UserOrderChatMessage, UserRole,
 };
 use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
@@ -122,6 +124,7 @@ pub async fn load_user_order_chats_at_startup(
     if app.user_role != UserRole::User {
         return;
     }
+    sync_user_order_history_messages_from_db(pool, app).await;
     let Ok(rows) = Order::get_startup_active_orders(pool).await else {
         return;
     };
@@ -144,6 +147,110 @@ pub async fn load_user_order_chats_at_startup(
         .await
         .unwrap_or_default();
     apply_user_order_chat_updates(app, updates);
+}
+
+fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
+    let order_id_str = order.id.as_deref()?;
+    let order_id = Uuid::parse_str(order_id_str).ok()?;
+    let trade_index = order.trade_index?;
+    let status = order.status.as_deref().and_then(|s| Status::from_str(s).ok());
+    let kind = order
+        .kind
+        .as_deref()
+        .and_then(|k| OrderKind::from_str(k).ok());
+
+    let action = if order.is_mine {
+        Action::NewOrder
+    } else {
+        match kind {
+            Some(OrderKind::Buy) => Action::TakeBuy,
+            Some(OrderKind::Sell) => Action::TakeSell,
+            None => Action::NewOrder,
+        }
+    };
+
+    let mut payload_order = SmallOrder::default();
+    payload_order.id = Some(order_id);
+    payload_order.kind = kind;
+    payload_order.status = status;
+    payload_order.amount = order.amount;
+    payload_order.fiat_code = order.fiat_code.clone();
+    payload_order.min_amount = order.min_amount;
+    payload_order.max_amount = order.max_amount;
+    payload_order.fiat_amount = order.fiat_amount;
+    payload_order.payment_method = order.payment_method.clone();
+    payload_order.premium = order.premium;
+    payload_order.buyer_invoice = order.buyer_invoice.clone();
+    payload_order.created_at = order.created_at;
+    payload_order.expires_at = order.expires_at;
+
+    let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
+    let message = Message::new_order(
+        Some(order_id),
+        request_id,
+        Some(trade_index),
+        action,
+        Some(Payload::Order(payload_order)),
+    );
+
+    Some(OrderMessage {
+        message,
+        timestamp: order
+            .last_seen_dm_ts
+            .or(order.created_at)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        sender,
+        order_id: Some(order_id),
+        trade_index,
+        sat_amount: None,
+        buyer_invoice: order.buyer_invoice.clone(),
+        order_kind: kind,
+        is_mine: Some(order.is_mine),
+        order_status: status,
+        read: true,
+        auto_popup_shown: true,
+    })
+}
+
+pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &mut AppState) {
+    let identity_keys = match User::get_identity_keys(pool).await {
+        Ok(k) => k,
+        Err(e) => {
+            log::warn!(
+                "Failed to derive identity keys for DB history sender attribution: {}",
+                e
+            );
+            return;
+        }
+    };
+    let sender = identity_keys.public_key();
+    let rows = match Order::get_user_history_orders(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("Failed to load user order history rows at startup: {}", e);
+            return;
+        }
+    };
+    let mut history_messages: Vec<OrderMessage> = rows
+        .iter()
+        .filter_map(|row| db_order_to_history_message(row, sender))
+        .collect();
+    history_messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            for msg in history_messages {
+                messages.retain(|m| m.order_id != msg.order_id);
+                messages.push(msg);
+            }
+            messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.

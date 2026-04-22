@@ -74,14 +74,8 @@ fn status_from_message(msg: &OrderMessage) -> Option<Status> {
     msg.order_status
 }
 
-fn is_order_chat_actionable(status: Option<Status>) -> bool {
-    matches!(
-        status,
-        Some(Status::SettledHoldInvoice)
-            | Some(Status::Active)
-            | Some(Status::FiatSent)
-            | Some(Status::Success)
-    )
+fn is_order_chat_actionable(_status: Option<Status>) -> bool {
+    true
 }
 
 /// Shared projection for the "My Trades" sidebar and Enter/action handlers.

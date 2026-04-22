@@ -78,6 +78,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+        | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -144,6 +146,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+        | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -296,6 +300,8 @@ fn handle_up_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
@@ -462,6 +468,8 @@ fn handle_down_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {

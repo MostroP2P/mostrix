@@ -2,7 +2,8 @@ use crate::ui::{
     helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
     OperationResult, RatingOrderState, UiMode, ViewingMessageButtonSelection,
 };
-use mostro_core::prelude::Action;
+use crate::ui::helpers::build_active_order_chat_list;
+use mostro_core::prelude::{Action, Status};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
@@ -119,13 +120,15 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
 
 /// Resolve the currently selected order id for the MyTrades (Order Chat) tab.
 pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
-    app.active_order_trade_indices.lock().ok().and_then(|map| {
-        // HashMap iteration order is arbitrary; sort keys to match the
-        // stable ordering used in the MyTrades sidebar (by order_id UUID).
-        let mut order_ids: Vec<Uuid> = map.keys().copied().collect();
-        order_ids.sort();
-        order_ids.get(app.selected_order_chat_idx).copied()
-    })
+    resolve_selected_mytrades_order_status(app).map(|(order_id, _)| order_id)
+}
+
+/// Resolve selected MyTrades order id + status from the same projection used by sidebar rendering.
+pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, Option<Status>)> {
+    let messages_snapshot = app.messages.lock().ok()?.clone();
+    let rows = build_active_order_chat_list(&messages_snapshot);
+    rows.get(app.selected_order_chat_idx)
+        .and_then(|row| Uuid::parse_str(&row.order_id).ok().map(|id| (id, row.status)))
 }
 
 /// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release).

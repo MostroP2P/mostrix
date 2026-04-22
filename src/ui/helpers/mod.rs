@@ -29,4 +29,5 @@ pub use startup::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
     load_user_order_chats_at_startup, recover_admin_chat_from_files,
+    sync_user_order_history_messages_from_db,
 };

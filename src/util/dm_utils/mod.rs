@@ -513,13 +513,6 @@ async fn handle_trade_dm_for_order(
         return;
     }
 
-    // Do not surface `new-order` in Messages or toasts (relist, book echo, etc.). Persisted status
-    // above still applies. Publish ack for a newly created order uses `send_new_order` / waiting UI.
-    if matches!(action, Action::NewOrder) {
-        remove_order_from_messages(messages, order_id);
-        return;
-    }
-
     // Lock `messages` only long enough to extract comparison data, then drop it
     // before touching `pending_notifications` to avoid lock-order deadlocks.
     let existing_message_data = {
@@ -803,7 +796,6 @@ async fn dispatch_giftwrap_batch(
                         trade_index,
                         subscription_id
                     );
-                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -825,7 +817,6 @@ async fn dispatch_giftwrap_batch(
                     break;
                 }
                 GiftWrapTerminalPolicy::UntrackedFallback => {
-                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {

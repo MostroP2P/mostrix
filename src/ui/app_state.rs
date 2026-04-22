@@ -43,6 +43,8 @@ pub enum UiMode {
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
+    ConfirmDeleteHistoryOrder(uuid::Uuid, bool), // (order_id, selected_button)
+    ConfirmBulkDeleteHistory(bool), // (selected_button)
     ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
     // Generate new keys flow (Settings tab)
@@ -89,6 +91,10 @@ impl Clone for UiMode {
                 UiMode::ConfirmCurrency(currency.clone(), *selected)
             }
             UiMode::ConfirmClearCurrencies(selected) => UiMode::ConfirmClearCurrencies(*selected),
+            UiMode::ConfirmDeleteHistoryOrder(order_id, selected) => {
+                UiMode::ConfirmDeleteHistoryOrder(*order_id, *selected)
+            }
+            UiMode::ConfirmBulkDeleteHistory(selected) => UiMode::ConfirmBulkDeleteHistory(*selected),
             UiMode::ConfirmExit(selected) => UiMode::ConfirmExit(*selected),
             UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
             // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.

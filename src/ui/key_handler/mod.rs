@@ -14,7 +14,7 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
-    resolve_selected_mytrades_order_id,
+    resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
@@ -49,6 +49,21 @@ pub struct EnterKeyContext<'a> {
     pub mostro_info: Option<MostroInstanceInfo>,
     pub admin_chat_keys: Option<&'a Keys>,
     pub dm_subscription_tx: &'a UnboundedSender<OrderDmSubscriptionCmd>,
+}
+
+fn is_terminal_order_status(status: Option<Status>) -> bool {
+    matches!(
+        status,
+        Some(
+            Status::Success
+                | Status::Canceled
+                | Status::CanceledByAdmin
+                | Status::SettledByAdmin
+                | Status::CompletedByAdmin
+                | Status::Expired
+                | Status::CooperativelyCanceled
+        )
+    )
 }
 
 // Re-export public functions
@@ -680,6 +695,25 @@ pub fn handle_key_event(
         let has_shift = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::SHIFT);
+        let has_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if code == KeyCode::Delete {
+            if has_ctrl {
+                app.mode = UiMode::ConfirmBulkDeleteHistory(true);
+                return Some(true);
+            }
+            if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                if is_terminal_order_status(status) {
+                    app.mode = UiMode::ConfirmDeleteHistoryOrder(order_id, true);
+                } else {
+                    app.mode = UiMode::OperationResult(OperationResult::Info(
+                        "Delete is only available for terminal orders.".to_string(),
+                    ));
+                }
+                return Some(true);
+            }
+        }
         if has_shift {
             match code {
                 KeyCode::Char('i') | KeyCode::Char('I') => {
@@ -698,7 +732,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "Cancel is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -710,7 +750,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "FiatSent is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -722,7 +768,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "Release is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -788,6 +840,8 @@ pub fn handle_key_event(
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+                | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO

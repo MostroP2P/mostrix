@@ -33,10 +33,48 @@ fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
     }
 }
 
+fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) {
+    let id_set: std::collections::HashSet<Uuid> = order_ids.iter().copied().collect();
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            messages.retain(|m| m.order_id.map(|id| !id_set.contains(&id)).unwrap_or(true));
+            strip_new_order_messages_and_clamp_selected(
+                &mut messages,
+                &mut app.selected_message_idx,
+            );
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+    match app.active_order_trade_indices.lock() {
+        Ok(mut indices) => {
+            for order_id in order_ids {
+                indices.remove(order_id);
+            }
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
+
 /// Handle order result from the order result channel
 pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
     if let OperationResult::TradeClosed { order_id, message } = result {
         remove_closed_trade_from_messages_tab(app, order_id);
+        result = OperationResult::Info(message);
+    }
+    if let OperationResult::OrderHistoryDeleted {
+        deleted_order_ids,
+        message,
+    } = result
+    {
+        remove_many_orders_from_messages_tab(app, &deleted_order_ids);
         result = OperationResult::Info(message);
     }
 

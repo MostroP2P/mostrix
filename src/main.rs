@@ -10,7 +10,7 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup,
+    load_user_order_chats_at_startup, sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -353,6 +353,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
                     handle_operation_result(result, &mut app);
+                    if app.user_role == UserRole::User {
+                        sync_user_order_history_messages_from_db(&pool, &mut app).await;
+                    }
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {

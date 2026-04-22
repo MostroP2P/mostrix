@@ -46,6 +46,11 @@ pub enum OperationResult {
         order_id: uuid::Uuid,
         message: String,
     },
+    /// Local-only history cleanup result; remove these order rows from in-memory My Trades cache.
+    OrderHistoryDeleted {
+        deleted_order_ids: Vec<uuid::Uuid>,
+        message: String,
+    },
 }
 
 /// Result of an async Mostro instance info fetch (sent from key handlers to main loop).
@@ -318,6 +323,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::WaitingBuyerInvoice => "Waiting Buyer Invoice",
         Action::WaitingSellerToPay => "Waiting Seller Payment",
         Action::HoldInvoicePaymentAccepted => "Hold Invoice Accepted",
+        Action::BuyerTookOrder => "Buyer Took Order",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat Confirmed",
         Action::Release | Action::Released => "Release sats",
@@ -326,8 +332,10 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rating Received",
-        Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated",
-        _ => "Message",
+        Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated by Peer",
+        Action::CooperativeCancelInitiatedByYou => "Cooperative Cancel Initiated by You",
+        Action::NewOrder => "New Order Created",
+        _ => "Unknown Message",
     }
 }
 

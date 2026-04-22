@@ -1,4 +1,5 @@
 use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
+use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
 };
@@ -28,6 +29,7 @@ use nostr_sdk::nips::nip06::FromMnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
 use std::str::FromStr;
+use std::collections::HashSet;
 
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -175,6 +177,76 @@ fn spawn_user_order_chat_send_task(
         .await
         {
             log::warn!("Failed to send user order chat: {}", e);
+        }
+    });
+}
+
+fn spawn_delete_single_terminal_order_task(
+    pool: sqlx::SqlitePool,
+    order_id: uuid::Uuid,
+    order_result_tx: tokio::sync::mpsc::UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        match Order::delete_terminal_order_by_id(&pool, &order_id.to_string()).await {
+            Ok(affected) if affected > 0 => {
+                let _ = order_result_tx.send(OperationResult::OrderHistoryDeleted {
+                    deleted_order_ids: vec![order_id],
+                    message: format!("Deleted order {} from local history.", order_id),
+                });
+            }
+            Ok(_) => {
+                let _ = order_result_tx.send(OperationResult::Error(
+                    "Selected order is not terminal or no longer exists in local database."
+                        .to_string(),
+                ));
+            }
+            Err(e) => {
+                let _ = order_result_tx.send(OperationResult::Error(format!(
+                    "Failed to delete selected order from local history: {}",
+                    e
+                )));
+            }
+        }
+    });
+}
+
+fn spawn_bulk_history_cleanup_task(
+    pool: sqlx::SqlitePool,
+    order_result_tx: tokio::sync::mpsc::UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        let mut ids_to_remove = Vec::new();
+        let allowed: HashSet<&str> = ORDER_HISTORY_BULK_DELETE_STATUSES.iter().copied().collect();
+        if let Ok(rows) = Order::get_user_history_orders(&pool).await {
+            ids_to_remove = rows
+                .iter()
+                .filter(|row| {
+                    row.status
+                        .as_deref()
+                        .map(|status| allowed.contains(&status.to_lowercase().as_str()))
+                        .unwrap_or(false)
+                })
+                .filter_map(|row| row.id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok()))
+                .collect();
+        }
+
+        match Order::delete_bulk_history_cleanup_orders(&pool).await {
+            Ok(affected) => {
+                let message = format!(
+                    "Removed {} success/canceled orders from local history.",
+                    affected
+                );
+                let _ = order_result_tx.send(OperationResult::OrderHistoryDeleted {
+                    deleted_order_ids: ids_to_remove,
+                    message,
+                });
+            }
+            Err(e) => {
+                let _ = order_result_tx.send(OperationResult::Error(format!(
+                    "Failed to clean up order history: {}",
+                    e
+                )));
+            }
         }
     });
 }
@@ -345,6 +417,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)
                     | Tab::Admin(AdminTab::Observer)
+                    | Tab::User(UserTab::MyTrades)
                     | Tab::User(UserTab::MostroInfo)
                     | Tab::Admin(AdminTab::MostroInfo)
                     | Tab::User(UserTab::Messages)
@@ -392,6 +465,32 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             let should_continue = handle_enter_settings_mode(app, current_mode, default_mode, ctx);
             if !should_continue {
                 return false; // Exit application
+            }
+            true
+        }
+        UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) => {
+            if selected_button {
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Deleting selected terminal order from local history...".to_string(),
+                ));
+                spawn_delete_single_terminal_order_task(
+                    ctx.pool.clone(),
+                    order_id,
+                    ctx.order_result_tx.clone(),
+                );
+            } else {
+                app.mode = default_mode;
+            }
+            true
+        }
+        UiMode::ConfirmBulkDeleteHistory(selected_button) => {
+            if selected_button {
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Cleaning up success/canceled orders from local history...".to_string(),
+                ));
+                spawn_bulk_history_cleanup_task(ctx.pool.clone(), ctx.order_result_tx.clone());
+            } else {
+                app.mode = default_mode;
             }
             true
         }
