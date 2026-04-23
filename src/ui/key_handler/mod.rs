@@ -28,30 +28,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use zeroize::Zeroizing;
-
-fn debug_log_keys(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "sessionId": "715880",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis()
-    });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("debug-715880.log")
-    {
-        let _ = writeln!(file, "{payload}");
-    }
-}
 
 /// Context passed to Enter and confirmation handlers to avoid too many arguments.
 pub struct EnterKeyContext<'a> {
@@ -875,22 +854,6 @@ pub fn handle_key_event(
                                 *yes_selected = true;
                             } else if code == KeyCode::Right {
                                 *yes_selected = false;
-                            }
-                            if matches!(view_state.action, Action::CooperativeCancelInitiatedByPeer)
-                            {
-                                // #region agent log
-                                debug_log_keys(
-                                    "H7",
-                                    "src/ui/key_handler/mod.rs:viewing_message_lr_toggle",
-                                    "Toggled peer cooperative-cancel confirmation selection",
-                                    serde_json::json!({
-                                        "key": format!("{:?}", code),
-                                        "action": format!("{:?}", view_state.action),
-                                        "yes_selected": *yes_selected,
-                                        "order_id": view_state.order_id.map(|id| id.to_string()),
-                                    }),
-                                );
-                                // #endregion
                             }
                         }
                         ViewingMessageButtonSelection::Three { selected } => {

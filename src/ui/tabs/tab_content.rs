@@ -135,6 +135,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     let show_buttons = matches!(
         view_state.action,
         Action::HoldInvoicePaymentAccepted
+            | Action::BuyerTookOrder
             | Action::FiatSentOk
             | Action::CooperativeCancelInitiatedByPeer
             | Action::Cancel
@@ -148,30 +149,33 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             ViewingMessageButtonSelection::Three { .. }
         );
 
-    // Hold-invoice: one Line per logical row so newlines render; fixed height avoids a huge Min() gap.
-    let trinary_line_count = if hold_invoice_trinary {
+    // Multiline body: hold-invoice trinary, or `BuyerTookOrder` (CANCEL / NO for cooperative cancel).
+    let multiline_message_body =
+        hold_invoice_trinary || matches!(view_state.action, Action::BuyerTookOrder);
+
+    let content_line_count = if multiline_message_body {
         view_state.message_content.lines().count().max(1) as u16
     } else {
         0
     };
     let max_popup_h = area.height.saturating_sub(4).max(12);
-    let mut message_chunk_height = if hold_invoice_trinary {
+    let mut message_chunk_height = if multiline_message_body {
         // Extra rows for soft-wrapped lines on narrow terminals.
-        trinary_line_count.saturating_add(2).clamp(8, 14)
+        content_line_count.saturating_add(2).clamp(8, 14)
     } else {
         1
     };
 
     // Rows: spacer + title + sep + order + message + spacer + buttons + help  => 10 + message_chunk
     let mut inner_needed = 10u16.saturating_add(message_chunk_height);
-    if hold_invoice_trinary && inner_needed > max_popup_h {
+    if multiline_message_body && inner_needed > max_popup_h {
         let shrink = inner_needed - max_popup_h;
         message_chunk_height = (message_chunk_height.saturating_sub(shrink)).max(6);
         inner_needed = 10u16.saturating_add(message_chunk_height);
     }
 
     let popup_height = if show_buttons {
-        if hold_invoice_trinary {
+        if multiline_message_body {
             inner_needed.min(max_popup_h)
         } else {
             14
@@ -186,7 +190,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     // Clear the popup area to make it fully opaque
     f.render_widget(Clear, popup);
 
-    let constraints = if show_buttons && hold_invoice_trinary {
+    let constraints = if show_buttons && multiline_message_body {
         vec![
             Constraint::Length(1), // spacer
             Constraint::Length(1), // title
@@ -244,7 +248,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
 
     // Message content (multi-line Text so `\n` in the string becomes real line breaks in ratatui)
     let body_style = Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR);
-    let message_paragraph = if hold_invoice_trinary {
+    let message_paragraph = if multiline_message_body {
         let lines: Vec<Line> = view_state
             .message_content
             .lines()
@@ -316,7 +320,12 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
                 ViewingMessageButtonSelection::Two { yes_selected } => yes_selected,
                 ViewingMessageButtonSelection::Three { .. } => true,
             };
-            helpers::render_yes_no_buttons(f, button_area, yes_selected, "✓ YES", "✗ NO");
+            let (yes_label, no_label) = if matches!(view_state.action, Action::BuyerTookOrder) {
+                ("CANCEL", "NO")
+            } else {
+                ("✓ YES", "✗ NO")
+            };
+            helpers::render_yes_no_buttons(f, button_area, yes_selected, yes_label, no_label);
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled("Use ", Style::default()),

@@ -170,20 +170,22 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         None => Action::WaitingSellerToPay,
     };
 
-    let mut payload_order = SmallOrder::default();
-    payload_order.id = Some(order_id);
-    payload_order.kind = kind;
-    payload_order.status = status;
-    payload_order.amount = order.amount;
-    payload_order.fiat_code = order.fiat_code.clone();
-    payload_order.min_amount = order.min_amount;
-    payload_order.max_amount = order.max_amount;
-    payload_order.fiat_amount = order.fiat_amount;
-    payload_order.payment_method = order.payment_method.clone();
-    payload_order.premium = order.premium;
-    payload_order.buyer_invoice = order.buyer_invoice.clone();
-    payload_order.created_at = order.created_at;
-    payload_order.expires_at = order.expires_at;
+    let payload_order = SmallOrder {
+        id: Some(order_id),
+        kind,
+        status,
+        amount: order.amount,
+        fiat_code: order.fiat_code.clone(),
+        min_amount: order.min_amount,
+        max_amount: order.max_amount,
+        fiat_amount: order.fiat_amount,
+        payment_method: order.payment_method.clone(),
+        premium: order.premium,
+        buyer_invoice: order.buyer_invoice.clone(),
+        created_at: order.created_at,
+        expires_at: order.expires_at,
+        ..Default::default()
+    };
 
     let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
     let message = Message::new_order(

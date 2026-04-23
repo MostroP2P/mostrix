@@ -4,28 +4,7 @@ use crate::ui::{
     AppState, InvoiceInputState, MessageNotification, OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
-use std::fs::OpenOptions;
-use std::io::Write;
 use uuid::Uuid;
-
-fn debug_log_order_result(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "sessionId": "715880",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis()
-    });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("debug-715880.log")
-    {
-        let _ = writeln!(file, "{payload}");
-    }
-}
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
     match app.messages.lock() {
@@ -87,17 +66,6 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
 /// Handle order result from the order result channel
 pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
     if let OperationResult::TradeClosed { order_id, message } = result {
-        // #region agent log
-        debug_log_order_result(
-            "H9",
-            "src/util/dm_utils/order_ch_mng.rs:handle_operation_result:trade_closed",
-            "TradeClosed branch removing order from messages tab",
-            serde_json::json!({
-                "order_id": order_id.to_string(),
-                "message": message,
-            }),
-        );
-        // #endregion
         remove_closed_trade_from_messages_tab(app, order_id);
         result = OperationResult::Info(message);
     }

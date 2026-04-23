@@ -73,6 +73,7 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::TooManyRequests => {
             "Too many requests - please wait and try again".to_string()
         }
+        CantDoReason::NotAuthorized => "Not authorized to perform this action".to_string(),
     }
 }
 

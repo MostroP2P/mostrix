@@ -29,8 +29,6 @@ use nostr_sdk::nips::nip06::FromMnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
@@ -60,25 +58,6 @@ fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<Str
         .secret_key()
         .to_bech32()
         .map_err(|e| e.to_string())
-}
-
-fn debug_log_enter(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "sessionId": "715880",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis()
-    });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("debug-715880.log")
-    {
-        let _ = writeln!(file, "{payload}");
-    }
 }
 
 #[derive(Clone)]
@@ -898,20 +877,6 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
-            // #region agent log
-            debug_log_enter(
-                "H8",
-                "src/ui/key_handler/enter_handlers.rs:messages_enter_selected",
-                "Pressed Enter on selected Messages row",
-                serde_json::json!({
-                    "order_id": msg.order_id.map(|id| id.to_string()),
-                    "selected_message_idx": app.selected_message_idx,
-                    "action": format!("{:?}", action),
-                    "order_status": msg.order_status.map(|s| format!("{:?}", s)),
-                    "timestamp": msg.timestamp,
-                }),
-            );
-            // #endregion
             if matches!(action, Action::AddInvoice | Action::PayInvoice)
                 && invoice_popup_allowed_for_order_status(&action, msg.order_status)
             {
@@ -945,6 +910,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 Action::HoldInvoicePaymentAccepted
                     | Action::FiatSentOk
                     | Action::CooperativeCancelInitiatedByPeer
+                    | Action::BuyerTookOrder
             ) {
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
@@ -964,18 +930,6 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     action: notification.action,
                     button_selection,
                 };
-                // #region agent log
-                debug_log_enter(
-                    "H6",
-                    "src/ui/key_handler/enter_handlers.rs:messages_open_viewing_message",
-                    "Created ViewingMessage state from Messages tab",
-                    serde_json::json!({
-                        "order_id": view_state.order_id.map(|id| id.to_string()),
-                        "action": format!("{:?}", view_state.action),
-                        "button_selection": format!("{:?}", view_state.button_selection),
-                    }),
-                );
-                // #endregion
                 app.mode = UiMode::ViewingMessage(view_state);
             } else if matches!(action, Action::Rate) {
                 if let Some(oid) = msg.order_id {

@@ -1,12 +1,11 @@
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
-use std::fs::OpenOptions;
-use std::io::Write;
 
 use crate::ui::constants::{
     BUY_ORDER_FLOW_STEPS_MAKER, BUY_ORDER_FLOW_STEPS_TAKER, GENERIC_ORDER_FLOW_STEPS_TAKER,
-    SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
+    SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
+    VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
 };
 
 pub use crate::ui::constants::StepLabel;
@@ -187,58 +186,13 @@ pub struct OrderMessage {
     pub auto_popup_shown: bool,
 }
 
-fn debug_log_ui_state(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "sessionId": "715880",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis()
-    });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("debug-715880.log")
-    {
-        let _ = writeln!(file, "{payload}");
-    }
-}
-
 /// Drop `new-order` rows and fix selection. Those DMs are not shown in the Messages tab
 /// (order creation ack is handled via `send_new_order` / waiting UI).
 pub fn strip_new_order_messages_and_clamp_selected(
     messages: &mut Vec<OrderMessage>,
     selected_message_idx: &mut usize,
 ) {
-    let before_len = messages.len();
-    let before_new_order_count = messages
-        .iter()
-        .filter(|m| matches!(m.message.get_inner_message_kind().action, Action::NewOrder))
-        .count();
-    let before_non_new_order_count = before_len.saturating_sub(before_new_order_count);
-    let before_actions: Vec<String> = messages
-        .iter()
-        .take(3)
-        .map(|m| format!("{:?}", m.message.get_inner_message_kind().action))
-        .collect();
     messages.retain(|m| !matches!(m.message.get_inner_message_kind().action, Action::NewOrder));
-    if before_len > 0 && messages.is_empty() {
-        // #region agent log
-        debug_log_ui_state(
-            "H10",
-            "src/ui/orders.rs:strip_new_order_messages_and_clamp_selected",
-            "Messages list became empty after strip/clamp",
-            serde_json::json!({
-                "before_len": before_len,
-                "before_new_order_count": before_new_order_count,
-                "before_non_new_order_count": before_non_new_order_count,
-                "before_actions_sample": before_actions,
-            }),
-        );
-        // #endregion
-    }
     if *selected_message_idx >= messages.len() {
         *selected_message_idx = messages.len().saturating_sub(1);
     }
@@ -341,6 +295,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
         Action::HoldInvoicePaymentAccepted => VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
+        Action::BuyerTookOrder => VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW,
         Action::Cancel => "Cancel",
         Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",
@@ -396,6 +351,8 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
         Some(Status::Canceled) => "Canceled",
         Some(Status::CanceledByAdmin) => "Admin Canceled",
         Some(Status::CooperativelyCanceled) => "Cooperatively Canceled",
+        Some(Status::WaitingBuyerInvoice) => "Waiting Buyer Invoice",
+        Some(Status::WaitingPayment) => "Waiting Seller Payment",
         Some(Status::Expired) => "Expired",
         Some(_) | None => {
             message_action_compact_label(&msg.message.get_inner_message_kind().action)
@@ -492,11 +449,8 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     // highlighted column matches [`listing_timeline_labels`] (taker wording per kind).
     let is_maker = msg.is_mine.unwrap_or(false);
     // Post-`success` phases are action-specific (`rate` vs release); handle before status.
-    if matches!(
-        &action,
-        Action::Rate | Action::RateReceived | Action::PurchaseCompleted
-    ) {
-        return FlowStep::BuyFlowStep(StepLabelsBuy::StepRate);
+    if matches!(&action, Action::FiatSentOk) {
+        return FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
         if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Buy, status) {
@@ -513,8 +467,8 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
         return message_buy_flow_step_fallback(&action);
     }
     let is_maker = msg.is_mine.unwrap_or(false);
-    if matches!(&action, Action::Rate | Action::RateReceived) {
-        return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
+    if matches!(&action, Action::FiatSentOk) {
+        return FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
         if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Sell, status) {

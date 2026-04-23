@@ -20,8 +20,6 @@ use crate::util::{
 use mostro_core::prelude::{Dispute, SmallOrder};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -31,25 +29,6 @@ use std::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
-
-fn debug_log_runtime(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "sessionId": "715880",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis()
-    });
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("debug-715880.log")
-    {
-        let _ = writeln!(file, "{payload}");
-    }
-}
 
 pub struct RuntimeReconnectContext<'a> {
     pub app: &'a mut AppState,
@@ -71,19 +50,7 @@ pub struct RuntimeReconnectContext<'a> {
 fn clear_runtime_session_state(app: &mut AppState) {
     match app.messages.lock() {
         Ok(mut messages) => {
-            let before_len = messages.len();
             messages.clear();
-            // #region agent log
-            debug_log_runtime(
-                "H11",
-                "src/ui/key_handler/async_tasks.rs:clear_runtime_session_state",
-                "Runtime session state cleared messages list",
-                serde_json::json!({
-                    "before_len": before_len,
-                    "after_len": messages.len(),
-                }),
-            );
-            // #endregion
         }
         Err(e) => {
             request_fatal_restart(format!(
@@ -154,14 +121,6 @@ fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
-    // #region agent log
-    debug_log_runtime(
-        "H12",
-        "src/ui/key_handler/async_tasks.rs:clear_runtime_tracking_state_preserve_messages",
-        "Reconnect path preserved messages while clearing runtime tracking state",
-        serde_json::json!({}),
-    );
-    // #endregion
 }
 
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys

@@ -114,6 +114,14 @@ pub const VIEW_MESSAGE_HOLD_INVOICE_PREVIEW: &str = concat!(
     "Cancel this order? This sends a cooperative Cancel request.",
 );
 
+/// Multi-line body for `Action::BuyerTookOrder` in the Messages tab (waiting for buyer fiat; optional cooperative cancel).
+pub const VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW: &str = concat!(
+    "Buyer took order — do you want to start a cooperative cancel?\n",
+    "\n",
+    "CANCEL — Start cooperative cancel (both sides must agree; same as My Trades Shift+C).\n",
+    "NO — Close without canceling.\n",
+);
+
 // Help popup lines (Messages)
 pub const HELP_MSG_ENTER_OPEN: &str = "Enter: Open selected message";
 pub const HELP_MSG_SELECT: &str = "↑↓: Select message";
