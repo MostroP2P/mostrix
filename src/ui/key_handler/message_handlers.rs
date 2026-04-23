@@ -8,7 +8,28 @@ use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
 use mostro_core::order::Status;
 use mostro_core::prelude::*;
+use std::fs::OpenOptions;
+use std::io::Write;
 use uuid::Uuid;
+
+fn debug_log_ui(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let payload = serde_json::json!({
+        "sessionId": "715880",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis()
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("debug-715880.log")
+    {
+        let _ = writeln!(file, "{payload}");
+    }
+}
 
 /// Handle Enter key when viewing a message.
 pub fn handle_enter_viewing_message(
@@ -16,6 +37,19 @@ pub fn handle_enter_viewing_message(
     view_state: &MessageViewState,
     ctx: &EnterKeyContext<'_>,
 ) {
+    // #region agent log
+    debug_log_ui(
+        "H1",
+        "src/ui/key_handler/message_handlers.rs:handle_enter_viewing_message:entry",
+        "ViewingMessage enter pressed",
+        serde_json::json!({
+            "source_action": format!("{:?}", view_state.action),
+            "button_selection": format!("{:?}", view_state.button_selection),
+            "order_id": view_state.order_id.map(|id| id.to_string()),
+        }),
+    );
+    // #endregion
+
     let default_mode = match app.user_role {
         UserRole::User => UiMode::UserMode(UserMode::Normal),
         UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
@@ -53,6 +87,17 @@ pub fn handle_enter_viewing_message(
             return;
         }
     };
+    // #region agent log
+    debug_log_ui(
+        "H1",
+        "src/ui/key_handler/message_handlers.rs:handle_enter_viewing_message:action_map",
+        "Mapped source action to outbound action",
+        serde_json::json!({
+            "source_action": format!("{:?}", view_state.action),
+            "outbound_action": format!("{:?}", action_to_send),
+        }),
+    );
+    // #endregion
 
     // Get order_id from view_state
     let Some(order_id) = view_state.order_id else {
@@ -97,6 +142,18 @@ pub fn handle_enter_viewing_message(
         .await
         {
             Ok(_) => {
+                // #region agent log
+                debug_log_ui(
+                    "H1",
+                    "src/ui/key_handler/message_handlers.rs:handle_enter_viewing_message:send_ok",
+                    "Follow-up message sent successfully",
+                    serde_json::json!({
+                        "order_id": order_id.to_string(),
+                        "source_action": format!("{:?}", source_action),
+                        "sent_cooperative_cancel_from_hold_invoice": sent_cooperative_cancel_from_hold_invoice,
+                    }),
+                );
+                // #endregion
                 let out = if source_action == Action::CooperativeCancelInitiatedByPeer {
                     match update_order_status(
                         &pool_clone,
@@ -128,6 +185,18 @@ pub fn handle_enter_viewing_message(
                 let _ = result_tx.send(out);
             }
             Err(e) => {
+                // #region agent log
+                debug_log_ui(
+                    "H1",
+                    "src/ui/key_handler/message_handlers.rs:handle_enter_viewing_message:send_err",
+                    "Follow-up message failed",
+                    serde_json::json!({
+                        "order_id": order_id.to_string(),
+                        "source_action": format!("{:?}", source_action),
+                        "error": e.to_string(),
+                    }),
+                );
+                // #endregion
                 log::error!("Failed to send message: {}", e);
                 let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
@@ -149,6 +218,18 @@ pub fn handle_enter_message_notification(
             let order_result_tx_clone = ctx.order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
+                    // #region agent log
+                    debug_log_ui(
+                        "H2",
+                        "src/ui/key_handler/message_handlers.rs:handle_enter_message_notification:add_invoice_submit",
+                        "Submitting AddInvoice from popup",
+                        serde_json::json!({
+                            "order_id": order_id.to_string(),
+                            "invoice_len": invoice_state.invoice_input.len(),
+                            "popup_action": "AddInvoice",
+                        }),
+                    );
+                    // #endregion
                     // Set waiting mode based on user role
                     let default_mode = match app.user_role {
                         UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),

@@ -1,6 +1,8 @@
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 use crate::ui::constants::{
     BUY_ORDER_FLOW_STEPS_MAKER, BUY_ORDER_FLOW_STEPS_TAKER, GENERIC_ORDER_FLOW_STEPS_TAKER,
@@ -185,13 +187,58 @@ pub struct OrderMessage {
     pub auto_popup_shown: bool,
 }
 
+fn debug_log_ui_state(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let payload = serde_json::json!({
+        "sessionId": "715880",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis()
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("debug-715880.log")
+    {
+        let _ = writeln!(file, "{payload}");
+    }
+}
+
 /// Drop `new-order` rows and fix selection. Those DMs are not shown in the Messages tab
 /// (order creation ack is handled via `send_new_order` / waiting UI).
 pub fn strip_new_order_messages_and_clamp_selected(
     messages: &mut Vec<OrderMessage>,
     selected_message_idx: &mut usize,
 ) {
+    let before_len = messages.len();
+    let before_new_order_count = messages
+        .iter()
+        .filter(|m| matches!(m.message.get_inner_message_kind().action, Action::NewOrder))
+        .count();
+    let before_non_new_order_count = before_len.saturating_sub(before_new_order_count);
+    let before_actions: Vec<String> = messages
+        .iter()
+        .take(3)
+        .map(|m| format!("{:?}", m.message.get_inner_message_kind().action))
+        .collect();
     messages.retain(|m| !matches!(m.message.get_inner_message_kind().action, Action::NewOrder));
+    if before_len > 0 && messages.is_empty() {
+        // #region agent log
+        debug_log_ui_state(
+            "H10",
+            "src/ui/orders.rs:strip_new_order_messages_and_clamp_selected",
+            "Messages list became empty after strip/clamp",
+            serde_json::json!({
+                "before_len": before_len,
+                "before_new_order_count": before_new_order_count,
+                "before_non_new_order_count": before_non_new_order_count,
+                "before_actions_sample": before_actions,
+            }),
+        );
+        // #endregion
+    }
     if *selected_message_idx >= messages.len() {
         *selected_message_idx = messages.len().saturating_sub(1);
     }

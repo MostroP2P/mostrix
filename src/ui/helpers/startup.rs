@@ -162,14 +162,12 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    let action = if order.is_mine {
-        Action::NewOrder
-    } else {
-        match kind {
-            Some(OrderKind::Buy) => Action::TakeBuy,
-            Some(OrderKind::Sell) => Action::TakeSell,
-            None => Action::NewOrder,
-        }
+    // Use non-NewOrder actions for history projection so My Trades can be DB-fed
+    // without polluting Messages-tab rows that are intentionally stripped.
+    let action = match kind {
+        Some(OrderKind::Buy) => Action::TakeBuy,
+        Some(OrderKind::Sell) => Action::TakeSell,
+        None => Action::WaitingSellerToPay,
     };
 
     let mut payload_order = SmallOrder::default();
@@ -196,7 +194,7 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         Some(Payload::Order(payload_order)),
     );
 
-    Some(OrderMessage {
+    let history_message = OrderMessage {
         message,
         timestamp: order
             .last_seen_dm_ts
@@ -212,7 +210,8 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         order_status: status,
         read: true,
         auto_popup_shown: true,
-    })
+    };
+    Some(history_message)
 }
 
 pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &mut AppState) {

@@ -14,6 +14,8 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,6 +62,25 @@ static GIFTWRAP_FALLBACK_DECRYPT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Last fallback scan: loop duration in milliseconds.
 static GIFTWRAP_FALLBACK_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+
+fn debug_log_dm(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let payload = serde_json::json!({
+        "sessionId": "715880",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis()
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("debug-715880.log")
+    {
+        let _ = writeln!(file, "{payload}");
+    }
+}
 
 pub struct StartupDmHydration {
     pub active_order_trade_indices: HashMap<Uuid, i64>,
@@ -451,6 +472,20 @@ async fn handle_trade_dm_for_order(
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
+    if matches!(action, Action::NewOrder) {
+        // #region agent log
+        debug_log_dm(
+            "H13",
+            "src/util/dm_utils/mod.rs:handle_trade_dm_for_order:skip_new_order",
+            "Skipping NewOrder DM for Messages tab hydration",
+            serde_json::json!({
+                "order_id": order_id.to_string(),
+                "trade_index": trade_index,
+            }),
+        );
+        // #endregion
+        return;
+    }
 
     let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
     let status_from_db = db_order
@@ -458,6 +493,20 @@ async fn handle_trade_dm_for_order(
         .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
 
     let status_candidate = resolved_status_candidate(&action, &inner_kind.payload);
+    // #region agent log
+    debug_log_dm(
+        "H3",
+        "src/util/dm_utils/mod.rs:handle_trade_dm_for_order:status_resolution",
+        "Resolved DM status candidate and current DB status",
+        serde_json::json!({
+            "order_id": order_id.to_string(),
+            "action": format!("{:?}", action),
+            "status_from_db": status_from_db.map(|s| format!("{:?}", s)),
+            "status_candidate": status_candidate.map(|s| format!("{:?}", s)),
+            "has_payload": inner_kind.payload.is_some(),
+        }),
+    );
+    // #endregion
 
     // Taker pre-Active cancel returns the order to the book; drop stale local row instead of
     // keeping it as terminal trade state.
@@ -614,6 +663,21 @@ async fn handle_trade_dm_for_order(
     } else {
         baseline_status
     };
+    // #region agent log
+    debug_log_dm(
+        "H5",
+        "src/util/dm_utils/mod.rs:handle_trade_dm_for_order:effective_status",
+        "Computed effective status for messages row",
+        serde_json::json!({
+            "order_id": order_id.to_string(),
+            "action": format!("{:?}", action),
+            "baseline_status": baseline_status.map(|s| format!("{:?}", s)),
+            "status_candidate": status_candidate.map(|s| format!("{:?}", s)),
+            "should_accept_candidate": should_accept_candidate,
+            "effective_order_status": effective_order_status.map(|s| format!("{:?}", s)),
+        }),
+    );
+    // #endregion
 
     if let Some(candidate) = status_candidate {
         let oid = small_order_ref_from_payload(&inner_kind.payload)
@@ -687,11 +751,48 @@ async fn handle_trade_dm_for_order(
             return;
         }
     };
-    // Keep one row per order, but ensure the newly accepted message is the one kept.
-    // This avoids dropping same-timestamp/different-action updates during dedup.
-    messages_lock.retain(|m| m.order_id != Some(order_id));
-    messages_lock.push(order_message.clone());
-    messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    // Keep one row per order, but do not let older stale replay messages overwrite the
+    // currently selected action row after startup/reconnect hydration.
+    let before_len = messages_lock.len();
+    let should_replace_row = match &existing_message_data {
+        None => true,
+        Some((existing_timestamp, existing_action, _, _, _, _, _, _)) => {
+            // Never let replayed `NewOrder` replace an already-established trade row.
+            // Otherwise Messages can regress to only NewOrder rows, which the UI strips.
+            if matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder) {
+                false
+            } else if timestamp > *existing_timestamp {
+                true
+            } else if timestamp == *existing_timestamp {
+                action != *existing_action
+            } else {
+                // Older-than-current replay: only replace if it advances accepted status.
+                should_accept_candidate
+            }
+        }
+    };
+    if should_replace_row {
+        messages_lock.retain(|m| m.order_id != Some(order_id));
+        messages_lock.push(order_message.clone());
+        messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    }
+    // #region agent log
+    debug_log_dm(
+        "H5",
+        "src/util/dm_utils/mod.rs:handle_trade_dm_for_order:messages_replace",
+        "Replaced messages row for order",
+        serde_json::json!({
+            "order_id": order_id.to_string(),
+            "action": format!("{:?}", action),
+                "should_replace_row": should_replace_row,
+            "before_len": before_len,
+            "after_len": messages_lock.len(),
+            "row_status": order_message.order_status.map(|s| format!("{:?}", s)),
+            "row_kind": order_message.order_kind.map(|k| format!("{:?}", k)),
+            "row_is_mine": order_message.is_mine,
+        }),
+    );
+    // #endregion
 
     // Send notification only for actionable/new updates; this avoids follow-up AddInvoice
     // payload variants (without order amount) from retriggering invoice popups with 0 sats.
@@ -713,7 +814,20 @@ enum GiftWrapTerminalPolicy<'a> {
 fn remove_order_from_messages(messages: &Arc<Mutex<Vec<OrderMessage>>>, order_id: Uuid) {
     match messages.lock() {
         Ok(mut guard) => {
+            let before_len = guard.len();
             guard.retain(|m| m.order_id != Some(order_id));
+            // #region agent log
+            debug_log_dm(
+                "H4",
+                "src/util/dm_utils/mod.rs:remove_order_from_messages",
+                "Removed order rows from messages list",
+                serde_json::json!({
+                    "order_id": order_id.to_string(),
+                    "before_len": before_len,
+                    "after_len": guard.len(),
+                }),
+            );
+            // #endregion
         }
         Err(e) => {
             crate::util::request_fatal_restart(format!(
@@ -749,6 +863,7 @@ async fn dispatch_giftwrap_batch(
 
     for (message, timestamp, sender) in parsed_messages {
         let has_terminal_status = trade_message_is_terminal(&message);
+        let action_for_log = format!("{:?}", message.get_inner_message_kind().action);
         log::info!(
             "order id: {} has_terminal_status: {:?}",
             order_id,
@@ -788,6 +903,22 @@ async fn dispatch_giftwrap_batch(
         }
 
         if has_terminal_status {
+            // #region agent log
+            debug_log_dm(
+                "H4",
+                "src/util/dm_utils/mod.rs:dispatch_giftwrap_batch:terminal_detected",
+                "Terminal message detected during giftwrap dispatch",
+                serde_json::json!({
+                    "order_id": order_id.to_string(),
+                    "trade_index": trade_index,
+                    "action": action_for_log,
+                    "terminal_policy": match terminal_policy {
+                        GiftWrapTerminalPolicy::TrackedSubscription(_) => "TrackedSubscription",
+                        GiftWrapTerminalPolicy::UntrackedFallback => "UntrackedFallback",
+                    },
+                }),
+            );
+            // #endregion
             match terminal_policy {
                 GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
                     log::info!(
