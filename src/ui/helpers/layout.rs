@@ -44,7 +44,7 @@ pub fn render_yes_no_buttons(
     yes_label: &str,
     no_label: &str,
 ) {
-    let button_width = 15;
+    let button_width = 18;
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
 

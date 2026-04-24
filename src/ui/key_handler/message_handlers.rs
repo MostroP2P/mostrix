@@ -1,14 +1,74 @@
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
 use crate::ui::{
-    AdminMode, AppState, MessageViewState, RatingOrderState, UiMode, UserMode, UserRole,
-    ViewingMessageButtonSelection,
+    AdminMode, AppState, InvoiceNotificationActionSelection, MessageViewState, RatingOrderState,
+    UiMode, UserMode, UserRole, ViewingMessageButtonSelection,
 };
 use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
 use mostro_core::order::Status;
 use mostro_core::prelude::*;
 use uuid::Uuid;
+
+fn role_default_mode(user_role: UserRole) -> UiMode {
+    match user_role {
+        UserRole::User => UiMode::UserMode(UserMode::Normal),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    }
+}
+
+fn role_waiting_mode(user_role: UserRole) -> UiMode {
+    match user_role {
+        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
+        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+    }
+}
+
+fn should_send_cancel_from_invoice_popup(selection: InvoiceNotificationActionSelection) -> bool {
+    matches!(selection, InvoiceNotificationActionSelection::Cancel)
+}
+
+fn spawn_cancel_from_notification(
+    app: &mut AppState,
+    ctx: &EnterKeyContext<'_>,
+    order_id: Option<Uuid>,
+) {
+    let Some(order_id) = order_id else {
+        let _ = ctx
+            .order_result_tx
+            .send(OperationResult::Error("No order ID in message".to_string()));
+        app.mode = role_default_mode(app.user_role);
+        return;
+    };
+
+    app.mode = role_waiting_mode(app.user_role);
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let order_result_tx_clone = ctx.order_result_tx.clone();
+    let mostro_info = ctx.mostro_info.clone();
+    tokio::spawn(async move {
+        match execute_send_msg(
+            &order_id,
+            Action::Cancel,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = order_result_tx_clone
+                    .send(OperationResult::Info("Cancel request sent.".to_string()));
+            }
+            Err(e) => {
+                log::error!("Failed to cancel order from invoice popup: {}", e);
+                let _ = order_result_tx_clone.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
+}
 
 /// Handle Enter key when viewing a message.
 pub fn handle_enter_viewing_message(
@@ -148,15 +208,16 @@ pub fn handle_enter_message_notification(
 ) {
     match action {
         Action::AddInvoice => {
+            if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {
+                spawn_cancel_from_notification(app, ctx, order_id);
+                return;
+            }
             // For AddInvoice, Enter submits the invoice
             let order_result_tx_clone = ctx.order_result_tx.clone();
             if !invoice_state.invoice_input.trim().is_empty() {
                 if let Some(order_id) = order_id {
                     // Set waiting mode based on user role
-                    let default_mode = match app.user_role {
-                        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
-                        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-                    };
+                    let default_mode = role_waiting_mode(app.user_role);
                     app.pending_post_take_operation_result = None;
                     app.mode = default_mode;
 
@@ -192,12 +253,34 @@ pub fn handle_enter_message_notification(
                 }
             }
         }
-        Action::PayInvoice => {}
+        Action::PayInvoice => {
+            if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {
+                spawn_cancel_from_notification(app, ctx, order_id);
+                return;
+            }
+            // Primary path for PayInvoice is acknowledgement: close popup.
+            app.mode = role_default_mode(app.user_role);
+        }
         _ => {
             let _ = ctx
                 .order_result_tx
                 .send(OperationResult::Error("Invalid action".to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_selection_triggers_cancel_path() {
+        assert!(should_send_cancel_from_invoice_popup(
+            InvoiceNotificationActionSelection::Cancel
+        ));
+        assert!(!should_send_cancel_from_invoice_popup(
+            InvoiceNotificationActionSelection::Primary
+        ));
     }
 }
 

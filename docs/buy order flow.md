@@ -86,13 +86,15 @@ For actions that require explicit confirmation (e.g. **`HoldInvoicePaymentAccept
 ### Cancel and dispute from `active`
 
 - From **`active`** (and adjacent states if the protocol allows), Enter should offer paths toward **cooperative cancel** and **dispute** (e.g. submenu or dedicated mode), not only passive info.
-- **Before `active`**, unilateral cancel (if supported) should be reachable from the same surface or a documented alternative (key binding / command). Exact UX is **TBD**; this spec only requires that Messages tab not rely solely on “info” popups for those intents.
+- **Before `active`**, unilateral cancel is reachable from the same Messages popup surface for invoice/payment phases (see current implementation pointer below).
 
 ### Current implementation pointer (non-normative)
 
 In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by **`Action`** (and by **`order_id`** where required):
 
 - **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`).
+- **`WaitingBuyerInvoice` / `WaitingSellerToPay`** also map to the same invoice/payment popup modes on Enter.
+- Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup.
 - **`HoldInvoicePaymentAccepted` / `FiatSentOk`** → confirmation popup (`ViewingMessage` with yes/no where applicable).
 - **`Rate`** → **rating popup** (`UiMode::RatingOrder`): choose **1–5** stars, **Enter** submits **`RateUser`** + **`RatingUser`** via **`execute_rate_user`** in `src/util/order_utils/execute_send_msg.rs` (Mostro resolves the counterparty; only **`order_id`** + rating are sent).
 - **Else** → informational `OperationResult::Info` (no send).

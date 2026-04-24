@@ -201,6 +201,9 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 - **Forms**: Character input and Backspace are handled by `handle_char_input` and `handle_backspace` for fields in `FormState`.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
+  - `AddInvoice` popup paste fallback: when `Event::Paste` is unavailable, key shortcuts (`Shift+Insert`, `Ctrl+V`, `Ctrl+Shift+V` where emitted) paste from clipboard.
+  - Windows right-click fallback: mouse right-click in `AddInvoice` popup tries clipboard paste via a dedicated `Event::Mouse` path.
+  - `just_pasted` is preserved so immediate `Enter` after paste does not accidentally submit.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
   - Supports direct character input and backspace
@@ -226,6 +229,11 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
+- **Invoice popups (`NewMessageNotification`)**:
+  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode.
+  - `PayInvoice` / `WaitingSellerToPay` map to payment popup mode.
+  - Both popups provide two actions (`Primary` + `Cancel Order`) via Left/Right selection; Enter confirms the selected action.
+  - `PayInvoice` keeps copy (`C`) and scroll (`Up/Down`, `PageUp/PageDown`) behavior while adding cancel selection.
 
 **`ViewingMessage` (trade confirmations)** — `render_message_view` in `src/ui/tabs/tab_content.rs`:
 

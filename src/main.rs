@@ -10,7 +10,7 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup, sync_user_order_history_messages_from_db,
+    load_user_order_chats_at_startup,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -43,7 +43,7 @@ use crossterm::terminal::{
 };
 use crossterm::{
     self,
-    event::{Event, KeyEvent},
+    event::{Event, KeyEvent, MouseButton, MouseEventKind},
 };
 use fern::Dispatch;
 use futures::StreamExt;
@@ -59,6 +59,16 @@ use zeroize::Zeroizing;
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
+
+fn read_clipboard_text_best_effort() -> Option<String> {
+    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            log::warn!("Failed to read clipboard text: {}", e);
+            None
+        }
+    }
+}
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -353,9 +363,10 @@ async fn main() -> Result<(), anyhow::Error> {
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
 
                     handle_operation_result(result, &mut app);
-                    if app.user_role == UserRole::User {
-                        sync_user_order_history_messages_from_db(&pool, &mut app).await;
-                    }
+                    // TODO: Uncomment this when we have a way to sync user order history messages from the DB
+                    // if app.user_role == UserRole::User {
+                    //     sync_user_order_history_messages_from_db(&pool, &mut app).await;
+                    // }
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {
@@ -511,6 +522,52 @@ async fn main() -> Result<(), anyhow::Error> {
                         app.observer_shared_key_input.push_str(&filtered_text);
                     }
                     continue;
+                }
+
+                // Mouse right-click paste fallback for terminals that do not emit Event::Paste.
+                if let Event::Mouse(mouse_event) = event {
+                    if matches!(
+                        mouse_event.kind,
+                        MouseEventKind::Down(MouseButton::Right)
+                    ) {
+                        log::debug!(
+                            "Detected right-click mouse event at x={}, y={}",
+                            mouse_event.column,
+                            mouse_event.row
+                        );
+                        if let UiMode::NewMessageNotification(
+                            _,
+                            Action::AddInvoice,
+                            ref mut invoice_state,
+                        ) = app.mode
+                        {
+                            if invoice_state.focused {
+                                if let Some(text) = read_clipboard_text_best_effort() {
+                                    let filtered_text: String = text
+                                        .chars()
+                                        .filter(|c| !c.is_control() || *c == '\t')
+                                        .collect();
+                                    if !filtered_text.is_empty() {
+                                        log::debug!(
+                                            "Right-click paste fallback appended {} chars to AddInvoice input",
+                                            filtered_text.chars().count()
+                                        );
+                                        invoice_state.invoice_input.push_str(&filtered_text);
+                                        invoice_state.just_pasted = true;
+                                    } else {
+                                        log::debug!(
+                                            "Right-click paste fallback found only control characters"
+                                        );
+                                    }
+                                } else {
+                                    log::debug!(
+                                        "Right-click paste fallback could not read clipboard text"
+                                    );
+                                }
+                                continue;
+                            }
+                        }
+                    }
                 }
 
 

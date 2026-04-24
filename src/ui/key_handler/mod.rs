@@ -19,8 +19,8 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
-    MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
-    ViewingMessageButtonSelection,
+    InvoiceNotificationActionSelection, MostroInfoFetchResult, OperationResult, Tab,
+    TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
 };
 use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
@@ -280,6 +280,33 @@ fn read_clipboard_text_best_effort() -> Option<String> {
     }
 }
 
+fn is_paste_shortcut(key_event: &KeyEvent) -> bool {
+    let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
+    match key_event.code {
+        KeyCode::Insert => is_shift,
+        KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
+        _ => false,
+    }
+}
+
+fn update_invoice_notification_action_selection(
+    code: KeyCode,
+    invoice_state: &mut crate::ui::InvoiceInputState,
+) -> bool {
+    match code {
+        KeyCode::Left => {
+            invoice_state.action_selection = InvoiceNotificationActionSelection::Primary;
+            true
+        }
+        KeyCode::Right => {
+            invoice_state.action_selection = InvoiceNotificationActionSelection::Cancel;
+            true
+        }
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -356,22 +383,23 @@ pub fn handle_key_event(
         }
     }
 
-    // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe):
-    // - Shift+Insert (classic Windows paste)
-    // - Ctrl+Shift+V (Windows Terminal-style paste shortcut)
-    // - Ctrl+V when the console delivers it as a key event
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
-        let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
-        let is_paste_shortcut = match key_event.code {
-            KeyCode::Insert => is_shift,
-            KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
-            _ => false,
-        } || (is_ctrl
-            && is_shift
-            && matches!(key_event.code, KeyCode::Char('v') | KeyCode::Char('V')));
+    // AddInvoice popup paste fallback for terminals without bracketed paste support.
+    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
+        if is_paste_shortcut(&key_event) {
+            if let Some(text) = read_clipboard_text_best_effort() {
+                let filtered_text: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !filtered_text.is_empty() {
+                    invoice_state.invoice_input.push_str(&filtered_text);
+                    invoice_state.just_pasted = true;
+                    return Some(true);
+                }
+            }
+        }
+    }
 
-        if is_paste_shortcut {
+    // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe).
+    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        if is_paste_shortcut(&key_event) {
             if let Some(text) = read_clipboard_text_best_effort() {
                 let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !filtered.is_empty() {
@@ -866,6 +894,16 @@ pub fn handle_key_event(
                     }
                     return Some(true);
                 }
+                UiMode::NewMessageNotification(
+                    _,
+                    Action::AddInvoice | Action::PayInvoice,
+                    ref mut invoice_state,
+                ) => {
+                    return Some(update_invoice_notification_action_selection(
+                        code,
+                        invoice_state,
+                    ))
+                }
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
                     ref mut selected_button_index,
@@ -1041,5 +1079,50 @@ pub fn handle_key_event(
             Some(true)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod key_handler_tests {
+    use super::*;
+    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn paste_shortcut_accepts_shift_insert_and_ctrl_v() {
+        let shift_insert = KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT);
+        assert!(is_paste_shortcut(&shift_insert));
+
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(is_paste_shortcut(&ctrl_v));
+    }
+
+    #[test]
+    fn invoice_notification_selection_toggles_with_arrows() {
+        let mut state = InvoiceInputState {
+            invoice_input: String::new(),
+            focused: true,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+        };
+
+        assert!(update_invoice_notification_action_selection(
+            KeyCode::Right,
+            &mut state
+        ));
+        assert_eq!(
+            state.action_selection,
+            InvoiceNotificationActionSelection::Cancel
+        );
+        assert!(update_invoice_notification_action_selection(
+            KeyCode::Left,
+            &mut state
+        ));
+        assert_eq!(
+            state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        );
     }
 }

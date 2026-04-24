@@ -456,6 +456,22 @@ When the counterparty initiates cooperative cancel, Mostrix receives a trade DM 
 
 When the relay later delivers **`CooperativeCancelAccepted`**, the DM listener treats it as **terminal** (`trade_message_is_terminal`), may update status again if needed, and performs the usual subscription cleanup. See **DM_LISTENER_FLOW.md** (terminal cleanup, status inference).
 
+### Invoice notifications in Messages tab
+
+For invoice-related trade actions, the Messages Enter path uses `UiMode::NewMessageNotification` with a dual-action popup model:
+
+- Action mapping:
+  - `AddInvoice` and `WaitingBuyerInvoice` -> AddInvoice popup mode.
+  - `PayInvoice` and `WaitingSellerToPay` -> PayInvoice popup mode.
+- Popup selection:
+  - Left/Right toggles between **Primary** and **Cancel Order**.
+  - Enter confirms the selected action.
+- Cancel path:
+  - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow.
+- Paste/copy details:
+  - AddInvoice supports bracketed paste plus key/mouse fallbacks where terminals do not emit `Event::Paste`.
+  - PayInvoice keeps copy (`C`) + scroll behavior while supporting cancel selection.
+
 ### Rating the counterparty (`RateUser`)
 
 After a successful trade, Mostro may prompt with a DM whose **`action`** is **`rate`** and **`payload`** is **`null`**, while the local DB row may still show **`success`**. The client must not infer the UI step from **`Status::Success` alone** for that message.

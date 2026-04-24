@@ -235,6 +235,13 @@ pub fn invoice_popup_allowed_for_order_status(
 }
 
 /// State for handling invoice input in AddInvoice notifications
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum InvoiceNotificationActionSelection {
+    Primary,
+    Cancel,
+}
+
+/// State for handling invoice input in AddInvoice notifications
 #[derive(Clone, Debug)]
 pub struct InvoiceInputState {
     pub invoice_input: String,
@@ -243,6 +250,8 @@ pub struct InvoiceInputState {
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
     /// Vertical scroll offset for long invoice display (PayInvoice popup).
     pub scroll_y: u16,
+    /// Selected action in AddInvoice/PayInvoice popup.
+    pub action_selection: InvoiceNotificationActionSelection,
 }
 
 /// State for handling key input (pubkey or privkey) in admin settings

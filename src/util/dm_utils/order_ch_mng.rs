@@ -1,7 +1,8 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::orders::{strip_new_order_messages_and_clamp_selected, OrderSuccess};
 use crate::ui::{
-    AppState, InvoiceInputState, MessageNotification, OperationResult, UiMode, UserMode,
+    AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
+    OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
 use uuid::Uuid;
@@ -127,6 +128,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             just_pasted: false,
             copied_to_clipboard: false,
             scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
         };
         // Reuse pay invoice popup for buy orders when taking an order
         app.mode = UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);
