@@ -14,8 +14,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
-    reload_runtime_session_after_reconnect, spawn_refresh_mostro_info_task, AppChannels,
-    RuntimeReconnectContext,
+    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    spawn_refresh_mostro_info_task, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{MostroInfoFetchResult, OperationResult};
@@ -43,7 +43,7 @@ use crossterm::terminal::{
 };
 use crossterm::{
     self,
-    event::{Event, KeyEvent, MouseButton, MouseEventKind},
+    event::{Event, KeyEvent},
 };
 use fern::Dispatch;
 use futures::StreamExt;
@@ -59,16 +59,6 @@ use zeroize::Zeroizing;
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
-
-fn read_clipboard_text_best_effort() -> Option<String> {
-    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            log::warn!("Failed to read clipboard text: {}", e);
-            None
-        }
-    }
-}
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -524,50 +514,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     continue;
                 }
 
-                // Mouse right-click paste fallback for terminals that do not emit Event::Paste.
-                if let Event::Mouse(mouse_event) = event {
-                    if matches!(
-                        mouse_event.kind,
-                        MouseEventKind::Down(MouseButton::Right)
-                    ) {
-                        log::debug!(
-                            "Detected right-click mouse event at x={}, y={}",
-                            mouse_event.column,
-                            mouse_event.row
-                        );
-                        if let UiMode::NewMessageNotification(
-                            _,
-                            Action::AddInvoice,
-                            ref mut invoice_state,
-                        ) = app.mode
-                        {
-                            if invoice_state.focused {
-                                if let Some(text) = read_clipboard_text_best_effort() {
-                                    let filtered_text: String = text
-                                        .chars()
-                                        .filter(|c| !c.is_control() || *c == '\t')
-                                        .collect();
-                                    if !filtered_text.is_empty() {
-                                        log::debug!(
-                                            "Right-click paste fallback appended {} chars to AddInvoice input",
-                                            filtered_text.chars().count()
-                                        );
-                                        invoice_state.invoice_input.push_str(&filtered_text);
-                                        invoice_state.just_pasted = true;
-                                    } else {
-                                        log::debug!(
-                                            "Right-click paste fallback found only control characters"
-                                        );
-                                    }
-                                } else {
-                                    log::debug!(
-                                        "Right-click paste fallback could not read clipboard text"
-                                    );
-                                }
-                                continue;
-                            }
-                        }
-                    }
+                if handle_mouse_invoice_paste_fallback(&event, &mut app) {
+                    continue;
                 }
 
 

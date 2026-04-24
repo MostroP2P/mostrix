@@ -24,7 +24,7 @@ use crate::ui::{
 };
 use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
@@ -278,6 +278,49 @@ fn read_clipboard_text_best_effort() -> Option<String> {
             None
         }
     }
+}
+
+/// Mouse right-click paste fallback for AddInvoice notification popup.
+///
+/// Returns `true` when the event is fully handled and should be consumed by the caller.
+pub fn handle_mouse_invoice_paste_fallback(event: &Event, app: &mut AppState) -> bool {
+    let Event::Mouse(mouse_event) = event else {
+        return false;
+    };
+    if !matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Right)) {
+        return false;
+    }
+    log::debug!(
+        "Detected right-click mouse event at x={}, y={}",
+        mouse_event.column,
+        mouse_event.row
+    );
+    let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode
+    else {
+        return false;
+    };
+    if !invoice_state.focused {
+        return false;
+    }
+    if let Some(text) = read_clipboard_text_best_effort() {
+        let filtered_text: String = text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\t')
+            .collect();
+        if !filtered_text.is_empty() {
+            log::debug!(
+                "Right-click paste fallback appended {} chars to AddInvoice input",
+                filtered_text.chars().count()
+            );
+            invoice_state.invoice_input.push_str(&filtered_text);
+            invoice_state.just_pasted = true;
+        } else {
+            log::debug!("Right-click paste fallback found only control characters");
+        }
+    } else {
+        log::debug!("Right-click paste fallback could not read clipboard text");
+    }
+    true
 }
 
 fn is_paste_shortcut(key_event: &KeyEvent) -> bool {

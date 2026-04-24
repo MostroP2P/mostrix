@@ -269,21 +269,6 @@ pub fn handle_enter_message_notification(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cancel_selection_triggers_cancel_path() {
-        assert!(should_send_cancel_from_invoice_popup(
-            InvoiceNotificationActionSelection::Cancel
-        ));
-        assert!(!should_send_cancel_from_invoice_popup(
-            InvoiceNotificationActionSelection::Primary
-        ));
-    }
-}
-
 /// Confirm and send the selected star rating (`RateUser`).
 pub fn handle_enter_rating_order(
     app: &mut AppState,
@@ -326,4 +311,19 @@ pub fn handle_enter_rating_order(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_selection_triggers_cancel_path() {
+        assert!(should_send_cancel_from_invoice_popup(
+            InvoiceNotificationActionSelection::Cancel
+        ));
+        assert!(!should_send_cancel_from_invoice_popup(
+            InvoiceNotificationActionSelection::Primary
+        ));
+    }
 }
