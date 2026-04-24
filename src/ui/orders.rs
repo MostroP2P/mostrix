@@ -263,12 +263,59 @@ pub struct KeyInputState {
 }
 
 /// YES/NO selection for `ViewingMessage` popups (FiatSentOk, My Trades actions, etc.).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ThreeState {
+    Yes,
+    No,
+    Cancel,
+}
+
+impl ThreeState {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Yes => Self::No,
+            Self::No => Self::Cancel,
+            Self::Cancel => Self::Yes,
+        }
+    }
+
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Yes => Self::Cancel,
+            Self::No => Self::Yes,
+            Self::Cancel => Self::No,
+        }
+    }
+
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::Yes => 0,
+            Self::No => 1,
+            Self::Cancel => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViewingMessageButtonSelection {
     /// `true` = YES highlighted, `false` = NO.
     Two { yes_selected: bool },
-    /// Hold-invoice confirmation only: `0` = YES, `1` = NO, `2` = CANCEL (cooperative cancel).
-    Three { selected: u8 },
+    /// Hold-invoice confirmation only: YES / NO / CANCEL.
+    Three(ThreeState),
+}
+
+impl ViewingMessageButtonSelection {
+    pub fn cycle_three_prev(&mut self) {
+        if let Self::Three(selected) = self {
+            *selected = selected.prev();
+        }
+    }
+
+    pub fn cycle_three_next(&mut self) {
+        if let Self::Three(selected) = self {
+            *selected = selected.next();
+        }
+    }
 }
 
 /// State for viewing a simple message popup

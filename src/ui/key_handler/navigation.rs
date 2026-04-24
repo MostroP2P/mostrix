@@ -64,8 +64,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ViewingMessageButtonSelection::Two { yes_selected } => {
                 *yes_selected = true;
             }
-            ViewingMessageButtonSelection::Three { selected } => {
-                *selected = (*selected + 2) % 3;
+            selection @ ViewingMessageButtonSelection::Three(_) => {
+                selection.cycle_three_prev();
             }
         },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
@@ -132,8 +132,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ViewingMessageButtonSelection::Two { yes_selected } => {
                 *yes_selected = false;
             }
-            ViewingMessageButtonSelection::Three { selected } => {
-                *selected = (*selected + 1) % 3;
+            selection @ ViewingMessageButtonSelection::Three(_) => {
+                selection.cycle_three_next();
             }
         },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))

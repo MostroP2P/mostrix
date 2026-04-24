@@ -5,8 +5,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 
 use crate::ui::{
-    helpers, MessageViewState, RatingOrderState, ViewingMessageButtonSelection, BACKGROUND_COLOR,
-    PRIMARY_COLOR,
+    helpers, MessageViewState, RatingOrderState, ThreeState, ViewingMessageButtonSelection,
+    BACKGROUND_COLOR, PRIMARY_COLOR,
 };
 
 pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
@@ -146,7 +146,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     let hold_invoice_trinary = matches!(view_state.action, Action::HoldInvoicePaymentAccepted)
         && matches!(
             view_state.button_selection,
-            ViewingMessageButtonSelection::Three { .. }
+            ViewingMessageButtonSelection::Three(_)
         );
 
     // Multiline body: hold-invoice trinary, or `BuyerTookOrder` (CANCEL / NO for cooperative cancel).
@@ -276,7 +276,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
         let button_area = inner_chunks[6];
         if hold_invoice_trinary {
             let selected = match view_state.button_selection {
-                ViewingMessageButtonSelection::Three { selected } => selected.min(2),
+                ViewingMessageButtonSelection::Three(selected) => selected.index(),
                 ViewingMessageButtonSelection::Two { .. } => 0,
             };
             helpers::render_yes_no_cancel_buttons(
@@ -318,7 +318,9 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
         } else {
             let yes_selected = match view_state.button_selection {
                 ViewingMessageButtonSelection::Two { yes_selected } => yes_selected,
-                ViewingMessageButtonSelection::Three { .. } => true,
+                ViewingMessageButtonSelection::Three(ThreeState::Yes)
+                | ViewingMessageButtonSelection::Three(ThreeState::Cancel) => true,
+                ViewingMessageButtonSelection::Three(ThreeState::No) => false,
             };
             let (yes_label, no_label) = if matches!(view_state.action, Action::BuyerTookOrder) {
                 ("CANCEL", "NO")

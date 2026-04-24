@@ -927,11 +927,11 @@ pub fn handle_key_event(
                                 *yes_selected = false;
                             }
                         }
-                        ViewingMessageButtonSelection::Three { selected } => {
+                        selection @ ViewingMessageButtonSelection::Three(_) => {
                             if code == KeyCode::Left {
-                                *selected = (*selected + 2) % 3;
+                                selection.cycle_three_prev();
                             } else {
-                                *selected = (*selected + 1) % 3;
+                                selection.cycle_three_next();
                             }
                         }
                     }

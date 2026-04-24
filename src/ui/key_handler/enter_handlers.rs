@@ -12,7 +12,8 @@ use crate::ui::orders::{
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
-    TakeOrderState, UiMode, UserMode, UserRole, UserTab, ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, UiMode, UserMode, UserRole, UserTab,
+    ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -933,7 +934,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
                 let button_selection = if matches!(action, Action::HoldInvoicePaymentAccepted) {
-                    ViewingMessageButtonSelection::Three { selected: 0 }
+                    ViewingMessageButtonSelection::Three(ThreeState::Yes)
                 } else if matches!(action, Action::CooperativeCancelInitiatedByPeer) {
                     // Safer default: Enter should not accept cooperative cancel implicitly.
                     ViewingMessageButtonSelection::Two {

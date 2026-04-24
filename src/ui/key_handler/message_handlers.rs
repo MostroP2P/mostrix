@@ -2,7 +2,7 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
 use crate::ui::{
     AdminMode, AppState, InvoiceNotificationActionSelection, MessageViewState, RatingOrderState,
-    UiMode, UserMode, UserRole, ViewingMessageButtonSelection,
+    ThreeState, UiMode, UserMode, UserRole, ViewingMessageButtonSelection,
 };
 use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
@@ -76,10 +76,7 @@ pub fn handle_enter_viewing_message(
     view_state: &MessageViewState,
     ctx: &EnterKeyContext<'_>,
 ) {
-    let default_mode = match app.user_role {
-        UserRole::User => UiMode::UserMode(UserMode::Normal),
-        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-    };
+    let default_mode = role_default_mode(app.user_role);
 
     // NO / dismiss without sending
     match &view_state.button_selection {
@@ -89,7 +86,7 @@ pub fn handle_enter_viewing_message(
             app.mode = default_mode;
             return;
         }
-        ViewingMessageButtonSelection::Three { selected: 1 } => {
+        ViewingMessageButtonSelection::Three(ThreeState::No) => {
             app.mode = default_mode;
             return;
         }
@@ -99,8 +96,17 @@ pub fn handle_enter_viewing_message(
     // Map the action from the message to the action we need to send
     let action_to_send = match &view_state.action {
         Action::HoldInvoicePaymentAccepted => match &view_state.button_selection {
-            ViewingMessageButtonSelection::Three { selected: 2 } => Action::Cancel,
-            _ => Action::FiatSent,
+            ViewingMessageButtonSelection::Three(ThreeState::Yes)
+            | ViewingMessageButtonSelection::Three(ThreeState::No) => Action::FiatSent,
+            ViewingMessageButtonSelection::Three(ThreeState::Cancel) => Action::Cancel,
+            ViewingMessageButtonSelection::Two { yes_selected } => {
+                if *yes_selected {
+                    Action::FiatSent
+                } else {
+                    app.mode = default_mode;
+                    return;
+                }
+            }
         },
         Action::BuyerTookOrder => Action::Cancel,
         Action::FiatSentOk => Action::Release,
@@ -120,20 +126,12 @@ pub fn handle_enter_viewing_message(
         let _ = ctx
             .order_result_tx
             .send(OperationResult::Error("No order ID in message".to_string()));
-        let default_mode = match app.user_role {
-            UserRole::User => UiMode::UserMode(UserMode::Normal),
-            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-        };
-        app.mode = default_mode;
+        app.mode = role_default_mode(app.user_role);
         return;
     };
 
     // Set waiting mode based on user role
-    let waiting_mode = match app.user_role {
-        UserRole::User => UiMode::UserMode(UserMode::WaitingAddInvoice),
-        UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-    };
-    app.mode = waiting_mode;
+    app.mode = role_waiting_mode(app.user_role);
 
     // Spawn async task to send message
     let pool_clone = ctx.pool.clone();

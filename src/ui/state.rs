@@ -9,5 +9,5 @@ pub use crate::ui::orders::{
     apply_kind_color, order_message_to_notification, FormState, InvoiceInputState,
     InvoiceNotificationActionSelection, KeyInputState, MessageNotification, MessageViewState,
     MostroInfoFetchResult, OperationResult, OrderMessage, OrderSuccess, RatingOrderState,
-    TakeOrderState, ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, ViewingMessageButtonSelection,
 };
