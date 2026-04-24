@@ -12,8 +12,7 @@ use crate::ui::orders::{
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
-    TakeOrderState, ThreeState, UiMode, UserMode, UserRole, UserTab,
-    ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, UiMode, UserMode, UserRole, UserTab, ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
