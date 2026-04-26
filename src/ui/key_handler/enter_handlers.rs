@@ -934,8 +934,12 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 let notification = order_message_to_notification(msg);
                 let button_selection = if matches!(action, Action::HoldInvoicePaymentAccepted) {
                     ViewingMessageButtonSelection::Three(ThreeState::Yes)
-                } else if matches!(action, Action::CooperativeCancelInitiatedByPeer) {
-                    // Safer default: Enter should not accept cooperative cancel implicitly.
+                } else if matches!(
+                    action,
+                    Action::CooperativeCancelInitiatedByPeer | Action::BuyerTookOrder
+                ) {
+                    // Safer default: Enter should not send Cancel until the user selects YES.
+                    // (handle_enter_viewing_message maps both to Action::Cancel when confirming.)
                     ViewingMessageButtonSelection::Two {
                         yes_selected: false,
                     }
