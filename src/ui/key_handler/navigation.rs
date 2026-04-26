@@ -1,6 +1,8 @@
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
+    ViewingMessageButtonSelection,
 };
 use crossterm::event::KeyCode;
 use mostro_core::prelude::*;
@@ -59,10 +61,14 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to YES button (left side)
             take_state.selected_button = true;
         }
-        UiMode::ViewingMessage(ref mut view_state) => {
-            // Switch to YES button (left side)
-            view_state.selected_button = true;
-        }
+        UiMode::ViewingMessage(ref mut view_state) => match &mut view_state.button_selection {
+            ViewingMessageButtonSelection::Two { yes_selected } => {
+                *yes_selected = true;
+            }
+            selection @ ViewingMessageButtonSelection::Three(_) => {
+                selection.cycle_three_prev();
+            }
+        },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
@@ -73,6 +79,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+        | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -121,10 +129,14 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             // Switch to NO button (right side)
             take_state.selected_button = false;
         }
-        UiMode::ViewingMessage(ref mut view_state) => {
-            // Switch to NO button (right side)
-            view_state.selected_button = false;
-        }
+        UiMode::ViewingMessage(ref mut view_state) => match &mut view_state.button_selection {
+            ViewingMessageButtonSelection::Two { yes_selected } => {
+                *yes_selected = false;
+            }
+            selection @ ViewingMessageButtonSelection::Three(_) => {
+                selection.cycle_three_next();
+            }
+        },
         UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
@@ -135,6 +147,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRelay(_, ref mut selected_button)
         | UiMode::ConfirmCurrency(_, ref mut selected_button)
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+        | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+        | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -237,14 +251,11 @@ fn handle_up_key(
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let order_ids: std::collections::HashSet<String> = match app.messages.lock() {
-                    Ok(g) => g
-                        .iter()
-                        .filter_map(|m| m.order_id.map(|id| id.to_string()))
-                        .collect(),
-                    Err(_) => std::collections::HashSet::new(),
+                let n = match app.messages.lock() {
+                    Ok(g) => build_active_order_chat_list(&g).len(),
+                    Err(_) => 0,
                 };
-                if !order_ids.is_empty() && app.selected_order_chat_idx > 0 {
+                if n > 0 && app.selected_order_chat_idx > 0 {
                     app.selected_order_chat_idx -= 1;
                 }
             } else if matches!(
@@ -287,6 +298,8 @@ fn handle_up_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
@@ -388,11 +401,11 @@ fn handle_down_key(
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let count = match app.messages.lock() {
-                    Ok(g) => g.iter().filter(|m| m.order_id.is_some()).count(),
+                let n = match app.messages.lock() {
+                    Ok(g) => build_active_order_chat_list(&g).len(),
                     Err(_) => 0,
                 };
-                if count > 0 && app.selected_order_chat_idx < count.saturating_sub(1) {
+                if n > 0 && app.selected_order_chat_idx < n.saturating_sub(1) {
                     app.selected_order_chat_idx += 1;
                 }
             } else if matches!(
@@ -453,6 +466,8 @@ fn handle_down_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {

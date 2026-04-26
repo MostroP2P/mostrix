@@ -201,6 +201,9 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 - **Forms**: Character input and Backspace are handled by `handle_char_input` and `handle_backspace` for fields in `FormState`.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
+  - `AddInvoice` popup paste fallback: when `Event::Paste` is unavailable, key shortcuts (`Shift+Insert`, `Ctrl+V`, `Ctrl+Shift+V` where emitted) paste from clipboard.
+  - Windows right-click fallback: mouse right-click in `AddInvoice` popup tries clipboard paste via a dedicated `Event::Mouse` path.
+  - `just_pasted` is preserved so immediate `Enter` after paste does not accidentally submit.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
   - Supports direct character input and backspace
@@ -226,6 +229,11 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
+- **Invoice popups (`NewMessageNotification`)**:
+  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode.
+  - `PayInvoice` / `WaitingSellerToPay` map to payment popup mode.
+  - Both popups provide two actions (`Primary` + `Cancel Order`) via Left/Right selection; Enter confirms the selected action.
+  - `PayInvoice` keeps copy (`C`) and scroll (`Up/Down`, `PageUp/PageDown`) behavior while adding cancel selection.
 
 **`ViewingMessage` (trade confirmations)** — `render_message_view` in `src/ui/tabs/tab_content.rs`:
 
@@ -245,7 +253,9 @@ A stateful form for creating new orders. It supports both fixed amounts and fiat
 
 The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows richer order context and cleaner chat readability:
 
-- **Header metadata**: includes order id, trade index, kind, status, initiator role/pubkey (truncated), created-at timestamp, amount, payment method, and premium.
+- **Header metadata (two layers)**:
+  - **Stable (one-time)**: order id, kind, created-at, trade index, and initiator (role: Maker/Taker + truncated trade pubkey) come from `OrderChatStaticHeader` in `AppState.order_chat_static`. The map is filled when the user **creates** an order (maker) or **takes** an order (taker, including the `PaymentRequestRequired` / PayInvoice path), and from `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs` (parses local `orders` rows so restarts do not lose the header). Entries are removed when a trade is closed or history cleanup deletes the row (`handle_operation_result` in `src/util/dm_utils/order_ch_mng.rs`).
+  - **Live (from DMs)**: **status**, **amount / fiats**, **payment method**, **premium**, and **buyer/seller rating** (when present) still come from the message projection (see below).
 - **Privacy / ratings**: there is no placeholder row for **`Privacy:`** / **`Buyer -`** / **`Seller -`** until trade privacy can be sourced from the same context as disputes (DM `SmallOrder` does not carry those flags). **Buyer Rating:** / **Seller Rating:** lines are shown only when reputation exists: `helpers::build_active_order_chat_list` merges `Payload::Peer` with `UserInfo` when `peer.pubkey` matches `buyer_trade_pubkey` / `seller_trade_pubkey` from `Payload::Order`, and the header uses `helpers::format_user_rating` for display.
 - **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
@@ -256,8 +266,8 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+R** release sats (YES/NO popup).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
   - **Shift+H** opens the shortcuts popup for the current tab.
-- **Data extraction**: active-order list rows now retain extra fields (kind, created_at, trade_index, payment_method, premium, initiator metadata) so rendering does not need to re-derive them later.
-- **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row.
+- **Projection vs static**: the DM-based list row (`OrderChatListItem` in `src/ui/helpers/order_chat_projection.rs`) holds **live** fields only: `status`, first-seen **economic** snapshot from `Payload::Order` (amount, fiat, payment, premium), `trade_index` (from any message in the order), and buyer/seller **trade pubkeys** plus **reputation** from `Payload::Peer`. It no longer carries kind, `created_at`, or initiator metadata (those are on `order_chat_static` above).
+- **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row. **Trade ID** in the header still falls back to projection `trade_index` if a static entry is not yet in the map (e.g. race before the result handler runs).
 
 **Source**: `src/ui/tabs/order_in_progress_tab.rs`
 
@@ -292,8 +302,8 @@ The previous monolithic helper file was split into focused modules under `src/ui
 - `chat_render.rs`: wrapped line formatting plus list/scrollview builders.
 - `chat_storage.rs`: transcript parse/load/save logic for disputes and user order chat.
 - `attachments.rs`: attachment JSON parsing, placeholders, and toast expiration/building.
-- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution); merges `Payload::Order` fields and attributes `Payload::Peer` reputation to buyer/seller when pubkeys match trade pubkeys.
-- `startup.rs`: startup hydration/recovery and applying chat updates to app state.
+- `order_chat_projection.rs`: shared "My Trades" active-order projection (single source of truth for sidebar ordering and Enter/action resolution). Merges `Payload::Order` (economic first snapshot, buyer/seller trade pubkeys) and `Payload::Peer` (reputation when pubkeys match). Payload merge runs even when `order_kind` is missing on a message, so **Peer** reputation is not skipped for odd DM shapes.
+- `startup.rs`: startup hydration/recovery, applying chat updates to app state, and seeding **`order_chat_static`** from `orders` when syncing user history.
 
 #### Data Structures
 

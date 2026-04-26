@@ -198,6 +198,20 @@ pub const TERMINAL_DM_STATUSES: &[&str] = &[
     "cooperatively-canceled",
 ];
 
+/// Kebab-case terminal statuses for order-history retention/cleanup operations.
+pub const TERMINAL_ORDER_HISTORY_STATUSES: &[&str] = &[
+    "success",
+    "canceled",
+    "canceled-by-admin",
+    "settled-by-admin",
+    "completed-by-admin",
+    "expired",
+    "cooperatively-canceled",
+];
+
+/// Kebab-case statuses eligible for bulk user cleanup in My Trades.
+pub const ORDER_HISTORY_BULK_DELETE_STATUSES: &[&str] = &["success", "canceled"];
+
 impl Order {
     /// Delete every row in `orders`. Used when rotating the user mnemonic so persisted trade keys
     /// cannot reference the previous seed.
@@ -541,6 +555,54 @@ impl Order {
             .fetch_all(pool)
             .await?;
         Ok(rows)
+    }
+
+    /// Fetches all locally-known user trade rows (maker + taker history) with persisted trade keys.
+    pub async fn get_user_history_orders(pool: &SqlitePool) -> Result<Vec<Order>> {
+        let rows = sqlx::query_as::<_, Order>(
+            r#"
+            SELECT * FROM orders
+            WHERE trade_keys IS NOT NULL
+              AND trade_keys != ''
+            ORDER BY COALESCE(last_seen_dm_ts, created_at, 0) DESC, id DESC
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Deletes one order row when it is in a terminal status.
+    /// Returns number of deleted rows (0 when order is non-terminal or missing).
+    pub async fn delete_terminal_order_by_id(pool: &SqlitePool, order_id: &str) -> Result<u64> {
+        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new("DELETE FROM orders WHERE id = ");
+        qb.push_bind(order_id);
+        qb.push(" AND lower(COALESCE(status, '')) IN (");
+        {
+            let mut separated = qb.separated(", ");
+            for s in TERMINAL_ORDER_HISTORY_STATUSES {
+                separated.push_bind(*s);
+            }
+        }
+        qb.push(")");
+        let result = qb.build().execute(pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Deletes only success/canceled rows for user bulk cleanup.
+    /// Returns number of deleted rows.
+    pub async fn delete_bulk_history_cleanup_orders(pool: &SqlitePool) -> Result<u64> {
+        let mut qb: QueryBuilder<'_, Sqlite> =
+            QueryBuilder::new("DELETE FROM orders WHERE lower(COALESCE(status, '')) IN (");
+        {
+            let mut separated = qb.separated(", ");
+            for s in ORDER_HISTORY_BULK_DELETE_STATUSES {
+                separated.push_bind(*s);
+            }
+        }
+        qb.push(")");
+        let result = qb.build().execute(pool).await?;
+        Ok(result.rows_affected())
     }
 }
 

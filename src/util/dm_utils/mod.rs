@@ -30,6 +30,7 @@ use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
+    should_strictly_advance_status,
 };
 use crate::util::types::{determine_message_type, MessageType};
 
@@ -451,6 +452,9 @@ async fn handle_trade_dm_for_order(
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
+    if matches!(action, Action::NewOrder) {
+        return;
+    }
 
     let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
     let status_from_db = db_order
@@ -510,13 +514,6 @@ async fn handle_trade_dm_for_order(
     };
 
     if matches!(action, Action::PayInvoice) && !is_actionable_notification {
-        return;
-    }
-
-    // Do not surface `new-order` in Messages or toasts (relist, book echo, etc.). Persisted status
-    // above still applies. Publish ack for a newly created order uses `send_new_order` / waiting UI.
-    if matches!(action, Action::NewOrder) {
-        remove_order_from_messages(messages, order_id);
         return;
     }
 
@@ -694,11 +691,34 @@ async fn handle_trade_dm_for_order(
             return;
         }
     };
-    // Keep one row per order, but ensure the newly accepted message is the one kept.
-    // This avoids dropping same-timestamp/different-action updates during dedup.
-    messages_lock.retain(|m| m.order_id != Some(order_id));
-    messages_lock.push(order_message.clone());
-    messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    // Keep one row per order, but do not let older stale replay messages overwrite the
+    // currently selected action row after startup/reconnect hydration.
+    let should_replace_row = match &existing_message_data {
+        None => true,
+        Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status)) => {
+            // Never let replayed `NewOrder` replace an already-established trade row.
+            // Otherwise Messages can regress to only NewOrder rows, which the UI strips.
+            if matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder) {
+                false
+            } else if timestamp > *existing_timestamp {
+                true
+            } else if timestamp == *existing_timestamp {
+                action != *existing_action
+            } else {
+                // Older-than-current replay: only replace if the payload status **strictly** advances
+                // the status already shown on the row (not merely equal; `should_accept_candidate`
+                // allows equality vs baseline for DB updates).
+                status_candidate.is_some_and(|c| {
+                    should_strictly_advance_status(*existing_order_status, c, effective_order_kind)
+                })
+            }
+        }
+    };
+    if should_replace_row {
+        messages_lock.retain(|m| m.order_id != Some(order_id));
+        messages_lock.push(order_message.clone());
+        messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    }
 
     // Send notification only for actionable/new updates; this avoids follow-up AddInvoice
     // payload variants (without order amount) from retriggering invoice popups with 0 sats.
@@ -748,7 +768,17 @@ async fn dispatch_giftwrap_batch(
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     terminal_policy: GiftWrapTerminalPolicy<'_>,
     notify: bool,
+    dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
 ) {
+    if let Ok(guard) = dropped_user_history_order_ids.lock() {
+        if guard.contains(&order_id) {
+            log::info!(
+                "[dm_listener] Skipping trade DMs for order_id={} (removed from local history by user)",
+                order_id
+            );
+            return;
+        }
+    }
     let log_each_message = matches!(
         terminal_policy,
         GiftWrapTerminalPolicy::TrackedSubscription(_)
@@ -803,7 +833,6 @@ async fn dispatch_giftwrap_batch(
                         trade_index,
                         subscription_id
                     );
-                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -825,7 +854,6 @@ async fn dispatch_giftwrap_batch(
                     break;
                 }
                 GiftWrapTerminalPolicy::UntrackedFallback => {
-                    remove_order_from_messages(messages, order_id);
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -870,6 +898,7 @@ struct DmListenerStartupReplay<'a> {
     subscribed_pubkeys: &'a mut HashSet<PublicKey>,
     subscription_to_order: &'a mut HashMap<SubscriptionId, (Uuid, i64)>,
     pubkey_to_subscription: &'a HashMap<PublicKey, SubscriptionId>,
+    dropped_user_history_order_ids: &'a Arc<Mutex<HashSet<Uuid>>>,
 }
 
 /// One-shot relay query + replay so restart shows trade DMs. `subscribe` alone often does not
@@ -890,6 +919,7 @@ async fn fetch_and_replay_startup_trade_dms(
         subscribed_pubkeys,
         subscription_to_order,
         pubkey_to_subscription,
+        dropped_user_history_order_ids,
     } = replay;
 
     let lookback_start = Timestamp::now()
@@ -1015,6 +1045,7 @@ async fn fetch_and_replay_startup_trade_dms(
             subscription_to_order,
             GiftWrapTerminalPolicy::TrackedSubscription(&sub_id),
             false,
+            dropped_user_history_order_ids,
         )
         .await;
     }
@@ -1132,6 +1163,7 @@ pub async fn listen_for_order_messages(
     messages: Arc<Mutex<Vec<OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
+    dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
     mut dm_subscription_rx: tokio::sync::mpsc::UnboundedReceiver<OrderDmSubscriptionCmd>,
 ) {
     // Get user key from db (for deriving trade keys)
@@ -1212,6 +1244,7 @@ pub async fn listen_for_order_messages(
             subscribed_pubkeys: &mut subscribed_pubkeys,
             subscription_to_order: &mut subscription_to_order,
             pubkey_to_subscription: &pubkey_to_subscription,
+            dropped_user_history_order_ids: &dropped_user_history_order_ids,
         },
         &startup_active_orders,
         &order_last_seen_dm_ts,
@@ -1478,6 +1511,7 @@ pub async fn listen_for_order_messages(
                             &mut subscription_to_order,
                             GiftWrapTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
+                            &dropped_user_history_order_ids,
                         )
                         .await;
                     } else if let Some((order_id, trade_index, trade_keys)) =
@@ -1509,6 +1543,7 @@ pub async fn listen_for_order_messages(
                             &mut subscription_to_order,
                             GiftWrapTerminalPolicy::UntrackedFallback,
                             true,
+                            &dropped_user_history_order_ids,
                         )
                         .await;
                     }

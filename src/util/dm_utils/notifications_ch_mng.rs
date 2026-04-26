@@ -1,6 +1,8 @@
 // Notifications channel manager - handles message notifications from async tasks
 use crate::ui::orders::invoice_popup_allowed_for_order_status;
-use crate::ui::{AppState, InvoiceInputState, MessageNotification, UiMode};
+use crate::ui::{
+    AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification, UiMode,
+};
 use mostro_core::prelude::Action;
 
 /// Check if the popup should be shown for a given notification
@@ -81,6 +83,7 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 just_pasted: false,
                 copied_to_clipboard: false,
                 scroll_y: 0,
+                action_selection: InvoiceNotificationActionSelection::Primary,
             };
             let action = notification.action.clone();
             app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);

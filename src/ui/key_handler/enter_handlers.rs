@@ -1,3 +1,4 @@
+use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
@@ -10,8 +11,8 @@ use crate::ui::orders::{
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
-    MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, UiMode, UserMode,
-    UserRole, UserTab,
+    InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
+    TakeOrderState, ThreeState, UiMode, UserMode, UserRole, UserTab, ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -27,6 +28,7 @@ use mostro_core::prelude::*;
 use nostr_sdk::nips::nip06::FromMnemonic;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use nostr_sdk::ToBech32;
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use crate::ui::key_handler::confirmation::{
@@ -36,6 +38,14 @@ use crate::ui::key_handler::settings::{
     clear_currency_filters, handle_mode_switch, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings,
 };
+
+fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
+    match action {
+        Action::AddInvoice | Action::WaitingBuyerInvoice => Some(Action::AddInvoice),
+        Action::PayInvoice | Action::WaitingSellerToPay => Some(Action::PayInvoice),
+        _ => None,
+    }
+}
 use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
 };
@@ -175,6 +185,80 @@ fn spawn_user_order_chat_send_task(
         .await
         {
             log::warn!("Failed to send user order chat: {}", e);
+        }
+    });
+}
+
+fn spawn_delete_single_terminal_order_task(
+    pool: sqlx::SqlitePool,
+    order_id: uuid::Uuid,
+    order_result_tx: tokio::sync::mpsc::UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        match Order::delete_terminal_order_by_id(&pool, &order_id.to_string()).await {
+            Ok(affected) if affected > 0 => {
+                let _ = order_result_tx.send(OperationResult::OrderHistoryDeleted {
+                    deleted_order_ids: vec![order_id],
+                    message: format!("Deleted order {} from local history.", order_id),
+                });
+            }
+            Ok(_) => {
+                let _ = order_result_tx.send(OperationResult::Error(
+                    "Selected order is not terminal or no longer exists in local database."
+                        .to_string(),
+                ));
+            }
+            Err(e) => {
+                let _ = order_result_tx.send(OperationResult::Error(format!(
+                    "Failed to delete selected order from local history: {}",
+                    e
+                )));
+            }
+        }
+    });
+}
+
+fn spawn_bulk_history_cleanup_task(
+    pool: sqlx::SqlitePool,
+    order_result_tx: tokio::sync::mpsc::UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        let mut ids_to_remove = Vec::new();
+        let allowed: HashSet<&str> = ORDER_HISTORY_BULK_DELETE_STATUSES.iter().copied().collect();
+        if let Ok(rows) = Order::get_user_history_orders(&pool).await {
+            ids_to_remove = rows
+                .iter()
+                .filter(|row| {
+                    row.status
+                        .as_deref()
+                        .map(|status| allowed.contains(&status.to_lowercase().as_str()))
+                        .unwrap_or(false)
+                })
+                .filter_map(|row| {
+                    row.id
+                        .as_deref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                })
+                .collect();
+        }
+
+        match Order::delete_bulk_history_cleanup_orders(&pool).await {
+            Ok(affected) => {
+                let message = format!(
+                    "Removed {} success/canceled orders from local history.",
+                    affected
+                );
+                let _ = order_result_tx.send(OperationResult::OrderHistoryDeleted {
+                    deleted_order_ids: ids_to_remove,
+                    message,
+                });
+            }
+            Err(e) => {
+                let _ = order_result_tx.send(OperationResult::Error(format!(
+                    "Failed to clean up order history: {}",
+                    e
+                )));
+            }
         }
     });
 }
@@ -345,6 +429,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 Tab::Admin(AdminTab::Settings)
                     | Tab::User(UserTab::Settings)
                     | Tab::Admin(AdminTab::Observer)
+                    | Tab::User(UserTab::MyTrades)
                     | Tab::User(UserTab::MostroInfo)
                     | Tab::Admin(AdminTab::MostroInfo)
                     | Tab::User(UserTab::Messages)
@@ -392,6 +477,32 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             let should_continue = handle_enter_settings_mode(app, current_mode, default_mode, ctx);
             if !should_continue {
                 return false; // Exit application
+            }
+            true
+        }
+        UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) => {
+            if selected_button {
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Deleting selected terminal order from local history...".to_string(),
+                ));
+                spawn_delete_single_terminal_order_task(
+                    ctx.pool.clone(),
+                    order_id,
+                    ctx.order_result_tx.clone(),
+                );
+            } else {
+                app.mode = default_mode;
+            }
+            true
+        }
+        UiMode::ConfirmBulkDeleteHistory(selected_button) => {
+            if selected_button {
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Cleaning up success/canceled orders from local history...".to_string(),
+                ));
+                spawn_bulk_history_cleanup_task(ctx.pool.clone(), ctx.order_result_tx.clone());
+            } else {
+                app.mode = default_mode;
             }
             true
         }
@@ -774,47 +885,72 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
-            if matches!(action, Action::AddInvoice | Action::PayInvoice)
-                && invoice_popup_allowed_for_order_status(&action, msg.order_status)
-            {
-                // Show invoice/payment popup only when the phase still requires it.
-                let notification = order_message_to_notification(msg);
-                let action = notification.action.clone();
-                let invoice_state = InvoiceInputState {
-                    invoice_input: String::new(),
-                    focused: matches!(action, Action::AddInvoice),
-                    just_pasted: false,
-                    copied_to_clipboard: false,
-                    scroll_y: 0,
-                };
+            if let Some(invoice_popup_action) = invoice_popup_action_for_message_action(&action) {
+                if invoice_popup_allowed_for_order_status(&invoice_popup_action, msg.order_status) {
+                    // Show invoice/payment popup only when the phase still requires it.
+                    let notification = order_message_to_notification(msg);
+                    let invoice_state = InvoiceInputState {
+                        invoice_input: String::new(),
+                        focused: matches!(invoice_popup_action, Action::AddInvoice),
+                        just_pasted: false,
+                        copied_to_clipboard: false,
+                        scroll_y: 0,
+                        action_selection: InvoiceNotificationActionSelection::Primary,
+                    };
 
-                app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
-            } else if matches!(action, Action::AddInvoice | Action::PayInvoice) {
-                // Stale replayed invoice/payment DMs after the trade moved on.
-                let info = if matches!(action, Action::PayInvoice)
-                    && matches!(
-                        msg.order_status,
-                        Some(mostro_core::order::Status::WaitingBuyerInvoice)
-                    ) {
-                    "Waiting for the buyer to add their invoice. Hold invoice is already paid."
-                        .to_string()
-                } else {
-                    "Trade already advanced; invoice action no longer required.".to_string()
-                };
-                app.mode = UiMode::OperationResult(OperationResult::Info(info));
+                    app.mode = UiMode::NewMessageNotification(
+                        notification,
+                        invoice_popup_action,
+                        invoice_state,
+                    );
+                } else if matches!(
+                    action,
+                    Action::AddInvoice
+                        | Action::PayInvoice
+                        | Action::WaitingBuyerInvoice
+                        | Action::WaitingSellerToPay
+                ) {
+                    // Stale replayed invoice/payment DMs after the trade moved on.
+                    let info = if matches!(action, Action::PayInvoice)
+                        && matches!(
+                            msg.order_status,
+                            Some(mostro_core::order::Status::WaitingBuyerInvoice)
+                        ) {
+                        "Waiting for the buyer to add their invoice. Hold invoice is already paid."
+                            .to_string()
+                    } else {
+                        "Trade already advanced; invoice action no longer required.".to_string()
+                    };
+                    app.mode = UiMode::OperationResult(OperationResult::Info(info));
+                }
             } else if matches!(
                 action,
                 Action::HoldInvoicePaymentAccepted
                     | Action::FiatSentOk
                     | Action::CooperativeCancelInitiatedByPeer
+                    | Action::BuyerTookOrder
             ) {
                 // Only these message types are actionable (send a follow-up message to Mostro).
                 let notification = order_message_to_notification(msg);
+                let button_selection = if matches!(action, Action::HoldInvoicePaymentAccepted) {
+                    ViewingMessageButtonSelection::Three(ThreeState::Yes)
+                } else if matches!(
+                    action,
+                    Action::CooperativeCancelInitiatedByPeer | Action::BuyerTookOrder
+                ) {
+                    // Safer default: Enter should not send Cancel until the user selects YES.
+                    // (handle_enter_viewing_message maps both to Action::Cancel when confirming.)
+                    ViewingMessageButtonSelection::Two {
+                        yes_selected: false,
+                    }
+                } else {
+                    ViewingMessageButtonSelection::Two { yes_selected: true }
+                };
                 let view_state = MessageViewState {
                     message_content: notification.message_preview,
                     order_id: notification.order_id,
                     action: notification.action,
-                    selected_button: true, // Default to YES
+                    button_selection,
                 };
                 app.mode = UiMode::ViewingMessage(view_state);
             } else if matches!(action, Action::Rate) {

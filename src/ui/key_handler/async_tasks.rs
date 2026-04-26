@@ -47,47 +47,100 @@ pub struct RuntimeReconnectContext<'a> {
     pub settings: &'a Settings,
 }
 
+const POISONED_UI_FATAL: &str = "Internal error. Please restart Mostrix.";
+
+/// Shared by runtime reset paths: log fatal, set exit-on-close, show error mode.
+fn apply_poisoned_mutex_ui_fatal(app: &mut AppState, user_message: String) {
+    request_fatal_restart(user_message);
+    app.fatal_exit_on_close = true;
+    app.mode = UiMode::OperationResult(OperationResult::Error(POISONED_UI_FATAL.to_string()));
+}
+
+fn clear_messages_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.messages.lock();
+        match lock_result {
+            Ok(mut messages) => {
+                messages.clear();
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
+/// Clears `active_order_trade_indices` or applies fatal UI state and returns `Err(())` on poison.
+fn clear_active_order_indices_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.active_order_trade_indices.lock();
+        match lock_result {
+            Ok(mut active) => {
+                active.clear();
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
+/// Resets `pending_notifications` to 0 or applies fatal UI state and returns `Err(())` on poison.
+fn reset_pending_notifications_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.pending_notifications.lock();
+        match lock_result {
+            Ok(mut pending) => {
+                *pending = 0;
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
 fn clear_runtime_session_state(app: &mut AppState) {
-    match app.messages.lock() {
-        Ok(mut messages) => messages.clear(),
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if clear_messages_or_fatal(app).is_err() {
+        return;
     }
-    match app.active_order_trade_indices.lock() {
-        Ok(mut active) => active.clear(),
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if clear_active_order_indices_or_fatal(app).is_err() {
+        return;
     }
-    match app.pending_notifications.lock() {
-        Ok(mut pending) => *pending = 0,
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-        }
+    if reset_pending_notifications_or_fatal(app).is_err() {
+        return;
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
+}
+
+fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
+    if clear_active_order_indices_or_fatal(app).is_err() {
+        return;
+    }
+    if reset_pending_notifications_or_fatal(app).is_err() {
+        return;
+    }
+    app.selected_message_idx = 0;
+    app.pending_post_take_operation_result = None;
+    if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+        dropped.clear();
+    }
 }
 
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
@@ -193,6 +246,8 @@ pub async fn apply_pending_key_reload(
                     let messages_clone = Arc::clone(&app.messages);
                     let message_notification_tx_clone = message_notification_tx.clone();
                     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+                    let dropped_user_history_clone =
+                        Arc::clone(&app.dropped_user_history_order_ids);
                     let (new_dm_tx, new_dm_rx) =
                         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
                     *dm_subscription_tx = new_dm_tx;
@@ -210,6 +265,7 @@ pub async fn apply_pending_key_reload(
                                 messages_clone,
                                 message_notification_tx_clone,
                                 pending_notifications_clone,
+                                dropped_user_history_clone,
                                 new_dm_rx,
                             )
                             .await;
@@ -349,6 +405,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
     let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
     *dm_subscription_tx = new_dm_tx;
     let router_reg = set_dm_router_cmd_tx(dm_subscription_tx.clone());
@@ -365,6 +422,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
                 messages_clone,
                 message_notification_tx_clone,
                 pending_notifications_clone,
+                dropped_user_history_clone,
                 new_dm_rx,
             )
             .await;
@@ -487,7 +545,7 @@ pub async fn reload_runtime_session_after_reconnect(
 
     ctx.app.currencies_filter = ctx.settings.currencies_filter.clone();
     hydrate_app_admin_keys_from_privkey(ctx.app, &ctx.settings.admin_privkey);
-    clear_runtime_session_state(ctx.app);
+    clear_runtime_tracking_state_preserve_messages(ctx.app);
 
     let (o, d) = spawn_fetch_scheduler_loops(
         ctx.client.clone(),
@@ -520,6 +578,7 @@ pub async fn reload_runtime_session_after_reconnect(
     let messages_clone = Arc::clone(&ctx.app.messages);
     let message_notification_tx_clone = ctx.message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&ctx.app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&ctx.app.dropped_user_history_order_ids);
     let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
     *ctx.dm_subscription_tx = new_dm_tx;
     let router_reg = set_dm_router_cmd_tx(ctx.dm_subscription_tx.clone());
@@ -536,6 +595,7 @@ pub async fn reload_runtime_session_after_reconnect(
                 messages_clone,
                 message_notification_tx_clone,
                 pending_notifications_clone,
+                dropped_user_history_clone,
                 new_dm_rx,
             )
             .await;

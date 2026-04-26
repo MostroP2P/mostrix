@@ -5,9 +5,23 @@ use ratatui::style::{Color, Style};
 use crate::ui::constants::{
     BUY_ORDER_FLOW_STEPS_MAKER, BUY_ORDER_FLOW_STEPS_TAKER, GENERIC_ORDER_FLOW_STEPS_TAKER,
     SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
+    VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
 };
 
 pub use crate::ui::constants::StepLabel;
+
+/// Stable My Trades header fields for one trade (maker publish or taker take). Not updated by later DMs.
+#[derive(Clone, Debug)]
+pub struct OrderChatStaticHeader {
+    pub order_id: uuid::Uuid,
+    pub kind: Option<mostro_core::order::Kind>,
+    pub created_at: Option<i64>,
+    pub trade_index: i64,
+    /// Local party's trade Nostr pubkey string (for display; matches DM path convention).
+    pub initiator_trade_pubkey: String,
+    /// `true` = we are maker, `false` = taker.
+    pub is_mine: bool,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct OrderSuccess {
@@ -22,6 +36,8 @@ pub struct OrderSuccess {
     pub premium: i64,
     pub status: Option<Status>,
     pub trade_index: Option<i64>, // Trade index used for this order
+    /// Filled on successful create/take for My Trades static header.
+    pub static_header: Option<OrderChatStaticHeader>,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +49,7 @@ pub enum OperationResult {
         invoice: String,
         sat_amount: Option<i64>,
         trade_index: i64,
+        static_header: OrderChatStaticHeader,
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
@@ -44,6 +61,11 @@ pub enum OperationResult {
     /// Trade ended (e.g. cooperative cancel confirmed); remove order from Messages and show `message`.
     TradeClosed {
         order_id: uuid::Uuid,
+        message: String,
+    },
+    /// Local-only history cleanup result; remove these order rows from in-memory My Trades cache.
+    OrderHistoryDeleted {
+        deleted_order_ids: Vec<uuid::Uuid>,
         message: String,
     },
 }
@@ -229,6 +251,13 @@ pub fn invoice_popup_allowed_for_order_status(
 }
 
 /// State for handling invoice input in AddInvoice notifications
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum InvoiceNotificationActionSelection {
+    Primary,
+    Cancel,
+}
+
+/// State for handling invoice input in AddInvoice notifications
 #[derive(Clone, Debug)]
 pub struct InvoiceInputState {
     pub invoice_input: String,
@@ -237,6 +266,8 @@ pub struct InvoiceInputState {
     pub copied_to_clipboard: bool, // Flag to show "Copied!" message
     /// Vertical scroll offset for long invoice display (PayInvoice popup).
     pub scroll_y: u16,
+    /// Selected action in AddInvoice/PayInvoice popup.
+    pub action_selection: InvoiceNotificationActionSelection,
 }
 
 /// State for handling key input (pubkey or privkey) in admin settings
@@ -247,13 +278,69 @@ pub struct KeyInputState {
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
 }
 
+/// YES/NO selection for `ViewingMessage` popups (FiatSentOk, My Trades actions, etc.).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ThreeState {
+    Yes,
+    No,
+    Cancel,
+}
+
+impl ThreeState {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Yes => Self::No,
+            Self::No => Self::Cancel,
+            Self::Cancel => Self::Yes,
+        }
+    }
+
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Yes => Self::Cancel,
+            Self::No => Self::Yes,
+            Self::Cancel => Self::No,
+        }
+    }
+
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::Yes => 0,
+            Self::No => 1,
+            Self::Cancel => 2,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewingMessageButtonSelection {
+    /// `true` = YES highlighted, `false` = NO.
+    Two { yes_selected: bool },
+    /// Hold-invoice confirmation only: YES / NO / CANCEL.
+    Three(ThreeState),
+}
+
+impl ViewingMessageButtonSelection {
+    pub fn cycle_three_prev(&mut self) {
+        if let Self::Three(selected) = self {
+            *selected = selected.prev();
+        }
+    }
+
+    pub fn cycle_three_next(&mut self) {
+        if let Self::Three(selected) = self {
+            *selected = selected.next();
+        }
+    }
+}
+
 /// State for viewing a simple message popup
 #[derive(Clone, Debug)]
 pub struct MessageViewState {
     pub message_content: String, // The message content to display
     pub order_id: Option<uuid::Uuid>,
     pub action: Action,
-    pub selected_button: bool, // true for YES, false for NO
+    pub button_selection: ViewingMessageButtonSelection,
 }
 
 /// Rate counterparty after Mostro prompts with `action: rate` (daemon resolves peer by order id).
@@ -279,9 +366,8 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::FiatSentOk => "Fiat payment completed",
         Action::WaitingBuyerInvoice => "Waiting for Buyer to Add Invoice",
         Action::WaitingSellerToPay => "Waiting for Seller to Pay",
-        Action::HoldInvoicePaymentAccepted => {
-            "Hold invoice payment accepted — confirm fiat was sent?"
-        }
+        Action::HoldInvoicePaymentAccepted => VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
+        Action::BuyerTookOrder => VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW,
         Action::Cancel => "Cancel",
         Action::CooperativeCancelInitiatedByPeer => "Peer requested cooperative cancel",
         Action::Canceled => "Order canceled",
@@ -311,6 +397,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::WaitingBuyerInvoice => "Waiting Buyer Invoice",
         Action::WaitingSellerToPay => "Waiting Seller Payment",
         Action::HoldInvoicePaymentAccepted => "Hold Invoice Accepted",
+        Action::BuyerTookOrder => "Buyer Took Order",
         Action::FiatSent => "Fiat Sent",
         Action::FiatSentOk => "Fiat Confirmed",
         Action::Release | Action::Released => "Release sats",
@@ -319,8 +406,10 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rating Received",
-        Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated",
-        _ => "Message",
+        Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated by Peer",
+        Action::CooperativeCancelInitiatedByYou => "Cooperative Cancel Initiated by You",
+        Action::NewOrder => "New Order Created",
+        _ => "Unknown Message",
     }
 }
 
@@ -334,6 +423,8 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
         Some(Status::Canceled) => "Canceled",
         Some(Status::CanceledByAdmin) => "Admin Canceled",
         Some(Status::CooperativelyCanceled) => "Cooperatively Canceled",
+        Some(Status::WaitingBuyerInvoice) => "Waiting Buyer Invoice",
+        Some(Status::WaitingPayment) => "Waiting Seller Payment",
         Some(Status::Expired) => "Expired",
         Some(_) | None => {
             message_action_compact_label(&msg.message.get_inner_message_kind().action)
@@ -430,11 +521,8 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     // highlighted column matches [`listing_timeline_labels`] (taker wording per kind).
     let is_maker = msg.is_mine.unwrap_or(false);
     // Post-`success` phases are action-specific (`rate` vs release); handle before status.
-    if matches!(
-        &action,
-        Action::Rate | Action::RateReceived | Action::PurchaseCompleted
-    ) {
-        return FlowStep::BuyFlowStep(StepLabelsBuy::StepRate);
+    if matches!(&action, Action::FiatSentOk) {
+        return FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
         if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Buy, status) {
@@ -451,8 +539,8 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
         return message_buy_flow_step_fallback(&action);
     }
     let is_maker = msg.is_mine.unwrap_or(false);
-    if matches!(&action, Action::Rate | Action::RateReceived) {
-        return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
+    if matches!(&action, Action::FiatSentOk) {
+        return FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
         if let Some(step) = listing_step_from_status(mostro_core::order::Kind::Sell, status) {

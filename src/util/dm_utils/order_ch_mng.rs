@@ -1,7 +1,9 @@
 // Order channel manager - handles order result messages from async tasks
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::{strip_new_order_messages_and_clamp_selected, OrderSuccess};
 use crate::ui::{
-    AppState, InvoiceInputState, MessageNotification, OperationResult, UiMode, UserMode,
+    AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
+    OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
 use uuid::Uuid;
@@ -31,6 +33,52 @@ fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
             ));
         }
     }
+    app.order_chat_static.remove(&order_id);
+}
+
+fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) {
+    let id_set: std::collections::HashSet<Uuid> = order_ids.iter().copied().collect();
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            messages.retain(|m| m.order_id.map(|id| !id_set.contains(&id)).unwrap_or(true));
+            strip_new_order_messages_and_clamp_selected(
+                &mut messages,
+                &mut app.selected_message_idx,
+            );
+            let n = build_active_order_chat_list(&messages).len();
+            if n == 0 {
+                app.selected_order_chat_idx = 0;
+            } else if app.selected_order_chat_idx >= n {
+                app.selected_order_chat_idx = n - 1;
+            }
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+    match app.active_order_trade_indices.lock() {
+        Ok(mut indices) => {
+            for order_id in order_ids {
+                indices.remove(order_id);
+            }
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+            ));
+        }
+    }
+    for order_id in order_ids {
+        let key = order_id.to_string();
+        app.order_chats.remove(&key);
+        app.order_chat_last_seen.remove(&key);
+        app.order_chat_static.remove(order_id);
+        if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+            dropped.insert(*order_id);
+        }
+    }
 }
 
 /// Handle order result from the order result channel
@@ -39,6 +87,27 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         remove_closed_trade_from_messages_tab(app, order_id);
         result = OperationResult::Info(message);
     }
+    if let OperationResult::OrderHistoryDeleted {
+        deleted_order_ids,
+        message,
+    } = result
+    {
+        remove_many_orders_from_messages_tab(app, &deleted_order_ids);
+        result = OperationResult::Info(message);
+    }
+
+    match &result {
+        OperationResult::Success(os) => {
+            if let Some(h) = &os.static_header {
+                app.order_chat_static.insert(h.order_id, h.clone());
+            }
+        }
+        OperationResult::PaymentRequestRequired { static_header, .. } => {
+            app.order_chat_static
+                .insert(static_header.order_id, static_header.clone());
+        }
+        _ => {}
+    }
 
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
@@ -46,6 +115,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         invoice,
         sat_amount,
         trade_index,
+        static_header: _,
     } = &result
     {
         // Track trade_index
@@ -89,6 +159,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             just_pasted: false,
             copied_to_clipboard: false,
             scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
         };
         // Reuse pay invoice popup for buy orders when taking an order
         app.mode = UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);

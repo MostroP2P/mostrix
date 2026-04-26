@@ -267,6 +267,24 @@ pub fn ui_draw(
             Some("Are you sure you want to clear all currencies filters?"),
         );
     }
+    if let UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🗑 Delete Order History",
+            &order_id.to_string(),
+            *selected_button,
+            Some("Delete selected terminal order from local database history?"),
+        );
+    }
+    if let UiMode::ConfirmBulkDeleteHistory(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🧹 Clean Up Terminal History",
+            "",
+            *selected_button,
+            Some("Delete all success/canceled orders from local database history?"),
+        );
+    }
 
     // Admin key input popup overlay
     if let UiMode::AdminMode(AdminMode::AddSolver(key_state)) = &app.mode {

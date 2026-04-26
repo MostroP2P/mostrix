@@ -3,7 +3,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::{helpers, InvoiceInputState, MessageNotification, BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{
+    helpers, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
+    BACKGROUND_COLOR, PRIMARY_COLOR,
+};
 
 /// Renders the order ID header in a notification popup
 fn render_order_id_header(f: &mut ratatui::Frame, area: Rect, order_id_str: &str) {
@@ -129,9 +132,9 @@ fn render_add_invoice(
             Constraint::Length(1), // label
             Constraint::Length(6), // invoice input field
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // help text (paste instructions)
-            Constraint::Length(1), // help text (esc instructions)
-            Constraint::Length(1), // extra spacer
+            Constraint::Length(3), // action buttons
+            Constraint::Length(1), // help text (navigation)
+            Constraint::Length(1), // help text (paste/dismiss)
         ],
     )
     .split(popup);
@@ -156,31 +159,67 @@ fn render_add_invoice(
     let input_area = create_input_area(chunks[5]);
     render_invoice_input(f, input_area, invoice_state);
 
-    // Help text
+    helpers::render_yes_no_buttons(
+        f,
+        chunks[7],
+        matches!(
+            invoice_state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        ),
+        "Submit Invoice",
+        "Cancel Order",
+    );
+
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Paste invoice (", Style::default()),
+            Span::styled("Use ", Style::default()),
             Span::styled(
-                "Ctrl+Shift+V",
+                "Left/Right",
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" or right-click), then press ", Style::default()),
+            Span::styled(" to select action, ", Style::default()),
             Span::styled(
                 "Enter",
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" to submit", Style::default()),
+            Span::styled(" to confirm", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[7],
+        chunks[8],
     );
 
-    // Esc help text
-    helpers::render_help_text(f, chunks[8], "Press ", "Esc", " to dismiss");
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Paste invoice (right-click / ", Style::default()),
+            Span::styled(
+                "Shift+Insert",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" / ", Style::default()),
+            Span::styled(
+                "Ctrl+Shift+V",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("), ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[9],
+    );
 }
 
 /// Renders PayInvoice notification popup
@@ -200,6 +239,7 @@ fn render_pay_invoice(
             Constraint::Length(1), // label
             Constraint::Length(6), // invoice display field
             Constraint::Length(1), // spacer
+            Constraint::Length(3), // action buttons
             Constraint::Length(1), // help text line 1
             Constraint::Length(1), // help text line 2
         ],
@@ -227,11 +267,23 @@ fn render_pay_invoice(
         chunks[4],
     );
 
+    let invoice_area = create_input_area(chunks[5]);
     render_invoice_display(
         f,
-        chunks[5],
+        invoice_area,
         notification.invoice.as_ref(),
         invoice_state.scroll_y,
+    );
+
+    helpers::render_yes_no_buttons(
+        f,
+        chunks[7],
+        matches!(
+            invoice_state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        ),
+        "Acknowledge",
+        "Cancel Order",
     );
 
     // Help text - first line
@@ -244,7 +296,7 @@ fn render_pay_invoice(
                     .add_modifier(Modifier::BOLD),
             )]))
             .alignment(ratatui::layout::Alignment::Center),
-            chunks[7],
+            chunks[8],
         );
     } else {
         f.render_widget(
@@ -265,15 +317,15 @@ fn render_pay_invoice(
                 ),
                 Span::styled(" scroll, ", Style::default()),
                 Span::styled(
-                    "Shift",
+                    "Left/Right",
                     Style::default()
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("+click to select", Style::default()),
+                Span::styled(" select action", Style::default()),
             ]))
             .alignment(ratatui::layout::Alignment::Center),
-            chunks[7],
+            chunks[8],
         );
     }
 
@@ -287,7 +339,7 @@ fn render_pay_invoice(
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" to view, ", Style::default()),
+            Span::styled(" to confirm, ", Style::default()),
             Span::styled(
                 "Esc",
                 Style::default()
@@ -297,7 +349,7 @@ fn render_pay_invoice(
             Span::styled(" to dismiss", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[8],
+        chunks[9],
     );
 }
 
@@ -373,7 +425,7 @@ pub fn render_message_notification(
     let area = f.area();
     let (popup_width, popup_height) = match action {
         mostro_core::prelude::Action::AddInvoice | mostro_core::prelude::Action::PayInvoice => {
-            (90, 18)
+            (90, 19)
         }
         _ => (70, 8),
     };

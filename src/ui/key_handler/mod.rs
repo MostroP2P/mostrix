@@ -14,16 +14,17 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
-    resolve_selected_mytrades_order_id,
+    resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
-    MostroInfoFetchResult, OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab,
+    InvoiceNotificationActionSelection, MostroInfoFetchResult, OperationResult, Tab,
+    TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
 };
 use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
@@ -48,6 +49,21 @@ pub struct EnterKeyContext<'a> {
     pub mostro_info: Option<MostroInstanceInfo>,
     pub admin_chat_keys: Option<&'a Keys>,
     pub dm_subscription_tx: &'a UnboundedSender<OrderDmSubscriptionCmd>,
+}
+
+fn is_terminal_order_status(status: Option<Status>) -> bool {
+    matches!(
+        status,
+        Some(
+            Status::Success
+                | Status::Canceled
+                | Status::CanceledByAdmin
+                | Status::SettledByAdmin
+                | Status::CompletedByAdmin
+                | Status::Expired
+                | Status::CooperativelyCanceled
+        )
+    )
 }
 
 // Re-export public functions
@@ -264,6 +280,76 @@ fn read_clipboard_text_best_effort() -> Option<String> {
     }
 }
 
+/// Mouse right-click paste fallback for AddInvoice notification popup.
+///
+/// Returns `true` when the event is fully handled and should be consumed by the caller.
+pub fn handle_mouse_invoice_paste_fallback(event: &Event, app: &mut AppState) -> bool {
+    let Event::Mouse(mouse_event) = event else {
+        return false;
+    };
+    if !matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Right)) {
+        return false;
+    }
+    log::debug!(
+        "Detected right-click mouse event at x={}, y={}",
+        mouse_event.column,
+        mouse_event.row
+    );
+    let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode
+    else {
+        return false;
+    };
+    if !invoice_state.focused {
+        return false;
+    }
+    if let Some(text) = read_clipboard_text_best_effort() {
+        let filtered_text: String = text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\t')
+            .collect();
+        if !filtered_text.is_empty() {
+            log::debug!(
+                "Right-click paste fallback appended {} chars to AddInvoice input",
+                filtered_text.chars().count()
+            );
+            invoice_state.invoice_input.push_str(&filtered_text);
+            invoice_state.just_pasted = true;
+        } else {
+            log::debug!("Right-click paste fallback found only control characters");
+        }
+    } else {
+        log::debug!("Right-click paste fallback could not read clipboard text");
+    }
+    true
+}
+
+fn is_paste_shortcut(key_event: &KeyEvent) -> bool {
+    let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
+    match key_event.code {
+        KeyCode::Insert => is_shift,
+        KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
+        _ => false,
+    }
+}
+
+fn update_invoice_notification_action_selection(
+    code: KeyCode,
+    invoice_state: &mut crate::ui::InvoiceInputState,
+) -> bool {
+    match code {
+        KeyCode::Left => {
+            invoice_state.action_selection = InvoiceNotificationActionSelection::Primary;
+            true
+        }
+        KeyCode::Right => {
+            invoice_state.action_selection = InvoiceNotificationActionSelection::Cancel;
+            true
+        }
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -340,22 +426,23 @@ pub fn handle_key_event(
         }
     }
 
-    // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe):
-    // - Shift+Insert (classic Windows paste)
-    // - Ctrl+Shift+V (Windows Terminal-style paste shortcut)
-    // - Ctrl+V when the console delivers it as a key event
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
-        let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
-        let is_paste_shortcut = match key_event.code {
-            KeyCode::Insert => is_shift,
-            KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
-            _ => false,
-        } || (is_ctrl
-            && is_shift
-            && matches!(key_event.code, KeyCode::Char('v') | KeyCode::Char('V')));
+    // AddInvoice popup paste fallback for terminals without bracketed paste support.
+    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
+        if is_paste_shortcut(&key_event) {
+            if let Some(text) = read_clipboard_text_best_effort() {
+                let filtered_text: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !filtered_text.is_empty() {
+                    invoice_state.invoice_input.push_str(&filtered_text);
+                    invoice_state.just_pasted = true;
+                    return Some(true);
+                }
+            }
+        }
+    }
 
-        if is_paste_shortcut {
+    // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe).
+    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+        if is_paste_shortcut(&key_event) {
             if let Some(text) = read_clipboard_text_best_effort() {
                 let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !filtered.is_empty() {
@@ -679,6 +766,26 @@ pub fn handle_key_event(
         let has_shift = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::SHIFT);
+        let has_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if code == KeyCode::Delete {
+            if has_ctrl {
+                // Default NO: avoid accidental Enter after Ctrl+Delete wiping all terminal history.
+                app.mode = UiMode::ConfirmBulkDeleteHistory(false);
+                return Some(true);
+            }
+            if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                if is_terminal_order_status(status) {
+                    app.mode = UiMode::ConfirmDeleteHistoryOrder(order_id, true);
+                } else {
+                    app.mode = UiMode::OperationResult(OperationResult::Info(
+                        "Delete is only available for terminal orders.".to_string(),
+                    ));
+                }
+                return Some(true);
+            }
+        }
         if has_shift {
             match code {
                 KeyCode::Char('i') | KeyCode::Char('I') => {
@@ -697,7 +804,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "Cancel is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -709,7 +822,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "FiatSent is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -721,7 +840,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                                "Release is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
                         let msg = crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG;
                         let view_state = build_order_action_view_state(
                             order_id,
@@ -787,14 +912,41 @@ pub fn handle_key_event(
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
+                | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
                 }
                 UiMode::ViewingMessage(ref mut view_state) => {
-                    view_state.selected_button = !view_state.selected_button; // Toggle between YES and NO
+                    match &mut view_state.button_selection {
+                        ViewingMessageButtonSelection::Two { yes_selected } => {
+                            if code == KeyCode::Left {
+                                *yes_selected = true;
+                            } else if code == KeyCode::Right {
+                                *yes_selected = false;
+                            }
+                        }
+                        selection @ ViewingMessageButtonSelection::Three(_) => {
+                            if code == KeyCode::Left {
+                                selection.cycle_three_prev();
+                            } else {
+                                selection.cycle_three_next();
+                            }
+                        }
+                    }
                     return Some(true);
+                }
+                UiMode::NewMessageNotification(
+                    _,
+                    Action::AddInvoice | Action::PayInvoice,
+                    ref mut invoice_state,
+                ) => {
+                    return Some(update_invoice_notification_action_selection(
+                        code,
+                        invoice_state,
+                    ))
                 }
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
@@ -971,5 +1123,50 @@ pub fn handle_key_event(
             Some(true)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod key_handler_tests {
+    use super::*;
+    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn paste_shortcut_accepts_shift_insert_and_ctrl_v() {
+        let shift_insert = KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT);
+        assert!(is_paste_shortcut(&shift_insert));
+
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(is_paste_shortcut(&ctrl_v));
+    }
+
+    #[test]
+    fn invoice_notification_selection_toggles_with_arrows() {
+        let mut state = InvoiceInputState {
+            invoice_input: String::new(),
+            focused: true,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+        };
+
+        assert!(update_invoice_notification_action_selection(
+            KeyCode::Right,
+            &mut state
+        ));
+        assert_eq!(
+            state.action_selection,
+            InvoiceNotificationActionSelection::Cancel
+        );
+        assert!(update_invoice_notification_action_selection(
+            KeyCode::Left,
+            &mut state
+        ));
+        assert_eq!(
+            state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        );
     }
 }
