@@ -30,6 +30,7 @@ use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
+    should_strictly_advance_status,
 };
 use crate::util::types::{determine_message_type, MessageType};
 
@@ -694,7 +695,7 @@ async fn handle_trade_dm_for_order(
     // currently selected action row after startup/reconnect hydration.
     let should_replace_row = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _, _, _)) => {
+        Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status)) => {
             // Never let replayed `NewOrder` replace an already-established trade row.
             // Otherwise Messages can regress to only NewOrder rows, which the UI strips.
             if matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder) {
@@ -704,8 +705,12 @@ async fn handle_trade_dm_for_order(
             } else if timestamp == *existing_timestamp {
                 action != *existing_action
             } else {
-                // Older-than-current replay: only replace if it advances accepted status.
-                should_accept_candidate
+                // Older-than-current replay: only replace if the payload status **strictly** advances
+                // the status already shown on the row (not merely equal; `should_accept_candidate`
+                // allows equality vs baseline for DB updates).
+                status_candidate.is_some_and(|c| {
+                    should_strictly_advance_status(*existing_order_status, c, effective_order_kind)
+                })
             }
         }
     };

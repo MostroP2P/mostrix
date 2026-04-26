@@ -165,6 +165,23 @@ pub fn should_apply_status_transition(
     }
 }
 
+/// Like [`should_apply_status_transition`], but never treats **equal** status as an advance.
+///
+/// Use when an **older** Nostr `timestamp` must not replace the Messages row unless the payload
+/// status is strictly newer than what the current row already shows.
+pub fn should_strictly_advance_status(
+    current: Option<Status>,
+    candidate: Status,
+    kind: Option<mostro_core::order::Kind>,
+) -> bool {
+    if let Some(cur) = current {
+        if cur == candidate {
+            return false;
+        }
+    }
+    should_apply_status_transition(current, candidate, kind)
+}
+
 /// Validates the range amount input against min/max limits.
 pub fn validate_range_amount(take_state: &mut TakeOrderState) {
     if take_state.amount_input.is_empty() {
@@ -540,7 +557,7 @@ pub(super) fn handle_mostro_response(
 
 #[cfg(test)]
 mod tests {
-    use super::should_apply_status_transition;
+    use super::{should_apply_status_transition, should_strictly_advance_status};
     use mostro_core::prelude::Status;
 
     #[test]
@@ -571,5 +588,20 @@ mod tests {
             Some(mostro_core::order::Kind::Buy),
         );
         assert!(!allow);
+    }
+
+    #[test]
+    fn apply_allows_equal_status_but_strict_does_not() {
+        let kind = Some(mostro_core::order::Kind::Buy);
+        assert!(should_apply_status_transition(
+            Some(Status::WaitingPayment),
+            Status::WaitingPayment,
+            kind,
+        ));
+        assert!(!should_strictly_advance_status(
+            Some(Status::WaitingPayment),
+            Status::WaitingPayment,
+            kind,
+        ));
     }
 }

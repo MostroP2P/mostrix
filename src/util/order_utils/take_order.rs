@@ -262,7 +262,12 @@ pub async fn take_order(
                                 &trade_keys,
                                 false,
                             )
-                            .expect("take order_to_save with id: static header for PayInvoice");
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "failed to build static header for order id {:?}",
+                                    order_to_save.id
+                                )
+                            })?;
                             Ok(OperationResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),

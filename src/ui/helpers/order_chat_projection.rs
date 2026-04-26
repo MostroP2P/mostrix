@@ -69,8 +69,22 @@ fn status_from_message(msg: &OrderMessage) -> Option<Status> {
     msg.order_status
 }
 
-fn is_order_chat_actionable(_status: Option<Status>) -> bool {
-    true
+/// My Trades sidebar: only **in-flight** trade phases. Excludes book/terminal states (e.g. `Pending`,
+/// `Success`, `Canceled`, `CooperativelyCanceled`, …). `None` is kept so rows still appear until
+/// status is merged from DMs/DB.
+fn is_order_chat_actionable(status: Option<Status>) -> bool {
+    match status {
+        None => true,
+        Some(s) => matches!(
+            s,
+            Status::WaitingPayment
+                | Status::WaitingBuyerInvoice
+                | Status::SettledHoldInvoice
+                | Status::InProgress
+                | Status::Active
+                | Status::FiatSent
+        ),
+    }
 }
 
 /// Shared projection for the "My Trades" sidebar and Enter/action handlers.

@@ -47,77 +47,94 @@ pub struct RuntimeReconnectContext<'a> {
     pub settings: &'a Settings,
 }
 
+const POISONED_UI_FATAL: &str = "Internal error. Please restart Mostrix.";
+
+/// Shared by runtime reset paths: log fatal, set exit-on-close, show error mode.
+fn apply_poisoned_mutex_ui_fatal(app: &mut AppState, user_message: String) {
+    request_fatal_restart(user_message);
+    app.fatal_exit_on_close = true;
+    app.mode = UiMode::OperationResult(OperationResult::Error(POISONED_UI_FATAL.to_string()));
+}
+
+fn clear_messages_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.messages.lock();
+        match lock_result {
+            Ok(mut messages) => {
+                messages.clear();
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
+/// Clears `active_order_trade_indices` or applies fatal UI state and returns `Err(())` on poison.
+fn clear_active_order_indices_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.active_order_trade_indices.lock();
+        match lock_result {
+            Ok(mut active) => {
+                active.clear();
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
+/// Resets `pending_notifications` to 0 or applies fatal UI state and returns `Err(())` on poison.
+fn reset_pending_notifications_or_fatal(app: &mut AppState) -> Result<(), ()> {
+    let poison_message = {
+        let lock_result = app.pending_notifications.lock();
+        match lock_result {
+            Ok(mut pending) => {
+                *pending = 0;
+                return Ok(());
+            }
+            Err(e) => {
+                format!(
+                    "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+                )
+            }
+        }
+    };
+    apply_poisoned_mutex_ui_fatal(app, poison_message);
+    Err(())
+}
+
 fn clear_runtime_session_state(app: &mut AppState) {
-    match app.messages.lock() {
-        Ok(mut messages) => {
-            messages.clear();
-        }
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if clear_messages_or_fatal(app).is_err() {
+        return;
     }
-    match app.active_order_trade_indices.lock() {
-        Ok(mut active) => active.clear(),
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if clear_active_order_indices_or_fatal(app).is_err() {
+        return;
     }
-    match app.pending_notifications.lock() {
-        Ok(mut pending) => *pending = 0,
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-        }
+    if reset_pending_notifications_or_fatal(app).is_err() {
+        return;
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
 }
 
 fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
-    match app.active_order_trade_indices.lock() {
-        Ok(mut active) => active.clear(),
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if clear_active_order_indices_or_fatal(app).is_err() {
+        return;
     }
-    match app.pending_notifications.lock() {
-        Ok(mut pending) => *pending = 0,
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
-            ));
-            app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
-                "Internal error. Please restart Mostrix.".to_string(),
-            ));
-            return;
-        }
+    if reset_pending_notifications_or_fatal(app).is_err() {
+        return;
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;

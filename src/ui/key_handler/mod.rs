@@ -771,7 +771,8 @@ pub fn handle_key_event(
             .contains(crossterm::event::KeyModifiers::CONTROL);
         if code == KeyCode::Delete {
             if has_ctrl {
-                app.mode = UiMode::ConfirmBulkDeleteHistory(true);
+                // Default NO: avoid accidental Enter after Ctrl+Delete wiping all terminal history.
+                app.mode = UiMode::ConfirmBulkDeleteHistory(false);
                 return Some(true);
             }
             if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
