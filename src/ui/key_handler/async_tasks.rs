@@ -121,6 +121,9 @@ fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
     }
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
+    if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+        dropped.clear();
+    }
 }
 
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
@@ -226,6 +229,8 @@ pub async fn apply_pending_key_reload(
                     let messages_clone = Arc::clone(&app.messages);
                     let message_notification_tx_clone = message_notification_tx.clone();
                     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+                    let dropped_user_history_clone =
+                        Arc::clone(&app.dropped_user_history_order_ids);
                     let (new_dm_tx, new_dm_rx) =
                         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
                     *dm_subscription_tx = new_dm_tx;
@@ -243,6 +248,7 @@ pub async fn apply_pending_key_reload(
                                 messages_clone,
                                 message_notification_tx_clone,
                                 pending_notifications_clone,
+                                dropped_user_history_clone,
                                 new_dm_rx,
                             )
                             .await;
@@ -382,6 +388,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
     let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
     *dm_subscription_tx = new_dm_tx;
     let router_reg = set_dm_router_cmd_tx(dm_subscription_tx.clone());
@@ -398,6 +405,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
                 messages_clone,
                 message_notification_tx_clone,
                 pending_notifications_clone,
+                dropped_user_history_clone,
                 new_dm_rx,
             )
             .await;
@@ -553,6 +561,7 @@ pub async fn reload_runtime_session_after_reconnect(
     let messages_clone = Arc::clone(&ctx.app.messages);
     let message_notification_tx_clone = ctx.message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&ctx.app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&ctx.app.dropped_user_history_order_ids);
     let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
     *ctx.dm_subscription_tx = new_dm_tx;
     let router_reg = set_dm_router_cmd_tx(ctx.dm_subscription_tx.clone());
@@ -569,6 +578,7 @@ pub async fn reload_runtime_session_after_reconnect(
                 messages_clone,
                 message_notification_tx_clone,
                 pending_notifications_clone,
+                dropped_user_history_clone,
                 new_dm_rx,
             )
             .await;

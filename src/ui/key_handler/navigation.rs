@@ -1,3 +1,4 @@
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
@@ -250,14 +251,11 @@ fn handle_up_key(
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let order_ids: std::collections::HashSet<String> = match app.messages.lock() {
-                    Ok(g) => g
-                        .iter()
-                        .filter_map(|m| m.order_id.map(|id| id.to_string()))
-                        .collect(),
-                    Err(_) => std::collections::HashSet::new(),
+                let n = match app.messages.lock() {
+                    Ok(g) => build_active_order_chat_list(&g).len(),
+                    Err(_) => 0,
                 };
-                if !order_ids.is_empty() && app.selected_order_chat_idx > 0 {
+                if n > 0 && app.selected_order_chat_idx > 0 {
                     app.selected_order_chat_idx -= 1;
                 }
             } else if matches!(
@@ -403,11 +401,11 @@ fn handle_down_key(
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let count = match app.messages.lock() {
-                    Ok(g) => g.iter().filter(|m| m.order_id.is_some()).count(),
+                let n = match app.messages.lock() {
+                    Ok(g) => build_active_order_chat_list(&g).len(),
                     Err(_) => 0,
                 };
-                if count > 0 && app.selected_order_chat_idx < count.saturating_sub(1) {
+                if n > 0 && app.selected_order_chat_idx < n.saturating_sub(1) {
                     app.selected_order_chat_idx += 1;
                 }
             } else if matches!(

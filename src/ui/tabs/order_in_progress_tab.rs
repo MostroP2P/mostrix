@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
+use uuid::Uuid;
 
 use crate::ui::constants::{
     FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
@@ -208,9 +209,14 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .status
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let order_kind = selected.kind.as_deref().unwrap_or("Unknown");
-    let created_str = selected
-        .created_at
+    let static_h = Uuid::parse_str(&selected.order_id)
+        .ok()
+        .and_then(|id| app.order_chat_static.get(&id));
+    let order_kind = static_h
+        .and_then(|h| h.kind.map(|k| k.to_string()))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let created_str = static_h
+        .and_then(|h| h.created_at)
         .and_then(|ts| DateTime::from_timestamp(ts, 0))
         .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "Unknown".to_string());
@@ -221,19 +227,17 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             pubkey.to_string()
         }
     };
-    let initiator_pubkey_display = selected
-        .initiator_pubkey
-        .as_deref()
-        .map(truncate_pubkey)
+    let initiator_pubkey_display = static_h
+        .map(|h| truncate_pubkey(&h.initiator_trade_pubkey))
         .unwrap_or_else(|| "Unknown".to_string());
-    let initiator_role = match selected.is_mine {
+    let initiator_role = match static_h.map(|h| h.is_mine) {
         Some(true) => "Maker",
         Some(false) => "Taker",
         None => "Initiator",
     };
-    let trade_id = selected
-        .trade_index
-        .map(|t| t.to_string())
+    let trade_id = static_h
+        .map(|h| h.trade_index.to_string())
+        .or_else(|| selected.trade_index.map(|t| t.to_string()))
         .unwrap_or_else(|| "Unknown".to_string());
     let payment_method = selected.payment_method.as_deref().unwrap_or("Unknown");
     let premium_text = selected
@@ -252,11 +256,14 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     // signals once available on DM payloads or local `orders` (see dispute UI + `Order::is_full_privacy_order`).
     // Omit that row until then — avoid static "Unknown" placeholders.
 
+    let order_id_display = static_h
+        .map(|h| h.order_id.to_string())
+        .unwrap_or_else(|| selected.order_id.clone());
     let mut header_lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                selected.order_id.clone(),
+                order_id_display,
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -272,7 +279,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             Span::raw("  "),
             Span::styled("Type: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                order_kind.to_string(),
+                order_kind,
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),

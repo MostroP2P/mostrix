@@ -10,7 +10,7 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup,
+    load_user_order_chats_at_startup, sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -272,6 +272,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let messages_clone = Arc::clone(&app.messages);
     let message_notification_tx_clone = message_notification_tx.clone();
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
     let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
@@ -282,6 +283,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 messages_clone,
                 message_notification_tx_clone,
                 pending_notifications_clone,
+                dropped_user_history_clone,
                 dm_subscription_rx,
             )
             .await;
@@ -351,12 +353,12 @@ async fn main() -> Result<(), anyhow::Error> {
                     let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
+                    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
 
                     handle_operation_result(result, &mut app);
-                    // TODO: Uncomment this when we have a way to sync user order history messages from the DB
-                    // if app.user_role == UserRole::User {
-                    //     sync_user_order_history_messages_from_db(&pool, &mut app).await;
-                    // }
+                    if resync_my_trades_from_db && app.user_role == UserRole::User {
+                        sync_user_order_history_messages_from_db(&pool, &mut app).await;
+                    }
 
                     // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
                     if is_dispute_related && app.user_role == UserRole::Admin {

@@ -46,6 +46,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             premium,
             status,
             trade_index: _,
+            ..
         }) => {
             let block = Block::default()
                 .title("✅ Order Created Successfully")

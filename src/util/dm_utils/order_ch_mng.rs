@@ -1,4 +1,5 @@
 // Order channel manager - handles order result messages from async tasks
+use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::{strip_new_order_messages_and_clamp_selected, OrderSuccess};
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
@@ -32,6 +33,7 @@ fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
             ));
         }
     }
+    app.order_chat_static.remove(&order_id);
 }
 
 fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) {
@@ -43,6 +45,12 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
                 &mut messages,
                 &mut app.selected_message_idx,
             );
+            let n = build_active_order_chat_list(&messages).len();
+            if n == 0 {
+                app.selected_order_chat_idx = 0;
+            } else if app.selected_order_chat_idx >= n {
+                app.selected_order_chat_idx = n - 1;
+            }
         }
         Err(e) => {
             crate::util::request_fatal_restart(format!(
@@ -62,6 +70,15 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
             ));
         }
     }
+    for order_id in order_ids {
+        let key = order_id.to_string();
+        app.order_chats.remove(&key);
+        app.order_chat_last_seen.remove(&key);
+        app.order_chat_static.remove(order_id);
+        if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+            dropped.insert(*order_id);
+        }
+    }
 }
 
 /// Handle order result from the order result channel
@@ -79,12 +96,26 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         result = OperationResult::Info(message);
     }
 
+    match &result {
+        OperationResult::Success(os) => {
+            if let Some(h) = &os.static_header {
+                app.order_chat_static.insert(h.order_id, h.clone());
+            }
+        }
+        OperationResult::PaymentRequestRequired { static_header, .. } => {
+            app.order_chat_static
+                .insert(static_header.order_id, static_header.clone());
+        }
+        _ => {}
+    }
+
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
         order,
         invoice,
         sat_amount,
         trade_index,
+        static_header: _,
     } = &result
     {
         // Track trade_index

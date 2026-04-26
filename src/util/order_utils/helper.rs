@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::ui::state::{OperationResult, OrderSuccess, TakeOrderState};
+use crate::ui::state::{OperationResult, OrderChatStaticHeader, OrderSuccess, TakeOrderState};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
@@ -455,8 +455,31 @@ pub async fn fetch_order_fiat_from_relay(
     Ok(if fiat.is_empty() { None } else { Some(fiat) })
 }
 
+/// Build My Trades static header for one trade (maker or taker).
+pub(super) fn build_order_chat_static_header(
+    order: &SmallOrder,
+    trade_index: i64,
+    trade_keys: &Keys,
+    is_mine: bool,
+) -> Option<OrderChatStaticHeader> {
+    let order_id = order.id?;
+    Some(OrderChatStaticHeader {
+        order_id,
+        kind: order.kind,
+        created_at: order.created_at,
+        trade_index,
+        initiator_trade_pubkey: trade_keys.public_key().to_string(),
+        is_mine,
+    })
+}
+
 /// Helper function to create OperationResult::Success from an order
-pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) -> OperationResult {
+pub(super) fn create_order_result_success(
+    order: &SmallOrder,
+    trade_index: i64,
+    trade_keys: &Keys,
+    is_mine: bool,
+) -> OperationResult {
     OperationResult::Success(OrderSuccess {
         order_id: order.id,
         kind: order.kind,
@@ -469,6 +492,7 @@ pub(super) fn create_order_result_success(order: &SmallOrder, trade_index: i64) 
         premium: order.premium,
         status: order.status,
         trade_index: Some(trade_index),
+        static_header: build_order_chat_static_header(order, trade_index, trade_keys, is_mine),
     })
 }
 

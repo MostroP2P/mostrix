@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use uuid::Uuid;
 
 use mostro_core::prelude::Action;
 use zeroize::{Zeroize, Zeroizing};
@@ -14,7 +16,7 @@ use crate::ui::chat::{
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
     InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
-    OrderMessage, RatingOrderState,
+    OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
@@ -130,6 +132,9 @@ pub struct AppState {
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
     pub active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>, // Map order_id -> trade_index
+    /// Orders the user removed from local history this session; trade DMs for these ids are ignored
+    /// so relays cannot re-upsert deleted rows back into the UI.
+    pub dropped_user_history_order_ids: Arc<Mutex<HashSet<uuid::Uuid>>>,
     /// Per-order startup floor for invoice popups: notifications at or below this rumor timestamp
     /// are treated as historical and must not auto-open AddInvoice/PayInvoice modal.
     pub startup_popup_floor_ts: HashMap<uuid::Uuid, i64>,
@@ -137,6 +142,8 @@ pub struct AppState {
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
     pub order_chat_input: String,
     pub order_chat_input_enabled: bool,
+    /// Per-order static header (id, kind, created_at, trade index, initiator) from take/create and DB.
+    pub order_chat_static: HashMap<Uuid, OrderChatStaticHeader>,
     pub order_chats: HashMap<String, Vec<UserOrderChatMessage>>, // Chat messages per order id
     pub order_chat_scrollview_state: tui_scrollview::ScrollViewState,
     pub order_chat_selected_message_idx: Option<usize>,
@@ -210,11 +217,13 @@ impl AppState {
             mode: UiMode::Normal,
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
+            dropped_user_history_order_ids: Arc::new(Mutex::new(HashSet::new())),
             startup_popup_floor_ts: HashMap::new(),
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),
             order_chat_input_enabled: true,
+            order_chat_static: HashMap::new(),
             order_chats: HashMap::new(),
             order_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
             order_chat_selected_message_idx: None,

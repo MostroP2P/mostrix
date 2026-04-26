@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
-    OrderChatLastSeen, OrderMessage, UserChatSender, UserOrderChatMessage, UserRole,
+    OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatSender, UserOrderChatMessage,
+    UserRole,
 };
 use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
 
@@ -216,6 +217,26 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
     Some(history_message)
 }
 
+fn order_chat_static_from_db_order(row: &Order) -> Option<OrderChatStaticHeader> {
+    let id_str = row.id.as_deref()?;
+    let order_id = Uuid::parse_str(id_str).ok()?;
+    let kind = row
+        .kind
+        .as_deref()
+        .and_then(|s| OrderKind::from_str(s).ok());
+    let trade_index = row.trade_index?;
+    let keys_hex = row.trade_keys.as_deref()?;
+    let trade_keys = Keys::parse(keys_hex).ok()?;
+    Some(OrderChatStaticHeader {
+        order_id,
+        kind,
+        created_at: row.created_at,
+        trade_index,
+        initiator_trade_pubkey: trade_keys.public_key().to_string(),
+        is_mine: row.is_mine,
+    })
+}
+
 pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &mut AppState) {
     let identity_keys = match User::get_identity_keys(pool).await {
         Ok(k) => k,
@@ -253,6 +274,11 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
             crate::util::request_fatal_restart(format!(
                 "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
             ));
+        }
+    }
+    for row in &rows {
+        if let Some(h) = order_chat_static_from_db_order(row) {
+            app.order_chat_static.insert(h.order_id, h);
         }
     }
 }

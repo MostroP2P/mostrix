@@ -10,6 +10,19 @@ use crate::ui::constants::{
 
 pub use crate::ui::constants::StepLabel;
 
+/// Stable My Trades header fields for one trade (maker publish or taker take). Not updated by later DMs.
+#[derive(Clone, Debug)]
+pub struct OrderChatStaticHeader {
+    pub order_id: uuid::Uuid,
+    pub kind: Option<mostro_core::order::Kind>,
+    pub created_at: Option<i64>,
+    pub trade_index: i64,
+    /// Local party's trade Nostr pubkey string (for display; matches DM path convention).
+    pub initiator_trade_pubkey: String,
+    /// `true` = we are maker, `false` = taker.
+    pub is_mine: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct OrderSuccess {
     pub order_id: Option<uuid::Uuid>,
@@ -23,6 +36,8 @@ pub struct OrderSuccess {
     pub premium: i64,
     pub status: Option<Status>,
     pub trade_index: Option<i64>, // Trade index used for this order
+    /// Filled on successful create/take for My Trades static header.
+    pub static_header: Option<OrderChatStaticHeader>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +49,7 @@ pub enum OperationResult {
         invoice: String,
         sat_amount: Option<i64>,
         trade_index: i64,
+        static_header: OrderChatStaticHeader,
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),

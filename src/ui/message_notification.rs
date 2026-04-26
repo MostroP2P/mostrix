@@ -425,7 +425,7 @@ pub fn render_message_notification(
     let area = f.area();
     let (popup_width, popup_height) = match action {
         mostro_core::prelude::Action::AddInvoice | mostro_core::prelude::Action::PayInvoice => {
-            (90, 18)
+            (90, 19)
         }
         _ => (70, 8),
     };

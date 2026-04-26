@@ -232,6 +232,7 @@ The `orders` table is essential for:
 - **Order Recovery**: Allows the client to recover active orders on startup (`Order::get_startup_active_orders`, `hydrate_startup_active_order_dm_state`)
 - **State Synchronization**: Enables the "fetch-on-startup" strategy to sync with Mostro daemon
 - **Trade History**: Maintains a local record of orders and trades
+- **My Trades static header (UI)**: on user history sync, `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs` seeds `AppState.order_chat_static` from existing `orders` rows (`id`, `kind`, `created_at`, `trade_index`, `is_mine`, and trade public key derived from `trade_keys`) so the in-app header (order id, type, created time, trade index, initiator) is stable across process restarts without re-folding the DM list.
 
 #### Data Persistence
 

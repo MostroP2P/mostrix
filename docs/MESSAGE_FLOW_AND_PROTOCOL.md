@@ -309,9 +309,10 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 - **Incremental merge**: `apply_user_order_chat_updates` deduplicates by `(timestamp, content)`, persists new entries, and advances per-order cursors.
 - **Compatibility parsing**: legacy sender labels from older files (`Admin`, `Admin to Buyer`, `Admin to Seller`, `Buyer`, `Seller`) are mapped to `You/Peer` when loading.
 - **UI selection safety**: the "My Trades" sidebar and Enter/send handlers resolve the active order list from the same shared projection (`helpers::build_active_order_chat_list`), ensuring `selected_order_chat_idx` cannot target a different order than the highlighted row.
-- **Header fields from DMs**: that projection walks `AppState.messages` per order and merges `Payload::Order` (trade pubkeys, amounts, etc.) with `Payload::Peer` so counterparty **`UserInfo`** can populate buyer/seller rating display when the daemon includes peer reputation events.
+- **My Trades static header (`order_chat_static`)**: in-memory map `AppState.order_chat_static` (see `src/ui/orders.rs` — `OrderChatStaticHeader`) is written by `handle_operation_result` in `src/util/dm_utils/order_ch_mng.rs` on `OperationResult::Success` and `PaymentRequestRequired` (after take / PayInvoice path), and populated from the local `orders` table during `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs`. It is cleared for removed trades when `TradeClosed` / `OrderHistoryDeleted` are handled. It supplies stable header fields (order id, kind, created time, trade index, initiator) so the UI does not depend on folding those out of the DM stream.
+- **Live fields from DMs**: the projection over `AppState.messages` per order merges `Payload::Order` (first economic snapshot, buyer/seller trade pubkeys) with `Payload::Peer` so counterparty `UserInfo` can populate buyer/seller rating, and `order_status` updates status for the header and for `resolve_selected_mytrades_order_status` in `src/ui/key_handler/chat_helpers.rs`.
 
-**Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/util/chat_utils.rs`
+**Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/util/dm_utils/order_ch_mng.rs`, `src/util/chat_utils.rs`
 
 ### Message Parsing
 **Source**: `src/util/dm_utils/mod.rs:137`

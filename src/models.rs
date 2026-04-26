@@ -575,10 +575,9 @@ impl Order {
     /// Deletes one order row when it is in a terminal status.
     /// Returns number of deleted rows (0 when order is non-terminal or missing).
     pub async fn delete_terminal_order_by_id(pool: &SqlitePool, order_id: &str) -> Result<u64> {
-        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
-            "DELETE FROM orders WHERE id = ? AND lower(COALESCE(status, '')) IN (",
-        );
+        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new("DELETE FROM orders WHERE id = ");
         qb.push_bind(order_id);
+        qb.push(" AND lower(COALESCE(status, '')) IN (");
         {
             let mut separated = qb.separated(", ");
             for s in TERMINAL_ORDER_HISTORY_STATUSES {

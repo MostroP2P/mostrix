@@ -763,7 +763,17 @@ async fn dispatch_giftwrap_batch(
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     terminal_policy: GiftWrapTerminalPolicy<'_>,
     notify: bool,
+    dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
 ) {
+    if let Ok(guard) = dropped_user_history_order_ids.lock() {
+        if guard.contains(&order_id) {
+            log::info!(
+                "[dm_listener] Skipping trade DMs for order_id={} (removed from local history by user)",
+                order_id
+            );
+            return;
+        }
+    }
     let log_each_message = matches!(
         terminal_policy,
         GiftWrapTerminalPolicy::TrackedSubscription(_)
@@ -883,6 +893,7 @@ struct DmListenerStartupReplay<'a> {
     subscribed_pubkeys: &'a mut HashSet<PublicKey>,
     subscription_to_order: &'a mut HashMap<SubscriptionId, (Uuid, i64)>,
     pubkey_to_subscription: &'a HashMap<PublicKey, SubscriptionId>,
+    dropped_user_history_order_ids: &'a Arc<Mutex<HashSet<Uuid>>>,
 }
 
 /// One-shot relay query + replay so restart shows trade DMs. `subscribe` alone often does not
@@ -903,6 +914,7 @@ async fn fetch_and_replay_startup_trade_dms(
         subscribed_pubkeys,
         subscription_to_order,
         pubkey_to_subscription,
+        dropped_user_history_order_ids,
     } = replay;
 
     let lookback_start = Timestamp::now()
@@ -1028,6 +1040,7 @@ async fn fetch_and_replay_startup_trade_dms(
             subscription_to_order,
             GiftWrapTerminalPolicy::TrackedSubscription(&sub_id),
             false,
+            dropped_user_history_order_ids,
         )
         .await;
     }
@@ -1145,6 +1158,7 @@ pub async fn listen_for_order_messages(
     messages: Arc<Mutex<Vec<OrderMessage>>>,
     message_notification_tx: tokio::sync::mpsc::UnboundedSender<MessageNotification>,
     pending_notifications: Arc<Mutex<usize>>,
+    dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
     mut dm_subscription_rx: tokio::sync::mpsc::UnboundedReceiver<OrderDmSubscriptionCmd>,
 ) {
     // Get user key from db (for deriving trade keys)
@@ -1225,6 +1239,7 @@ pub async fn listen_for_order_messages(
             subscribed_pubkeys: &mut subscribed_pubkeys,
             subscription_to_order: &mut subscription_to_order,
             pubkey_to_subscription: &pubkey_to_subscription,
+            dropped_user_history_order_ids: &dropped_user_history_order_ids,
         },
         &startup_active_orders,
         &order_last_seen_dm_ts,
@@ -1491,6 +1506,7 @@ pub async fn listen_for_order_messages(
                             &mut subscription_to_order,
                             GiftWrapTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
+                            &dropped_user_history_order_ids,
                         )
                         .await;
                     } else if let Some((order_id, trade_index, trade_keys)) =
@@ -1522,6 +1538,7 @@ pub async fn listen_for_order_messages(
                             &mut subscription_to_order,
                             GiftWrapTerminalPolicy::UntrackedFallback,
                             true,
+                            &dropped_user_history_order_ids,
                         )
                         .await;
                     }

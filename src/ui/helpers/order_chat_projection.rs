@@ -5,19 +5,17 @@ use mostro_core::prelude::{Payload, Peer, SmallOrder, Status, UserInfo};
 
 use crate::ui::OrderMessage;
 
+/// One row in the My Trades sidebar, derived from order DMs. Live status, amounts, and `Payload::Peer`
+/// ratings. Static id/kind/created/trade/initiator come from [`crate::ui::AppState::order_chat_static`].
 #[derive(Clone)]
 pub struct OrderChatListItem {
     pub order_id: String,
     pub status: Option<Status>,
-    pub kind: Option<String>,
     pub amount: Option<i64>,
     pub fiat: Option<(i64, String)>,
-    pub created_at: Option<i64>,
     pub trade_index: Option<i64>,
     pub payment_method: Option<String>,
     pub premium: Option<i64>,
-    pub initiator_pubkey: Option<String>,
-    pub is_mine: Option<bool>,
     /// From latest `Payload::Order` seen for this trade (used to attribute `Payload::Peer` reputation).
     pub buyer_trade_pubkey: Option<String>,
     pub seller_trade_pubkey: Option<String>,
@@ -36,14 +34,10 @@ fn merge_order_fields(entry: &mut OrderChatListItem, order: &SmallOrder, msg: &O
     if entry.amount.is_none() {
         entry.amount = Some(order.amount);
         entry.fiat = Some((order.fiat_amount, order.fiat_code.clone()));
-        entry.kind = order.kind.map(|k| k.to_string());
-        entry.created_at = order.created_at;
-        entry.trade_index = Some(msg.trade_index);
         entry.payment_method = Some(order.payment_method.clone());
         entry.premium = Some(order.premium);
-        entry.initiator_pubkey = Some(msg.sender.to_string());
-        entry.is_mine = msg.is_mine;
     }
+    entry.trade_index = entry.trade_index.or(Some(msg.trade_index));
 }
 
 fn merge_peer_fields(entry: &mut OrderChatListItem, peer: &Peer) {
@@ -59,6 +53,7 @@ fn merge_peer_fields(entry: &mut OrderChatListItem, peer: &Peer) {
 }
 
 fn merge_message_into_entry(entry: &mut OrderChatListItem, msg: &OrderMessage) {
+    entry.trade_index = entry.trade_index.or(Some(msg.trade_index));
     entry.status = status_from_message(msg).or(entry.status);
     let Some(payload) = &msg.message.get_inner_message_kind().payload else {
         return;
@@ -96,15 +91,11 @@ pub fn build_active_order_chat_list(messages: &[OrderMessage]) -> Vec<OrderChatL
                 let mut entry = OrderChatListItem {
                     order_id: key,
                     status: status_from_message(msg),
-                    kind: None,
                     amount: None,
                     fiat: None,
-                    created_at: None,
                     trade_index: Some(msg.trade_index),
                     payment_method: None,
                     premium: None,
-                    initiator_pubkey: Some(msg.sender.to_string()),
-                    is_mine: msg.is_mine,
                     buyer_trade_pubkey: None,
                     seller_trade_pubkey: None,
                     buyer_reputation: None,
