@@ -69,24 +69,6 @@ fn status_from_message(msg: &OrderMessage) -> Option<Status> {
     msg.order_status
 }
 
-/// My Trades sidebar: only **in-flight** trade phases. Excludes book/terminal states (e.g. `Pending`,
-/// `Success`, `Canceled`, `CooperativelyCanceled`, …). `None` is kept so rows still appear until
-/// status is merged from DMs/DB.
-fn is_order_chat_actionable(status: Option<Status>) -> bool {
-    match status {
-        None => true,
-        Some(s) => matches!(
-            s,
-            Status::WaitingPayment
-                | Status::WaitingBuyerInvoice
-                | Status::SettledHoldInvoice
-                | Status::InProgress
-                | Status::Active
-                | Status::FiatSent
-        ),
-    }
-}
-
 /// Shared projection for the "My Trades" sidebar and Enter/action handlers.
 ///
 /// Important: ordering must stay stable and match the sidebar ordering, otherwise
@@ -120,10 +102,7 @@ pub fn build_active_order_chat_list(messages: &[OrderMessage]) -> Vec<OrderChatL
             });
     }
 
-    let mut rows: Vec<OrderChatListItem> = by_order
-        .into_values()
-        .filter(|row| is_order_chat_actionable(row.status))
-        .collect();
+    let mut rows: Vec<OrderChatListItem> = by_order.into_values().collect();
     // Newest trades first: higher NIP-06 trade index ⇒ more recently allocated key.
     rows.sort_by(|a, b| match (a.trade_index, b.trade_index) {
         (Some(ia), Some(ib)) => match ib.cmp(&ia) {
