@@ -33,7 +33,7 @@ pub mod tabs;
 pub mod user_state;
 pub mod waiting;
 
-pub use admin_state::AdminMode;
+pub use admin_state::{AddSolverState, AdminMode, SolverPermission};
 pub use draw::ui_draw;
 pub use network_status::NetworkStatus;
 pub use state::{

@@ -99,9 +99,19 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
     }
 
     // Handle paste for admin key input popups
-    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut key_state))
-    | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
-    {
+    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut add_solver_state)) = app.mode {
+        if add_solver_state.key_input.focused {
+            let filtered_text: String = pasted_text
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .collect();
+            add_solver_state
+                .key_input
+                .key_input
+                .push_str(&filtered_text);
+            add_solver_state.key_input.just_pasted = true;
+        }
+    } else if let UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode {
         if key_state.focused {
             let filtered_text: String = pasted_text
                 .chars()

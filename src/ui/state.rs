@@ -1,3 +1,4 @@
+pub use crate::ui::admin_state::{AddSolverState, SolverPermission};
 pub use crate::ui::app_state::{AppState, UiMode};
 pub use crate::ui::chat::{
     AdminChatLastSeen, AdminChatUpdate, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender,

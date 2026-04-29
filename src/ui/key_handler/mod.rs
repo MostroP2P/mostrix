@@ -696,7 +696,7 @@ pub fn handle_key_event(
             UiMode::AddMostroPubkey(ref mut ks) => Some(ks),
             UiMode::AddRelay(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
-            UiMode::AdminMode(AdminMode::AddSolver(ref mut ks)) => Some(ks),
+            UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
             UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
             _ => None,
         };
@@ -908,7 +908,14 @@ pub fn handle_key_event(
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups
             match &mut app.mode {
-                UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
+                UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => {
+                    state.permission = state.permission.toggle();
+                    return Some(true);
+                }
+                UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+                    ref mut selected_button,
+                    ..
+                })
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)

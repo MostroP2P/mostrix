@@ -460,7 +460,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::AdminMode(AdminMode::AddSolver(_))
-        | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
             handle_enter_admin_mode(app, current_mode, default_mode, ctx);
@@ -1074,7 +1074,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             6 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
-                app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
+                app.mode = UiMode::AdminMode(AdminMode::AddSolver(crate::ui::AddSolverState {
+                    key_input: key_state,
+                    permission: crate::ui::SolverPermission::ReadWrite,
+                }));
             }
             7 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)

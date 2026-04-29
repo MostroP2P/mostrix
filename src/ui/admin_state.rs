@@ -1,11 +1,43 @@
 use crate::ui::KeyInputState;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SolverPermission {
+    Read,
+    ReadWrite,
+}
+
+impl SolverPermission {
+    pub const fn toggle(self) -> Self {
+        match self {
+            Self::Read => Self::ReadWrite,
+            Self::ReadWrite => Self::Read,
+        }
+    }
+
+    pub const fn as_label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::ReadWrite => "read-write",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AddSolverState {
+    pub key_input: KeyInputState,
+    pub permission: SolverPermission,
+}
+
 #[derive(Clone, Debug)]
 pub enum AdminMode {
     Normal,
-    AddSolver(KeyInputState),
-    ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
-    WaitingAddSolver,               // Waiting for Mostro response after admin-add-solver
+    AddSolver(AddSolverState),
+    ConfirmAddSolver {
+        solver_pubkey: String,
+        permission: SolverPermission,
+        selected_button: bool, // true=Yes, false=No
+    },
+    WaitingAddSolver, // Waiting for Mostro response after admin-add-solver
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)

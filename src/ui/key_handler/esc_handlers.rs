@@ -90,10 +90,17 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) => {
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+            solver_pubkey,
+            permission,
+            ..
+        }) => {
             // Cancel confirmation, go back to input
             app.mode = handle_confirmation_esc(solver_pubkey, |input| {
-                UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(input)))
+                UiMode::AdminMode(AdminMode::AddSolver(crate::ui::AddSolverState {
+                    key_input: create_key_input_state(input),
+                    permission: *permission,
+                }))
             });
             true
         }

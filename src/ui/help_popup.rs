@@ -238,7 +238,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Add Dispute Solver",
-            "Enter a solver npub to register with Mostro for dispute routing.",
+            "Enter solver npub and choose read or read-write permission before confirming.",
         ),
         (
             "Change Admin Key",
