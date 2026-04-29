@@ -89,7 +89,6 @@ pub(crate) fn execute_add_solver_action(
     };
     app.mode = UiMode::AdminMode(AdminMode::WaitingAddSolver);
 
-    let solver_pubkey_clone = solver_pubkey.clone();
     let client_clone = ctx.client.clone();
     let result_tx = ctx.order_result_tx.clone();
 
@@ -106,7 +105,7 @@ pub(crate) fn execute_add_solver_action(
     let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
         match execute_admin_add_solver(
-            &solver_pubkey_clone,
+            &solver_pubkey,
             permission,
             &admin_keys,
             &client_clone,

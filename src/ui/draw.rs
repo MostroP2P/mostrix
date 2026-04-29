@@ -457,10 +457,10 @@ fn render_add_solver_popup(f: &mut ratatui::Frame, add_solver_state: &AddSolverS
         chunks[1],
     );
 
-    let input_display = if add_solver_state.key_input.key_input.is_empty() {
-        "npub... / hex...".to_string()
+    let input_display: &str = if add_solver_state.key_input.key_input.is_empty() {
+        "npub... / hex..."
     } else {
-        add_solver_state.key_input.key_input.clone()
+        add_solver_state.key_input.key_input.as_str()
     };
 
     f.render_widget(
