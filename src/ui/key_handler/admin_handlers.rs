@@ -1,5 +1,6 @@
+use crate::shared::permissions::SolverPermission;
 use crate::ui::key_handler::EnterKeyContext;
-use crate::ui::{AddSolverState, AdminMode, AppState, SolverPermission, UiMode};
+use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
 use uuid::Uuid;

@@ -238,7 +238,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Add Dispute Solver",
-            "Enter solver npub and choose read or read-write permission before confirming.",
+            "Enter solver npub, use Left/Right to choose read or read-write, then confirm",
         ),
         (
             "Change Admin Key",

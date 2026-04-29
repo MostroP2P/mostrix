@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use crate::shared::permissions::SolverPermission;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 use crate::util::fatal::request_fatal_restart;

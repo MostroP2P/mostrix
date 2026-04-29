@@ -4,8 +4,8 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
+use crate::shared::permissions::SolverPermission;
 use crate::ui::key_handler::hex_pubkey_to_npub;
-use crate::ui::SolverPermission;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;

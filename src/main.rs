@@ -1,6 +1,7 @@
 pub mod db;
 pub mod models;
 pub mod settings;
+pub mod shared;
 pub mod ui;
 pub mod util;
 
