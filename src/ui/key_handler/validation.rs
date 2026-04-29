@@ -59,7 +59,9 @@ pub fn hex_pubkey_to_npub(hex: &str) -> Option<String> {
 /// Returns None if the input is not a valid 64-char hex string.
 pub fn hex_seckey_to_nsec(hex: &str) -> Option<String> {
     let hex = hex.trim();
-    SecretKey::from_str(hex).ok().and_then(|sk| sk.to_bech32().ok())
+    SecretKey::from_str(hex)
+        .ok()
+        .and_then(|sk| sk.to_bech32().ok())
 }
 
 /// Validate if a string is a valid hex-encoded Mostro pubkey
@@ -114,33 +116,50 @@ mod tests {
 
     #[test]
     fn validate_npub_accepts_bech32() {
-        // Valid npub
-        assert!(validate_npub("npub1qqqq884wtp2jn96lqhqlnarl4kk3rmvrc9z2nmrvqujx3m4l2ea5qd5d0fq").is_ok());
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae";
+        let npub = PublicKey::from_hex(hex)
+            .expect("hex must parse as public key")
+            .to_bech32()
+            .expect("public key must convert to bech32");
+        assert!(validate_npub(&npub).is_ok());
     }
 
     #[test]
     fn validate_npub_accepts_hex() {
         // Valid hex (64 chars)
-        assert!(validate_npub("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae").is_ok());
+        assert!(
+            validate_npub("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae")
+                .is_ok()
+        );
     }
 
     #[test]
     fn validate_npub_rejects_invalid() {
         assert!(validate_npub("not-a-key").is_err());
-        assert!(validate_npub("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84").is_err()); // too short
+        assert!(
+            validate_npub("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84")
+                .is_err()
+        ); // too short
         assert!(validate_npub("").is_err());
     }
 
     #[test]
     fn validate_nsec_accepts_bech32() {
-        // Valid nsec (fake key for test)
-        assert!(validate_nsec("nsec1").is_err()); // nsec1 alone is invalid
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af";
+        let nsec = SecretKey::from_str(hex)
+            .expect("hex must parse as secret key")
+            .to_bech32()
+            .expect("secret key must convert to bech32");
+        assert!(validate_nsec(&nsec).is_ok());
     }
 
     #[test]
     fn validate_nsec_accepts_hex() {
         // Valid hex (64 chars)
-        assert!(validate_nsec("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af").is_ok());
+        assert!(
+            validate_nsec("627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af")
+                .is_ok()
+        );
     }
 
     #[test]

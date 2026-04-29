@@ -45,6 +45,7 @@ use super::{execute_admin_cancel, execute_admin_settle};
 /// - Failed to update dispute status in database
 pub async fn execute_finalize_dispute(
     dispute_id: &Uuid,
+    admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
     pool: &SqlitePool,
@@ -94,9 +95,23 @@ pub async fn execute_finalize_dispute(
 
     // Execute the appropriate action (settle or cancel) using the order ID
     let result = if is_settle {
-        execute_admin_settle(&order_id, client, mostro_pubkey, mostro_instance).await
+        execute_admin_settle(
+            &order_id,
+            admin_keys,
+            client,
+            mostro_pubkey,
+            mostro_instance,
+        )
+        .await
     } else {
-        execute_admin_cancel(&order_id, client, mostro_pubkey, mostro_instance).await
+        execute_admin_cancel(
+            &order_id,
+            admin_keys,
+            client,
+            mostro_pubkey,
+            mostro_instance,
+        )
+        .await
     };
 
     result?; // Propagate error if action failed

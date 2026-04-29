@@ -35,6 +35,12 @@ pub(crate) fn execute_take_dispute_action(
         return;
     };
     // Spawn async task to take dispute
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        app.mode = UiMode::OperationResult(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+        return;
+    };
     let client_clone = ctx.client.clone();
     let result_tx = ctx.order_result_tx.clone();
     let pool_clone = ctx.pool.clone();
@@ -42,6 +48,7 @@ pub(crate) fn execute_take_dispute_action(
     tokio::spawn(async move {
         match execute_take_dispute(
             &dispute_id,
+            &admin_keys,
             &client_clone,
             current_mostro_pubkey,
             &pool_clone,
@@ -66,14 +73,19 @@ pub(crate) fn execute_take_dispute_action(
 /// Helper function to execute adding a solver.
 ///
 /// This avoids code duplication between Enter key and 'y' key handlers.
-/// Sets the UI mode to normal and spawns an async task to add the solver.
+/// Sets the UI mode to waiting and spawns an async task to add the solver.
 pub(crate) fn execute_add_solver_action(
     app: &mut AppState,
     solver_pubkey: String,
     ctx: &EnterKeyContext<'_>,
 ) {
-    // Stay on Settings tab after confirmation
-    app.mode = UiMode::AdminMode(AdminMode::Normal);
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        app.mode = UiMode::OperationResult(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+        return;
+    };
+    app.mode = UiMode::AdminMode(AdminMode::WaitingAddSolver);
 
     let solver_pubkey_clone = solver_pubkey.clone();
     let client_clone = ctx.client.clone();
@@ -93,6 +105,7 @@ pub(crate) fn execute_add_solver_action(
     tokio::spawn(async move {
         match execute_admin_add_solver(
             &solver_pubkey_clone,
+            &admin_keys,
             &client_clone,
             current_mostro_pubkey,
             mostro_info.as_ref(),
@@ -122,6 +135,12 @@ pub(crate) fn execute_finalize_dispute_action(
     ctx: &EnterKeyContext<'_>,
     is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
 ) {
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        app.mode = UiMode::OperationResult(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+        return;
+    };
     app.mode = UiMode::AdminMode(AdminMode::WaitingDisputeFinalization(dispute_id));
 
     let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
@@ -141,6 +160,7 @@ pub(crate) fn execute_finalize_dispute_action(
     tokio::spawn(async move {
         match execute_finalize_dispute(
             &dispute_id,
+            &admin_keys,
             &client_clone,
             current_mostro_pubkey,
             &pool_clone,

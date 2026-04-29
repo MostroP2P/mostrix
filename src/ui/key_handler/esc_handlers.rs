@@ -172,6 +172,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting
             true
         }
+        UiMode::AdminMode(AdminMode::WaitingAddSolver) => {
+            // Can't cancel while waiting
+            true
+        }
         _ => {
             // ESC in normal mode or other unhandled modes - do nothing, just continue
             // ESC should never exit the application (use Exit tab instead)

@@ -470,6 +470,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
+        UiMode::AdminMode(AdminMode::WaitingAddSolver) => {
+            // No action while waiting
+            true
+        }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             handle_enter_admin_managing_dispute_chat(app, ctx);
             true

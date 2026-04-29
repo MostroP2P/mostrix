@@ -164,6 +164,10 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
         waiting::render_waiting(f);
     }
+    // Waiting for add solver popup overlay (admin mode only)
+    if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
+        waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");
+    }
 
     // Operation result popup overlay (shared)
     if let UiMode::OperationResult(result) = &app.mode {

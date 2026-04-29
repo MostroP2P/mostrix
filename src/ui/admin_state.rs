@@ -5,6 +5,7 @@ pub enum AdminMode {
     Normal,
     AddSolver(KeyInputState),
     ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
+    WaitingAddSolver,               // Waiting for Mostro response after admin-add-solver
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
