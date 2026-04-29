@@ -175,7 +175,8 @@ The Settings tab provides comprehensive configuration options for both User and 
   - Mostro pubkey: Must be 64-character hex string
   - Relay URLs: Must start with `wss://`
   - Currency codes: Non-empty, max 10 characters
-  - Admin/Solver pubkeys: Must be valid `npub` format
+  - Solver public key: Accepts `npub1...` **or** 64-char hex public key
+  - Admin private key: Accepts `nsec1...` **or** 64-char hex secret key
 - **Keyboard Input**: All inputs support both paste and keyboard entry
 - **Settings Persistence**: All changes are saved to `settings.toml` file
 - **Error Handling**: Invalid inputs display error popups with clear messages
@@ -443,21 +444,24 @@ sequenceDiagram
     Admin->>TUI: Navigate to Settings tab
     Admin->>TUI: Select "Add Dispute Solver"
     TUI->>TUI: Show input popup
-    Admin->>TUI: Enter solver public key (npub...)
+    Admin->>TUI: Enter solver public key (npub... or hex)
     Admin->>TUI: Press Enter
-    TUI->>Validation: Validate npub format
+    TUI->>Validation: Validate npub/hex format
     alt Invalid Format
         Validation-->>TUI: Error: "Invalid key format"
         TUI-->>Admin: Show error popup
     else Valid Format
         TUI->>TUI: Show confirmation popup
         Admin->>TUI: Confirm (press 'y')
-        TUI->>Client: execute_admin_add_solver(solver_pubkey)
-        Client->>AdminKey: Get & parse admin_privkey
+        TUI->>Client: execute_admin_add_solver(solver_pubkey, admin_keys)
+        Client->>AdminKey: Use live runtime admin key
         Client->>Client: Construct AdminAddSolver message
         Client->>NostrRelays: Send NIP-59 Gift Wrap DM
         NostrRelays->>Mostro: Forward AdminAddSolver action
         Mostro->>Mostro: Validate & add solver
+        Mostro->>NostrRelays: admin-add-solver response
+        NostrRelays-->>Client: Response DM
+        Client->>Client: Validate sender + request_id + action
         Client-->>TUI: Success/Error result
         TUI-->>Admin: Show result popup
         TUI->>TUI: Stay on Settings tab
@@ -465,74 +469,25 @@ sequenceDiagram
     end
 ```
 
-**Implementation Function**:
+**Implementation Notes**:
 
-```12:53:src/util/order_utils/execute_admin_add_solver.rs
-pub async fn execute_admin_add_solver(
-    solver_pubkey: &str,
-    client: &Client,
-    mostro_pubkey: PublicKey,
-) -> Result<()> {
-    // Get admin keys from settings
-    let settings = SETTINGS
-        .get()
-        .ok_or(anyhow::anyhow!("Settings not initialized"))?;
-
-    if settings.admin_privkey.is_empty() {
-        return Err(anyhow::anyhow!("Admin private key not configured"));
-    }
-
-    let admin_keys = Keys::parse(&settings.admin_privkey)?;
-
-    // Create AddSolver message
-    let add_solver_message = Message::new_dispute(
-        Some(Uuid::new_v4()),
-        None,
-        None,
-        Action::AdminAddSolver,
-        Some(Payload::TextMessage(solver_pubkey.to_string())),
-    )
-    .as_json()
-    .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
-
-    // Send the DM using admin keys (signed gift wrap)
-    // Note: Following the example pattern, we don't wait for a response
-    send_dm(
-        client,
-        Some(&admin_keys),
-        &admin_keys,
-        &mostro_pubkey,
-        add_solver_message,
-        None,
-        false,
-    )
-    .await?;
-
-    Ok(())
-}
-```
-
-**Validation Function**:
-
-```3:13:src/ui/key_handler/validation.rs
-pub fn validate_npub(npub_str: &str) -> Result<(), String> {
-    if npub_str.trim().is_empty() {
-        return Err("Public key cannot be empty".to_string());
-    }
-
-    PublicKey::from_bech32(npub_str.trim()).map_err(|_| "Invalid key format".to_string())?;
-
-    Ok(())
-}
-```
+- `execute_admin_add_solver` now uses **live runtime admin keys** passed by the UI context, not startup `SETTINGS` snapshots, so admin key changes apply immediately without restart.
+- The Add Solver flow now waits for Mostro response (`wait_for_dm` + `parse_dm_events`) and validates:
+  - response sender is `mostro_pubkey`
+  - request id (`handle_mostro_response`)
+  - response action is `AdminAddSolver`
+- UI shows a dedicated waiting popup while the command is in-flight.
+- Validation accepts both bech32 and hex key formats for Settings input:
+  - `validate_npub`: `npub1...` or 64-char hex public key
+  - `validate_nsec`: `nsec1...` or 64-char hex secret key
 
 **Key Points**:
 
 - ✅ Requires admin privileges (signed with `admin_privkey`)
-- ✅ Input validation: Validates npub format using `PublicKey::from_bech32`
-- ✅ Error handling: Shows error popup for invalid pubkey format
+- ✅ Input validation: accepts `npub1...` and 64-char hex public keys
+- ✅ Error handling: shows error popup for invalid key format or missing/invalid Mostro response
 - ✅ Confirmation popup: Custom message "Are you sure you want to add this pubkey as dispute solver?"
-- ✅ UI state management: Stays on Settings tab after operation
+- ✅ UI state management: stays on Settings tab and shows a waiting popup while request is pending
 - ✅ Adds a new public key to the list of authorized dispute solvers
 - ✅ The new solver can then take and resolve disputes
 - ✅ Helps distribute dispute resolution workload

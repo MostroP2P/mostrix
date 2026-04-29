@@ -164,6 +164,10 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
         waiting::render_waiting(f);
     }
+    // Waiting for add solver popup overlay (admin mode only)
+    if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
+        waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");
+    }
 
     // Operation result popup overlay (shared)
     if let UiMode::OperationResult(result) = &app.mode {
@@ -291,8 +295,8 @@ pub fn ui_draw(
         key_input_popup::render_key_input_popup(
             f,
             "Add Solver",
-            "Enter solver public key (npub...):",
-            "npub...",
+            "Enter solver public key (npub... or hex):",
+            "npub... / hex...",
             key_state,
             false,
         );
@@ -301,8 +305,8 @@ pub fn ui_draw(
         key_input_popup::render_key_input_popup(
             f,
             "🔐 Setup Admin Key",
-            "Enter admin private key (nsec...):",
-            "nsec...",
+            "Enter admin private key (nsec... or hex):",
+            "nsec... / hex...",
             key_state,
             true,
         );

@@ -9,7 +9,6 @@ use crate::models::AdminDispute;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
-use crate::SETTINGS;
 
 /// Take a dispute as an admin.
 ///
@@ -44,22 +43,12 @@ use crate::SETTINGS;
 /// - Failed to save dispute to database
 pub async fn execute_take_dispute(
     dispute_id: &Uuid,
+    admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
     pool: &SqlitePool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Get admin keys from settings
-    let settings = SETTINGS
-        .get()
-        .ok_or(anyhow::anyhow!("Settings not initialized"))?;
-
-    if settings.admin_privkey.is_empty() {
-        return Err(anyhow::anyhow!("Admin private key not configured"));
-    }
-
-    let admin_keys = Keys::parse(&settings.admin_privkey)?;
-
     // Create take dispute message
     let take_dispute_message = Message::new_dispute(
         Some(*dispute_id),
@@ -74,8 +63,8 @@ pub async fn execute_take_dispute(
     // Send the DM using admin keys (signed gift wrap)
     let sent_message = send_dm(
         client,
-        Some(&admin_keys),
-        &admin_keys,
+        Some(admin_keys),
+        admin_keys,
         &mostro_pubkey,
         take_dispute_message,
         None,
@@ -84,10 +73,10 @@ pub async fn execute_take_dispute(
     );
 
     // Wait for incoming DM response
-    let recv_event = wait_for_dm(&admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
 
     // Parse the incoming DM
-    let messages = parse_dm_events(recv_event, &admin_keys, None).await;
+    let messages = parse_dm_events(recv_event, admin_keys, None).await;
     if let Some((response_message, _, sender_pubkey)) = messages.first() {
         if *sender_pubkey != mostro_pubkey {
             return Err(anyhow::anyhow!("Received response from wrong sender"));
@@ -137,7 +126,7 @@ pub async fn execute_take_dispute(
                     dispute_info_clone,
                     dispute_id.to_string(),
                     fiat_code_from_relay,
-                    Some(&admin_keys),
+                    Some(admin_keys),
                 )
                 .await
                 {

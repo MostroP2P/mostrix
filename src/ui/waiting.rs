@@ -6,6 +6,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_waiting(f: &mut ratatui::Frame) {
+    render_waiting_with_message(f, "Sending order and waiting for confirmation...");
+}
+
+pub fn render_waiting_with_message(f: &mut ratatui::Frame, message: &str) {
     let area = f.area();
     let popup_width = 50;
     let popup_height = 7;
@@ -40,8 +44,7 @@ pub fn render_waiting(f: &mut ratatui::Frame) {
     .split(popup);
 
     f.render_widget(
-        Paragraph::new(Line::from("Sending order and waiting for confirmation..."))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(message)).alignment(ratatui::layout::Alignment::Center),
         inner_chunks[1],
     );
 

@@ -4,53 +4,84 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
-use crate::util::dm_utils::send_dm;
+use crate::ui::key_handler::hex_pubkey_to_npub;
+use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::SETTINGS;
+use crate::util::order_utils::helper::handle_mostro_response;
+
+/// Normalize a solver pubkey to bech32 (npub) format.
+/// If the input is already bech32, returns it as-is.
+/// If the input is a 64-char hex string, converts it to npub.
+/// Otherwise returns the original string (Mostro will handle validation).
+fn normalize_solver_pubkey(pubkey: &str) -> String {
+    let trimmed = pubkey.trim();
+    // Already bech32
+    if trimmed.starts_with("npub1") {
+        return trimmed.to_string();
+    }
+    // Try hex -> bech32
+    if let Some(npub) = hex_pubkey_to_npub(trimmed) {
+        return npub;
+    }
+    // Fall back to original (Mostro will validate)
+    trimmed.to_string()
+}
 
 /// Add a new solver to the Mostro network
 /// Requires admin privileges (admin_privkey must be configured)
 pub async fn execute_admin_add_solver(
     solver_pubkey: &str,
+    admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Get admin keys from settings
-    let settings = SETTINGS
-        .get()
-        .ok_or(anyhow::anyhow!("Settings not initialized"))?;
+    let request_id = Uuid::new_v4().as_u128() as u64;
 
-    if settings.admin_privkey.is_empty() {
-        return Err(anyhow::anyhow!("Admin private key not configured"));
-    }
-
-    let admin_keys = Keys::parse(&settings.admin_privkey)?;
+    // Normalize solver pubkey to bech32 (hex input → npub conversion)
+    let normalized_pubkey = normalize_solver_pubkey(solver_pubkey);
 
     // Create AddSolver message
     let add_solver_message = Message::new_dispute(
         Some(Uuid::new_v4()),
-        None,
+        Some(request_id),
         None,
         Action::AdminAddSolver,
-        Some(Payload::TextMessage(solver_pubkey.to_string())),
+        Some(Payload::TextMessage(normalized_pubkey)),
     )
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
     // Send the DM using admin keys (signed gift wrap)
     // Note: Following the example pattern, we don't wait for a response
-    send_dm(
+    let sent_message = send_dm(
         client,
-        Some(&admin_keys),
-        &admin_keys,
+        Some(admin_keys),
+        admin_keys,
         &mostro_pubkey,
         add_solver_message,
         None,
         false,
         mostro_instance,
-    )
-    .await?;
+    );
+
+    // Wait for Mostro answer and parse it.
+    let recv_event = wait_for_dm(admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let messages = parse_dm_events(recv_event, admin_keys, None).await;
+    let Some((response_message, _, sender_pubkey)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    };
+    if *sender_pubkey != mostro_pubkey {
+        return Err(anyhow::anyhow!("Received response from wrong sender"));
+    }
+
+    let inner_message = handle_mostro_response(response_message, request_id)?;
+    if inner_message.action != Action::AdminAddSolver {
+        return Err(anyhow::anyhow!(
+            "Unexpected action in response: {:?}",
+            inner_message.action
+        ));
+    }
 
     Ok(())
 }

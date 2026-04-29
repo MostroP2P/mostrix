@@ -28,14 +28,18 @@ impl TextInputState for crate::ui::KeyInputState {
 
 /// Generic handler for text input (invoice or key input)
 /// Returns true if the key was handled and should skip further processing
-fn handle_text_input<T: TextInputState>(code: KeyCode, state: &mut T) -> bool {
+fn handle_text_input<T: TextInputState>(
+    code: KeyCode,
+    state: &mut T,
+    ignore_enter_after_paste: bool,
+) -> bool {
     // Clear the just_pasted flag on any key press (except Enter)
     if code != KeyCode::Enter {
         *state.get_just_pasted_mut() = false;
     }
 
-    // Ignore Enter if it comes immediately after paste
-    if code == KeyCode::Enter && *state.get_just_pasted_mut() {
+    // Optionally ignore Enter if it comes immediately after paste
+    if ignore_enter_after_paste && code == KeyCode::Enter && *state.get_just_pasted_mut() {
         *state.get_just_pasted_mut() = false;
         return true; // Skip processing this Enter key
     }
@@ -57,13 +61,13 @@ fn handle_text_input<T: TextInputState>(code: KeyCode, state: &mut T) -> bool {
 /// Handle invoice input for AddInvoice notifications
 /// Returns true if the key was handled and should skip further processing
 pub fn handle_invoice_input(code: KeyCode, invoice_state: &mut InvoiceInputState) -> bool {
-    handle_text_input(code, invoice_state)
+    handle_text_input(code, invoice_state, true)
 }
 
 /// Handle key input for admin key input popups (AddSolver, SetupAdminKey)
 /// Returns true if the key was handled and should skip further processing
 pub fn handle_key_input(code: KeyCode, key_state: &mut KeyInputState) -> bool {
-    handle_text_input(code, key_state)
+    handle_text_input(code, key_state, false)
 }
 
 /// Prepare admin chat message for sending via inputbox in admin disputes in progress tab.

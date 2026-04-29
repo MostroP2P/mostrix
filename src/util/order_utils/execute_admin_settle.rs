@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::util::dm_utils::send_dm;
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::SETTINGS;
 
 /// Settle a dispute in favor of the buyer (AdminSettle action).
 /// This pays the full escrow amount to the buyer.
@@ -38,21 +37,11 @@ use crate::SETTINGS;
 /// - Failed to send the DM
 pub async fn execute_admin_settle(
     order_id: &Uuid,
+    admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Get admin keys from settings
-    let settings = SETTINGS
-        .get()
-        .ok_or(anyhow::anyhow!("Settings not initialized"))?;
-
-    if settings.admin_privkey.is_empty() {
-        return Err(anyhow::anyhow!("Admin private key not configured"));
-    }
-
-    let admin_keys = Keys::parse(&settings.admin_privkey)?;
-
     // Create AdminSettle message
     // No payload needed - just the order ID (Mostro expects the order UUID here)
     let settle_message =
@@ -63,8 +52,8 @@ pub async fn execute_admin_settle(
     // Send the DM using admin keys (signed gift wrap)
     send_dm(
         client,
-        Some(&admin_keys),
-        &admin_keys,
+        Some(admin_keys),
+        admin_keys,
         &mostro_pubkey,
         settle_message,
         None,

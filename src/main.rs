@@ -43,7 +43,7 @@ use crossterm::terminal::{
 };
 use crossterm::{
     self,
-    event::{Event, KeyEvent},
+    event::{Event, KeyEvent, MouseButton, MouseEventKind},
 };
 use fern::Dispatch;
 use futures::StreamExt;
@@ -83,6 +83,40 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
         .chain(fern::log_file("app.log")?) // Guarda en logs/app.log
         .apply()?;
     Ok(())
+}
+
+fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
+    // Handle paste for invoice input
+    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
+        if invoice_state.focused {
+            let filtered_text: String = pasted_text
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .collect();
+            invoice_state.invoice_input.push_str(&filtered_text);
+            invoice_state.just_pasted = true;
+        }
+    }
+
+    // Handle paste for admin key input popups
+    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut key_state))
+    | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
+    {
+        if key_state.focused {
+            let filtered_text: String = pasted_text
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .collect();
+            key_state.key_input.push_str(&filtered_text);
+            key_state.just_pasted = true;
+        }
+    }
+
+    // Handle paste for observer shared key input
+    if matches!(app.active_tab, Tab::Admin(AdminTab::Observer)) {
+        let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
+        app.observer_shared_key_input.push_str(&filtered_text);
+    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -481,37 +515,19 @@ async fn main() -> Result<(), anyhow::Error> {
 
                 // Handle paste events (bracketed paste mode)
                 if let Event::Paste(pasted_text) = event {
-                    // Handle paste for invoice input
-                    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
-                        if invoice_state.focused {
-                            let filtered_text: String = pasted_text
-                                .chars()
-                                .filter(|c| !c.is_control() || *c == '\t')
-                                .collect();
-                            invoice_state.invoice_input.push_str(&filtered_text);
-                            invoice_state.just_pasted = true;
+                    apply_pasted_text_to_active_input(&mut app, &pasted_text);
+                    continue;
+                }
+
+                // Handle right-click paste when mouse capture is enabled.
+                // Some terminals do not emit Event::Paste for mouse paste.
+                if let Event::Mouse(mouse_event) = event {
+                    if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Right)) {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                apply_pasted_text_to_active_input(&mut app, &text);
+                            }
                         }
-                    }
-                    // Handle paste for admin key input popups
-                    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut key_state))
-                    | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode
-                    {
-                        if key_state.focused {
-                            let filtered_text: String = pasted_text
-                                .chars()
-                                .filter(|c| !c.is_control() || *c == '\t')
-                                .collect();
-                            key_state.key_input.push_str(&filtered_text);
-                            key_state.just_pasted = true;
-                        }
-                    }
-                    // Handle paste for observer shared key input
-                    if matches!(app.active_tab, Tab::Admin(AdminTab::Observer)) {
-                        let filtered_text: String = pasted_text
-                            .chars()
-                            .filter(|c| !c.is_control())
-                            .collect();
-                        app.observer_shared_key_input.push_str(&filtered_text);
                     }
                     continue;
                 }

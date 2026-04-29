@@ -201,9 +201,10 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 - **Forms**: Character input and Backspace are handled by `handle_char_input` and `handle_backspace` for fields in `FormState`.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
-  - `AddInvoice` popup paste fallback: when `Event::Paste` is unavailable, key shortcuts (`Shift+Insert`, `Ctrl+V`, `Ctrl+Shift+V` where emitted) paste from clipboard.
-  - Windows right-click fallback: mouse right-click in `AddInvoice` popup tries clipboard paste via a dedicated `Event::Mouse` path.
-  - `just_pasted` is preserved so immediate `Enter` after paste does not accidentally submit.
+- **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
+  - `Event::Paste(...)` (bracketed paste)
+  - mouse right-click paste (`MouseEventKind::Down(MouseButton::Right)`) using clipboard read fallback
+  This applies to invoice input, admin key/solver inputs, and observer shared-key input.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
   - Supports direct character input and backspace
