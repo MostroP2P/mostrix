@@ -69,7 +69,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 selection.cycle_three_prev();
             }
         },
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
@@ -137,7 +140,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
                 selection.cycle_three_next();
             }
         },
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, ref mut selected_button))
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
@@ -281,7 +287,7 @@ fn handle_up_key(
         | UiMode::ViewingMessage(_)
         | UiMode::RatingOrder(_)
         | UiMode::AdminMode(AdminMode::AddSolver(_))
-        | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
@@ -450,7 +456,7 @@ fn handle_down_key(
         | UiMode::ViewingMessage(_)
         | UiMode::RatingOrder(_)
         | UiMode::AdminMode(AdminMode::AddSolver(_))
-        | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))

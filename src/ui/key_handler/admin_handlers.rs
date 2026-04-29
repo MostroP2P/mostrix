@@ -1,5 +1,6 @@
+use crate::shared::permissions::SolverPermission;
 use crate::ui::key_handler::EnterKeyContext;
-use crate::ui::{AdminMode, AppState, UiMode};
+use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
 use uuid::Uuid;
@@ -77,6 +78,7 @@ pub(crate) fn execute_take_dispute_action(
 pub(crate) fn execute_add_solver_action(
     app: &mut AppState,
     solver_pubkey: String,
+    permission: SolverPermission,
     ctx: &EnterKeyContext<'_>,
 ) {
     let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
@@ -87,7 +89,6 @@ pub(crate) fn execute_add_solver_action(
     };
     app.mode = UiMode::AdminMode(AdminMode::WaitingAddSolver);
 
-    let solver_pubkey_clone = solver_pubkey.clone();
     let client_clone = ctx.client.clone();
     let result_tx = ctx.order_result_tx.clone();
 
@@ -104,7 +105,8 @@ pub(crate) fn execute_add_solver_action(
     let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
         match execute_admin_add_solver(
-            &solver_pubkey_clone,
+            &solver_pubkey,
+            permission,
             &admin_keys,
             &client_clone,
             current_mostro_pubkey,
@@ -198,14 +200,21 @@ pub(crate) fn handle_enter_admin_mode(
     ctx: &crate::ui::key_handler::EnterKeyContext<'_>,
 ) {
     match mode {
-        UiMode::AdminMode(AdminMode::AddSolver(key_state)) => {
+        UiMode::AdminMode(AdminMode::AddSolver(add_solver_state)) => {
             // Validate npub before proceeding to confirmation
-            match validate_npub(&key_state.key_input) {
+            match validate_npub(&add_solver_state.key_input.key_input) {
                 Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::AdminMode(AdminMode::ConfirmAddSolver(input, true))
-                        });
+                    app.mode = handle_input_to_confirmation(
+                        &add_solver_state.key_input.key_input,
+                        default_mode,
+                        |input| {
+                            UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+                                solver_pubkey: input,
+                                permission: add_solver_state.permission,
+                                selected_button: true,
+                            })
+                        },
+                    );
                 }
                 Err(e) => {
                     // Show error popup
@@ -213,14 +222,20 @@ pub(crate) fn handle_enter_admin_mode(
                 }
             }
         }
-        UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) => {
+        UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+            solver_pubkey,
+            permission,
+            selected_button,
+        }) => {
             if selected_button {
                 // YES selected - send AddSolver message
-                execute_add_solver_action(app, solver_pubkey, ctx);
+                execute_add_solver_action(app, solver_pubkey, permission, ctx);
             } else {
                 // NO selected - go back to input
-                app.mode =
-                    UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(&solver_pubkey)));
+                app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
+                    key_input: create_key_input_state(&solver_pubkey),
+                    permission,
+                }));
             }
         }
         UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {

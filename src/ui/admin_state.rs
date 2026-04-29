@@ -1,11 +1,22 @@
+use crate::shared::permissions::SolverPermission;
 use crate::ui::KeyInputState;
+
+#[derive(Clone, Debug)]
+pub struct AddSolverState {
+    pub key_input: KeyInputState,
+    pub permission: SolverPermission,
+}
 
 #[derive(Clone, Debug)]
 pub enum AdminMode {
     Normal,
-    AddSolver(KeyInputState),
-    ConfirmAddSolver(String, bool), // (solver_pubkey, selected_button: true=Yes, false=No)
-    WaitingAddSolver,               // Waiting for Mostro response after admin-add-solver
+    AddSolver(AddSolverState),
+    ConfirmAddSolver {
+        solver_pubkey: String,
+        permission: SolverPermission,
+        selected_button: bool, // true=Yes, false=No
+    },
+    WaitingAddSolver, // Waiting for Mostro response after admin-add-solver
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)

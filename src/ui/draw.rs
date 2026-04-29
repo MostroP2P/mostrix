@@ -1,8 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
+use ratatui::layout::Alignment;
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use crate::shared::permissions::SolverPermission;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 use crate::util::fatal::request_fatal_restart;
@@ -291,15 +296,8 @@ pub fn ui_draw(
     }
 
     // Admin key input popup overlay
-    if let UiMode::AdminMode(AdminMode::AddSolver(key_state)) = &app.mode {
-        key_input_popup::render_key_input_popup(
-            f,
-            "Add Solver",
-            "Enter solver public key (npub... or hex):",
-            "npub... / hex...",
-            key_state,
-            false,
-        );
+    if let UiMode::AdminMode(AdminMode::AddSolver(add_solver_state)) = &app.mode {
+        render_add_solver_popup(f, add_solver_state);
     }
     if let UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) = &app.mode {
         key_input_popup::render_key_input_popup(
@@ -326,15 +324,21 @@ pub fn ui_draw(
             )),
         );
     }
-    if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, selected_button)) =
-        &app.mode
+    if let UiMode::AdminMode(AdminMode::ConfirmAddSolver {
+        solver_pubkey,
+        permission,
+        selected_button,
+    }) = &app.mode
     {
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "Add Solver",
             solver_pubkey,
             *selected_button,
-            Some("Are you sure you want to add this pubkey as dispute solver?"),
+            Some(&format!(
+                "Add this pubkey as dispute solver with '{}' permission?",
+                permission.as_label()
+            )),
         );
     }
     if let UiMode::AdminMode(AdminMode::ConfirmAdminKey(key_string, selected_button)) = &app.mode {
@@ -414,4 +418,120 @@ pub fn ui_draw(
     if let Some(message) = app.offline_overlay_message.as_deref() {
         offline_overlay::render_offline_overlay(f, message);
     }
+}
+
+fn render_add_solver_popup(f: &mut ratatui::Frame, add_solver_state: &AddSolverState) {
+    let area = f.area();
+    let popup = crate::ui::helpers::create_centered_popup(area, 84, 13);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title("Add Solver")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block, popup);
+
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ],
+    )
+    .split(popup);
+
+    f.render_widget(
+        Paragraph::new("Enter solver pubkey (npub... or hex):")
+            .style(
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center),
+        chunks[1],
+    );
+
+    let input_display: &str = if add_solver_state.key_input.key_input.is_empty() {
+        "npub... / hex..."
+    } else {
+        add_solver_state.key_input.key_input.as_str()
+    };
+
+    f.render_widget(
+        Paragraph::new(input_display)
+            .style(
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(PRIMARY_COLOR)),
+            ),
+        chunks[2],
+    );
+
+    let is_read_selected = add_solver_state.permission == SolverPermission::Read;
+    let read_style = if is_read_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let read_write_style = if is_read_selected {
+        Style::default().fg(Color::Gray)
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let permission_line = Line::from(vec![
+        Span::styled("Permission: ", Style::default().fg(Color::White)),
+        Span::styled(" [ Read ] ", read_style),
+        Span::styled("   ", Style::default()),
+        Span::styled(" [ Read-Write ] ", read_write_style),
+    ]);
+    f.render_widget(
+        Paragraph::new(permission_line).alignment(Alignment::Center),
+        chunks[4],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "(Left/Right to switch)",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(Alignment::Center),
+        chunks[5],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to continue", Style::default()),
+        ]))
+        .alignment(Alignment::Center),
+        chunks[6],
+    );
+
+    crate::ui::helpers::render_help_text(f, chunks[7], "Press ", "Esc", " to cancel");
 }

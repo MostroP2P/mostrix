@@ -1,4 +1,6 @@
 use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
+use crate::shared::permissions::SolverPermission;
+use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
     handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
@@ -460,7 +462,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::AdminMode(AdminMode::AddSolver(_))
-        | UiMode::AdminMode(AdminMode::ConfirmAddSolver(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _)) => {
             handle_enter_admin_mode(app, current_mode, default_mode, ctx);
@@ -1074,7 +1076,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             6 if app.user_role == UserRole::Admin => {
                 // Add Solver (Admin only)
-                app.mode = UiMode::AdminMode(AdminMode::AddSolver(key_state));
+                app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
+                    key_input: key_state,
+                    permission: SolverPermission::ReadWrite,
+                }));
             }
             7 if app.user_role == UserRole::Admin => {
                 // Setup Admin Key (Admin only)

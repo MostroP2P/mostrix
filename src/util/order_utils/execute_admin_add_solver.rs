@@ -4,6 +4,7 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
+use crate::shared::permissions::SolverPermission;
 use crate::ui::key_handler::hex_pubkey_to_npub;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
@@ -27,10 +28,19 @@ fn normalize_solver_pubkey(pubkey: &str) -> String {
     trimmed.to_string()
 }
 
+fn build_solver_payload_text(pubkey: &str, permission: SolverPermission) -> String {
+    let normalized_pubkey = normalize_solver_pubkey(pubkey);
+    match permission {
+        SolverPermission::Read => format!("{normalized_pubkey}:read"),
+        SolverPermission::ReadWrite => normalized_pubkey,
+    }
+}
+
 /// Add a new solver to the Mostro network
 /// Requires admin privileges (admin_privkey must be configured)
 pub async fn execute_admin_add_solver(
     solver_pubkey: &str,
+    permission: SolverPermission,
     admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
@@ -38,8 +48,7 @@ pub async fn execute_admin_add_solver(
 ) -> Result<()> {
     let request_id = Uuid::new_v4().as_u128() as u64;
 
-    // Normalize solver pubkey to bech32 (hex input → npub conversion)
-    let normalized_pubkey = normalize_solver_pubkey(solver_pubkey);
+    let payload_text = build_solver_payload_text(solver_pubkey, permission);
 
     // Create AddSolver message
     let add_solver_message = Message::new_dispute(
@@ -47,7 +56,7 @@ pub async fn execute_admin_add_solver(
         Some(request_id),
         None,
         Action::AdminAddSolver,
-        Some(Payload::TextMessage(normalized_pubkey)),
+        Some(Payload::TextMessage(payload_text)),
     )
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
@@ -84,4 +93,23 @@ pub async fn execute_admin_add_solver(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_solver_payload_uses_read_suffix_for_read_permission() {
+        let npub = "npub1qqq884wtp2jn96lqhqlnarl4kk3rmvrc9z2nmrvqujx3m4l2ea5qd5d0fq";
+        let payload = build_solver_payload_text(npub, SolverPermission::Read);
+        assert_eq!(payload, format!("{npub}:read"));
+    }
+
+    #[test]
+    fn add_solver_payload_keeps_default_format_for_read_write_permission() {
+        let npub = "npub1qqq884wtp2jn96lqhqlnarl4kk3rmvrc9z2nmrvqujx3m4l2ea5qd5d0fq";
+        let payload = build_solver_payload_text(npub, SolverPermission::ReadWrite);
+        assert_eq!(payload, npub);
+    }
 }
