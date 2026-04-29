@@ -8,7 +8,9 @@ use crate::ui::OperationResult;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
+use crate::util::order_utils::helper::{
+    build_order_chat_static_header, create_order_result_success, handle_mostro_response,
+};
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -190,7 +192,12 @@ pub async fn take_order(
                                     trade_index: next_idx,
                                 });
                             }
-                            Ok(create_order_result_success(&normalized_order, next_idx))
+                            Ok(create_order_result_success(
+                                &normalized_order,
+                                next_idx,
+                                &trade_keys,
+                                false,
+                            ))
                         }
                         Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
                             // For buy orders, we receive PaymentRequest with invoice for seller to pay
@@ -249,11 +256,24 @@ pub async fn take_order(
                             );
 
                             // Return PaymentRequestRequired to trigger invoice popup
+                            let static_header = build_order_chat_static_header(
+                                &order_to_save,
+                                next_idx,
+                                &trade_keys,
+                                false,
+                            )
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "failed to build static header for order id {:?}",
+                                    order_to_save.id
+                                )
+                            })?;
                             Ok(OperationResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),
                                 sat_amount: *opt_amount,
                                 trade_index: next_idx,
+                                static_header,
                             })
                         }
                         _ => {

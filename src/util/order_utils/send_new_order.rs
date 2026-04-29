@@ -185,7 +185,12 @@ pub async fn send_new_order(
                                     }
                                 }
 
-                                Ok(create_order_result_success(order, next_idx))
+                                Ok(create_order_result_success(
+                                    order,
+                                    next_idx,
+                                    &trade_keys,
+                                    true,
+                                ))
                             } else {
                                 log::error!(
                                     "Mostro replied with Action::NewOrder but payload is missing/invalid. request_id={:?} trade_index={} payload={:?}",
@@ -231,7 +236,12 @@ pub async fn send_new_order(
                         }
                     }
 
-                    Ok(create_order_result_success(order, next_idx))
+                    Ok(create_order_result_success(
+                        order,
+                        next_idx,
+                        &trade_keys,
+                        true,
+                    ))
                 } else {
                     log::error!(
                         "Mostro replied with Action::{:?} but payload is missing/invalid. request_id={:?} trade_index={} payload={:?}",

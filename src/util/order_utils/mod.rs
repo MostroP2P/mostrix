@@ -27,7 +27,7 @@ pub use helper::{
     dispute_from_tags, fetch_events_list, get_disputes, get_orders,
     inferred_status_from_trade_action, map_action_to_status, order_from_tags,
     parse_disputes_events, parse_orders_events, should_apply_status_transition,
-    validate_range_amount,
+    should_strictly_advance_status, validate_range_amount,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;

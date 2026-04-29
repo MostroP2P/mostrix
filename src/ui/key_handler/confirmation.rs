@@ -278,6 +278,11 @@ pub fn handle_cancel_key(app: &mut AppState) {
     } else if let UiMode::ConfirmClearCurrencies(_) = &app.mode {
         // Cancel clear-all confirmation, just return to default mode
         app.mode = default_mode;
+    } else if matches!(
+        app.mode,
+        UiMode::ConfirmDeleteHistoryOrder(_, _) | UiMode::ConfirmBulkDeleteHistory(_)
+    ) {
+        app.mode = default_mode;
     } else if let UiMode::AdminMode(AdminMode::ConfirmAddSolver(solver_pubkey, _)) = &app.mode {
         app.mode = handle_confirmation_esc(solver_pubkey, |input| {
             UiMode::AdminMode(AdminMode::AddSolver(create_key_input_state(input)))

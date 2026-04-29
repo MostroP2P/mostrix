@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use mostro_core::prelude::{Action, Kind as OrderKind, Message, Payload, SmallOrder, Status};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
-use crate::models::{AdminDispute, Order};
+use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
-    OrderChatLastSeen, UserChatSender, UserOrderChatMessage, UserRole,
+    OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatSender, UserOrderChatMessage,
+    UserRole,
 };
 use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
 
@@ -122,6 +125,7 @@ pub async fn load_user_order_chats_at_startup(
     if app.user_role != UserRole::User {
         return;
     }
+    sync_user_order_history_messages_from_db(pool, app).await;
     let Ok(rows) = Order::get_startup_active_orders(pool).await else {
         return;
     };
@@ -144,6 +148,139 @@ pub async fn load_user_order_chats_at_startup(
         .await
         .unwrap_or_default();
     apply_user_order_chat_updates(app, updates);
+}
+
+fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
+    let order_id_str = order.id.as_deref()?;
+    let order_id = Uuid::parse_str(order_id_str).ok()?;
+    let trade_index = order.trade_index?;
+    let status = order
+        .status
+        .as_deref()
+        .and_then(|s| Status::from_str(s).ok());
+    let kind = order
+        .kind
+        .as_deref()
+        .and_then(|k| OrderKind::from_str(k).ok());
+
+    // Use non-NewOrder actions for history projection so My Trades can be DB-fed
+    // without polluting Messages-tab rows that are intentionally stripped.
+    let action = match kind {
+        Some(OrderKind::Buy) => Action::TakeBuy,
+        Some(OrderKind::Sell) => Action::TakeSell,
+        None => Action::WaitingSellerToPay,
+    };
+
+    let payload_order = SmallOrder {
+        id: Some(order_id),
+        kind,
+        status,
+        amount: order.amount,
+        fiat_code: order.fiat_code.clone(),
+        min_amount: order.min_amount,
+        max_amount: order.max_amount,
+        fiat_amount: order.fiat_amount,
+        payment_method: order.payment_method.clone(),
+        premium: order.premium,
+        buyer_invoice: order.buyer_invoice.clone(),
+        created_at: order.created_at,
+        expires_at: order.expires_at,
+        ..Default::default()
+    };
+
+    let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
+    let message = Message::new_order(
+        Some(order_id),
+        request_id,
+        Some(trade_index),
+        action,
+        Some(Payload::Order(payload_order)),
+    );
+
+    let history_message = OrderMessage {
+        message,
+        timestamp: order
+            .last_seen_dm_ts
+            .or(order.created_at)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        sender,
+        order_id: Some(order_id),
+        trade_index,
+        sat_amount: None,
+        buyer_invoice: order.buyer_invoice.clone(),
+        order_kind: kind,
+        is_mine: Some(order.is_mine),
+        order_status: status,
+        read: true,
+        auto_popup_shown: true,
+    };
+    Some(history_message)
+}
+
+fn order_chat_static_from_db_order(row: &Order) -> Option<OrderChatStaticHeader> {
+    let id_str = row.id.as_deref()?;
+    let order_id = Uuid::parse_str(id_str).ok()?;
+    let kind = row
+        .kind
+        .as_deref()
+        .and_then(|s| OrderKind::from_str(s).ok());
+    let trade_index = row.trade_index?;
+    let keys_hex = row.trade_keys.as_deref()?;
+    let trade_keys = Keys::parse(keys_hex).ok()?;
+    Some(OrderChatStaticHeader {
+        order_id,
+        kind,
+        created_at: row.created_at,
+        trade_index,
+        initiator_trade_pubkey: trade_keys.public_key().to_string(),
+        is_mine: row.is_mine,
+    })
+}
+
+pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &mut AppState) {
+    let identity_keys = match User::get_identity_keys(pool).await {
+        Ok(k) => k,
+        Err(e) => {
+            log::warn!(
+                "Failed to derive identity keys for DB history sender attribution: {}",
+                e
+            );
+            return;
+        }
+    };
+    let sender = identity_keys.public_key();
+    let rows = match Order::get_user_history_orders(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("Failed to load user order history rows at startup: {}", e);
+            return;
+        }
+    };
+    let mut history_messages: Vec<OrderMessage> = rows
+        .iter()
+        .filter_map(|row| db_order_to_history_message(row, sender))
+        .collect();
+    history_messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            for msg in history_messages {
+                messages.retain(|m| m.order_id != msg.order_id);
+                messages.push(msg);
+            }
+            messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+    for row in &rows {
+        if let Some(h) = order_chat_static_from_db_order(row) {
+            app.order_chat_static.insert(h.order_id, h);
+        }
+    }
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.

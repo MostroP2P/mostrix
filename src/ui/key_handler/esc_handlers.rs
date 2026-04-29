@@ -126,6 +126,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::ConfirmDeleteHistoryOrder(_, _) | UiMode::ConfirmBulkDeleteHistory(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
         UiMode::ConfirmGenerateNewKeys(_) => {
             // Cancel warning, return to normal mode
             app.mode = default_mode.clone();
