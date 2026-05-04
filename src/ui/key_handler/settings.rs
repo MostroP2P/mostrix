@@ -1,4 +1,6 @@
 use crate::ui::{AppState, UserRole};
+use lnurl::lightning_address::LightningAddress;
+use std::str::FromStr;
 
 /// Generic helper to save settings with a custom update function
 pub fn save_settings_with<F>(update_fn: F, error_msg: &str, success_msg: &str)
@@ -39,6 +41,35 @@ pub fn save_mostro_pubkey_to_settings(key_string: &str) {
         |s| s.mostro_pubkey = key_string.to_string(),
         "Failed to save Mostro pubkey to settings",
         "Mostro pubkey saved to settings file",
+    );
+}
+
+/// Validate Lightning address shape (`user@domain.com`) for settings UI (reachability is PR3).
+pub fn validate_ln_address_format(addr: &str) -> Result<(), String> {
+    let t = addr.trim();
+    if t.is_empty() {
+        return Err("Lightning address cannot be empty".to_string());
+    }
+    LightningAddress::from_str(t)
+        .map(|_| ())
+        .map_err(|_| "Invalid Lightning address (expected user@domain.com)".to_string())
+}
+
+/// Persist trimmed Lightning address for buyer receive flow.
+pub fn save_ln_address_to_settings(addr: &str) {
+    let trimmed = addr.trim().to_string();
+    save_settings_with(
+        |s| s.ln_address = trimmed.clone(),
+        "Failed to save Lightning address",
+        "Lightning address saved to settings file",
+    );
+}
+
+pub fn clear_ln_address_from_settings() {
+    save_settings_with(
+        |s| s.ln_address.clear(),
+        "Failed to clear Lightning address",
+        "Lightning address cleared from settings file",
     );
 }
 

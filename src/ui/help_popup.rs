@@ -264,6 +264,14 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Append a wss:// relay; duplicates are skipped.",
         ),
         (
+            "Set Lightning Address (buyer)",
+            "User mode only. Save a Lightning address (user@domain.com) to settings for receiving when you buy.",
+        ),
+        (
+            "Clear Lightning Address",
+            "User mode only. Remove the saved buyer Lightning address from settings.toml.",
+        ),
+        (
             "Add Currency Filter",
             "Add a fiat code (e.g. USD). The order book only shows matching orders.",
         ),

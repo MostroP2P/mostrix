@@ -85,6 +85,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::AddRelay(_)
+        | UiMode::AddLnAddress(_)
         | UiMode::AddCurrency(_) => {
             // Dismiss key input popup
             app.mode = default_mode.clone();
@@ -120,6 +121,16 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = handle_confirmation_esc(relay_string, |input| {
                 UiMode::AddRelay(create_key_input_state(input))
             });
+            true
+        }
+        UiMode::ConfirmLnAddress(addr, _) => {
+            app.mode = handle_confirmation_esc(addr, |input| {
+                UiMode::AddLnAddress(create_key_input_state(input))
+            });
+            true
+        }
+        UiMode::ConfirmClearLnAddress(_) => {
+            app.mode = default_mode.clone();
             true
         }
         UiMode::ConfirmCurrency(currency_string, _) => {

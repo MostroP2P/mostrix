@@ -37,8 +37,9 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::{
-    clear_currency_filters, handle_mode_switch, save_currency_to_settings,
-    save_mostro_pubkey_to_settings, save_relay_to_settings,
+    clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
+    save_currency_to_settings, save_ln_address_to_settings, save_mostro_pubkey_to_settings,
+    save_relay_to_settings, validate_ln_address_format,
 };
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
@@ -472,6 +473,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
+        | UiMode::AddLnAddress(_)
+        | UiMode::ConfirmLnAddress(_, _)
+        | UiMode::ConfirmClearLnAddress(_)
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
@@ -753,6 +757,32 @@ fn handle_enter_settings_mode(
                     }
                 });
             }
+        }
+        UiMode::AddLnAddress(key_state) => match validate_ln_address_format(&key_state.key_input) {
+            Ok(()) => {
+                let trimmed = key_state.key_input.trim().to_string();
+                app.mode = handle_input_to_confirmation(&trimmed, default_mode.clone(), |input| {
+                    UiMode::ConfirmLnAddress(input, true)
+                });
+            }
+            Err(e) => {
+                app.mode = UiMode::OperationResult(OperationResult::Error(e));
+            }
+        },
+        UiMode::ConfirmLnAddress(addr, selected_button) => {
+            app.mode = handle_confirmation_enter(
+                selected_button,
+                addr.as_str(),
+                default_mode,
+                save_ln_address_to_settings,
+                |input| UiMode::AddLnAddress(create_key_input_state(input)),
+            );
+        }
+        UiMode::ConfirmClearLnAddress(selected_button) => {
+            if selected_button {
+                clear_ln_address_from_settings();
+            }
+            app.mode = default_mode;
         }
         UiMode::AddCurrency(key_state) => {
             // Validate currency code before proceeding to confirmation
@@ -1048,48 +1078,60 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 // Add Relay (Common for both roles)
                 app.mode = UiMode::AddRelay(key_state);
             }
-            3 => {
-                // Add Currency Filter (Common for both roles)
-                app.mode = UiMode::AddCurrency(key_state);
-            }
-            4 => {
-                // Clear Currency Filters (Common for both roles) - show confirmation
-                app.mode = UiMode::ConfirmClearCurrencies(true);
-            }
-            5 if app.user_role == UserRole::User => {
-                // View current seed words (User)
-                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
-                app.mode = UiMode::OperationResult(OperationResult::Info(
-                    "Loading seed words...".to_string(),
-                ));
-            }
-            6 if app.user_role == UserRole::User => {
-                // Generate new keys for current role (user)
-                app.mode = UiMode::ConfirmGenerateNewKeys(true);
-            }
-            5 if app.user_role == UserRole::Admin => {
-                // View current seed words (Admin mode still uses user identity seed)
-                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
-                app.mode = UiMode::OperationResult(OperationResult::Info(
-                    "Loading seed words...".to_string(),
-                ));
-            }
-            6 if app.user_role == UserRole::Admin => {
-                // Add Solver (Admin only)
-                app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
-                    key_input: key_state,
-                    permission: SolverPermission::ReadWrite,
-                }));
-            }
-            7 if app.user_role == UserRole::Admin => {
-                // Setup Admin Key (Admin only)
-                app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
-            }
-            8 if app.user_role == UserRole::Admin => {
-                // Generate new keys for current role (admin)
-                app.mode = UiMode::ConfirmGenerateNewKeys(true);
-            }
-            _ => {}
+            n => match app.user_role {
+                UserRole::User => match n {
+                    3 => {
+                        // User only: buyer Lightning address
+                        app.mode = UiMode::AddLnAddress(key_state);
+                    }
+                    4 => {
+                        app.mode = UiMode::ConfirmClearLnAddress(true);
+                    }
+                    5 => {
+                        app.mode = UiMode::AddCurrency(key_state);
+                    }
+                    6 => {
+                        app.mode = UiMode::ConfirmClearCurrencies(true);
+                    }
+                    7 => {
+                        spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                        app.mode = UiMode::OperationResult(OperationResult::Info(
+                            "Loading seed words...".to_string(),
+                        ));
+                    }
+                    8 => {
+                        app.mode = UiMode::ConfirmGenerateNewKeys(true);
+                    }
+                    _ => {}
+                },
+                UserRole::Admin => match n {
+                    3 => {
+                        app.mode = UiMode::AddCurrency(key_state);
+                    }
+                    4 => {
+                        app.mode = UiMode::ConfirmClearCurrencies(true);
+                    }
+                    5 => {
+                        spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                        app.mode = UiMode::OperationResult(OperationResult::Info(
+                            "Loading seed words...".to_string(),
+                        ));
+                    }
+                    6 => {
+                        app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
+                            key_input: key_state,
+                            permission: SolverPermission::ReadWrite,
+                        }));
+                    }
+                    7 => {
+                        app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+                    }
+                    8 => {
+                        app.mode = UiMode::ConfirmGenerateNewKeys(true);
+                    }
+                    _ => {}
+                },
+            },
         }
     }
 }

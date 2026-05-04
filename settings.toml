@@ -13,3 +13,5 @@ currencies_filter = ["VES", "ARS", "USD"]
 nsec_privkey = 'nsec1_privkey_format'
 # User mode: "user" or "admin"
 user_mode = "user"
+# Lightning address when you buy (receive via LNURL-pay); leave empty if unused.
+ln_address = ""

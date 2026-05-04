@@ -121,6 +121,15 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
             key_state.key_input.push_str(&filtered_text);
             key_state.just_pasted = true;
         }
+    } else if let UiMode::AddLnAddress(ref mut key_state) = app.mode {
+        if key_state.focused {
+            let filtered_text: String = pasted_text
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .collect();
+            key_state.key_input.push_str(&filtered_text);
+            key_state.just_pasted = true;
+        }
     }
 
     // Handle paste for observer shared key input

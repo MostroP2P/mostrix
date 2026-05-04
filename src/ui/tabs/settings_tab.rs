@@ -8,8 +8,8 @@ use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 /// Number of settings options for Admin role
 pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 9; // Switch Mode + … + Generate New Keys
 
-/// Number of settings options for User role
-pub const USER_SETTINGS_OPTIONS_COUNT: usize = 7; // Switch Mode + … + Generate New Keys
+/// Number of settings options for User role (includes LN address rows; admin has no LN rows)
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = 9;
 
 /// Render the Settings tab UI
 ///
@@ -78,6 +78,8 @@ pub fn render_settings_tab(
             "Switch Mode (User ↔ Admin)",
             "Change Mostro Pubkey",
             "Add Nostr Relay",
+            "Set Lightning Address (buyer)",
+            "Clear Lightning Address",
             "Add Currency Filter",
             "Clear Currency Filters",
             "View Seed Words",

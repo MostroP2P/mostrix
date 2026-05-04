@@ -42,6 +42,11 @@ pub enum UiMode {
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
     ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
+    /// User-mode Settings: buyer Lightning address (`user@domain.com`).
+    AddLnAddress(KeyInputState),
+    ConfirmLnAddress(String, bool), // (address, selected_button)
+    /// User-mode Settings: clear saved buyer Lightning address.
+    ConfirmClearLnAddress(bool),
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
@@ -88,6 +93,11 @@ impl Clone for UiMode {
             }
             UiMode::AddRelay(state) => UiMode::AddRelay(state.clone()),
             UiMode::ConfirmRelay(relay, selected) => UiMode::ConfirmRelay(relay.clone(), *selected),
+            UiMode::AddLnAddress(state) => UiMode::AddLnAddress(state.clone()),
+            UiMode::ConfirmLnAddress(addr, selected) => {
+                UiMode::ConfirmLnAddress(addr.clone(), *selected)
+            }
+            UiMode::ConfirmClearLnAddress(selected) => UiMode::ConfirmClearLnAddress(*selected),
             UiMode::AddCurrency(state) => UiMode::AddCurrency(state.clone()),
             UiMode::ConfirmCurrency(currency, selected) => {
                 UiMode::ConfirmCurrency(currency.clone(), *selected)

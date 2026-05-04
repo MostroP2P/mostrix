@@ -9,8 +9,9 @@ use crate::ui::key_handler::async_tasks::{spawn_add_relay_task, spawn_refresh_mo
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
-    clear_currency_filters, save_currency_to_settings, save_mostro_pubkey_to_settings,
-    save_relay_to_settings, try_save_admin_key_to_settings,
+    clear_currency_filters, clear_ln_address_from_settings, save_currency_to_settings,
+    save_ln_address_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    try_save_admin_key_to_settings,
 };
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
@@ -171,6 +172,20 @@ pub fn handle_confirm_key(
             spawn_add_relay_task(ctx.client.clone(), relay_string.clone());
             true
         }
+        UiMode::ConfirmLnAddress(addr, _) => {
+            let default_mode = match app.user_role {
+                UserRole::User => UiMode::UserMode(UserMode::Normal),
+                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+            };
+            app.mode = handle_confirmation_enter(
+                true,
+                &addr,
+                default_mode,
+                save_ln_address_to_settings,
+                |input| UiMode::AddLnAddress(create_key_input_state(input)),
+            );
+            true
+        }
         UiMode::ConfirmCurrency(currency_string, _) => {
             let default_mode = match app.user_role {
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
@@ -202,6 +217,15 @@ pub fn handle_confirm_key(
             // Clear in-memory cache as well.
             app.currencies_filter.clear();
             app.pending_fetch_scheduler_reload = true;
+            app.mode = default_mode;
+            true
+        }
+        UiMode::ConfirmClearLnAddress(_) => {
+            let default_mode = match app.user_role {
+                UserRole::User => UiMode::UserMode(UserMode::Normal),
+                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+            };
+            clear_ln_address_from_settings();
             app.mode = default_mode;
             true
         }
@@ -278,6 +302,12 @@ pub fn handle_cancel_key(app: &mut AppState) {
         app.mode = handle_confirmation_esc(relay_string, |input| {
             UiMode::AddRelay(create_key_input_state(input))
         });
+    } else if let UiMode::ConfirmLnAddress(addr, _) = &app.mode {
+        app.mode = handle_confirmation_esc(addr, |input| {
+            UiMode::AddLnAddress(create_key_input_state(input))
+        });
+    } else if let UiMode::ConfirmClearLnAddress(_) = &app.mode {
+        app.mode = default_mode;
     } else if let UiMode::ConfirmCurrency(currency_string, _) = &app.mode {
         // Cancel currency confirmation, go back to AddCurrency input
         app.mode = handle_confirmation_esc(currency_string, |input| {

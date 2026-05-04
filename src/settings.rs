@@ -19,6 +19,9 @@ pub struct Settings {
     pub currencies_filter: Vec<String>,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
+    /// Lightning address for receiving sats when acting as buyer (`user@domain.com`). Empty string = unset.
+    #[serde(default)]
+    pub ln_address: String,
 }
 
 fn default_user_mode() -> String {
@@ -42,6 +45,7 @@ impl Default for Settings {
             log_level: "info".to_string(),
             currencies_filter: Vec::new(),
             user_mode: "user".to_string(),
+            ln_address: String::new(),
         }
     }
 }
@@ -340,6 +344,38 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy installs omit `ln_address`; serde `default` must yield empty string (same as explicit "").
+    #[test]
+    fn legacy_settings_without_ln_address_deserializes_to_empty_string() {
+        let toml_missing_key = r#"
+mostro_pubkey = "npub1test"
+nsec_privkey = "nsec1test"
+admin_privkey = ""
+relays = ["wss://relay.example.com"]
+log_level = "info"
+currencies_filter = ["USD"]
+user_mode = "user"
+"#;
+        let parsed: Settings = toml::from_str(toml_missing_key).expect("toml parse");
+        assert!(
+            parsed.ln_address.is_empty(),
+            "missing ln_address should default to empty"
+        );
+
+        let cfg = config::Config::builder()
+            .add_source(config::File::from_str(
+                toml_missing_key,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("config build");
+        let via_config: Settings = cfg.try_deserialize().expect("config -> Settings");
+        assert!(
+            via_config.ln_address.is_empty(),
+            "config crate path must match direct toml::from_str for backwards compatibility"
+        );
+    }
 
     #[test]
     fn settings_rejects_deprecated_currencies_field() {

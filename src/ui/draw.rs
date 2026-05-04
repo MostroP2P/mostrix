@@ -248,6 +248,34 @@ pub fn ui_draw(
             *selected_button,
         );
     }
+    if let UiMode::AddLnAddress(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "⚡ Lightning Address (buyer)",
+            "Enter Lightning address (user@domain.com):",
+            "you@wallet.example.com",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmLnAddress(addr, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "⚡ Confirm Lightning Address",
+            addr,
+            *selected_button,
+            Some("Save this address to settings.toml for buyer receive flow?"),
+        );
+    }
+    if let UiMode::ConfirmClearLnAddress(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "⚡ Clear Lightning Address",
+            "",
+            *selected_button,
+            Some("Remove the saved buyer Lightning address from settings?"),
+        );
+    }
     if let UiMode::AddCurrency(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
             f,
