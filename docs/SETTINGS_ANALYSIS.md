@@ -30,7 +30,7 @@ Proof-of-work for **published Nostr events** is **not** configured in the Settin
 - **Field**: `Settings.ln_address` (`String`, default empty). Persisted in `settings.toml`; template always includes `ln_address = ""`.
 - **UI**: Only listed under **User** Settings (not Admin). **Set** opens `AddLnAddress` → `ConfirmLnAddress`; **Clear** uses `ConfirmClearLnAddress` (no network).
 - **Format check**: `validate_ln_address_format` in `src/ui/key_handler/settings.rs` (`LightningAddress::from_str`).
-- **Reachability before save**: On confirm, `spawn_verify_and_save_ln_address_task` GETs the LNURL-pay metadata URL and requires JSON `tag: "payRequest"` (`ln_address_pay_request_reachable` in `src/util/ln_address.rs`). Failure surfaces as `OperationResult::Error`; disk is not updated.
+- **Reachability before save**: On confirm, `spawn_verify_and_save_ln_address_task` GETs the LNURL-pay metadata URL and requires JSON `tag: "payRequest"` (`ln_address_pay_request_reachable` in `src/util/ln_address.rs`). Results are sent on **`ln_address_result_tx`** as **`LnAddressVerifyResult`** (`src/ui/orders.rs`); the main loop (`src/main.rs`) receives them on **`ln_address_result_rx`**, maps success to `OperationResult::Info` and failure to `OperationResult::Error`, then calls **`handle_operation_result`** so the user still sees the same operation-result popup. Disk is not updated on failure.
 - **AddInvoice path**: When the pasted/submitted invoice parses as a Lightning address, `execute_add_invoice` runs the same reachability check before sending the Mostro DM (`src/util/order_utils/execute_add_invoice.rs`).
 
 ### 4. Validation Enhancements

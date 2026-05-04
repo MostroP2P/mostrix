@@ -5,8 +5,8 @@ use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::FormState;
 use crate::ui::{
-    AdminChatUpdate, AppState, ChatAttachment, MessageNotification, MostroInfoFetchResult,
-    NetworkStatus, OperationResult, OrderChatUpdate, TakeOrderState, UiMode,
+    AdminChatUpdate, AppState, ChatAttachment, LnAddressVerifyResult, MessageNotification,
+    MostroInfoFetchResult, NetworkStatus, OperationResult, OrderChatUpdate, TakeOrderState, UiMode,
 };
 use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
@@ -655,6 +655,8 @@ pub struct AppChannels {
     pub network_status_rx: UnboundedReceiver<NetworkStatus>,
     pub fatal_error_tx: UnboundedSender<String>,
     pub fatal_error_rx: UnboundedReceiver<String>,
+    pub ln_address_result_tx: UnboundedSender<LnAddressVerifyResult>,
+    pub ln_address_result_rx: UnboundedReceiver<LnAddressVerifyResult>,
 }
 
 pub fn create_app_channels() -> AppChannels {
@@ -679,6 +681,8 @@ pub fn create_app_channels() -> AppChannels {
     let (network_status_tx, network_status_rx) =
         tokio::sync::mpsc::unbounded_channel::<NetworkStatus>();
     let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (ln_address_result_tx, ln_address_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<LnAddressVerifyResult>();
 
     AppChannels {
         order_result_tx,
@@ -703,6 +707,8 @@ pub fn create_app_channels() -> AppChannels {
         network_status_rx,
         fatal_error_tx,
         fatal_error_rx,
+        ln_address_result_tx,
+        ln_address_result_rx,
     }
 }
 
@@ -748,12 +754,12 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
 /// Verify LNURL-pay metadata (`tag: payRequest`), then persist trimmed address to `settings.toml`.
 pub fn spawn_verify_and_save_ln_address_task(
     address: String,
-    result_tx: UnboundedSender<OperationResult>,
+    result_tx: UnboundedSender<LnAddressVerifyResult>,
 ) {
     tokio::spawn(async move {
         let trimmed = address.trim().to_string();
         if trimmed.is_empty() {
-            let _ = result_tx.send(OperationResult::Error(
+            let _ = result_tx.send(LnAddressVerifyResult::Err(
                 "Lightning address cannot be empty".to_string(),
             ));
             return;
@@ -766,12 +772,13 @@ pub fn spawn_verify_and_save_ln_address_task(
                     match crate::settings::save_settings(&s) {
                         Ok(()) => {
                             log::info!("Lightning address saved after LNURL verification");
-                            let _ = result_tx.send(OperationResult::Info(
-                                "Lightning address saved (LNURL endpoint verified).".to_string(),
-                            ));
+                            let _ = result_tx.send(LnAddressVerifyResult::Verified {
+                                message: "Lightning address saved (LNURL endpoint verified)."
+                                    .to_string(),
+                            });
                         }
                         Err(e) => {
-                            let _ = result_tx.send(OperationResult::Error(format!(
+                            let _ = result_tx.send(LnAddressVerifyResult::Err(format!(
                                 "Address verified but failed to save settings: {}",
                                 e
                             )));
@@ -779,14 +786,14 @@ pub fn spawn_verify_and_save_ln_address_task(
                     }
                 }
                 Err(e) => {
-                    let _ = result_tx.send(OperationResult::Error(format!(
+                    let _ = result_tx.send(LnAddressVerifyResult::Err(format!(
                         "Failed to load settings: {}",
                         e
                     )));
                 }
             },
             Err(e) => {
-                let _ = result_tx.send(OperationResult::Error(format!(
+                let _ = result_tx.send(LnAddressVerifyResult::Err(format!(
                     "Could not verify Lightning address: {}",
                     e
                 )));

@@ -19,8 +19,8 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::{
     helpers::{get_visible_attachment_messages, is_dispute_finalized},
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
-    InvoiceNotificationActionSelection, MostroInfoFetchResult, OperationResult, Tab,
-    TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
+    InvoiceNotificationActionSelection, LnAddressVerifyResult, MostroInfoFetchResult,
+    OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
 };
 use crate::util::MostroInstanceInfo;
 use crate::util::OrderDmSubscriptionCmd;
@@ -42,6 +42,7 @@ pub struct EnterKeyContext<'a> {
     pub mostro_pubkey: PublicKey,
     pub current_mostro_pubkey: &'a Arc<Mutex<PublicKey>>,
     pub order_result_tx: &'a UnboundedSender<OperationResult>,
+    pub ln_address_result_tx: &'a UnboundedSender<LnAddressVerifyResult>,
     pub key_rotation_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub seed_words_tx: &'a UnboundedSender<Result<Zeroizing<String>, String>>,
     pub mostro_info_tx: &'a UnboundedSender<MostroInfoFetchResult>,
@@ -365,6 +366,7 @@ pub fn handle_key_event(
     mostro_pubkey: PublicKey,
     current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
     order_result_tx: &UnboundedSender<OperationResult>,
+    ln_address_result_tx: &UnboundedSender<LnAddressVerifyResult>,
     key_rotation_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     seed_words_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
@@ -1064,6 +1066,7 @@ pub fn handle_key_event(
                 mostro_pubkey,
                 current_mostro_pubkey,
                 order_result_tx,
+                ln_address_result_tx,
                 key_rotation_tx,
                 seed_words_tx,
                 mostro_info_tx,

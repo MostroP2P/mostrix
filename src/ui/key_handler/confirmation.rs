@@ -174,7 +174,7 @@ pub fn handle_confirm_key(
             true
         }
         UiMode::ConfirmLnAddress(addr, _) => {
-            spawn_verify_and_save_ln_address_task(addr.clone(), ctx.order_result_tx.clone());
+            spawn_verify_and_save_ln_address_task(addr.clone(), ctx.ln_address_result_tx.clone());
             app.mode = UiMode::OperationResult(OperationResult::Info(
                 "Verifying Lightning address...".to_string(),
             ));

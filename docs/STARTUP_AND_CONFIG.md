@@ -112,7 +112,7 @@ pub struct Settings {
   - When empty, all currencies published by the Mostro instance are shown.  
   - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
-- **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). **Clear** removes the value without a network call.
+- **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). The spawned task reports on **`ln_address_result_tx`** (`LnAddressVerifyResult`), not on `order_result_tx`, so settings verification does not share the order/dispute result queue. **Clear** removes the value without a network call.
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 
@@ -181,31 +181,27 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
 
 ## Main Event Loop
 
-The TUI runs in a `tokio::select!` loop that handles:
-1. **Order Results**: Results from asynchronous order-related operations.
-2. **Message Notifications**: New direct messages from counterparties or Mostro.
-3. **Network Status Events**: Offline/online transitions and reconnect workflow.
-4. **User Input**: Keyboard and paste events processed via `key_handler.rs`.
-5. **UI Refresh**: Periodic ticks to ensure the UI stays up-to-date.
+The TUI runs in a `tokio::select!` loop that handles (among others):
 
-**Source**: `src/main.rs:184`
-```184:279:src/main.rs
-    loop {
-        tokio::select! {
-            result = order_result_rx.recv() => {
-                // ... handle order results ...
-            }
-            notification = message_notification_rx.recv() => {
-                // ... handle notifications ...
-            }
-            maybe_event = events.next() => {
-                // ... handle keyboard/paste events ...
-            }
-            _ = refresh_interval.tick() => {
-                // Refresh the UI
-            }
-        }
-        // ... UI drawing ...
-        terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
+1. **Fatal errors**: `fatal_error_rx` — aborts background work and shows an error popup.
+2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
+3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
+4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.
+5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers).
+
+**Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`).
+
+```text
+// Simplified shape (not exhaustive — see src/main.rs for full select!)
+loop {
+    tokio::select! {
+        // fatal_error_rx, network_status_rx, ...
+        result = order_result_rx.recv() => { /* handle_operation_result + side effects */ }
+        ln_address_verify = ln_address_result_rx.recv() => { /* map LnAddressVerifyResult → OperationResult */ }
+        // key_rotation_rx, seed_words_rx, message_notification_rx, ...
+        maybe_event = events.next() => { /* handle_key_event, paste, mouse */ }
+        _ = refresh_interval.tick() => { /* keep UI alive */ }
     }
+    terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
+}
 ```

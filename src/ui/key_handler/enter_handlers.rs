@@ -772,7 +772,7 @@ fn handle_enter_settings_mode(
         UiMode::ConfirmLnAddress(addr, selected_button) => {
             if selected_button {
                 let addr_clone = addr.clone();
-                spawn_verify_and_save_ln_address_task(addr_clone, ctx.order_result_tx.clone());
+                spawn_verify_and_save_ln_address_task(addr_clone, ctx.ln_address_result_tx.clone());
                 app.mode = UiMode::OperationResult(OperationResult::Info(
                     "Verifying Lightning address...".to_string(),
                 ));

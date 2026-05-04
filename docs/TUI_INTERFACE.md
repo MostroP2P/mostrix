@@ -195,7 +195,7 @@ Users can switch between roles (User/Admin) and tabs using arrow keys.
 
 The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
-**Example**: Handling the `Enter` key (dispatched from `key_handler/mod.rs` to `enter_handlers::handle_enter_key`, which uses `order_result_tx` for operation-result feedback).
+**Example**: Handling the `Enter` key (dispatched from `key_handler/mod.rs` to `enter_handlers::handle_enter_key`). Async feedback uses purpose-specific channels from **`EnterKeyContext`**: **`order_result_tx`** for orders, takes, disputes, bulk history cleanup, attachments, etc., and **`ln_address_result_tx`** for **Lightning address verify-and-save** only (`LnAddressVerifyResult` → main loop maps to `OperationResult` for the shared popup).
 
 ### Specialized Input
 
