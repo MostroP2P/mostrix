@@ -688,6 +688,7 @@ pub fn handle_key_event(
         app.mode,
         UiMode::AddMostroPubkey(_)
             | UiMode::AddRelay(_)
+            | UiMode::AddLnAddress(_)
             | UiMode::AddCurrency(_)
             | UiMode::AdminMode(AdminMode::AddSolver(_))
             | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
@@ -695,6 +696,7 @@ pub fn handle_key_event(
         let key_state = match &mut app.mode {
             UiMode::AddMostroPubkey(ref mut ks) => Some(ks),
             UiMode::AddRelay(ref mut ks) => Some(ks),
+            UiMode::AddLnAddress(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
             UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
             UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
@@ -920,6 +922,8 @@ pub fn handle_key_event(
                 | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
+                | UiMode::ConfirmLnAddress(_, ref mut selected_button)
+                | UiMode::ConfirmClearLnAddress(ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
