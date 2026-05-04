@@ -19,6 +19,9 @@ pub struct Settings {
     pub currencies_filter: Vec<String>,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
+    /// Lightning address for receiving sats when acting as buyer (`user@domain.com`). Empty/absent = unset.
+    #[serde(default)]
+    pub ln_address: Option<String>,
 }
 
 fn default_user_mode() -> String {
@@ -42,6 +45,7 @@ impl Default for Settings {
             log_level: "info".to_string(),
             currencies_filter: Vec::new(),
             user_mode: "user".to_string(),
+            ln_address: None,
         }
     }
 }
