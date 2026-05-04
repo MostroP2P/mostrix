@@ -745,6 +745,56 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
     });
 }
 
+/// Verify LNURL-pay metadata (`tag: payRequest`), then persist trimmed address to `settings.toml`.
+pub fn spawn_verify_and_save_ln_address_task(
+    address: String,
+    result_tx: UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        let trimmed = address.trim().to_string();
+        if trimmed.is_empty() {
+            let _ = result_tx.send(OperationResult::Error(
+                "Lightning address cannot be empty".to_string(),
+            ));
+            return;
+        }
+
+        match crate::util::ln_address::ln_address_pay_request_reachable(&trimmed).await {
+            Ok(()) => match load_settings_from_disk() {
+                Ok(mut s) => {
+                    s.ln_address = trimmed.clone();
+                    match crate::settings::save_settings(&s) {
+                        Ok(()) => {
+                            log::info!("Lightning address saved after LNURL verification");
+                            let _ = result_tx.send(OperationResult::Info(
+                                "Lightning address saved (LNURL endpoint verified).".to_string(),
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = result_tx.send(OperationResult::Error(format!(
+                                "Address verified but failed to save settings: {}",
+                                e
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = result_tx.send(OperationResult::Error(format!(
+                        "Failed to load settings: {}",
+                        e
+                    )));
+                }
+            },
+            Err(e) => {
+                let _ = result_tx.send(OperationResult::Error(format!(
+                    "Could not verify Lightning address: {}",
+                    e
+                )));
+            }
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_take_order_task(
     pool: SqlitePool,

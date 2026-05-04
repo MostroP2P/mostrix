@@ -472,6 +472,7 @@ For invoice-related trade actions, the Messages Enter path uses `UiMode::NewMess
 - Paste/copy details:
   - AddInvoice supports bracketed paste plus key/mouse fallbacks where terminals do not emit `Event::Paste`.
   - PayInvoice keeps copy (`C`) + scroll behavior while supporting cancel selection.
+- **Lightning address as invoice**: If the input is a Lightning address (`user@domain.com`), Mostrix still sends `AddInvoice` with a `PaymentRequest` payload, but first verifies the LNURL metadata endpoint returns `tag: payRequest` (`util::ln_address::ln_address_pay_request_reachable`) so unreachable addresses fail before hitting Mostro.
 
 ### Rating the counterparty (`RateUser`)
 

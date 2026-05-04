@@ -97,6 +97,8 @@ pub struct Settings {
     pub currencies_filter: Vec<String>,
     #[serde(default = "default_user_mode")]
     pub user_mode: String, // "user" or "admin", default "user"
+    #[serde(default)]
+    pub ln_address: String, // Lightning address for buyer receive; empty = unset
 }
 ```
 
@@ -110,6 +112,7 @@ pub struct Settings {
   - When empty, all currencies published by the Mostro instance are shown.  
   - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
+- **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). **Clear** removes the value without a network call.
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 

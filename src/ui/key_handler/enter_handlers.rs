@@ -20,7 +20,7 @@ use crate::ui::{
 use crate::ui::key_handler::async_tasks::{
     spawn_key_rotation_task, spawn_load_seed_words_task,
     spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
-    spawn_send_new_order_task,
+    spawn_send_new_order_task, spawn_verify_and_save_ln_address_task,
 };
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
@@ -38,8 +38,8 @@ use crate::ui::key_handler::confirmation::{
 };
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
-    save_currency_to_settings, save_ln_address_to_settings, save_mostro_pubkey_to_settings,
-    save_relay_to_settings, validate_ln_address_format,
+    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    validate_ln_address_format,
 };
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
@@ -770,13 +770,15 @@ fn handle_enter_settings_mode(
             }
         },
         UiMode::ConfirmLnAddress(addr, selected_button) => {
-            app.mode = handle_confirmation_enter(
-                selected_button,
-                addr.as_str(),
-                default_mode,
-                save_ln_address_to_settings,
-                |input| UiMode::AddLnAddress(create_key_input_state(input)),
-            );
+            if selected_button {
+                let addr_clone = addr.clone();
+                spawn_verify_and_save_ln_address_task(addr_clone, ctx.order_result_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Verifying Lightning address...".to_string(),
+                ));
+            } else {
+                app.mode = UiMode::AddLnAddress(create_key_input_state(addr.as_str()));
+            }
         }
         UiMode::ConfirmClearLnAddress(selected_button) => {
             if selected_button {

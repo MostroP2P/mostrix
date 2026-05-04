@@ -265,7 +265,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Set Lightning Address (buyer)",
-            "User mode only. Save a Lightning address (user@domain.com) to settings for receiving when you buy.",
+            "User mode only. Confirms save after fetching LNURL metadata (payRequest). On failure, settings are not updated.",
         ),
         (
             "Clear Lightning Address",

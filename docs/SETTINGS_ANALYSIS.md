@@ -25,6 +25,14 @@ This document provides a comprehensive analysis of the Settings tab features imp
 
 Proof-of-work for **published Nostr events** is **not** configured in the Settings tab or in `settings.toml`. It comes from the Mostro instance status event (kind 38385, tag `pow`) and is applied in code paths described in **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)**. Older `settings.toml` files may still list `pow`; that key is ignored when loading `Settings`.
 
+### Buyer Lightning address (`ln_address`, User mode)
+
+- **Field**: `Settings.ln_address` (`String`, default empty). Persisted in `settings.toml`; template always includes `ln_address = ""`.
+- **UI**: Only listed under **User** Settings (not Admin). **Set** opens `AddLnAddress` → `ConfirmLnAddress`; **Clear** uses `ConfirmClearLnAddress` (no network).
+- **Format check**: `validate_ln_address_format` in `src/ui/key_handler/settings.rs` (`LightningAddress::from_str`).
+- **Reachability before save**: On confirm, `spawn_verify_and_save_ln_address_task` GETs the LNURL-pay metadata URL and requires JSON `tag: "payRequest"` (`ln_address_pay_request_reachable` in `src/util/ln_address.rs`). Failure surfaces as `OperationResult::Error`; disk is not updated.
+- **AddInvoice path**: When the pasted/submitted invoice parses as a Lightning address, `execute_add_invoice` runs the same reachability check before sending the Mostro DM (`src/util/order_utils/execute_add_invoice.rs`).
+
 ### 4. Validation Enhancements
 - **Mostro Pubkey Validation**: Changed from `npub` format to hex format validation
 - **Relay Validation**: Added validation to ensure relay URLs start with `wss://`
