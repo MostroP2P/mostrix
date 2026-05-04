@@ -70,6 +70,13 @@ pub enum OperationResult {
     },
 }
 
+/// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).
+#[derive(Clone, Debug)]
+pub enum LnAddressVerifyResult {
+    Verified { message: String },
+    Err(String),
+}
+
 /// Result of an async Mostro instance info fetch (sent from key handlers to main loop).
 #[derive(Clone, Debug)]
 pub enum MostroInfoFetchResult {

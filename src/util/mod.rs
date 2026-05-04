@@ -4,6 +4,7 @@ pub mod db_utils;
 pub mod dm_utils;
 pub mod fatal;
 pub mod filters;
+pub mod ln_address;
 pub mod mostro_info;
 pub mod network;
 pub mod order_utils;

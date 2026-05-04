@@ -21,6 +21,8 @@ This document outlines the coding standards and best practices for the Mostrix p
   - Protocol logic in `src/util/order_utils/`
   - Database operations in `src/util/db_utils.rs`
 
+- **Async UI feedback channels**: When spawning tasks from the key handler, use a **dedicated** `tokio::sync::mpsc` channel when the domain is not order/dispute traffic (for example, **`ln_address_result_tx`** / **`LnAddressVerifyResult`** for Lightning address LNURL verification) instead of overloading **`order_result_tx`**, which already carries creates, takes, disputes, history cleanup, and attachment flows. The main loop can still map a small domain-specific enum into **`OperationResult`** for a single popup renderer.
+
 ### 6. Import Usage Rule
 
 **Always import from the crate root at the top of the file; never use full crate paths in the body of the code.**

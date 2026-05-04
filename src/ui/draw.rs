@@ -264,7 +264,7 @@ pub fn ui_draw(
             "⚡ Confirm Lightning Address",
             addr,
             *selected_button,
-            Some("Save this address to settings.toml for buyer receive flow?"),
+            Some("Verify LNURL endpoint and save this address to settings.toml?"),
         );
     }
     if let UiMode::ConfirmClearLnAddress(selected_button) = &app.mode {

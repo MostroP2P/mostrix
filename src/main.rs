@@ -19,7 +19,7 @@ use crate::ui::key_handler::{
     spawn_refresh_mostro_info_task, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::network_status::spawn_network_status_monitor;
-use crate::ui::{MostroInfoFetchResult, OperationResult};
+use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
     handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
@@ -195,6 +195,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut network_status_rx,
         fatal_error_tx,
         mut fatal_error_rx,
+        ln_address_result_tx,
+        mut ln_address_result_rx,
     } = create_app_channels();
 
     // Set fatal error tx for the app channels
@@ -433,6 +435,17 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
+            ln_address_verify = ln_address_result_rx.recv() => {
+                if let Some(ln_res) = ln_address_verify {
+                    let op = match ln_res {
+                        LnAddressVerifyResult::Verified { message } => {
+                            OperationResult::Info(message)
+                        }
+                        LnAddressVerifyResult::Err(e) => OperationResult::Error(e),
+                    };
+                    handle_operation_result(op, &mut app);
+                }
+            }
             key_rotation_result = key_rotation_rx.recv() => {
                 if let Some(res) = key_rotation_result {
                     match res {
@@ -571,6 +584,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         mostro_pubkey,
                         &current_mostro_pubkey,
                         &order_result_tx,
+                        &ln_address_result_tx,
                         &key_rotation_tx,
                         &seed_words_tx,
                         &mostro_info_tx,

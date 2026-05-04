@@ -76,7 +76,7 @@ Focused on trading and order management.
 - **Orders**: View the global order book.
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts.
+- **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`).
 - **Create New Order**: Form for publishing new orders.
 
 ### Admin Role
@@ -138,7 +138,7 @@ Popups are implemented by rendering additional widgets on top of the main layout
 The primary shared popup is the **operation result** modal, used for:
 
 - Order creation / take-order flows
-- Settings validation errors (invalid pubkey, relay, currency, etc.)
+- Settings validation errors (invalid pubkey, relay, currency, Lightning address format, LNURL verification failure, etc.)
 - Admin actions (add solver, finalize disputes)
 - Blossom attachment downloads and Observer-mode shared-key errors
 
@@ -195,7 +195,7 @@ Users can switch between roles (User/Admin) and tabs using arrow keys.
 
 The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
-**Example**: Handling the `Enter` key (dispatched from `key_handler/mod.rs` to `enter_handlers::handle_enter_key`, which uses `order_result_tx` for operation-result feedback).
+**Example**: Handling the `Enter` key (dispatched from `key_handler/mod.rs` to `enter_handlers::handle_enter_key`). Async feedback uses purpose-specific channels from **`EnterKeyContext`**: **`order_result_tx`** for orders, takes, disputes, bulk history cleanup, attachments, etc., and **`ln_address_result_tx`** for **Lightning address verify-and-save** only (`LnAddressVerifyResult` → main loop maps to `OperationResult` for the shared popup).
 
 ### Specialized Input
 

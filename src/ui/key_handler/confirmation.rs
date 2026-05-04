@@ -5,13 +5,14 @@ use crate::ui::{AdminMode, AppState, UiMode, UserMode, UserRole};
 use crate::ui::key_handler::admin_handlers::{
     execute_take_dispute_action, handle_enter_admin_mode,
 };
-use crate::ui::key_handler::async_tasks::{spawn_add_relay_task, spawn_refresh_mostro_info_task};
+use crate::ui::key_handler::async_tasks::{
+    spawn_add_relay_task, spawn_refresh_mostro_info_task, spawn_verify_and_save_ln_address_task,
+};
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, save_currency_to_settings,
-    save_ln_address_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
-    try_save_admin_key_to_settings,
+    save_mostro_pubkey_to_settings, save_relay_to_settings, try_save_admin_key_to_settings,
 };
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
@@ -173,17 +174,10 @@ pub fn handle_confirm_key(
             true
         }
         UiMode::ConfirmLnAddress(addr, _) => {
-            let default_mode = match app.user_role {
-                UserRole::User => UiMode::UserMode(UserMode::Normal),
-                UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
-            };
-            app.mode = handle_confirmation_enter(
-                true,
-                &addr,
-                default_mode,
-                save_ln_address_to_settings,
-                |input| UiMode::AddLnAddress(create_key_input_state(input)),
-            );
+            spawn_verify_and_save_ln_address_task(addr.clone(), ctx.ln_address_result_tx.clone());
+            app.mode = UiMode::OperationResult(OperationResult::Info(
+                "Verifying Lightning address...".to_string(),
+            ));
             true
         }
         UiMode::ConfirmCurrency(currency_string, _) => {

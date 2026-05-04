@@ -42,9 +42,16 @@ pub async fn execute_add_invoice(
     let order_trade_keys = Keys::parse(&trade_keys)?;
 
     // Check invoice string
-    let ln_addr = LightningAddress::from_str(invoice);
+    let ln_addr = LightningAddress::from_str(invoice.trim());
     let payload = if ln_addr.is_ok() {
-        Some(Payload::PaymentRequest(None, invoice.to_string(), None))
+        crate::util::ln_address::ln_address_pay_request_reachable(invoice.trim())
+            .await
+            .map_err(|e| anyhow::anyhow!("Lightning address not verified: {}", e))?;
+        Some(Payload::PaymentRequest(
+            None,
+            invoice.trim().to_string(),
+            None,
+        ))
     } else {
         match is_valid_invoice(invoice) {
             Ok(i) => Some(Payload::PaymentRequest(None, i.to_string(), None)),
