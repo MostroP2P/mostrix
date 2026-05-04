@@ -758,20 +758,17 @@ fn handle_enter_settings_mode(
                 });
             }
         }
-        UiMode::AddLnAddress(key_state) => {
-            match validate_ln_address_format(&key_state.key_input) {
-                Ok(()) => {
-                    let trimmed = key_state.key_input.trim().to_string();
-                    app.mode =
-                        handle_input_to_confirmation(&trimmed, default_mode.clone(), |input| {
-                            UiMode::ConfirmLnAddress(input, true)
-                        });
-                }
-                Err(e) => {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
-                }
+        UiMode::AddLnAddress(key_state) => match validate_ln_address_format(&key_state.key_input) {
+            Ok(()) => {
+                let trimmed = key_state.key_input.trim().to_string();
+                app.mode = handle_input_to_confirmation(&trimmed, default_mode.clone(), |input| {
+                    UiMode::ConfirmLnAddress(input, true)
+                });
             }
-        }
+            Err(e) => {
+                app.mode = UiMode::OperationResult(OperationResult::Error(e));
+            }
+        },
         UiMode::ConfirmLnAddress(addr, selected_button) => {
             app.mode = handle_confirmation_enter(
                 selected_button,
