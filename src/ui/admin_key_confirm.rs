@@ -232,7 +232,7 @@ pub fn render_saved_ln_address_invoice_confirm(
         Direction::Vertical,
         [
             Constraint::Length(1),
-            Constraint::Min(7),
+            Constraint::Length(9),
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
