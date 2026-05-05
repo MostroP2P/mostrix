@@ -459,7 +459,12 @@ When the relay later delivers **`CooperativeCancelAccepted`**, the DM listener t
 
 ### Invoice notifications in Messages tab
 
-For invoice-related trade actions, the Messages Enter path uses `UiMode::NewMessageNotification` with a dual-action popup model:
+For invoice-related trade actions, the Messages Enter path normally uses `UiMode::NewMessageNotification` with a dual-action popup model. **`AddInvoice`** may be preceded by a **saved-Lightning-address** confirmation:
+
+- **Saved buyer Lightning address (`settings.toml` → `ln_address`)**: If the trimmed address is non-empty when **`AddInvoice`** should open (incoming notification handled by **`handle_message_notification`**, or **Messages → Enter** via **`present_add_invoice_popup`** in `src/util/dm_utils/notifications_ch_mng.rs`), the client shows **`UiMode::ConfirmSavedLnAddressForInvoice`** (YES/NO). YES inserts **`BuyerInvoicePreference::UseSavedLnAddress`** for that **`order_id`** (when applicable) and opens **`NewMessageNotification`** with the saved address prefilled; NO inserts **`ManualInvoice`** and opens with an empty invoice field. The popup body lists the address string read from disk during **`ui_draw`**.
+- **Per-order cache**: **`AppState.buyer_invoice_preference`** skips repeating the confirmation until canceled/trade cleanup (**Cancel Order** from the invoice popup removes the **`order_id`** preference row; **`TradeClosed`** / history deletion clears it in **`order_ch_mng`**).
+
+Otherwise:
 
 - Action mapping:
   - `AddInvoice` and `WaitingBuyerInvoice` -> AddInvoice popup mode.

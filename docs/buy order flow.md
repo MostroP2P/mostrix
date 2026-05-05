@@ -75,7 +75,7 @@ Same status vocabulary applies; **order** of states must match [ORDER.md](https:
 
 ### Invoice popups (paste vs pay)
 
-- **AddInvoice** (paste **BOLT11** or **Lightning address**): open only when the **buyer** must submit an invoice and status/action indicates that step for the **local** user. For addresses, Mostrix checks the LNURL endpoint before publishing the DM. An optional saved buyer address lives in **`settings.toml`** (`ln_address`) and is editable from **User → Settings** only.
+- **AddInvoice** (paste **BOLT11** or **Lightning address**): open only when the **buyer** must submit an invoice and status/action indicates that step for the **local** user. For addresses, Mostrix checks the LNURL endpoint before publishing the DM. An optional saved buyer address lives in **`settings.toml`** (`ln_address`) and is editable from **User → Settings** only. If **`ln_address`** is set, **`AddInvoice`** may open **`ConfirmSavedLnAddressForInvoice`** first (YES uses saved address, NO manual invoice); see **`present_add_invoice_popup`** in `src/util/dm_utils/notifications_ch_mng.rs`.
 - **PayInvoice** (pay hold invoice): open only when the **seller** must pay and that matches the **local** user in the current phase.
 - If Enter is pressed but the phase does **not** match, **do not** open the invoice modal; show a short informational message or no-op.
 
@@ -92,7 +92,7 @@ For actions that require explicit confirmation (e.g. **`HoldInvoicePaymentAccept
 
 In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by **`Action`** (and by **`order_id`** where required):
 
-- **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`).
+- **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`); **`AddInvoice`** may run **`ConfirmSavedLnAddressForInvoice`** first when **`ln_address`** is configured (`present_add_invoice_popup`).
 - **`WaitingBuyerInvoice` / `WaitingSellerToPay`** also map to the same invoice/payment popup modes on Enter.
 - Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup.
 - **`HoldInvoicePaymentAccepted` / `FiatSentOk`** → confirmation popup (`ViewingMessage` with yes/no where applicable).

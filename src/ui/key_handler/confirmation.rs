@@ -14,6 +14,7 @@ use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings, try_save_admin_key_to_settings,
 };
+use crate::util::dm_utils::apply_saved_ln_address_invoice_choice;
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
 
@@ -180,6 +181,10 @@ pub fn handle_confirm_key(
             ));
             true
         }
+        UiMode::ConfirmSavedLnAddressForInvoice(notification, _) => {
+            apply_saved_ln_address_invoice_choice(app, notification, true);
+            true
+        }
         UiMode::ConfirmCurrency(currency_string, _) => {
             let default_mode = match app.user_role {
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
@@ -300,6 +305,8 @@ pub fn handle_cancel_key(app: &mut AppState) {
         app.mode = handle_confirmation_esc(addr, |input| {
             UiMode::AddLnAddress(create_key_input_state(input))
         });
+    } else if let UiMode::ConfirmSavedLnAddressForInvoice(notification, _) = &app.mode {
+        apply_saved_ln_address_invoice_choice(app, notification.clone(), false);
     } else if let UiMode::ConfirmClearLnAddress(_) = &app.mode {
         app.mode = default_mode;
     } else if let UiMode::ConfirmCurrency(currency_string, _) = &app.mode {

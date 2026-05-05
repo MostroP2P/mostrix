@@ -41,6 +41,7 @@ use crate::ui::key_handler::settings::{
     save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
     validate_ln_address_format,
 };
+use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
@@ -404,6 +405,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
             // No action while waiting
             app.mode = default_mode;
+            true
+        }
+        UiMode::ConfirmSavedLnAddressForInvoice(notification, selected_button) => {
+            apply_saved_ln_address_invoice_choice(app, notification, selected_button);
             true
         }
         UiMode::HelpPopup(..) | UiMode::SettingsInstructionsPopup(..) => {
@@ -927,20 +932,26 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 if invoice_popup_allowed_for_order_status(&invoice_popup_action, msg.order_status) {
                     // Show invoice/payment popup only when the phase still requires it.
                     let notification = order_message_to_notification(msg);
-                    let invoice_state = InvoiceInputState {
-                        invoice_input: String::new(),
-                        focused: matches!(invoice_popup_action, Action::AddInvoice),
-                        just_pasted: false,
-                        copied_to_clipboard: false,
-                        scroll_y: 0,
-                        action_selection: InvoiceNotificationActionSelection::Primary,
-                    };
-
-                    app.mode = UiMode::NewMessageNotification(
-                        notification,
-                        invoice_popup_action,
-                        invoice_state,
-                    );
+                    if invoice_popup_action == Action::AddInvoice {
+                        app.mode = present_add_invoice_popup(
+                            &mut app.buyer_invoice_preference,
+                            notification,
+                        );
+                    } else {
+                        let invoice_state = InvoiceInputState {
+                            invoice_input: String::new(),
+                            focused: false,
+                            just_pasted: false,
+                            copied_to_clipboard: false,
+                            scroll_y: 0,
+                            action_selection: InvoiceNotificationActionSelection::Primary,
+                        };
+                        app.mode = UiMode::NewMessageNotification(
+                            notification,
+                            invoice_popup_action,
+                            invoice_state,
+                        );
+                    }
                 } else if matches!(
                     action,
                     Action::AddInvoice

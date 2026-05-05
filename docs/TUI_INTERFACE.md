@@ -231,7 +231,7 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
 - **Invoice popups (`NewMessageNotification`)**:
-  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode.
+  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode. If **`settings.toml`** **`ln_address`** is non-empty, **`UiMode::ConfirmSavedLnAddressForInvoice`** may appear first (**YES** / **NO**), listing the saved address; **`BuyerInvoicePreference`** per **`order_id`** (`src/ui/app_state.rs`, `src/ui/orders.rs`) remembers the choice for that trade until **Cancel Order** from the popup removes it (`message_handlers.rs`) or the trade row is torn down (`order_ch_mng.rs`).
   - `PayInvoice` / `WaitingSellerToPay` map to payment popup mode.
   - Both popups provide two actions (`Primary` + `Cancel Order`) via Left/Right selection; Enter confirms the selected action.
   - `PayInvoice` keeps copy (`C`) and scroll (`Up/Down`, `PageUp/PageDown`) behavior while adding cancel selection.
