@@ -40,6 +40,18 @@ pub struct OrderSuccess {
     pub static_header: Option<OrderChatStaticHeader>,
 }
 
+/// Per-order buyer invoice preference when we act as taker on a SELL listing.
+/// Stored in-memory only (not persisted to DB); later flows can use it to
+/// decide how to pre-fill or submit buyer invoices for that specific order.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BuyerInvoicePreference {
+    /// Prefer using the saved Settings `ln_address` (Lightning address) as
+    /// the buyer invoice source when appropriate.
+    UseSavedLnAddress,
+    /// Always prompt for a manual BOLT11 or Lightning address for this order.
+    ManualInvoice,
+}
+
 #[derive(Clone, Debug)]
 pub enum OperationResult {
     Success(OrderSuccess),

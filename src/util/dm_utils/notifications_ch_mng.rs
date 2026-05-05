@@ -1,9 +1,13 @@
 // Notifications channel manager - handles message notifications from async tasks
+use crate::settings::load_settings_from_disk;
 use crate::ui::orders::invoice_popup_allowed_for_order_status;
+use crate::ui::orders::BuyerInvoicePreference;
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification, UiMode,
 };
 use mostro_core::prelude::Action;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Check if the popup should be shown for a given notification
 /// The message is guaranteed to exist in the vector because listen_for_order_messages
@@ -63,6 +67,100 @@ fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppS
     true
 }
 
+fn invoice_state_for_add_invoice(invoice_input: String, focused: bool) -> InvoiceInputState {
+    InvoiceInputState {
+        invoice_input,
+        focused,
+        just_pasted: false,
+        copied_to_clipboard: false,
+        scroll_y: 0,
+        action_selection: InvoiceNotificationActionSelection::Primary,
+    }
+}
+
+/// Opens AddInvoice UI: optional confirmation when settings contain a buyer Lightning address.
+pub fn present_add_invoice_popup(
+    buyer_invoice_preference: &mut HashMap<Uuid, BuyerInvoicePreference>,
+    notification: MessageNotification,
+) -> UiMode {
+    let trimmed_ln = load_settings_from_disk()
+        .ok()
+        .map(|s| s.ln_address.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(addr) = trimmed_ln {
+        if let Some(oid) = notification.order_id {
+            match buyer_invoice_preference.get(&oid).copied() {
+                Some(BuyerInvoicePreference::ManualInvoice) => {
+                    return UiMode::NewMessageNotification(
+                        notification,
+                        Action::AddInvoice,
+                        invoice_state_for_add_invoice(String::new(), true),
+                    );
+                }
+                Some(BuyerInvoicePreference::UseSavedLnAddress) => {
+                    return UiMode::NewMessageNotification(
+                        notification,
+                        Action::AddInvoice,
+                        invoice_state_for_add_invoice(addr, true),
+                    );
+                }
+                None => {
+                    return UiMode::ConfirmSavedLnAddressForInvoice(notification, true);
+                }
+            }
+        }
+        return UiMode::ConfirmSavedLnAddressForInvoice(notification, true);
+    }
+
+    UiMode::NewMessageNotification(
+        notification,
+        Action::AddInvoice,
+        invoice_state_for_add_invoice(String::new(), true),
+    )
+}
+
+/// Apply Yes/No on the saved-Lightning-address confirmation before AddInvoice.
+pub fn apply_saved_ln_address_invoice_choice(
+    app: &mut AppState,
+    notification: MessageNotification,
+    use_saved: bool,
+) {
+    let action = Action::AddInvoice;
+    if use_saved {
+        let addr = load_settings_from_disk()
+            .ok()
+            .map(|s| s.ln_address.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let (Some(oid), Some(a)) = (notification.order_id, addr.as_ref()) {
+            if !a.is_empty() {
+                app.buyer_invoice_preference
+                    .insert(oid, BuyerInvoicePreference::UseSavedLnAddress);
+            }
+        }
+        let invoice_input = addr.unwrap_or_default();
+        app.mode = UiMode::NewMessageNotification(
+            notification,
+            action,
+            invoice_state_for_add_invoice(invoice_input, true),
+        );
+    } else if let Some(oid) = notification.order_id {
+        app.buyer_invoice_preference
+            .insert(oid, BuyerInvoicePreference::ManualInvoice);
+        app.mode = UiMode::NewMessageNotification(
+            notification,
+            action,
+            invoice_state_for_add_invoice(String::new(), true),
+        );
+    } else {
+        app.mode = UiMode::NewMessageNotification(
+            notification,
+            action,
+            invoice_state_for_add_invoice(String::new(), true),
+        );
+    }
+}
+
 /// Handle message notification from the notification channel
 pub fn handle_message_notification(notification: MessageNotification, app: &mut AppState) {
     // Only show popup automatically for PayInvoice and AddInvoice,
@@ -75,18 +173,21 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 return;
             }
 
-            // should_show_popup is true at this point, show the popup
-            let invoice_state = InvoiceInputState {
-                invoice_input: String::new(),
-                // Only focus input for AddInvoice, PayInvoice is display-only.
-                focused: matches!(notification.action, Action::AddInvoice),
-                just_pasted: false,
-                copied_to_clipboard: false,
-                scroll_y: 0,
-                action_selection: InvoiceNotificationActionSelection::Primary,
-            };
-            let action = notification.action.clone();
-            app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
+            if matches!(notification.action, Action::AddInvoice) {
+                app.mode =
+                    present_add_invoice_popup(&mut app.buyer_invoice_preference, notification);
+            } else {
+                let invoice_state = InvoiceInputState {
+                    invoice_input: String::new(),
+                    focused: false,
+                    just_pasted: false,
+                    copied_to_clipboard: false,
+                    scroll_y: 0,
+                    action_selection: InvoiceNotificationActionSelection::Primary,
+                };
+                app.mode =
+                    UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);
+            }
         }
         _ => {}
     }

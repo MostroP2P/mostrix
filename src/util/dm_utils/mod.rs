@@ -6,7 +6,9 @@ mod notifications_ch_mng;
 mod order_ch_mng;
 
 pub use dm_helpers::seed_admin_chat_last_seen;
-pub use notifications_ch_mng::handle_message_notification;
+pub use notifications_ch_mng::{
+    apply_saved_ln_address_invoice_choice, handle_message_notification, present_add_invoice_popup,
+};
 pub use order_ch_mng::handle_operation_result;
 
 use anyhow::Result;

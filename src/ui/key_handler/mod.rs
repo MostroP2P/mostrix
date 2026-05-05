@@ -925,6 +925,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmLnAddress(_, ref mut selected_button)
+                | UiMode::ConfirmSavedLnAddressForInvoice(_, ref mut selected_button)
                 | UiMode::ConfirmClearLnAddress(ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)

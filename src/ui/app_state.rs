@@ -15,8 +15,8 @@ use crate::ui::chat::{
 };
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
-    InvoiceInputState, KeyInputState, MessageNotification, MessageViewState, OperationResult,
-    OrderChatStaticHeader, OrderMessage, RatingOrderState,
+    BuyerInvoicePreference, InvoiceInputState, KeyInputState, MessageNotification,
+    MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
@@ -47,6 +47,8 @@ pub enum UiMode {
     ConfirmLnAddress(String, bool), // (address, selected_button)
     /// User-mode Settings: clear saved buyer Lightning address.
     ConfirmClearLnAddress(bool),
+    /// Before AddInvoice: ask whether to use the saved buyer Lightning address from settings.
+    ConfirmSavedLnAddressForInvoice(MessageNotification, bool), // selected_button: true = Yes
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
@@ -98,6 +100,9 @@ impl Clone for UiMode {
                 UiMode::ConfirmLnAddress(addr.clone(), *selected)
             }
             UiMode::ConfirmClearLnAddress(selected) => UiMode::ConfirmClearLnAddress(*selected),
+            UiMode::ConfirmSavedLnAddressForInvoice(notification, selected) => {
+                UiMode::ConfirmSavedLnAddressForInvoice(notification.clone(), *selected)
+            }
             UiMode::AddCurrency(state) => UiMode::AddCurrency(state.clone()),
             UiMode::ConfirmCurrency(currency, selected) => {
                 UiMode::ConfirmCurrency(currency.clone(), *selected)
@@ -148,6 +153,10 @@ pub struct AppState {
     /// Per-order startup floor for invoice popups: notifications at or below this rumor timestamp
     /// are treated as historical and must not auto-open AddInvoice/PayInvoice modal.
     pub startup_popup_floor_ts: HashMap<uuid::Uuid, i64>,
+    /// Per-order buyer invoice preference when we are taker on a SELL listing.
+    /// In-memory only; used by Messages/AddInvoice flows to decide how to
+    /// source the buyer invoice for a specific trade.
+    pub buyer_invoice_preference: HashMap<uuid::Uuid, BuyerInvoicePreference>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
     pub order_chat_input: String,
@@ -229,6 +238,7 @@ impl AppState {
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
             dropped_user_history_order_ids: Arc::new(Mutex::new(HashSet::new())),
             startup_popup_floor_ts: HashMap::new(),
+            buyer_invoice_preference: HashMap::new(),
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),

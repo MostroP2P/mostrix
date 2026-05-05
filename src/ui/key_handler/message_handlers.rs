@@ -41,6 +41,9 @@ fn spawn_cancel_from_notification(
         return;
     };
 
+    // Drop per-order invoice preference so a later trade / retake can show the LN confirm again.
+    app.buyer_invoice_preference.remove(&order_id);
+
     app.mode = role_waiting_mode(app.user_role);
     let pool_clone = ctx.pool.clone();
     let client_clone = ctx.client.clone();

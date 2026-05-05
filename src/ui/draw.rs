@@ -276,6 +276,20 @@ pub fn ui_draw(
             Some("Remove the saved buyer Lightning address from settings?"),
         );
     }
+    if let UiMode::ConfirmSavedLnAddressForInvoice(_, selected_button) = &app.mode {
+        let addr_display = crate::settings::load_settings_from_disk()
+            .ok()
+            .map(|s| s.ln_address.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "(none)".to_string());
+        let body = format!(
+            "Saved Lightning address:\n{addr_display}\n\n\
+Confirm using this address from Settings as your invoice?\n\n\
+Yes: fill invoice from Settings.\n\
+No: paste BOLT11 or Lightning address manually."
+        );
+        admin_key_confirm::render_saved_ln_address_invoice_confirm(f, *selected_button, &body);
+    }
     if let UiMode::AddCurrency(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
             f,

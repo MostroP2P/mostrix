@@ -34,6 +34,7 @@ fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
         }
     }
     app.order_chat_static.remove(&order_id);
+    app.buyer_invoice_preference.remove(&order_id);
 }
 
 fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) {
@@ -71,6 +72,7 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
         }
     }
     for order_id in order_ids {
+        app.buyer_invoice_preference.remove(order_id);
         let key = order_id.to_string();
         app.order_chats.remove(&key);
         app.order_chat_last_seen.remove(&key);
@@ -230,6 +232,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             } else {
                 app.mode = UiMode::OperationResult(result);
             }
+        }
+        UiMode::ConfirmSavedLnAddressForInvoice(..) => {
+            app.pending_post_take_operation_result = Some(result);
         }
         _ => {
             app.mode = UiMode::OperationResult(result);

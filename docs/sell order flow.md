@@ -34,7 +34,7 @@ Typical `Status` values follow the same global order machine as other trades (`w
 
 Phases (labels from `SELL_ORDER_FLOW_STEPS_TAKER`):
 
-1. **Add invoice** — buyer submits a **BOLT11** payment request or a **Lightning address** (`user@domain.com`) when required; Mostrix verifies LNURL-pay metadata (`payRequest`) before sending `AddInvoice` for addresses. Optional default address: **User → Settings → Set Lightning Address** (`settings.toml` field `ln_address`).
+1. **Add invoice** — buyer submits a **BOLT11** payment request or a **Lightning address** (`user@domain.com`) when required; Mostrix verifies LNURL-pay metadata (`payRequest`) before sending `AddInvoice` for addresses. Optional default address: **User → Settings → Set Lightning Address** (`settings.toml` field `ln_address`). When that field is non-empty, taking this phase may show **`ConfirmSavedLnAddressForInvoice`** before the invoice field (**YES** = prefilled from Settings, **NO** = paste manually); see **`notifications_ch_mng.rs`**.
 2. **Wait for seller** — seller pays hold / completes prerequisites.
 3. **Chat with buyer** — messaging phase (label uses “Buyer” from book side).
 4. **Send fiat** — buyer sends fiat.
