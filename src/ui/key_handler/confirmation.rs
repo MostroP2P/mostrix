@@ -10,13 +10,10 @@ use crate::ui::key_handler::async_tasks::{
 };
 use crate::ui::key_handler::user_handlers::execute_take_order_action;
 
-use crate::settings::load_settings_from_disk;
-use crate::ui::key_handler::message_handlers::submit_add_invoice;
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, save_currency_to_settings,
     save_mostro_pubkey_to_settings, save_relay_to_settings, try_save_admin_key_to_settings,
 };
-use crate::ui::orders::BuyerInvoicePreference;
 use crate::util::dm_utils::apply_saved_ln_address_invoice_choice;
 use nostr_sdk::prelude::PublicKey;
 use std::str::FromStr;
@@ -182,30 +179,6 @@ pub fn handle_confirm_key(
             app.mode = UiMode::OperationResult(OperationResult::Info(
                 "Verifying Lightning address...".to_string(),
             ));
-            true
-        }
-        UiMode::ConfirmSavedLnAddressForInvoice(notification, _) => {
-            let Some(order_id) = notification.order_id else {
-                app.mode = UiMode::OperationResult(OperationResult::Error(
-                    "No order ID for AddInvoice".to_string(),
-                ));
-                return true;
-            };
-
-            let trimmed = load_settings_from_disk()
-                .ok()
-                .map(|s| s.ln_address.trim().to_string())
-                .unwrap_or_default();
-            if trimmed.is_empty() {
-                app.mode = UiMode::OperationResult(OperationResult::Error(
-                    "No saved Lightning address in settings".to_string(),
-                ));
-                return true;
-            }
-
-            app.buyer_invoice_preference
-                .insert(order_id, BuyerInvoicePreference::UseSavedLnAddress);
-            submit_add_invoice(app, ctx, order_id, trimmed);
             true
         }
         UiMode::ConfirmCurrency(currency_string, _) => {

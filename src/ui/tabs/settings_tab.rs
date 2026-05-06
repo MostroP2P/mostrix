@@ -20,40 +20,68 @@ pub enum SettingsMenuAction {
     GenerateNewKeys,
 }
 
-pub fn settings_action_for_index(user_role: UserRole, idx: usize) -> Option<SettingsMenuAction> {
-    match user_role {
-        UserRole::Admin => match idx {
-            0 => Some(SettingsMenuAction::SwitchMode),
-            1 => Some(SettingsMenuAction::ChangeMostroPubkey),
-            2 => Some(SettingsMenuAction::AddRelay),
-            3 => Some(SettingsMenuAction::AddCurrencyFilter),
-            4 => Some(SettingsMenuAction::ClearCurrencyFilters),
-            5 => Some(SettingsMenuAction::ViewSeedWords),
-            6 => Some(SettingsMenuAction::AddDisputeSolver),
-            7 => Some(SettingsMenuAction::ChangeAdminKey),
-            8 => Some(SettingsMenuAction::GenerateNewKeys),
-            _ => None,
-        },
-        UserRole::User => match idx {
-            0 => Some(SettingsMenuAction::SwitchMode),
-            1 => Some(SettingsMenuAction::ChangeMostroPubkey),
-            2 => Some(SettingsMenuAction::AddRelay),
-            3 => Some(SettingsMenuAction::SetBuyerLnAddress),
-            4 => Some(SettingsMenuAction::ClearBuyerLnAddress),
-            5 => Some(SettingsMenuAction::AddCurrencyFilter),
-            6 => Some(SettingsMenuAction::ClearCurrencyFilters),
-            7 => Some(SettingsMenuAction::ViewSeedWords),
-            8 => Some(SettingsMenuAction::GenerateNewKeys),
-            _ => None,
-        },
+type SettingsMenuRow = (SettingsMenuAction, &'static str);
+
+/// Single source of truth for Admin Settings rows (action + list label).
+#[allow(clippy::redundant_static_lifetimes)]
+const ADMIN_SETTINGS: [SettingsMenuRow; 9] = [
+    (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
+    (
+        SettingsMenuAction::ChangeMostroPubkey,
+        "Change Mostro Pubkey",
+    ),
+    (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
+    (SettingsMenuAction::AddCurrencyFilter, "Add Currency Filter"),
+    (
+        SettingsMenuAction::ClearCurrencyFilters,
+        "Clear Currency Filters",
+    ),
+    (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
+    (SettingsMenuAction::AddDisputeSolver, "Add Dispute Solver"),
+    (SettingsMenuAction::ChangeAdminKey, "Change Admin Key"),
+    (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
+];
+
+/// Single source of truth for User Settings rows (action + list label).
+#[allow(clippy::redundant_static_lifetimes)]
+const USER_SETTINGS: [SettingsMenuRow; 9] = [
+    (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
+    (
+        SettingsMenuAction::ChangeMostroPubkey,
+        "Change Mostro Pubkey",
+    ),
+    (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
+    (
+        SettingsMenuAction::SetBuyerLnAddress,
+        "Set Lightning Address (buyer)",
+    ),
+    (
+        SettingsMenuAction::ClearBuyerLnAddress,
+        "Clear Lightning Address",
+    ),
+    (SettingsMenuAction::AddCurrencyFilter, "Add Currency Filter"),
+    (
+        SettingsMenuAction::ClearCurrencyFilters,
+        "Clear Currency Filters",
+    ),
+    (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
+    (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
+];
+
+pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = ADMIN_SETTINGS.len();
+
+pub const USER_SETTINGS_OPTIONS_COUNT: usize = USER_SETTINGS.len();
+
+fn settings_rows(role: UserRole) -> &'static [SettingsMenuRow] {
+    match role {
+        UserRole::Admin => &ADMIN_SETTINGS,
+        UserRole::User => &USER_SETTINGS,
     }
 }
 
-/// Number of settings options for Admin role
-pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 9; // Switch Mode + … + Generate New Keys
-
-/// Number of settings options for User role (includes LN address rows; admin has no LN rows)
-pub const USER_SETTINGS_OPTIONS_COUNT: usize = 9;
+pub fn settings_action_for_index(user_role: UserRole, idx: usize) -> Option<SettingsMenuAction> {
+    settings_rows(user_role).get(idx).map(|(action, _)| *action)
+}
 
 /// Render the Settings tab UI
 ///
@@ -104,37 +132,11 @@ pub fn render_settings_tab(
         chunks[1],
     );
 
-    // Options based on user role
-    let options = if user_role == UserRole::Admin {
-        vec![
-            "Switch Mode (User ↔ Admin)",
-            "Change Mostro Pubkey",
-            "Add Nostr Relay",
-            "Add Currency Filter",
-            "Clear Currency Filters",
-            "View Seed Words",
-            "Add Dispute Solver",
-            "Change Admin Key",
-            "Generate New Keys",
-        ]
-    } else {
-        vec![
-            "Switch Mode (User ↔ Admin)",
-            "Change Mostro Pubkey",
-            "Add Nostr Relay",
-            "Set Lightning Address (buyer)",
-            "Clear Lightning Address",
-            "Add Currency Filter",
-            "Clear Currency Filters",
-            "View Seed Words",
-            "Generate New Keys",
-        ]
-    };
-
-    let list_items: Vec<ListItem> = options
+    let rows = settings_rows(user_role);
+    let list_items: Vec<ListItem> = rows
         .iter()
         .enumerate()
-        .map(|(i, option)| {
+        .map(|(i, (_, label))| {
             let style = if i == selected_option {
                 Style::default()
                     .fg(PRIMARY_COLOR)
@@ -142,7 +144,7 @@ pub fn render_settings_tab(
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(Span::styled(*option, style)))
+            ListItem::new(Line::from(Span::styled(*label, style)))
         })
         .collect();
 

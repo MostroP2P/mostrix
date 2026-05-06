@@ -53,7 +53,7 @@ Proof-of-work for **published Nostr events** is **not** configured in the Settin
 - **Settings Tab Position**: Settings tab moved to last position in user mode for uniform interface
 - **Navigation from Order Form**: Single arrow key press navigates from order form to Settings tab
 - **Responsive Layout**: Settings tab adapts to narrow terminals by using full width instead of centered layout
-- **Settings menu Enter routing**: Row selection uses **`settings_action_for_index`** → **`SettingsMenuAction`** in `src/ui/tabs/settings_tab.rs` so Enter handling in **`enter_handlers.rs`** does not rely on raw indices inline (User vs Admin lists still share top rows; LN rows remain User-only).
+- **Settings menu (single source of truth)**: `src/ui/tabs/settings_tab.rs` defines **`ADMIN_SETTINGS`** and **`USER_SETTINGS`** — `const` arrays of **`SettingsMenuRow`** (`(SettingsMenuAction, label)`). **`render_settings_tab`**, **`settings_action_for_index`**, and **`ADMIN_SETTINGS_OPTIONS_COUNT`** / **`USER_SETTINGS_OPTIONS_COUNT`** (via **`.len()`**) all derive from those tables so labels and Enter routing cannot drift. **`enter_handlers.rs`** matches on **`SettingsMenuAction`** after **`settings_action_for_index`**.
 
 ## Compliance Analysis
 
