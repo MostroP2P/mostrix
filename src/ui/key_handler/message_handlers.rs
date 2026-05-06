@@ -28,6 +28,53 @@ fn should_send_cancel_from_invoice_popup(selection: InvoiceNotificationActionSel
     matches!(selection, InvoiceNotificationActionSelection::Cancel)
 }
 
+pub fn submit_add_invoice(
+    app: &mut AppState,
+    ctx: &EnterKeyContext<'_>,
+    order_id: Uuid,
+    invoice_input: String,
+) {
+    if invoice_input.trim().is_empty() {
+        let _ = ctx.order_result_tx.send(OperationResult::Error(
+            "Invoice cannot be empty".to_string(),
+        ));
+        app.mode = role_default_mode(app.user_role);
+        return;
+    }
+
+    // Set waiting mode based on user role.
+    app.pending_post_take_operation_result = None;
+    app.mode = role_waiting_mode(app.user_role);
+
+    let order_result_tx_clone = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let mostro_info = ctx.mostro_info.clone();
+    tokio::spawn(async move {
+        match execute_add_invoice(
+            &order_id,
+            &invoice_input,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = order_result_tx_clone.send(OperationResult::Info(
+                    "Invoice sent successfully".to_string(),
+                ));
+            }
+            Err(e) => {
+                log::error!("Failed to add invoice: {}", e);
+                let _ = order_result_tx_clone.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
+}
+
 fn spawn_cancel_from_notification(
     app: &mut AppState,
     ctx: &EnterKeyContext<'_>,
@@ -213,46 +260,15 @@ pub fn handle_enter_message_notification(
                 spawn_cancel_from_notification(app, ctx, order_id);
                 return;
             }
-            // For AddInvoice, Enter submits the invoice
-            let order_result_tx_clone = ctx.order_result_tx.clone();
-            if !invoice_state.invoice_input.trim().is_empty() {
-                if let Some(order_id) = order_id {
-                    // Set waiting mode based on user role
-                    let default_mode = role_waiting_mode(app.user_role);
-                    app.pending_post_take_operation_result = None;
-                    app.mode = default_mode;
+            let Some(order_id) = order_id else {
+                let _ = ctx
+                    .order_result_tx
+                    .send(OperationResult::Error("No order ID in message".to_string()));
+                app.mode = role_default_mode(app.user_role);
+                return;
+            };
 
-                    // Send invoice to Mostro
-                    let invoice_state_clone = invoice_state.clone();
-                    let pool_clone = ctx.pool.clone();
-                    let client_clone = ctx.client.clone();
-                    let mostro_pubkey = ctx.mostro_pubkey;
-                    let mostro_info = ctx.mostro_info.clone();
-                    tokio::spawn(async move {
-                        match execute_add_invoice(
-                            &order_id,
-                            &invoice_state_clone.invoice_input,
-                            &pool_clone,
-                            &client_clone,
-                            mostro_pubkey,
-                            mostro_info.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                let _ = order_result_tx_clone.send(OperationResult::Info(
-                                    "Invoice sent successfully".to_string(),
-                                ));
-                            }
-                            Err(e) => {
-                                log::error!("Failed to add invoice: {}", e);
-                                let _ = order_result_tx_clone
-                                    .send(OperationResult::Error(e.to_string()));
-                            }
-                        }
-                    });
-                }
-            }
+            submit_add_invoice(app, ctx, order_id, invoice_state.invoice_input.clone());
         }
         Action::PayInvoice => {
             if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {

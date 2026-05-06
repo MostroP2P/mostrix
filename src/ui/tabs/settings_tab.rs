@@ -5,6 +5,50 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsMenuAction {
+    SwitchMode,
+    ChangeMostroPubkey,
+    AddRelay,
+    SetBuyerLnAddress,
+    ClearBuyerLnAddress,
+    AddCurrencyFilter,
+    ClearCurrencyFilters,
+    ViewSeedWords,
+    AddDisputeSolver,
+    ChangeAdminKey,
+    GenerateNewKeys,
+}
+
+pub fn settings_action_for_index(user_role: UserRole, idx: usize) -> Option<SettingsMenuAction> {
+    match user_role {
+        UserRole::Admin => match idx {
+            0 => Some(SettingsMenuAction::SwitchMode),
+            1 => Some(SettingsMenuAction::ChangeMostroPubkey),
+            2 => Some(SettingsMenuAction::AddRelay),
+            3 => Some(SettingsMenuAction::AddCurrencyFilter),
+            4 => Some(SettingsMenuAction::ClearCurrencyFilters),
+            5 => Some(SettingsMenuAction::ViewSeedWords),
+            6 => Some(SettingsMenuAction::AddDisputeSolver),
+            7 => Some(SettingsMenuAction::ChangeAdminKey),
+            8 => Some(SettingsMenuAction::GenerateNewKeys),
+            _ => None,
+        },
+        UserRole::User => match idx {
+            0 => Some(SettingsMenuAction::SwitchMode),
+            1 => Some(SettingsMenuAction::ChangeMostroPubkey),
+            2 => Some(SettingsMenuAction::AddRelay),
+            3 => Some(SettingsMenuAction::SetBuyerLnAddress),
+            4 => Some(SettingsMenuAction::ClearBuyerLnAddress),
+            5 => Some(SettingsMenuAction::AddCurrencyFilter),
+            6 => Some(SettingsMenuAction::ClearCurrencyFilters),
+            7 => Some(SettingsMenuAction::ViewSeedWords),
+            8 => Some(SettingsMenuAction::GenerateNewKeys),
+            _ => None,
+        },
+    }
+}
+
 /// Number of settings options for Admin role
 pub const ADMIN_SETTINGS_OPTIONS_COUNT: usize = 9; // Switch Mode + … + Generate New Keys
 
