@@ -33,6 +33,7 @@ pub fn submit_add_invoice(
     ctx: &EnterKeyContext<'_>,
     order_id: Uuid,
     invoice_input: String,
+    remember_buyer_saved_ln_address_on_success: Option<Uuid>,
 ) {
     if invoice_input.trim().is_empty() {
         let _ = ctx.order_result_tx.send(OperationResult::Error(
@@ -63,9 +64,11 @@ pub fn submit_add_invoice(
         .await
         {
             Ok(_) => {
-                let _ = order_result_tx_clone.send(OperationResult::Info(
-                    "Invoice sent successfully".to_string(),
-                ));
+                let _ = order_result_tx_clone.send(OperationResult::InvoiceSubmitted {
+                    message: "Invoice sent successfully".to_string(),
+                    remember_buyer_saved_ln_address_for_order:
+                        remember_buyer_saved_ln_address_on_success,
+                });
             }
             Err(e) => {
                 log::error!("Failed to add invoice: {}", e);
@@ -268,7 +271,13 @@ pub fn handle_enter_message_notification(
                 return;
             };
 
-            submit_add_invoice(app, ctx, order_id, invoice_state.invoice_input.clone());
+            submit_add_invoice(
+                app,
+                ctx,
+                order_id,
+                invoice_state.invoice_input.clone(),
+                None,
+            );
         }
         Action::PayInvoice => {
             if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {

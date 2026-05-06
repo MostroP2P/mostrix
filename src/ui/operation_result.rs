@@ -16,6 +16,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::ObserverChatError(_) => 8,
         OperationResult::Error(_)
         | OperationResult::Info(_)
+        | OperationResult::InvoiceSubmitted { .. }
         | OperationResult::TradeClosed { .. }
         | OperationResult::OrderHistoryDeleted { .. } => 8,
     };
@@ -171,6 +172,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::Info(message)
+        | OperationResult::InvoiceSubmitted { message, .. }
         | OperationResult::TradeClosed { message, .. }
         | OperationResult::OrderHistoryDeleted { message, .. } => {
             let block = Block::default()

@@ -43,7 +43,6 @@ use crate::ui::key_handler::settings::{
     save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
     validate_ln_address_format,
 };
-use crate::ui::orders::BuyerInvoicePreference;
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
 
@@ -438,12 +437,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     return true;
                 }
 
-                // Persist preference so later AddInvoice popups for this order skip the confirm.
-                app.buyer_invoice_preference
-                    .insert(order_id, BuyerInvoicePreference::UseSavedLnAddress);
-
                 // Auto-submit: send to Mostro immediately (one-Enter flow).
-                submit_add_invoice(app, ctx, order_id, trimmed);
+                // `UseSavedLnAddress` is recorded only after successful send (`InvoiceSubmitted` → main loop).
+                submit_add_invoice(app, ctx, order_id, trimmed, Some(order_id));
             } else {
                 apply_saved_ln_address_invoice_choice(app, notification, false);
             }

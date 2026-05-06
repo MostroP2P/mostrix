@@ -1,6 +1,8 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
-use crate::ui::orders::{strip_new_order_messages_and_clamp_selected, OrderSuccess};
+use crate::ui::orders::{
+    strip_new_order_messages_and_clamp_selected, BuyerInvoicePreference, OrderSuccess,
+};
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
     OperationResult, UiMode, UserMode,
@@ -95,6 +97,17 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     } = result
     {
         remove_many_orders_from_messages_tab(app, &deleted_order_ids);
+        result = OperationResult::Info(message);
+    }
+    if let OperationResult::InvoiceSubmitted {
+        message,
+        remember_buyer_saved_ln_address_for_order,
+    } = result
+    {
+        if let Some(order_id) = remember_buyer_saved_ln_address_for_order {
+            app.buyer_invoice_preference
+                .insert(order_id, BuyerInvoicePreference::UseSavedLnAddress);
+        }
         result = OperationResult::Info(message);
     }
 
