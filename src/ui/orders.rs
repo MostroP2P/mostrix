@@ -65,6 +65,12 @@ pub enum OperationResult {
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
+    /// AddInvoice DM succeeded; optionally persist [`BuyerInvoicePreference::UseSavedLnAddress`]
+    /// for this order after send (main loop normalizes to [`Self::Info`] for display).
+    InvoiceSubmitted {
+        message: String,
+        remember_buyer_saved_ln_address_for_order: Option<uuid::Uuid>,
+    },
     Error(String),
     /// Observer chat loaded successfully from relays.
     ObserverChatLoaded(Vec<crate::ui::chat::DisputeChatMessage>),

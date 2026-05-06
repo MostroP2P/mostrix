@@ -33,14 +33,17 @@ use nostr_sdk::ToBech32;
 use std::collections::HashSet;
 use std::str::FromStr;
 
+use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
+use crate::ui::key_handler::message_handlers::submit_add_invoice;
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
     save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
     validate_ln_address_format,
 };
+use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
@@ -408,7 +411,38 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::ConfirmSavedLnAddressForInvoice(notification, selected_button) => {
-            apply_saved_ln_address_invoice_choice(app, notification, selected_button);
+            if selected_button {
+                let Some(order_id) = notification.order_id else {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "No order ID for AddInvoice".to_string(),
+                    ));
+                    return true;
+                };
+
+                let trimmed = match load_settings_from_disk() {
+                    Ok(s) => s.ln_address.trim().to_string(),
+                    Err(e) => {
+                        log::error!("Failed to load settings from disk: {}", e);
+                        app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                            "Failed to load settings from disk: {}",
+                            e
+                        )));
+                        return true;
+                    }
+                };
+                if trimmed.is_empty() {
+                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                        "No saved Lightning address in settings".to_string(),
+                    ));
+                    return true;
+                }
+
+                // Auto-submit: send to Mostro immediately (one-Enter flow).
+                // `UseSavedLnAddress` is recorded only after successful send (`InvoiceSubmitted` → main loop).
+                submit_add_invoice(app, ctx, order_id, trimmed, Some(order_id));
+            } else {
+                apply_saved_ln_address_invoice_choice(app, notification, false);
+            }
             true
         }
         UiMode::HelpPopup(..) | UiMode::SettingsInstructionsPopup(..) => {
@@ -1078,73 +1112,43 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
     ) {
         // Open key input popup based on selected option
         let key_state = create_key_input_state("");
-
-        match app.selected_settings_option {
-            0 => {
-                handle_mode_switch(app);
-            }
-            1 => {
-                // Add Mostro Pubkey (Common for both roles)
+        match settings_action_for_index(app.user_role, app.selected_settings_option) {
+            Some(SettingsMenuAction::SwitchMode) => handle_mode_switch(app),
+            Some(SettingsMenuAction::ChangeMostroPubkey) => {
                 app.mode = UiMode::AddMostroPubkey(key_state);
             }
-            2 => {
-                // Add Relay (Common for both roles)
-                app.mode = UiMode::AddRelay(key_state);
+            Some(SettingsMenuAction::AddRelay) => app.mode = UiMode::AddRelay(key_state),
+            Some(SettingsMenuAction::SetBuyerLnAddress) => {
+                app.mode = UiMode::AddLnAddress(key_state)
             }
-            n => match app.user_role {
-                UserRole::User => match n {
-                    3 => {
-                        // User only: buyer Lightning address
-                        app.mode = UiMode::AddLnAddress(key_state);
-                    }
-                    4 => {
-                        app.mode = UiMode::ConfirmClearLnAddress(true);
-                    }
-                    5 => {
-                        app.mode = UiMode::AddCurrency(key_state);
-                    }
-                    6 => {
-                        app.mode = UiMode::ConfirmClearCurrencies(true);
-                    }
-                    7 => {
-                        spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
-                        app.mode = UiMode::OperationResult(OperationResult::Info(
-                            "Loading seed words...".to_string(),
-                        ));
-                    }
-                    8 => {
-                        app.mode = UiMode::ConfirmGenerateNewKeys(true);
-                    }
-                    _ => {}
-                },
-                UserRole::Admin => match n {
-                    3 => {
-                        app.mode = UiMode::AddCurrency(key_state);
-                    }
-                    4 => {
-                        app.mode = UiMode::ConfirmClearCurrencies(true);
-                    }
-                    5 => {
-                        spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
-                        app.mode = UiMode::OperationResult(OperationResult::Info(
-                            "Loading seed words...".to_string(),
-                        ));
-                    }
-                    6 => {
-                        app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
-                            key_input: key_state,
-                            permission: SolverPermission::ReadWrite,
-                        }));
-                    }
-                    7 => {
-                        app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
-                    }
-                    8 => {
-                        app.mode = UiMode::ConfirmGenerateNewKeys(true);
-                    }
-                    _ => {}
-                },
-            },
-        }
+            Some(SettingsMenuAction::ClearBuyerLnAddress) => {
+                app.mode = UiMode::ConfirmClearLnAddress(true);
+            }
+            Some(SettingsMenuAction::AddCurrencyFilter) => {
+                app.mode = UiMode::AddCurrency(key_state)
+            }
+            Some(SettingsMenuAction::ClearCurrencyFilters) => {
+                app.mode = UiMode::ConfirmClearCurrencies(true);
+            }
+            Some(SettingsMenuAction::ViewSeedWords) => {
+                spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
+                app.mode = UiMode::OperationResult(OperationResult::Info(
+                    "Loading seed words...".to_string(),
+                ));
+            }
+            Some(SettingsMenuAction::AddDisputeSolver) => {
+                app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
+                    key_input: key_state,
+                    permission: SolverPermission::ReadWrite,
+                }));
+            }
+            Some(SettingsMenuAction::ChangeAdminKey) => {
+                app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            }
+            Some(SettingsMenuAction::GenerateNewKeys) => {
+                app.mode = UiMode::ConfirmGenerateNewKeys(true);
+            }
+            None => {}
+        };
     }
 }

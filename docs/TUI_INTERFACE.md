@@ -76,7 +76,7 @@ Focused on trading and order management.
 - **Orders**: View the global order book.
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`).
+- **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
 - **Create New Order**: Form for publishing new orders.
 
 ### Admin Role
@@ -231,7 +231,7 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
 - **Invoice popups (`NewMessageNotification`)**:
-  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode. If **`settings.toml`** **`ln_address`** is non-empty, **`UiMode::ConfirmSavedLnAddressForInvoice`** may appear first (**YES** / **NO**), listing the saved address; **`BuyerInvoicePreference`** per **`order_id`** (`src/ui/app_state.rs`, `src/ui/orders.rs`) remembers the choice for that trade until **Cancel Order** from the popup removes it (`message_handlers.rs`) or the trade row is torn down (`order_ch_mng.rs`).
+  - `AddInvoice` / `WaitingBuyerInvoice` map to invoice-submit popup mode. If **`settings.toml`** **`ln_address`** is non-empty, **`UiMode::ConfirmSavedLnAddressForInvoice`** may appear first (**YES** / **NO**), listing the saved address; **Left/Right** moves the highlight; **YES + Enter** auto-submits **`AddInvoice`** via **`submit_add_invoice`** (`message_handlers.rs`) without opening the invoice input popup (**`UseSavedLnAddress`** is saved only after the send succeeds — **`OperationResult::InvoiceSubmitted`** in **`order_ch_mng.rs`**). Choose **NO** and press **Enter** to open the manual invoice UI (**`ManualInvoice`**). **Esc** closes the confirm popup without committing YES or NO (**`handle_esc_key`** in `esc_handlers.rs`). **`BuyerInvoicePreference`** per **`order_id`** (`src/ui/app_state.rs`, `src/ui/orders.rs`) remembers the choice for that trade until **Cancel Order** from the popup removes it (`message_handlers.rs`) or the trade row is torn down (`order_ch_mng.rs`).
   - `PayInvoice` / `WaitingSellerToPay` map to payment popup mode.
   - Both popups provide two actions (`Primary` + `Cancel Order`) via Left/Right selection; Enter confirms the selected action.
   - `PayInvoice` keeps copy (`C`) and scroll (`Up/Down`, `PageUp/PageDown`) behavior while adding cancel selection.

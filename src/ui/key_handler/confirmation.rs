@@ -181,10 +181,6 @@ pub fn handle_confirm_key(
             ));
             true
         }
-        UiMode::ConfirmSavedLnAddressForInvoice(notification, _) => {
-            apply_saved_ln_address_invoice_choice(app, notification, true);
-            true
-        }
         UiMode::ConfirmCurrency(currency_string, _) => {
             let default_mode = match app.user_role {
                 UserRole::User => UiMode::UserMode(UserMode::Normal),
