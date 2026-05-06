@@ -420,10 +420,17 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     return true;
                 };
 
-                let trimmed = load_settings_from_disk()
-                    .ok()
-                    .map(|s| s.ln_address.trim().to_string())
-                    .unwrap_or_default();
+                let trimmed = match load_settings_from_disk() {
+                    Ok(s) => s.ln_address.trim().to_string(),
+                    Err(e) => {
+                        log::error!("Failed to load settings from disk: {}", e);
+                        app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                            "Failed to load settings from disk: {}",
+                            e
+                        )));
+                        return true;
+                    }
+                };
                 if trimmed.is_empty() {
                     app.mode = UiMode::OperationResult(OperationResult::Error(
                         "No saved Lightning address in settings".to_string(),
