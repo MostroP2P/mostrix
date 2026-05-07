@@ -190,26 +190,36 @@ pub async fn send_dm(
             dm_helpers::create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
         }
         MessageType::PrivateGiftWrap => {
-            dm_helpers::create_gift_wrap_event(
-                trade_keys,
+            let message = Message::from_json(&payload)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+            let identity_keys = identity_keys.unwrap_or(trade_keys);
+            wrap_message(
+                &message,
                 identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                false,
+                trade_keys,
+                *receiver_pubkey,
+                WrapOptions {
+                    pow,
+                    expiration,
+                    signed: false,
+                },
             )
             .await?
         }
         MessageType::SignedGiftWrap => {
-            dm_helpers::create_gift_wrap_event(
-                trade_keys,
+            let message = Message::from_json(&payload)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+            let identity_keys = identity_keys.unwrap_or(trade_keys);
+            wrap_message(
+                &message,
                 identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                true,
+                trade_keys,
+                *receiver_pubkey,
+                WrapOptions {
+                    pow,
+                    expiration,
+                    signed: true,
+                },
             )
             .await?
         }
