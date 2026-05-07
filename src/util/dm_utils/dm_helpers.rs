@@ -157,7 +157,7 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
     let filter = match options.mode {
         GiftWrapSubscriptionMode::StartupCatchUp => filter_giftwrap_to_recipient(pubkey).limit(1),
         GiftWrapSubscriptionMode::StartupSince(ts) => {
-            let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_u64());
+            let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_secs());
             let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
             filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(since_ts))
         }

@@ -349,11 +349,11 @@ pub async fn parse_dm_events(
                 .unwrap()
                 .timestamp();
 
-            if (created_at.as_u64() as i64) < since_time {
+            if (created_at.as_secs() as i64) < since_time {
                 continue;
             }
         }
-        direct_messages.push((message, created_at.as_u64() as i64, sender));
+        direct_messages.push((message, created_at.as_secs() as i64, sender));
     }
     direct_messages.sort_by(|a, b| a.1.cmp(&b.1));
     direct_messages
@@ -925,7 +925,7 @@ async fn fetch_and_replay_startup_trade_dms(
     } = replay;
 
     let lookback_start = Timestamp::now()
-        .as_u64()
+        .as_secs()
         .saturating_sub(STARTUP_TRADE_DM_LOOKBACK_SECS);
 
     for (order_id, trade_index) in startup_active_orders {

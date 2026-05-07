@@ -171,7 +171,7 @@ pub async fn unwrap_giftwrap_with_shared_key(
 
     Ok((
         inner_event.content,
-        inner_event.created_at.as_u64() as i64,
+        inner_event.created_at.as_secs() as i64,
         inner_event.pubkey,
     ))
 }
@@ -182,7 +182,7 @@ pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
 ) -> Result<Vec<(String, i64, PublicKey)>> {
-    let now = Timestamp::now().as_u64();
+    let now = Timestamp::now().as_secs();
     let seven_days_secs: u64 = 7 * 24 * 60 * 60;
     let wide_since = now.saturating_sub(seven_days_secs);
 
