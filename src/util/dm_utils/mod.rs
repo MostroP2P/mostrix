@@ -189,27 +189,20 @@ pub async fn send_dm(
         MessageType::PrivateDirectMessage => {
             dm_helpers::create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
         }
-        MessageType::PrivateGiftWrap => {
-            dm_helpers::create_gift_wrap_event(
-                trade_keys,
+        MessageType::SignedGiftWrap | MessageType::PrivateGiftWrap => {
+            let message = Message::from_json(&payload)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+            let identity_keys = identity_keys.unwrap_or(trade_keys);
+            wrap_message(
+                &message,
                 identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                false,
-            )
-            .await?
-        }
-        MessageType::SignedGiftWrap => {
-            dm_helpers::create_gift_wrap_event(
                 trade_keys,
-                identity_keys,
-                receiver_pubkey,
-                payload,
-                pow,
-                expiration,
-                true,
+                *receiver_pubkey,
+                WrapOptions {
+                    pow,
+                    expiration,
+                    signed: matches!(message_type, MessageType::SignedGiftWrap),
+                },
             )
             .await?
         }
@@ -360,10 +353,32 @@ pub async fn parse_dm_events(
 }
 
 /// Parse one GiftWrap [`Event`] with the trade key (`since: None`). Shared by relay notifications and startup replay.
+///
+/// When `pre_unwrapped` is set (e.g. after a successful `nip59::extract_rumor`), skips a second decrypt.
 async fn parse_dm_events_single(
     event: &Event,
     trade_keys: &Keys,
+    pre_unwrapped: Option<nip59::UnwrappedGift>,
 ) -> Vec<(Message, i64, PublicKey)> {
+    if let Some(unwrapped_gift) = pre_unwrapped {
+        let (message, _): (Message, Option<String>) =
+            match serde_json::from_str(&unwrapped_gift.rumor.content) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    log::warn!(
+                        "Could not parse message content (event {}): {}",
+                        event.id,
+                        e
+                    );
+                    return Vec::new();
+                }
+            };
+        return vec![(
+            message,
+            unwrapped_gift.rumor.created_at.as_secs() as i64,
+            unwrapped_gift.sender,
+        )];
+    }
     let mut batch = Events::default();
     batch.insert(event.clone());
     parse_dm_events(batch, trade_keys, None).await
@@ -987,10 +1002,10 @@ async fn fetch_and_replay_startup_trade_dms(
 
         let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
         for event in &event_list {
-            if nip59::extract_rumor(&trade_keys, event).await.is_err() {
+            let Ok(unwrapped) = nip59::extract_rumor(&trade_keys, event).await else {
                 continue;
-            }
-            let parsed_messages = parse_dm_events_single(event, &trade_keys).await;
+            };
+            let parsed_messages = parse_dm_events_single(event, &trade_keys, Some(unwrapped)).await;
             if parsed_messages.is_empty() {
                 continue;
             }
@@ -1103,7 +1118,7 @@ async fn resolve_order_for_event(
     event: &Event,
     user: &User,
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
-) -> Option<(Uuid, i64, Keys)> {
+) -> Option<(Uuid, i64, Keys, nip59::UnwrappedGift)> {
     GIFTWRAP_FALLBACK_DECRYPT_TOTAL.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
 
@@ -1127,11 +1142,11 @@ async fn resolve_order_for_event(
             Ok(k) => k,
             Err(_) => continue,
         };
-        if nip59::extract_rumor(&trade_keys, event).await.is_ok() {
+        if let Ok(unwrapped) = nip59::extract_rumor(&trade_keys, event).await {
             let duration_ms = started.elapsed().as_millis() as u64;
             GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
             log_giftwrap_fallback_decrypt_stats(active_count, decrypt_attempts, duration_ms, true);
-            return Some((order_id, trade_index, trade_keys));
+            return Some((order_id, trade_index, trade_keys, unwrapped));
         }
     }
 
@@ -1149,8 +1164,10 @@ async fn resolve_order_for_event(
 /// - route each incoming GiftWrap through two complementary paths:
 ///   1) waiter path: satisfy in-flight `wait_for_dm` calls
 ///   2) tracked-order path: parse and dispatch updates to the order/UI pipeline
-/// - reuse per-event decryptability checks across both paths to avoid duplicate
-///   `nip59::extract_rumor` work for the same `(event_id, trade_pubkey)`
+/// - reuse decryptability checks across both paths for the same incoming GiftWrap
+///   and trade pubkey (`HashMap<PublicKey, bool>` scoped to one notification; the
+///   unknown-subscription fallback reuses the `UnwrappedGift` from `resolve_order_for_event`
+///   so it does not decrypt twice there)
 ///
 /// Lifecycle notes:
 /// - bootstrap subscriptions for already-active orders at startup
@@ -1410,13 +1427,10 @@ pub async fn listen_for_order_messages(
                     // One GiftWrap event can be consumed by:
                     // 1) request/response waiters (`wait_for_dm`) and
                     // 2) tracked order subscriptions (UI/order state pipeline).
-                    // Keep a shared per-event cache so we only test decryptability once per
-                    // (event_id, trade_pubkey), then reuse the result in both paths.
-                    // This avoids duplicate `extract_rumor` calls while preserving behavior.
-                    let event_id = event.id;
-                    // Cache decryptability for this event across both waiter and tracked paths.
-                    // Keep it event-scoped to avoid unbounded growth over runtime.
-                    let mut rumor_cache: HashMap<(EventId, PublicKey), bool> = HashMap::new();
+                    // Shared cache for this single incoming GiftWrap: decryptability is keyed only
+                    // by trade pubkey; `event.id` is fixed for the whole handler block.
+                    // This avoids duplicate `extract_rumor` calls between waiter and tracked paths.
+                    let mut rumor_cache: HashMap<PublicKey, bool> = HashMap::new();
 
                     if !pending_waiters.is_empty() {
                         let mut still_pending: Vec<PendingDmWaiter> =
@@ -1429,8 +1443,7 @@ pub async fn listen_for_order_messages(
                             if waiter.response_tx.is_closed() {
                                 continue;
                             }
-                            // Cache key: this event + this waiter's trade pubkey.
-                            let key = (event_id, waiter.trade_keys.public_key());
+                            let key = waiter.trade_keys.public_key();
                             let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
                                 *boolean
                             } else {
@@ -1473,7 +1486,7 @@ pub async fn listen_for_order_messages(
                         };
                         // Reuse per-event decryptability result if waiter path already checked
                         // this same trade pubkey.
-                        let key = (event_id, trade_keys.public_key());
+                        let key = trade_keys.public_key();
                         let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
                             *boolean
                         } else {
@@ -1486,7 +1499,8 @@ pub async fn listen_for_order_messages(
                             continue;
                         }
 
-                        let parsed_messages = parse_dm_events_single(&event, &trade_keys).await;
+                        let parsed_messages =
+                            parse_dm_events_single(&event, &trade_keys, None).await;
                         if parsed_messages.is_empty() {
                             continue;
                         }
@@ -1516,10 +1530,15 @@ pub async fn listen_for_order_messages(
                             &dropped_user_history_order_ids,
                         )
                         .await;
-                    } else if let Some((order_id, trade_index, trade_keys)) =
+                    } else if let Some((order_id, trade_index, trade_keys, unwrapped)) =
                         resolve_order_for_event(&event, &user, &active_order_trade_indices).await
                     {
-                        let parsed_messages = parse_dm_events_single(&event, &trade_keys).await;
+                        let parsed_messages = parse_dm_events_single(
+                            &event,
+                            &trade_keys,
+                            Some(unwrapped),
+                        )
+                        .await;
                         if parsed_messages.is_empty() {
                             continue;
                         }

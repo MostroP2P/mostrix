@@ -77,14 +77,6 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
     }
 }
 
-pub(super) fn create_expiration_tags(expiration: Option<Timestamp>) -> Tags {
-    let mut tags: Vec<Tag> = Vec::with_capacity(1 + usize::from(expiration.is_some()));
-    if let Some(timestamp) = expiration {
-        tags.push(Tag::expiration(timestamp));
-    }
-    Tags::from_list(tags)
-}
-
 pub(super) fn determine_message_type(to_user: bool, private: bool) -> MessageType {
     match (to_user, private) {
         (true, _) => MessageType::PrivateDirectMessage,
