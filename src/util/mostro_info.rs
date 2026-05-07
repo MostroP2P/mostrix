@@ -12,7 +12,7 @@ const INSTANCE_INFO_STALE_SECS: u64 = 604_800;
 
 /// Human-readable age string for a timestamp (e.g. "2 hours ago", "5 days ago").
 pub fn format_instance_info_age(ts: &Timestamp) -> String {
-    let age_secs = Timestamp::now().as_u64().saturating_sub(ts.as_u64());
+    let age_secs = Timestamp::now().as_secs().saturating_sub(ts.as_secs());
     if age_secs < 60 {
         "just now".to_string()
     } else if age_secs < 3600 {
@@ -61,7 +61,7 @@ impl MostroInstanceInfo {
     pub fn is_stale(&self) -> bool {
         self.last_updated
             .map(|t| {
-                let age_seconds = Timestamp::now().as_u64().saturating_sub(t.as_u64());
+                let age_seconds = Timestamp::now().as_secs().saturating_sub(t.as_secs());
                 age_seconds > INSTANCE_INFO_STALE_SECS
             })
             .unwrap_or(true)
