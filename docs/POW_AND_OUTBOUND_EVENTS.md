@@ -16,10 +16,6 @@ This document describes how Mostrix applies **NIP-13 proof-of-work** to events i
 
 If instance info has not been loaded yet (e.g. slow startup), PoW may be **0** until a successful fetch or manual refresh (Mostro Info tab / background refresh tasks). Users may see rejects from strict instances until 38385 is cached.
 
-## Private direct messages (NIP-17 / kind 14)
-
-[`create_private_dm_event`](../src/util/dm_utils/dm_helpers.rs) builds the published event with `EventBuilder::new(Kind::PrivateDirectMessage, …).pow(pow).…` so the **event that hits relays** is mined to the required difficulty.
-
 ## Gift Wrap (NIP-59 / kind 1059)
 
 Mostro protocol traffic uses encrypted Gift Wraps. The **rust-nostr** helper `EventBuilder::gift_wrap` composes seal → wrap but, in the versions Mostrix uses, does **not** apply PoW to the **outer** Gift Wrap event (the one relays and daemons index).

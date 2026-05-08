@@ -1,9 +1,4 @@
 // Helper functions for direct message operations
-use anyhow::Result;
-use base64::engine::general_purpose;
-use base64::Engine;
-use nip44::v2::encrypt_to_bytes;
-use nip44::v2::ConversationKey;
 use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -28,24 +23,6 @@ pub(crate) struct GiftWrapOrderSubscription {
     pub(crate) error_label: &'static str,
     pub(crate) info_label: Option<&'static str>,
     pub(crate) mode: GiftWrapSubscriptionMode,
-}
-
-/// Create a private direct message event
-pub(crate) async fn create_private_dm_event(
-    trade_keys: &Keys,
-    receiver_pubkey: &PublicKey,
-    payload: String,
-    pow: u8,
-) -> Result<nostr_sdk::Event> {
-    let ck = ConversationKey::derive(trade_keys.secret_key(), receiver_pubkey)?;
-    let encrypted_content = encrypt_to_bytes(&ck, payload.as_bytes())?;
-    let b64decoded_content = general_purpose::STANDARD.encode(encrypted_content);
-    Ok(
-        EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, b64decoded_content)
-            .pow(pow)
-            .tag(Tag::public_key(*receiver_pubkey))
-            .sign_with_keys(trade_keys)?,
-    )
 }
 
 /// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
