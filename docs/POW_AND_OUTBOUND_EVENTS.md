@@ -26,7 +26,10 @@ Mostrix therefore:
 2. Builds and signs the **seal** with `EventBuilder::seal` + `sign`.
 3. Wraps with a local [`gift_wrap_from_seal_with_pow`](../src/util/dm_utils/dm_helpers.rs) that mirrors upstream `gift_wrap_from_seal` (NIP-44 encrypt seal JSON, kind 1059, tweaked `created_at`, ephemeral keys) but adds **`.pow(pow)`** on the **Gift Wrap** `EventBuilder` **before** `sign_with_keys`, so the **published** envelope id satisfies instance PoW policy.
 
-Admin dispute chat gift wraps use the same instance-derived PoW via [`send_admin_chat_message_via_shared_key`](../src/util/chat_utils.rs) and `nostr_pow_from_instance`.
+### Chat vs protocol PoW
+
+- **Protocol DMs toward Mostro**: use instance-derived PoW (`nostr_pow_from_instance`) and apply it to the **published** outer GiftWrap event (see above; entry point is [`send_dm`](../src/util/dm_utils/mod.rs)).
+- **Shared-key chat messages** (admin dispute chat, user order chat, observer chat): are plain relay-scoped GiftWraps wrapped via `mostro_core::chat` (`wrap_chat_message`) and **do not apply PoW**.
 
 ## Call sites (high level)
 
