@@ -34,7 +34,6 @@ use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
     should_strictly_advance_status,
 };
-use crate::util::types::{determine_message_type, MessageType};
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -179,34 +178,25 @@ pub async fn send_dm(
     receiver_pubkey: &PublicKey,
     payload: String,
     expiration: Option<Timestamp>,
-    to_user: bool,
+    _to_user: bool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     let pow = nostr_pow_from_instance(mostro_instance);
-    let message_type = determine_message_type(to_user, false);
-
-    let event = match message_type {
-        MessageType::PrivateDirectMessage => {
-            dm_helpers::create_private_dm_event(trade_keys, receiver_pubkey, payload, pow).await?
-        }
-        MessageType::SignedGiftWrap | MessageType::PrivateGiftWrap => {
-            let message = Message::from_json(&payload)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
-            let identity_keys = identity_keys.unwrap_or(trade_keys);
-            wrap_message(
-                &message,
-                identity_keys,
-                trade_keys,
-                *receiver_pubkey,
-                WrapOptions {
-                    pow,
-                    expiration,
-                    signed: matches!(message_type, MessageType::SignedGiftWrap),
-                },
-            )
-            .await?
-        }
-    };
+    let message = Message::from_json(&payload)
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+    let identity_keys = identity_keys.unwrap_or(trade_keys);
+    let event = wrap_message(
+        &message,
+        identity_keys,
+        trade_keys,
+        *receiver_pubkey,
+        WrapOptions {
+            pow,
+            expiration,
+            signed: true,
+        },
+    )
+    .await?;
 
     client.send_event(&event).await?;
     Ok(())

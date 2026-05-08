@@ -11,13 +11,6 @@ pub enum ListKind {
     PrivateDirectMessagesUser,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum MessageType {
-    PrivateDirectMessage,
-    PrivateGiftWrap,
-    SignedGiftWrap,
-}
-
 #[derive(Clone, Debug)]
 pub enum Event {
     SmallOrder(SmallOrder),
@@ -74,13 +67,5 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
             "Too many requests - please wait and try again".to_string()
         }
         CantDoReason::NotAuthorized => "Not authorized to perform this action".to_string(),
-    }
-}
-
-pub(super) fn determine_message_type(to_user: bool, private: bool) -> MessageType {
-    match (to_user, private) {
-        (true, _) => MessageType::PrivateDirectMessage,
-        (false, true) => MessageType::PrivateGiftWrap,
-        (false, false) => MessageType::SignedGiftWrap,
     }
 }
