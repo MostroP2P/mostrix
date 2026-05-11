@@ -48,9 +48,15 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
     let Some(order_id) = relay_order.id else {
         return;
     };
-    let Ok(row) = Order::get_by_id(pool, &order_id.to_string()).await else {
-        return;
+
+    let row = match Order::get_by_id(pool, &order_id.to_string()).await {
+        Ok(row) => row,
+        Err(e) => {
+            log::warn!("Failed to get order by id: {}", e);
+            return;
+        }
     };
+
     let current = row.status.as_deref().and_then(|s| Status::from_str(s).ok());
     let kind = relay_order.kind.or_else(|| {
         row.kind
@@ -73,10 +79,12 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::SqlitePool;
+    use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
     async fn test_pool() -> SqlitePool {
-        SqlitePool::connect("sqlite::memory:")
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool")
     }
@@ -210,5 +218,12 @@ mod tests {
         reconcile_terminal_order_statuses_from_relay(&pool, &relay_latest)
             .await
             .unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orders WHERE id = ?")
+            .bind(oid.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
     }
 }
