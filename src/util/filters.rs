@@ -11,11 +11,17 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
     Filter::new().pubkey(pubkey).kind(nostr_sdk::Kind::GiftWrap)
 }
 
-/// Create a filter for events from the last 7 days
-pub fn create_seven_days_filter(kind: u16, pubkey: PublicKey) -> Result<Filter> {
+/// Relay fetch cap for Mostro-published [`Kind::Custom`] order/dispute list snapshots.
+pub const MOSTRO_LIST_FETCH_EVENT_LIMIT: usize = 500;
+
+/// Build a fetch filter for Mostro list snapshots: events authored by `pubkey`, a given custom
+/// `kind`, and at most [`MOSTRO_LIST_FETCH_EVENT_LIMIT`] results.
+///
+/// There is **no** `since` time window; relay ordering decides which events fall inside the limit.
+pub fn create_mostro_list_fetch_filter(kind: u16, pubkey: PublicKey) -> Result<Filter> {
     Ok(Filter::new()
         .author(pubkey)
-        .limit(50)
+        .limit(MOSTRO_LIST_FETCH_EVENT_LIMIT)
         .kind(nostr_sdk::Kind::Custom(kind)))
 }
 
@@ -26,8 +32,8 @@ pub fn create_filter(
     _since: Option<&i64>,
 ) -> Result<Filter> {
     match list_kind {
-        ListKind::Orders => create_seven_days_filter(NOSTR_ORDER_EVENT_KIND, pubkey),
-        ListKind::Disputes => create_seven_days_filter(NOSTR_DISPUTE_EVENT_KIND, pubkey),
+        ListKind::Orders => create_mostro_list_fetch_filter(NOSTR_ORDER_EVENT_KIND, pubkey),
+        ListKind::Disputes => create_mostro_list_fetch_filter(NOSTR_DISPUTE_EVENT_KIND, pubkey),
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
     }
 }

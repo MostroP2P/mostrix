@@ -8,6 +8,7 @@ mod execute_send_msg;
 mod execute_take_dispute;
 mod fetch_scheduler;
 mod helper;
+mod relay_order_db_reconcile;
 mod send_new_order;
 mod take_order;
 
@@ -24,10 +25,14 @@ pub use fetch_scheduler::{
     start_fetch_scheduler, FetchSchedulerResult,
 };
 pub use helper::{
-    dispute_from_tags, fetch_events_list, get_disputes, get_orders,
-    inferred_status_from_trade_action, map_action_to_status, order_from_tags,
-    parse_disputes_events, parse_orders_events, should_apply_status_transition,
-    should_strictly_advance_status, validate_range_amount,
+    aggregate_latest_orders_by_id, dispute_from_tags, fetch_events_list, fetch_mostro_order_events,
+    get_disputes, get_orders, inferred_status_from_trade_action, map_action_to_status,
+    order_from_tags, parse_disputes_events, parse_orders_events, pending_orders_for_book,
+    should_apply_status_transition, should_strictly_advance_status, validate_range_amount,
+};
+pub use relay_order_db_reconcile::{
+    reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
+    run_relay_order_db_reconcile_once,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;

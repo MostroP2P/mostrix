@@ -27,7 +27,10 @@ pub use fatal::{
     catch_unwind_request_fatal_restart, fatal_requested, install_background_panic_hook,
     request_fatal_restart, set_fatal_error_tx,
 };
-pub use filters::{create_filter, create_seven_days_filter, filter_giftwrap_to_recipient};
+pub use filters::{
+    create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
+    MOSTRO_LIST_FETCH_EVENT_LIMIT,
+};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,
     mostro_info_from_tags, nostr_pow_from_instance, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
