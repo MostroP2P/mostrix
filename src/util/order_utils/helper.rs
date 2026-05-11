@@ -121,7 +121,7 @@ fn status_phase_rank_for_actor(
     }
 }
 
-fn is_terminal_trade_status(status: Status) -> bool {
+pub(crate) fn is_terminal_trade_status(status: Status) -> bool {
     matches!(
         status,
         Status::Canceled
@@ -291,17 +291,13 @@ pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
     disputes_list
 }
 
-/// Parse orders from events
-pub fn parse_orders_events(
-    events: Events,
-    currencies: Option<Vec<String>>,
-    status: Option<Status>,
-    kind: Option<mostro_core::order::Kind>,
-) -> Vec<SmallOrder> {
+/// Latest [`SmallOrder`] per order id from Mostro nostr order events (newest event wins).
+///
+/// Does not apply currency, status, or kind filters — use [`parse_orders_events`] for that.
+pub fn aggregate_latest_orders_by_id(events: &Events) -> HashMap<Uuid, SmallOrder> {
     let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
 
     for event in events.iter() {
-        // Get order from tags
         let mut order = match order_from_tags(event.tags.clone()) {
             Ok(o) => o,
             Err(e) => {
@@ -309,7 +305,6 @@ pub fn parse_orders_events(
                 continue;
             }
         };
-        // Get order id
         let order_id = match order.id {
             Some(id) => id,
             None => {
@@ -317,14 +312,11 @@ pub fn parse_orders_events(
                 continue;
             }
         };
-        // Check if order kind is none
         if order.kind.is_none() {
             log::info!("Order kind is none");
             continue;
         }
-        // Set created at
         order.created_at = Some(event.created_at.as_secs() as i64);
-        // Update latest order by id
         latest_by_id
             .entry(order_id)
             .and_modify(|existing| {
@@ -336,6 +328,18 @@ pub fn parse_orders_events(
             })
             .or_insert(order);
     }
+
+    latest_by_id
+}
+
+/// Parse orders from events
+pub fn parse_orders_events(
+    events: Events,
+    currencies: Option<Vec<String>>,
+    status: Option<Status>,
+    kind: Option<mostro_core::order::Kind>,
+) -> Vec<SmallOrder> {
+    let latest_by_id = aggregate_latest_orders_by_id(&events);
 
     let mut requested: Vec<SmallOrder> = latest_by_id
         .into_values()
@@ -359,6 +363,41 @@ pub fn parse_orders_events(
     requested
 }
 
+/// Fetch raw Mostro order-kind events from relays (same filter as [`fetch_events_list`] for orders).
+///
+/// Relay queries are capped (see [`crate::util::filters::MOSTRO_LIST_FETCH_EVENT_LIMIT`]); very old
+/// order updates may not be included in the snapshot.
+pub async fn fetch_mostro_order_events(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+) -> Result<Events> {
+    let filters = create_filter(ListKind::Orders, mostro_pubkey, None)?;
+    Ok(client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?)
+}
+
+/// Pending listings for the public order book from an aggregated relay snapshot.
+///
+/// Applies the same currency rules as [`parse_orders_events`] when `status` is pending-only:
+/// empty `currencies` list means no filter; `None` means no filter.
+pub fn pending_orders_for_book(
+    latest: &HashMap<Uuid, SmallOrder>,
+    currencies: Option<Vec<String>>,
+) -> Vec<SmallOrder> {
+    let mut requested: Vec<SmallOrder> = latest
+        .values()
+        .filter(|o| {
+            o.status == Some(Status::Pending)
+                && currencies
+                    .as_ref()
+                    .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
+                    .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    requested.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    requested
+}
+
 /// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
 pub async fn fetch_events_list(
     list_kind: ListKind,
@@ -371,8 +410,7 @@ pub async fn fetch_events_list(
 ) -> Result<Vec<Event>> {
     match list_kind {
         ListKind::Orders => {
-            let filters = create_filter(list_kind, mostro_pubkey, None)?;
-            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
+            let fetched_events = fetch_mostro_order_events(client, mostro_pubkey).await?;
             let orders = parse_orders_events(fetched_events, currencies, status, kind);
             Ok(orders.into_iter().map(Event::SmallOrder).collect())
         }
@@ -394,29 +432,13 @@ pub async fn get_orders(
     status: Option<Status>,
     currencies: Option<Vec<String>>,
 ) -> Result<Vec<SmallOrder>> {
-    let fetched_events = fetch_events_list(
-        ListKind::Orders,
-        status,
+    let fetched_events = fetch_mostro_order_events(client, mostro_pubkey).await?;
+    Ok(parse_orders_events(
+        fetched_events,
         currencies,
+        status,
         None,
-        client,
-        mostro_pubkey,
-        None,
-    )
-    .await?;
-
-    let orders: Vec<SmallOrder> = fetched_events
-        .into_iter()
-        .filter_map(|event| {
-            if let Event::SmallOrder(order) = event {
-                Some(order)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(orders)
+    ))
 }
 
 /// Fetch disputes from the Mostro network
@@ -447,6 +469,30 @@ pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<V
     Ok(disputes)
 }
 
+/// Fetch the latest [`SmallOrder`] for one order id from relays (author + custom order kind + `d` tag).
+///
+/// Uses `limit(10)` and picks the event with the greatest [`Event::created_at`] so relays that return
+/// multiple revisions for the same identifier still resolve to the newest snapshot.
+pub async fn fetch_small_order_by_id_from_relay(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    order_id: Uuid,
+) -> Result<Option<SmallOrder>> {
+    let filter = Filter::new()
+        .author(mostro_pubkey)
+        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+        .identifier(order_id.to_string())
+        .limit(10);
+    let events = client
+        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay by id: {}", e))?;
+    let Some(best) = events.iter().max_by_key(|e| e.created_at) else {
+        return Ok(None);
+    };
+    Ok(Some(order_from_tags(best.tags.clone())?))
+}
+
 /// Fetch a single order's fiat code from the relay by order id (identifier "d" tag).
 /// Used when the order is not in the local DB (e.g. admin taking a dispute for an order they did not create).
 pub async fn fetch_order_fiat_from_relay(
@@ -454,22 +500,15 @@ pub async fn fetch_order_fiat_from_relay(
     mostro_pubkey: PublicKey,
     order_id: Uuid,
 ) -> Result<Option<String>> {
-    let filter = Filter::new()
-        .author(mostro_pubkey)
-        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
-        .identifier(order_id.to_string())
-        .limit(1);
-    let events = client
-        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay: {}", e))?;
-    let event = match events.iter().next() {
-        Some(ev) => ev,
-        None => return Ok(None),
-    };
-    let order = order_from_tags(event.tags.clone())?;
-    let fiat = order.fiat_code;
-    Ok(if fiat.is_empty() { None } else { Some(fiat) })
+    let order = fetch_small_order_by_id_from_relay(client, mostro_pubkey, order_id).await?;
+    Ok(order.and_then(|o| {
+        let fiat = o.fiat_code;
+        if fiat.is_empty() {
+            None
+        } else {
+            Some(fiat)
+        }
+    }))
 }
 
 /// Build My Trades static header for one trade (maker or taker).
@@ -557,8 +596,44 @@ pub(super) fn handle_mostro_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{should_apply_status_transition, should_strictly_advance_status};
+    use super::{
+        is_terminal_trade_status, should_apply_status_transition, should_strictly_advance_status,
+    };
+    use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
     use mostro_core::prelude::Status;
+    use std::str::FromStr;
+
+    #[test]
+    fn terminal_order_history_statuses_match_is_terminal_trade_status() {
+        let terminal_variants = [
+            Status::Success,
+            Status::Canceled,
+            Status::CanceledByAdmin,
+            Status::SettledByAdmin,
+            Status::CompletedByAdmin,
+            Status::Expired,
+            Status::CooperativelyCanceled,
+        ];
+        for s in terminal_variants {
+            assert!(
+                is_terminal_trade_status(s),
+                "test variant list must stay aligned with is_terminal_trade_status"
+            );
+            let display = s.to_string();
+            assert!(
+                TERMINAL_ORDER_HISTORY_STATUSES.contains(&display.as_str()),
+                "Status::to_string() for {s:?} must appear in TERMINAL_ORDER_HISTORY_STATUSES for targeted reconcile SQL"
+            );
+        }
+        for &kebab in TERMINAL_ORDER_HISTORY_STATUSES {
+            let parsed =
+                Status::from_str(kebab).expect("TERMINAL_ORDER_HISTORY_STATUSES must parse");
+            assert!(
+                is_terminal_trade_status(parsed),
+                "{kebab} in TERMINAL_ORDER_HISTORY_STATUSES must be terminal for relay reconcile"
+            );
+        }
+    }
 
     #[test]
     fn buy_maker_blocks_waiting_payment_downgrade() {

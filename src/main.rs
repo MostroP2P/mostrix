@@ -25,6 +25,7 @@ use crate::util::{
     handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
     install_background_panic_hook, listen_for_order_messages,
     order_utils::{
+        run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         spawn_admin_chat_fetch, spawn_user_order_chat_fetch, start_fetch_scheduler,
         validate_range_amount, FetchSchedulerResult,
     },
@@ -245,7 +246,12 @@ async fn main() -> Result<(), anyhow::Error> {
         disputes,
         mut order_task,
         mut dispute_task,
-    } = start_fetch_scheduler(client.clone(), Arc::clone(&current_mostro_pubkey), settings);
+    } = start_fetch_scheduler(
+        client.clone(),
+        Arc::clone(&current_mostro_pubkey),
+        settings,
+        pool.clone(),
+    );
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
@@ -301,6 +307,22 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Load admin disputes at startup (only when role is admin)
     load_admin_disputes_at_startup(&pool, &mut app).await;
+    if relays_reachable {
+        if let Err(e) = run_relay_order_db_reconcile_once(&client, &pool, mostro_pubkey).await {
+            log::warn!("Startup relay order DB reconcile failed: {}", e);
+        }
+        let startup_targeted_cursor = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        if let Err(e) = run_targeted_relay_order_db_reconcile_tick(
+            &client,
+            &pool,
+            mostro_pubkey,
+            &startup_targeted_cursor,
+        )
+        .await
+        {
+            log::warn!("Startup targeted relay order DB reconcile failed: {}", e);
+        }
+    }
     load_user_order_chats_at_startup(&client, &pool, &mut app).await;
 
     // Spawn background task to listen for messages on active orders

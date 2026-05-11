@@ -15,8 +15,16 @@ use crate::ui::{
 };
 use crate::util::catch_unwind_request_fatal_restart;
 use crate::util::chat_utils::{fetch_admin_chat_updates, fetch_user_order_chat_updates};
+use sqlx::SqlitePool;
 
-use super::{get_disputes, get_orders};
+use super::get_disputes;
+use super::helper::{
+    aggregate_latest_orders_by_id, fetch_mostro_order_events, pending_orders_for_book,
+};
+use super::relay_order_db_reconcile::{
+    reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
+    run_targeted_relay_order_db_reconcile_tick,
+};
 
 /// Result of starting the fetch scheduler
 /// Contains shared state for orders and disputes that are periodically updated
@@ -120,6 +128,7 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
 ///
 /// * `client` - Nostr client for fetching events
 /// * `mostro_pubkey` - Public key of the Mostro daemon
+/// * `pool` - SQLite pool used to align local order rows with relay terminal statuses
 ///
 /// # Returns
 ///
@@ -128,6 +137,7 @@ pub fn start_fetch_scheduler(
     client: Client,
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,
     settings: &Settings,
+    pool: SqlitePool,
 ) -> FetchSchedulerResult {
     let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
     let disputes: Arc<Mutex<Vec<Dispute>>> = Arc::new(Mutex::new(Vec::new()));
@@ -138,6 +148,7 @@ pub fn start_fetch_scheduler(
         Arc::clone(&orders),
         Arc::clone(&disputes),
         settings,
+        pool,
     );
 
     FetchSchedulerResult {
@@ -158,10 +169,12 @@ pub fn spawn_fetch_scheduler_loops(
     orders: Arc<Mutex<Vec<SmallOrder>>>,
     disputes: Arc<Mutex<Vec<Dispute>>>,
     settings: &Settings,
+    pool: SqlitePool,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     // Spawn task to periodically fetch orders
     let orders_clone = Arc::clone(&orders);
     let client_for_orders = client.clone();
+    let pool_for_orders = pool.clone();
     let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey);
     let reloaded_settings = settings.clone();
     let order_task = tokio::spawn(async move {
@@ -198,6 +211,7 @@ pub fn spawn_fetch_scheduler_loops(
                 Instant::now(),
                 Duration::from_secs(RECONCILIATION_INTERVAL_SECS),
             );
+            let targeted_reconcile_cursor = Arc::new(Mutex::new(0usize));
             loop {
                 tokio::select! {
                     _ = refresh_interval.tick() => {
@@ -218,28 +232,60 @@ pub fn spawn_fetch_scheduler_loops(
                             }
                         };
 
-                        if let Ok(fetched_orders) = get_orders(
+                        match fetch_mostro_order_events(
                             &client_for_orders,
                             mostro_pubkey_for_orders,
-                            Some(Status::Pending),
-                            Some(currencies),
                         )
                         .await
                         {
-                            let mut orders_lock = match orders_clone.lock() {
-                                Ok(g) => g,
-                                Err(e) => {
-                                    crate::util::request_fatal_restart(format!(
-                                        "Mostrix encountered an internal error while reconciling orders (poisoned orders lock: {e}). Please restart the app."
-                                    ));
-                                    return;
+                            Ok(events) => {
+                                let latest_map = aggregate_latest_orders_by_id(&events);
+                                if let Err(e) = reconcile_terminal_order_statuses_from_relay(
+                                    &pool_for_orders,
+                                    &latest_map,
+                                )
+                                .await
+                                {
+                                    log::warn!(
+                                        "[orders_reconcile] relay DB status reconcile failed: {}",
+                                        e
+                                    );
                                 }
-                            };
-                            orders_lock.clear();
-                            orders_lock.extend(fetched_orders);
-                            log::debug!(
-                                "[orders_reconcile] refreshed pending orders count={}",
-                                orders_lock.len()
+                                let fetched_orders =
+                                    pending_orders_for_book(&latest_map, Some(currencies));
+                                let mut orders_lock = match orders_clone.lock() {
+                                    Ok(g) => g,
+                                    Err(e) => {
+                                        crate::util::request_fatal_restart(format!(
+                                            "Mostrix encountered an internal error while reconciling orders (poisoned orders lock: {e}). Please restart the app."
+                                        ));
+                                        return;
+                                    }
+                                };
+                                orders_lock.clear();
+                                orders_lock.extend(fetched_orders);
+                                log::debug!(
+                                    "[orders_reconcile] refreshed pending orders count={}",
+                                    orders_lock.len()
+                                );
+                            }
+                            Err(e) => log::warn!(
+                                "[orders_reconcile] failed to fetch order events: {}",
+                                e
+                            ),
+                        }
+
+                        if let Err(e) = run_targeted_relay_order_db_reconcile_tick(
+                            &client_for_orders,
+                            &pool_for_orders,
+                            mostro_pubkey_for_orders,
+                            &targeted_reconcile_cursor,
+                        )
+                        .await
+                        {
+                            log::warn!(
+                                "[orders_reconcile_targeted] relay DB status reconcile failed: {}",
+                                e
                             );
                         }
                     }
@@ -253,13 +299,13 @@ pub fn spawn_fetch_scheduler_loops(
                         }
                         let mut one = Events::default();
                         one.insert(event);
+                        let latest_live = aggregate_latest_orders_by_id(&one);
+                        for relay_order in latest_live.values() {
+                            reconcile_one_order_if_terminal(&pool_for_orders, relay_order).await;
+                        }
                         let currencies = reloaded_settings.currencies_filter.clone();
-                        let mut parsed = super::parse_orders_events(
-                            one,
-                            Some(currencies),
-                            None,
-                            None,
-                        );
+                        let mut parsed =
+                            super::parse_orders_events(one, Some(currencies), None, None);
                         log::debug!(
                             "[orders_live] received order event, parsed_candidates={}",
                             parsed.len()

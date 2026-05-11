@@ -218,6 +218,7 @@ pub async fn apply_pending_key_reload(
                         Arc::clone(&orders),
                         Arc::clone(&disputes),
                         &latest_settings,
+                        pool.clone(),
                     );
                     *order_fetch_task = o;
                     *dispute_fetch_task = d;
@@ -381,6 +382,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
         Arc::clone(&orders),
         Arc::clone(&disputes),
         &latest,
+        pool.clone(),
     );
     *order_fetch_task = o;
     *dispute_fetch_task = d;
@@ -553,6 +555,7 @@ pub async fn reload_runtime_session_after_reconnect(
         Arc::clone(&ctx.orders),
         Arc::clone(&ctx.disputes),
         ctx.settings,
+        ctx.pool.clone(),
     );
     *ctx.order_fetch_task = o;
     *ctx.dispute_fetch_task = d;
