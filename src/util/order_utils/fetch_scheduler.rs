@@ -23,6 +23,7 @@ use super::helper::{
 };
 use super::relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
+    run_targeted_relay_order_db_reconcile_tick,
 };
 
 /// Result of starting the fetch scheduler
@@ -210,6 +211,7 @@ pub fn spawn_fetch_scheduler_loops(
                 Instant::now(),
                 Duration::from_secs(RECONCILIATION_INTERVAL_SECS),
             );
+            let targeted_reconcile_cursor = Arc::new(Mutex::new(0usize));
             loop {
                 tokio::select! {
                     _ = refresh_interval.tick() => {
@@ -271,6 +273,20 @@ pub fn spawn_fetch_scheduler_loops(
                                 "[orders_reconcile] failed to fetch order events: {}",
                                 e
                             ),
+                        }
+
+                        if let Err(e) = run_targeted_relay_order_db_reconcile_tick(
+                            &client_for_orders,
+                            &pool_for_orders,
+                            mostro_pubkey_for_orders,
+                            &targeted_reconcile_cursor,
+                        )
+                        .await
+                        {
+                            log::warn!(
+                                "[orders_reconcile_targeted] relay DB status reconcile failed: {}",
+                                e
+                            );
                         }
                     }
                     notification = notifications.recv() => {

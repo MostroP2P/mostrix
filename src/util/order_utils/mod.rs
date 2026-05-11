@@ -32,7 +32,8 @@ pub use helper::{
 };
 pub use relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
-    run_relay_order_db_reconcile_once,
+    run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
+    TARGETED_RELAY_RECONCILE_MAX_PER_TICK,
 };
 pub use send_new_order::send_new_order;
 pub use take_order::take_order;

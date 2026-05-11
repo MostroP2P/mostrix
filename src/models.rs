@@ -557,6 +557,27 @@ impl Order {
         Ok(rows)
     }
 
+    /// Order UUIDs (as strings) that may still need a relay terminal status, for targeted reconcile.
+    ///
+    /// Rows must have persisted trade keys. Status is compared case-insensitively against
+    /// [`TERMINAL_ORDER_HISTORY_STATUSES`] (includes `success`, unlike [`TERMINAL_DM_STATUSES`]).
+    pub async fn list_ids_for_targeted_relay_reconcile(pool: &SqlitePool) -> Result<Vec<String>> {
+        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+            "SELECT id FROM orders WHERE trade_keys IS NOT NULL AND trade_keys != '' \
+             AND id IS NOT NULL AND id != '' \
+             AND (status IS NULL OR lower(status) NOT IN (",
+        );
+        {
+            let mut separated = qb.separated(", ");
+            for s in TERMINAL_ORDER_HISTORY_STATUSES {
+                separated.push_bind(*s);
+            }
+        }
+        qb.push(")) ORDER BY id");
+        let rows = qb.build_query_scalar::<String>().fetch_all(pool).await?;
+        Ok(rows)
+    }
+
     /// Fetches all locally-known user trade rows (maker + taker history) with persisted trade keys.
     pub async fn get_user_history_orders(pool: &SqlitePool) -> Result<Vec<Order>> {
         let rows = sqlx::query_as::<_, Order>(

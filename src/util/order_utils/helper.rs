@@ -469,6 +469,30 @@ pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<V
     Ok(disputes)
 }
 
+/// Fetch the latest [`SmallOrder`] for one order id from relays (author + custom order kind + `d` tag).
+///
+/// Uses `limit(10)` and picks the event with the greatest [`Event::created_at`] so relays that return
+/// multiple revisions for the same identifier still resolve to the newest snapshot.
+pub async fn fetch_small_order_by_id_from_relay(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    order_id: Uuid,
+) -> Result<Option<SmallOrder>> {
+    let filter = Filter::new()
+        .author(mostro_pubkey)
+        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+        .identifier(order_id.to_string())
+        .limit(10);
+    let events = client
+        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay by id: {}", e))?;
+    let Some(best) = events.iter().max_by_key(|e| e.created_at) else {
+        return Ok(None);
+    };
+    Ok(Some(order_from_tags(best.tags.clone())?))
+}
+
 /// Fetch a single order's fiat code from the relay by order id (identifier "d" tag).
 /// Used when the order is not in the local DB (e.g. admin taking a dispute for an order they did not create).
 pub async fn fetch_order_fiat_from_relay(
@@ -476,22 +500,15 @@ pub async fn fetch_order_fiat_from_relay(
     mostro_pubkey: PublicKey,
     order_id: Uuid,
 ) -> Result<Option<String>> {
-    let filter = Filter::new()
-        .author(mostro_pubkey)
-        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
-        .identifier(order_id.to_string())
-        .limit(1);
-    let events = client
-        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay: {}", e))?;
-    let event = match events.iter().next() {
-        Some(ev) => ev,
-        None => return Ok(None),
-    };
-    let order = order_from_tags(event.tags.clone())?;
-    let fiat = order.fiat_code;
-    Ok(if fiat.is_empty() { None } else { Some(fiat) })
+    let order = fetch_small_order_by_id_from_relay(client, mostro_pubkey, order_id).await?;
+    Ok(order.and_then(|o| {
+        let fiat = o.fiat_code;
+        if fiat.is_empty() {
+            None
+        } else {
+            Some(fiat)
+        }
+    }))
 }
 
 /// Build My Trades static header for one trade (maker or taker).
@@ -579,8 +596,44 @@ pub(super) fn handle_mostro_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{should_apply_status_transition, should_strictly_advance_status};
+    use super::{
+        is_terminal_trade_status, should_apply_status_transition, should_strictly_advance_status,
+    };
+    use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
     use mostro_core::prelude::Status;
+    use std::str::FromStr;
+
+    #[test]
+    fn terminal_order_history_statuses_match_is_terminal_trade_status() {
+        let terminal_variants = [
+            Status::Success,
+            Status::Canceled,
+            Status::CanceledByAdmin,
+            Status::SettledByAdmin,
+            Status::CompletedByAdmin,
+            Status::Expired,
+            Status::CooperativelyCanceled,
+        ];
+        for s in terminal_variants {
+            assert!(
+                is_terminal_trade_status(s),
+                "test variant list must stay aligned with is_terminal_trade_status"
+            );
+            let display = s.to_string();
+            assert!(
+                TERMINAL_ORDER_HISTORY_STATUSES.contains(&display.as_str()),
+                "Status::to_string() for {s:?} must appear in TERMINAL_ORDER_HISTORY_STATUSES for targeted reconcile SQL"
+            );
+        }
+        for &kebab in TERMINAL_ORDER_HISTORY_STATUSES {
+            let parsed =
+                Status::from_str(kebab).expect("TERMINAL_ORDER_HISTORY_STATUSES must parse");
+            assert!(
+                is_terminal_trade_status(parsed),
+                "{kebab} in TERMINAL_ORDER_HISTORY_STATUSES must be terminal for relay reconcile"
+            );
+        }
+    }
 
     #[test]
     fn buy_maker_blocks_waiting_payment_downgrade() {
