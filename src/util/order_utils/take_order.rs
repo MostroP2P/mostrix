@@ -279,10 +279,16 @@ pub async fn take_order(
                                     order_to_save.id
                                 )
                             })?;
+                            // Prefer the explicit `Option<Amount>` override from the
+                            // `PaymentRequest` payload — that's where mostrod puts the
+                            // bond satoshis for `PayBondInvoice` per mostro-core 0.11.0.
+                            // Fall back to the embedded order's `amount` for legacy
+                            // `PayInvoice` flows where the override is omitted.
+                            let sat_amount = opt_amount.or(Some(order_to_save.amount));
                             Ok(OperationResult::PaymentRequestRequired {
                                 order: order_to_save.clone(),
                                 invoice: invoice_string.clone(),
-                                sat_amount: *opt_amount,
+                                sat_amount,
                                 trade_index: next_idx,
                                 static_header,
                                 action: popup_action,

@@ -471,11 +471,16 @@ async fn handle_trade_dm_for_order(
     )
     .await;
 
-    // Extract invoice and sat_amount from payload based on action type
+    // Extract invoice and sat_amount from payload based on action type.
+    // For `PayBondInvoice` mostrod populates the bond satoshis in the third
+    // `Option<Amount>` field of `Payload::PaymentRequest` (the SmallOrder is
+    // `None` per mostro-core 0.11.0 wire format); for `PayInvoice` it may come
+    // either as that explicit override or via the embedded order's `amount`.
     let (sat_amount, invoice) = match &action {
         Action::PayInvoice | Action::PayBondInvoice => match &inner_kind.payload {
-            Some(Payload::PaymentRequest(opt_order, invoice, _)) => {
-                (opt_order.as_ref().map(|o| o.amount), Some(invoice.clone()))
+            Some(Payload::PaymentRequest(opt_order, invoice, opt_amount)) => {
+                let amount = opt_amount.or_else(|| opt_order.as_ref().map(|o| o.amount));
+                (amount, Some(invoice.clone()))
             }
             _ => (None, None),
         },

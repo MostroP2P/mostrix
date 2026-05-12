@@ -921,4 +921,32 @@ mod timeline_step_tests {
             FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
         );
     }
+
+    #[test]
+    fn buy_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(mostro_core::order::Status::WaitingTakerBond),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+        );
+    }
+
+    #[test]
+    fn sell_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(mostro_core::order::Status::WaitingTakerBond),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+        );
+    }
 }
