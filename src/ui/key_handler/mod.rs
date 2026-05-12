@@ -408,8 +408,13 @@ pub fn handle_key_event(
         return Some(true);
     }
 
-    // PayInvoice popup: allow scrolling the (wrapped) invoice text.
-    if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
+    // PayInvoice / PayBondInvoice popup: allow scrolling the (wrapped) invoice text.
+    if let UiMode::NewMessageNotification(
+        _,
+        Action::PayInvoice | Action::PayBondInvoice,
+        ref mut invoice_state,
+    ) = app.mode
+    {
         match code {
             KeyCode::Up => {
                 invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(1);
@@ -713,7 +718,12 @@ pub fn handle_key_event(
     }
 
     // Clear "copied" indicator when any key is pressed (except C which sets it)
-    if let UiMode::NewMessageNotification(_, Action::PayInvoice, ref mut invoice_state) = app.mode {
+    if let UiMode::NewMessageNotification(
+        _,
+        Action::PayInvoice | Action::PayBondInvoice,
+        ref mut invoice_state,
+    ) = app.mode
+    {
         if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
             invoice_state.copied_to_clipboard = false;
         }
@@ -957,7 +967,7 @@ pub fn handle_key_event(
                 }
                 UiMode::NewMessageNotification(
                     _,
-                    Action::AddInvoice | Action::PayInvoice,
+                    Action::AddInvoice | Action::PayInvoice | Action::PayBondInvoice,
                     ref mut invoice_state,
                 ) => {
                     return Some(update_invoice_notification_action_selection(
@@ -1117,10 +1127,10 @@ pub fn handle_key_event(
                 return Some(true);
             }
 
-            // Handle copy invoice for PayInvoice notifications
+            // Handle copy invoice for PayInvoice / PayBondInvoice notifications
             if let UiMode::NewMessageNotification(
                 ref notification,
-                Action::PayInvoice,
+                Action::PayInvoice | Action::PayBondInvoice,
                 ref mut invoice_state,
             ) = app.mode
             {

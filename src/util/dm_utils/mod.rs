@@ -363,6 +363,7 @@ fn is_pre_active_status(status: Status) -> bool {
     matches!(
         status,
         Status::Pending
+            | Status::WaitingTakerBond
             | Status::WaitingPayment
             | Status::WaitingBuyerInvoice
             | Status::SettledHoldInvoice
@@ -383,6 +384,9 @@ async fn upsert_order_from_trade_dm(
         (Action::AddInvoice, Some(Payload::Order(o))) => ("AddInvoice", o.clone()),
         (Action::PayInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
             ("PayInvoice", o.clone())
+        }
+        (Action::PayBondInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
+            ("PayBondInvoice", o.clone())
         }
         (Action::BuyerTookOrder, Some(Payload::Order(o))) => ("BuyerTookOrder", o.clone()),
         (Action::HoldInvoicePaymentAccepted, Some(Payload::Order(o))) => {
@@ -469,7 +473,7 @@ async fn handle_trade_dm_for_order(
 
     // Extract invoice and sat_amount from payload based on action type
     let (sat_amount, invoice) = match &action {
-        Action::PayInvoice => match &inner_kind.payload {
+        Action::PayInvoice | Action::PayBondInvoice => match &inner_kind.payload {
             Some(Payload::PaymentRequest(opt_order, invoice, _)) => {
                 (opt_order.as_ref().map(|o| o.amount), Some(invoice.clone()))
             }
@@ -482,14 +486,17 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
-    // Only show PayInvoice popup/notification when an invoice is actually present.
+    // Only show PayInvoice/PayBondInvoice popup/notification when an invoice is actually present.
     let is_actionable_notification = match &action {
-        Action::PayInvoice => invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+        Action::PayInvoice | Action::PayBondInvoice => {
+            invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
+        }
         Action::AddInvoice => sat_amount.is_some(),
         _ => true,
     };
 
-    if matches!(action, Action::PayInvoice) && !is_actionable_notification {
+    if matches!(action, Action::PayInvoice | Action::PayBondInvoice) && !is_actionable_notification
+    {
         return;
     }
 

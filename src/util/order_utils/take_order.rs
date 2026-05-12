@@ -200,6 +200,15 @@ pub async fn take_order(
                             ))
                         }
                         Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
+                            // Disambiguate the trade hold invoice (`PayInvoice`) from the
+                            // anti-abuse bond invoice (`PayBondInvoice`). Both arrive with the
+                            // same payload shape; only the action discriminator differs.
+                            // Anything else falling into this arm is treated as a legacy
+                            // `PayInvoice` for backwards compatibility with pre-0.11 daemons.
+                            let popup_action = match inner_message.action {
+                                Action::PayBondInvoice => Action::PayBondInvoice,
+                                _ => Action::PayInvoice,
+                            };
                             // For buy orders, we receive PaymentRequest with invoice for seller to pay
                             // Use the order from payload if available, otherwise use the original order
                             let mut order_to_save = if let Some(order_to_save) = opt_order {
@@ -218,7 +227,8 @@ pub async fn take_order(
                             }
                             let effective_order_id = order_to_save.id.unwrap_or(order_id);
                             log::info!(
-                                "[take_order] Action::PaymentRequest response mapped to effective_order_id={}, trade_index={}",
+                                "[take_order] Action::{:?} response mapped to effective_order_id={}, trade_index={}",
+                                popup_action,
                                 effective_order_id,
                                 next_idx
                             );
@@ -251,7 +261,8 @@ pub async fn take_order(
                             }
 
                             log::info!(
-                                "Received PaymentRequest for buy order {} with invoice",
+                                "Received {:?} for order {} with invoice",
+                                popup_action,
                                 order_id
                             );
 
@@ -274,6 +285,7 @@ pub async fn take_order(
                                 sat_amount: *opt_amount,
                                 trade_index: next_idx,
                                 static_header,
+                                action: popup_action,
                             })
                         }
                         _ => {

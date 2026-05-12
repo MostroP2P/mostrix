@@ -353,6 +353,152 @@ fn render_pay_invoice(
     );
 }
 
+/// Renders PayBondInvoice notification popup.
+///
+/// Mirrors `render_pay_invoice` but adds a yellow one-line explanation that the
+/// bond sats are locked, not spent, and refunded on normal completion. Used for
+/// the anti-abuse bond hold invoice that takers must pay before the trade flow
+/// starts (Mostro daemon Phase 1.5+).
+fn render_pay_bond_invoice(
+    f: &mut ratatui::Frame,
+    popup: Rect,
+    notification: &MessageNotification,
+    invoice_state: &InvoiceInputState,
+) {
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // message preview
+            Constraint::Length(1), // bond explanatory note
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // label
+            Constraint::Length(6), // invoice display field
+            Constraint::Length(1), // spacer
+            Constraint::Length(3), // action buttons
+            Constraint::Length(1), // help text line 1
+            Constraint::Length(1), // help text line 2
+        ],
+    )
+    .split(popup);
+
+    let order_id_str = helpers::format_order_id(notification.order_id);
+    render_order_id_header(f, chunks[1], &order_id_str);
+    render_message_preview(f, chunks[2], &notification.message_preview, true);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "Locked, not spent — refunded on normal completion",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[3],
+    );
+
+    let amount_text = if let Some(amount) = notification.sat_amount {
+        format!("Bond invoice to pay ({} sats):", amount)
+    } else {
+        "Bond invoice to pay:".to_string()
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            amount_text,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[5],
+    );
+
+    let invoice_area = create_input_area(chunks[6]);
+    render_invoice_display(
+        f,
+        invoice_area,
+        notification.invoice.as_ref(),
+        invoice_state.scroll_y,
+    );
+
+    helpers::render_yes_no_buttons(
+        f,
+        chunks[8],
+        matches!(
+            invoice_state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        ),
+        "Acknowledge",
+        "Cancel Order",
+    );
+
+    if invoice_state.copied_to_clipboard {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ Invoice copied to clipboard!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[9],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Press ", Style::default()),
+                Span::styled(
+                    "C",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to copy invoice to clipboard. ", Style::default()),
+                Span::styled(
+                    "↑/↓",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" scroll, ", Style::default()),
+                Span::styled(
+                    "Left/Right",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" select action", Style::default()),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[9],
+        );
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[10],
+    );
+}
+
 /// Renders default notification popup for other actions
 fn render_default_notification(
     f: &mut ratatui::Frame,
@@ -427,6 +573,8 @@ pub fn render_message_notification(
         mostro_core::prelude::Action::AddInvoice | mostro_core::prelude::Action::PayInvoice => {
             (90, 19)
         }
+        // Bond popup is one row taller for the "Locked, not spent" explanation line.
+        mostro_core::prelude::Action::PayBondInvoice => (90, 20),
         _ => (70, 8),
     };
 
@@ -436,6 +584,7 @@ pub fn render_message_notification(
     let title = match action {
         mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
         mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
+        mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
         _ => "📨 New Message",
     };
 
@@ -451,6 +600,9 @@ pub fn render_message_notification(
         }
         mostro_core::prelude::Action::PayInvoice => {
             render_pay_invoice(f, popup, notification, invoice_state);
+        }
+        mostro_core::prelude::Action::PayBondInvoice => {
+            render_pay_bond_invoice(f, popup, notification, invoice_state);
         }
         _ => {
             render_default_notification(f, popup, notification);

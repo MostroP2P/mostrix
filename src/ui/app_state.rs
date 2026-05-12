@@ -151,7 +151,7 @@ pub struct AppState {
     /// so relays cannot re-upsert deleted rows back into the UI.
     pub dropped_user_history_order_ids: Arc<Mutex<HashSet<uuid::Uuid>>>,
     /// Per-order startup floor for invoice popups: notifications at or below this rumor timestamp
-    /// are treated as historical and must not auto-open AddInvoice/PayInvoice modal.
+    /// are treated as historical and must not auto-open AddInvoice/PayInvoice/PayBondInvoice modal.
     pub startup_popup_floor_ts: HashMap<uuid::Uuid, i64>,
     /// Per-order buyer invoice preference when we are taker on a SELL listing.
     /// In-memory only; used by Messages/AddInvoice flows to decide how to
@@ -205,9 +205,10 @@ pub struct AppState {
     /// Set when Mostro pubkey or currency filters change: respawn order/dispute subscriptions and
     /// DM listener without rotating identity keys or clearing the Messages tab.
     pub pending_fetch_scheduler_reload: bool,
-    /// When `take_order` completes while an AddInvoice/PayInvoice popup is open, we stash the
-    /// [`OperationResult`] here so the invoice UI is not replaced by the success screen (race).
-    /// Applied when the user dismisses the popup (Esc), or cleared when they submit the invoice.
+    /// When `take_order` completes while an AddInvoice/PayInvoice/PayBondInvoice popup is open, we
+    /// stash the [`OperationResult`] here so the invoice UI is not replaced by the success screen
+    /// (race). Applied when the user dismisses the popup (Esc), or cleared when they submit the
+    /// invoice.
     pub pending_post_take_operation_result: Option<OperationResult>,
     /// When set, closing an OperationResult popup (ESC/ENTER) will exit the app.
     /// Used for fatal errors that require a clean restart.

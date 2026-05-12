@@ -74,6 +74,7 @@ pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
         Action::CooperativeCancelAccepted => Some(Status::CooperativelyCanceled),
         Action::WaitingBuyerInvoice | Action::AddInvoice => Some(Status::WaitingBuyerInvoice),
         Action::WaitingSellerToPay | Action::PayInvoice => Some(Status::WaitingPayment),
+        Action::PayBondInvoice => Some(Status::WaitingTakerBond),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::Success),
         Action::Release | Action::Released => Some(Status::Success),
@@ -583,6 +584,7 @@ pub(super) fn handle_mostro_response(
         && inner_message.action != Action::NewOrder
         && inner_message.action != Action::AddInvoice
         && inner_message.action != Action::PayInvoice
+        && inner_message.action != Action::PayBondInvoice
     {
         log::warn!(
             "Received response with null request_id. Expected: {}",

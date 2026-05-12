@@ -160,7 +160,7 @@ This function is where `OrderMessage` is created/updated and pushed into `messag
 Key behaviors:
 
 - **DB refresh/upsert for certain actions**  
-  For `add-invoice` and `pay-invoice` where the payload embeds an order, the listener persists/upserts the order row (including request id when available).
+  For `add-invoice`, `pay-invoice`, and **`pay-bond-invoice`** (Mostro Phase 1.5+ anti-abuse bond) where the payload embeds an order, the listener persists/upserts the order row (including request id when available). `pay-bond-invoice` is additionally allow-listed for null `request_id` DMs (`src/util/order_utils/helper.rs`) since Mostro emits these unsolicited after a take.
 
 - **Status persistence**  
   Updates the order status in SQLite via `update_order_status` using:
@@ -191,7 +191,7 @@ So the “message list” is really a **per-order summary row list**, not a chat
 
 If the update is both:
 
-- **actionable** (e.g. `pay-invoice` only when an actual invoice exists), and
+- **actionable** (e.g. `pay-invoice` / `pay-bond-invoice` only when an actual invoice exists in the `PaymentRequest` payload — same gate in `src/util/dm_utils/mod.rs`), and
 - **new** (per the logic above),
 
 then the listener:
@@ -202,13 +202,13 @@ then the listener:
 ## Action vs Status vs Database (how to think about them)
 
 - **`Action`** (`mostro_core::Action`)  
-  The *event type* of a protocol step (e.g. `PayInvoice`, `AddInvoice`, `FiatSent`, `Release`, `Canceled`, …). This is always present in the decoded `MessageKind`.
+  The *event type* of a protocol step (e.g. `PayInvoice`, **`PayBondInvoice`**, `AddInvoice`, `FiatSent`, `Release`, `Canceled`, …). This is always present in the decoded `MessageKind`. `PayBondInvoice` (wire discriminator `pay-bond-invoice`) was introduced in `mostro-core` 0.11.0 and replaces the Phase 1 hack of reusing `PayInvoice` for anti-abuse bonds.
 
 - **`Status`** (`mostro_core::order::Status`)  
-  The order’s *state machine position* (e.g. `waiting-payment`, `active`, `fiat-sent`, `success`, …). This may come from:
+  The order’s *state machine position* (e.g. `waiting-payment`, **`waiting-taker-bond`** (Phase 1.5+), `active`, `fiat-sent`, `success`, …). This may come from:
   - an embedded order payload (`Payload::Order` or `PaymentRequest(Some(order), ...)`)
   - the local DB (previously persisted)
-  - inference from certain action-only messages
+  - inference from certain action-only messages (e.g. `PayBondInvoice` → `WaitingTakerBond` in `inferred_status_from_trade_action`)
 
 - **Database (`sqlite`)**  
   Used to persist “critical truth” for recovery and UI:

@@ -287,6 +287,17 @@ pub fn handle_enter_message_notification(
             // Primary path for PayInvoice is acknowledgement: close popup.
             app.mode = role_default_mode(app.user_role);
         }
+        Action::PayBondInvoice => {
+            // Cancel during `WaitingTakerBond` is valid per Mostro Phase 1.5+ spec:
+            // only the sender's own bond is released; concurrent takers (if any)
+            // keep racing.
+            if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {
+                spawn_cancel_from_notification(app, ctx, order_id);
+                return;
+            }
+            // Primary path for PayBondInvoice is acknowledgement: close popup.
+            app.mode = role_default_mode(app.user_role);
+        }
         _ => {
             let _ = ctx
                 .order_result_tx

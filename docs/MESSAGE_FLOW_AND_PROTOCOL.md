@@ -309,7 +309,7 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 - **Incremental merge**: `apply_user_order_chat_updates` deduplicates by `(timestamp, content)`, persists new entries, and advances per-order cursors.
 - **Compatibility parsing**: legacy sender labels from older files (`Admin`, `Admin to Buyer`, `Admin to Seller`, `Buyer`, `Seller`) are mapped to `You/Peer` when loading.
 - **UI selection safety**: the "My Trades" sidebar and Enter/send handlers resolve the active order list from the same shared projection (`helpers::build_active_order_chat_list`), ensuring `selected_order_chat_idx` cannot target a different order than the highlighted row.
-- **My Trades static header (`order_chat_static`)**: in-memory map `AppState.order_chat_static` (see `src/ui/orders.rs` — `OrderChatStaticHeader`) is written by `handle_operation_result` in `src/util/dm_utils/order_ch_mng.rs` on `OperationResult::Success` and `PaymentRequestRequired` (after take / PayInvoice path), and populated from the local `orders` table during `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs`. It is cleared for removed trades when `TradeClosed` / `OrderHistoryDeleted` are handled. It supplies stable header fields (order id, kind, created time, trade index, initiator) so the UI does not depend on folding those out of the DM stream.
+- **My Trades static header (`order_chat_static`)**: in-memory map `AppState.order_chat_static` (see `src/ui/orders.rs` — `OrderChatStaticHeader`) is written by `handle_operation_result` in `src/util/dm_utils/order_ch_mng.rs` on `OperationResult::Success` and `PaymentRequestRequired` (after take / PayInvoice / PayBondInvoice path — the variant now carries the originating `Action` so the same write covers anti-abuse bond responses), and populated from the local `orders` table during `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs`. It is cleared for removed trades when `TradeClosed` / `OrderHistoryDeleted` are handled. It supplies stable header fields (order id, kind, created time, trade index, initiator) so the UI does not depend on folding those out of the DM stream.
 - **Live fields from DMs**: the projection over `AppState.messages` per order merges `Payload::Order` (first economic snapshot, buyer/seller trade pubkeys) with `Payload::Peer` so counterparty `UserInfo` can populate buyer/seller rating, and `order_status` updates status for the header and for `resolve_selected_mytrades_order_status` in `src/ui/key_handler/chat_helpers.rs`.
 
 **Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/util/dm_utils/order_ch_mng.rs`, `src/util/chat_utils.rs`
@@ -469,14 +469,16 @@ Otherwise:
 - Action mapping:
   - `AddInvoice` and `WaitingBuyerInvoice` -> AddInvoice popup mode.
   - `PayInvoice` and `WaitingSellerToPay` -> PayInvoice popup mode.
+  - **`PayBondInvoice`** (Mostro Phase 1.5+) -> dedicated **anti-abuse bond** popup mode (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Same `Payload::PaymentRequest` shape as `PayInvoice`, but distinguished visually (shield emoji title, "Bond invoice to pay (… sats)" amount label, and a yellow "Locked, not spent — refunded on normal completion" disclaimer). The popup is gated on `order_status` ∈ {`WaitingTakerBond`, `None`} (`invoice_popup_allowed_for_order_status` in `src/ui/orders.rs`) and is **additive**: daemons not running Phase 1.5 keep using `PayInvoice` for hold invoices, so no-bond flows are unchanged.
 - Popup selection:
   - Left/Right toggles between **Primary** and **Cancel Order**.
   - Enter confirms the selected action.
+  - For **`PayBondInvoice`** the **Primary** button is labelled **Acknowledge** (closes the popup) since the actual payment happens in the user's wallet; cancel still sends `Action::Cancel`.
 - Cancel path:
-  - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow.
+  - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow. This is valid during `WaitingTakerBond` per the Mostro Phase 1.5+ spec.
 - Paste/copy details:
   - AddInvoice supports bracketed paste plus key/mouse fallbacks where terminals do not emit `Event::Paste`.
-  - PayInvoice keeps copy (`C`) + scroll behavior while supporting cancel selection.
+  - PayInvoice and PayBondInvoice keep copy (`C`) + scroll behavior while supporting cancel selection.
 - **Lightning address as invoice**: If the input is a Lightning address (`user@domain.com`), Mostrix still sends `AddInvoice` with a `PaymentRequest` payload, but first verifies the LNURL metadata endpoint returns `tag: payRequest` (`util::ln_address::ln_address_pay_request_reachable`) so unreachable addresses fail before hitting Mostro.
 
 ### Rating the counterparty (`RateUser`)
