@@ -50,6 +50,7 @@ fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
         Action::AddInvoice | Action::WaitingBuyerInvoice => Some(Action::AddInvoice),
         Action::PayInvoice | Action::WaitingSellerToPay => Some(Action::PayInvoice),
+        Action::PayBondInvoice => Some(Action::PayBondInvoice),
         _ => None,
     }
 }
@@ -990,6 +991,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     action,
                     Action::AddInvoice
                         | Action::PayInvoice
+                        | Action::PayBondInvoice
                         | Action::WaitingBuyerInvoice
                         | Action::WaitingSellerToPay
                 ) {

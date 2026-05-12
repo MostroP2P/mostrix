@@ -15,8 +15,8 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 - **TUI Interface**: [TUI_INTERFACE.md](TUI_INTERFACE.md) — Navigation, modes, state; My Trades (static `order_chat_static` header vs `build_active_order_chat_list` live fields)
 - **UI constants** (`src/ui/constants.rs`): Shared copy (footers, help, **`StepLabel`** for the Messages tab buy/sell timeline)
-- **Buy order flow (spec)**: [buy order flow.md](buy%20order%20flow.md)
-- **Sell order flow (spec)**: [sell order flow.md](sell%20order%20flow.md)
+- **Buy order flow (spec)**: [buy order flow.md](buy%20order%20flow.md) — Phase 1.5+ optional **anti-abuse bond** (`PayBondInvoice` / `WaitingTakerBond`) included as phase 0 for the taker
+- **Sell order flow (spec)**: [sell order flow.md](sell%20order%20flow.md) — Phase 1.5+ optional **anti-abuse bond** for the taker (buyer)
 - **Range Orders**: [RANGE_ORDERS.md](RANGE_ORDERS.md) — Variable amount orders and NextTrade payload
 
 ## Admin

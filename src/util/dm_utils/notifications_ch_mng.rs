@@ -163,11 +163,10 @@ pub fn apply_saved_ln_address_invoice_choice(
 
 /// Handle message notification from the notification channel
 pub fn handle_message_notification(notification: MessageNotification, app: &mut AppState) {
-    // Only show popup automatically for PayInvoice and AddInvoice,
+    // Only show popup automatically for PayInvoice / PayBondInvoice / AddInvoice,
     // and only if we haven't already shown it for this message.
     match notification.action {
-        Action::PayInvoice | Action::AddInvoice => {
-            // Check if the popup should be shown for this notification
+        Action::PayInvoice | Action::PayBondInvoice | Action::AddInvoice => {
             let should_show_popup = check_if_popup_should_be_shown(&notification, app);
             if !should_show_popup {
                 return;
@@ -177,6 +176,9 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 app.mode =
                     present_add_invoice_popup(&mut app.buyer_invoice_preference, notification);
             } else {
+                // PayInvoice (trade hold) or PayBondInvoice (anti-abuse bond): both use the
+                // same display-only InvoiceInputState. The popup variant is selected by the
+                // action stored on the notification.
                 let invoice_state = InvoiceInputState {
                     invoice_input: String::new(),
                     focused: false,
@@ -185,8 +187,8 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                     scroll_y: 0,
                     action_selection: InvoiceNotificationActionSelection::Primary,
                 };
-                app.mode =
-                    UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);
+                let action = notification.action.clone();
+                app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
             }
         }
         _ => {}

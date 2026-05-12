@@ -131,6 +131,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         sat_amount,
         trade_index,
         static_header: _,
+        action,
     } = &result
     {
         // Track trade_index
@@ -157,17 +158,22 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             );
         }
 
-        // Create MessageNotification to show PayInvoice popup
+        // Create MessageNotification to show the invoice popup. `action` distinguishes
+        // the trade hold invoice (`PayInvoice`) from the anti-abuse bond
+        // (`PayBondInvoice`), so each opens its own popup variant.
+        let preview = match action {
+            Action::PayBondInvoice => "Bond Invoice".to_string(),
+            _ => "Payment Request".to_string(),
+        };
         let notification = MessageNotification {
             order_id: order.id,
-            message_preview: "Payment Request".to_string(),
+            message_preview: preview,
             timestamp: chrono::Utc::now().timestamp(),
-            action: Action::PayInvoice,
+            action: action.clone(),
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),
         };
 
-        // Create invoice state (not focused since this is display-only)
         let invoice_state = InvoiceInputState {
             invoice_input: String::new(),
             focused: false,
@@ -176,8 +182,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             scroll_y: 0,
             action_selection: InvoiceNotificationActionSelection::Primary,
         };
-        // Reuse pay invoice popup for buy orders when taking an order
-        app.mode = UiMode::NewMessageNotification(notification, Action::PayInvoice, invoice_state);
+        app.mode = UiMode::NewMessageNotification(notification, action.clone(), invoice_state);
         return;
     }
 
@@ -238,9 +243,13 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             app.mode = UiMode::OperationResult(result);
         }
         UiMode::NewMessageNotification(_, action, _) => {
-            // Do not replace AddInvoice/PayInvoice popups: the take-order task can finish after
-            // the DM listener already showed the invoice UI — overwriting would drop the popup.
-            if matches!(action, Action::AddInvoice | Action::PayInvoice) {
+            // Do not replace AddInvoice/PayInvoice/PayBondInvoice popups: the take-order task
+            // can finish after the DM listener already showed the invoice UI — overwriting
+            // would drop the popup.
+            if matches!(
+                action,
+                Action::AddInvoice | Action::PayInvoice | Action::PayBondInvoice
+            ) {
                 app.pending_post_take_operation_result = Some(result);
             } else {
                 app.mode = UiMode::OperationResult(result);

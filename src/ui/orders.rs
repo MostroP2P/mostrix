@@ -55,13 +55,17 @@ pub enum BuyerInvoicePreference {
 #[derive(Clone, Debug)]
 pub enum OperationResult {
     Success(OrderSuccess),
-    /// Payment request required - shows invoice popup for buy orders
+    /// Payment request required - shows invoice popup for buy orders.
+    /// `action` discriminates between the trade hold invoice (`Action::PayInvoice`)
+    /// and the anti-abuse bond invoice (`Action::PayBondInvoice`); both arrive
+    /// with the same `Payload::PaymentRequest` shape and only differ by action.
     PaymentRequestRequired {
         order: mostro_core::prelude::SmallOrder,
         invoice: String,
         sat_amount: Option<i64>,
         trade_index: i64,
         static_header: OrderChatStaticHeader,
+        action: mostro_core::prelude::Action,
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
@@ -264,6 +268,14 @@ pub fn invoice_popup_allowed_for_order_status(
             order_status,
             Some(mostro_core::order::Status::WaitingPayment)
         ),
+        // The anti-abuse bond is outstanding precisely while the order sits in
+        // `WaitingTakerBond`. `None` covers fresh DMs that arrive before the local
+        // row hydrates. A daemon with bonds disabled never emits this action, so
+        // this arm stays dead in that configuration.
+        Action::PayBondInvoice => matches!(
+            order_status,
+            Some(mostro_core::order::Status::WaitingTakerBond) | None
+        ),
         Action::AddInvoice => matches!(
             order_status,
             Some(
@@ -385,6 +397,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
+        Action::PayBondInvoice => "Bond Invoice",
         Action::TakeSell => "Take Sell",
         Action::TakeBuy => "Take Buy",
         Action::FiatSent => "Fiat Sent",
@@ -419,6 +432,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
     match action {
         Action::AddInvoice => "Invoice Request",
         Action::PayInvoice => "Payment Request",
+        Action::PayBondInvoice => "Bond Invoice",
         Action::WaitingBuyerInvoice => "Waiting Buyer Invoice",
         Action::WaitingSellerToPay => "Waiting Seller Payment",
         Action::HoldInvoicePaymentAccepted => "Hold Invoice Accepted",
@@ -579,7 +593,9 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
 fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> Option<FlowStep> {
     match kind {
         mostro_core::order::Kind::Buy => match status {
-            Status::Pending | Status::WaitingPayment => {
+            // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
+            // started; treat like `Pending` for the timeline.
+            Status::Pending | Status::WaitingTakerBond | Status::WaitingPayment => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment))
             }
             Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
@@ -601,7 +617,9 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             | Status::CompletedByAdmin => None,
         },
         mostro_core::order::Kind::Sell => match status {
-            Status::Pending | Status::WaitingPayment => {
+            // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
+            // started; treat like `Pending` for the timeline.
+            Status::Pending | Status::WaitingTakerBond | Status::WaitingPayment => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment))
             }
             Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
@@ -897,6 +915,34 @@ mod timeline_step_tests {
             Some(mostro_core::order::Kind::Sell),
             Some(false),
             Some(mostro_core::order::Status::WaitingPayment),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+        );
+    }
+
+    #[test]
+    fn buy_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(mostro_core::order::Status::WaitingTakerBond),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+        );
+    }
+
+    #[test]
+    fn sell_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(mostro_core::order::Status::WaitingTakerBond),
         );
         assert_eq!(
             message_trade_timeline_step(&m),

@@ -48,13 +48,14 @@ Typical status alignment (review against live mostrod):
 
 High-level phases:
 
+0. **Pay anti-abuse bond (taker / seller)** — *Mostro Phase 1.5+ only, configurable in mostrod*: when the daemon has bonds enabled, the taker (acting as seller on a buy listing) first receives a `pay-bond-invoice` DM with `Status::WaitingTakerBond`. The bond is **locked, not spent** and is refunded on normal trade completion. Mostrix opens the dedicated **🛡️ Anti-abuse Bond Invoice** popup (`render_pay_bond_invoice`). When bonds are **disabled** on the daemon, this phase is skipped and the flow starts directly at step 1 — Mostrix never assumes a bond exists.
 1. **Pay-invoice (seller)** — seller pays hold invoice when prompted (`pay-invoice`).
 2. **Waiting-buyer-invoice (buyer)** — buyer provides invoice (`add-invoice` / `waiting-buyer-invoice` status).
 3. **Send fiat (buyer)** — buyer sends fiat (`fiat-sent`).
 4. **Release (seller)** — seller releases.
 5. **Rate counterpart**.
 
-Same status vocabulary applies; **order** of states must match [ORDER.md](https://github.com/MostroP2P/protocol/blob/main/ORDER.md) for your mostrod version.
+Same status vocabulary applies; **order** of states must match [ORDER.md](https://github.com/MostroP2P/protocol/blob/main/ORDER.md) for your mostrod version. `waiting-taker-bond` is the new Phase 1.5+ state and maps to NIP-69 `pending` for external visibility.
 
 ## Cancellation (first draft)
 
@@ -77,6 +78,7 @@ Same status vocabulary applies; **order** of states must match [ORDER.md](https:
 
 - **AddInvoice** (paste **BOLT11** or **Lightning address**): open only when the **buyer** must submit an invoice and status/action indicates that step for the **local** user. For addresses, Mostrix checks the LNURL endpoint before publishing the DM. An optional saved buyer address lives in **`settings.toml`** (`ln_address`) and is editable from **User → Settings** only. If **`ln_address`** is set, **`AddInvoice`** may open **`ConfirmSavedLnAddressForInvoice`** first — **YES** auto-sends **`AddInvoice`** with that address (**`submit_add_invoice`**); **NO** opens manual invoice entry; see **`present_add_invoice_popup`** / **`apply_saved_ln_address_invoice_choice`** in `src/util/dm_utils/notifications_ch_mng.rs`.
 - **PayInvoice** (pay hold invoice): open only when the **seller** must pay and that matches the **local** user in the current phase.
+- **PayBondInvoice** (Mostro Phase 1.5+ anti-abuse bond, **optional in mostrod**): open only when the **taker** must lock a bond and `order.status` is `WaitingTakerBond` (or `None` for pre-status DMs). Distinct popup — shield title, "Locked, not spent — refunded on normal completion" disclaimer — and **Primary = Acknowledge** (no DM follow-up; bond is paid in the wallet). Cancel from this popup still sends `Action::Cancel` per Mostro Phase 1.5+ spec.
 - If Enter is pressed but the phase does **not** match, **do not** open the invoice modal; show a short informational message or no-op.
 
 ### Confirmation actions
@@ -93,8 +95,9 @@ For actions that require explicit confirmation (e.g. **`HoldInvoicePaymentAccept
 In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by **`Action`** (and by **`order_id`** where required):
 
 - **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`) after any saved-address branch; **`AddInvoice`** may run **`ConfirmSavedLnAddressForInvoice`** first when **`ln_address`** is configured (`present_add_invoice_popup`), and **YES** there skips the popup and submits via **`submit_add_invoice`** (`message_handlers.rs`).
+- **`PayBondInvoice`** (Phase 1.5+) → dedicated anti-abuse bond popup (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Wired through the same `NewMessageNotification` UI mode but with distinct chrome and **Acknowledge** as the primary action. The take-order sync path (`src/util/order_utils/take_order.rs`) also forwards this directly when Mostro's first reply is `PayBondInvoice`, carrying the action through `OperationResult::PaymentRequestRequired { action, … }`.
 - **`WaitingBuyerInvoice` / `WaitingSellerToPay`** also map to the same invoice/payment popup modes on Enter.
-- Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup.
+- Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup (also valid during `WaitingTakerBond`).
 - **`HoldInvoicePaymentAccepted` / `FiatSentOk`** → confirmation popup (`ViewingMessage` with yes/no where applicable).
 - **`Rate`** → **rating popup** (`UiMode::RatingOrder`): choose **1–5** stars, **Enter** submits **`RateUser`** + **`RatingUser`** via **`execute_rate_user`** in `src/util/order_utils/execute_send_msg.rs` (Mostro resolves the counterparty; only **`order_id`** + rating are sent).
 - **Else** → informational `OperationResult::Info` (no send).
