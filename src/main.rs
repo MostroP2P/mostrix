@@ -431,7 +431,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
                         || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
-                    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
+                    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. } | OperationResult::Success(_));
 
                     handle_operation_result(result, &mut app);
                     if resync_my_trades_from_db && app.user_role == UserRole::User {

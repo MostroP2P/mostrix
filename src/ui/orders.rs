@@ -456,6 +456,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
 /// Keeps terminal statuses from showing stale action text after reboot replay.
 pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static str {
     match msg.order_status {
+        Some(Status::Pending) => "Pending order",
         Some(Status::Success) => "Trade Completed",
         Some(Status::SettledByAdmin) => "Settled by admin",
         Some(Status::CompletedByAdmin) => "Completed by admin",
@@ -500,6 +501,7 @@ pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
 #[repr(u8)]
 #[allow(clippy::enum_variant_names)] // Step* names match UI column semantics
 pub enum StepLabelsBuy {
+    StepPendingOrder = 0,
     StepSellerPayment = 1,
     StepBuyerInvoice = 2,
     StepChatActiveOrder = 3,
@@ -512,6 +514,7 @@ pub enum StepLabelsBuy {
 #[repr(u8)]
 #[allow(clippy::enum_variant_names)] // Step* names match UI column semantics
 pub enum StepLabelsSell {
+    StepPendingOrder = 0,
     StepBuyerInvoice = 1,
     StepSellerPayment = 2,
     StepChatActiveOrder = 3,
@@ -593,11 +596,13 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
 fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> Option<FlowStep> {
     match kind {
         mostro_core::order::Kind::Buy => match status {
+            // Initial stat of order - no green steps visulized, orders is still pending.
+            Status::Pending | Status::WaitingTakerBond => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder))
+            }
             // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
             // started; treat like `Pending` for the timeline.
-            Status::Pending | Status::WaitingTakerBond | Status::WaitingPayment => {
-                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment))
-            }
+            Status::WaitingPayment => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)),
             Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice))
             }
@@ -614,12 +619,18 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             | Status::Expired
             | Status::Dispute
             | Status::SettledByAdmin
-            | Status::CompletedByAdmin => None,
+            | Status::CompletedByAdmin => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder))
+            }
         },
         mostro_core::order::Kind::Sell => match status {
+            // Initial stat of order - no green steps visulized, orders is still pending.
+            Status::Pending | Status::WaitingTakerBond => {
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder))
+            }
             // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
             // started; treat like `Pending` for the timeline.
-            Status::Pending | Status::WaitingTakerBond | Status::WaitingPayment => {
+            Status::WaitingPayment => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment))
             }
             Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
@@ -638,7 +649,9 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             | Status::Expired
             | Status::Dispute
             | Status::SettledByAdmin
-            | Status::CompletedByAdmin => None,
+            | Status::CompletedByAdmin => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder))
+            }
         },
     }
 }
