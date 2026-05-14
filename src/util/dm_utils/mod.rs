@@ -432,7 +432,7 @@ async fn handle_trade_dm_for_order(
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
-    if matches!(action, Action::NewOrder) {
+    if matches!(action, Action::NewOrder | Action::CantDo) {
         return;
     }
 
