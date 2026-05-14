@@ -1,7 +1,8 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::{
-    strip_new_order_messages_and_clamp_selected, BuyerInvoicePreference, OrderSuccess,
+    strip_new_order_messages_and_clamp_selected, try_placeholder_order_message_from_success,
+    BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
@@ -85,6 +86,35 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
     }
 }
 
+/// If `Success` arrived before any DM row exists for this trade, append one placeholder so
+/// **Orders In Progress** (`build_active_order_chat_list`) has a sidebar row without running
+/// `sync_user_order_history_messages_from_db` (which would clobber real actions).
+fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSuccess) {
+    let Some(order_id) = os.order_id else {
+        return;
+    };
+    if os.static_header.is_none() {
+        return;
+    }
+    let Some(placeholder) = try_placeholder_order_message_from_success(os) else {
+        return;
+    };
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            if messages.iter().any(|m| m.order_id == Some(order_id)) {
+                return;
+            }
+            messages.push(placeholder);
+            messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
+
 /// Handle order result from the order result channel
 pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
     if let OperationResult::TradeClosed { order_id, message } = result {
@@ -116,6 +146,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             if let Some(h) = &os.static_header {
                 app.order_chat_static.insert(h.order_id, h.clone());
             }
+            maybe_insert_my_trade_placeholder_message(app, os);
         }
         OperationResult::PaymentRequestRequired { static_header, .. } => {
             app.order_chat_static

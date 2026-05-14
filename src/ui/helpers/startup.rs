@@ -212,7 +212,8 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         is_mine: Some(order.is_mine),
         order_status: status,
         read: true,
-        auto_popup_shown: true,
+        // This is need to avoid the missing visualization of the invoice popup when the order is in the WaitingBuyerInvoice status
+        auto_popup_shown: !matches!(status, Some(Status::WaitingBuyerInvoice)),
     };
     Some(history_message)
 }

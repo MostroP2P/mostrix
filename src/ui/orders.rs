@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use ratatui::style::{Color, Style};
@@ -38,6 +40,76 @@ pub struct OrderSuccess {
     pub trade_index: Option<i64>, // Trade index used for this order
     /// Filled on successful create/take for My Trades static header.
     pub static_header: Option<OrderChatStaticHeader>,
+}
+
+/// `action` for a post-success placeholder [`OrderMessage`] so My Trades has a row before DMs land.
+/// Never returns synthetic book-side `take-buy` / `take-sell` (those break Messages-tab Enter).
+fn placeholder_action_for_order_success(os: &OrderSuccess) -> Option<Action> {
+    let header = os.static_header.as_ref()?;
+    if header.is_mine {
+        return Some(Action::NewOrder);
+    }
+    match os.status {
+        Some(Status::WaitingTakerBond) => Some(Action::PayBondInvoice),
+        Some(Status::WaitingPayment) => Some(Action::WaitingSellerToPay),
+        Some(Status::WaitingBuyerInvoice) | Some(Status::SettledHoldInvoice) => {
+            Some(Action::WaitingBuyerInvoice)
+        }
+        Some(Status::FiatSent) => Some(Action::FiatSent),
+        _ => Some(Action::BuyerTookOrder),
+    }
+}
+
+fn small_order_from_order_success(os: &OrderSuccess) -> SmallOrder {
+    SmallOrder {
+        id: os.order_id,
+        kind: os.kind,
+        status: os.status,
+        amount: os.amount,
+        fiat_code: os.fiat_code.clone(),
+        min_amount: os.min_amount,
+        max_amount: os.max_amount,
+        fiat_amount: os.fiat_amount,
+        payment_method: os.payment_method.clone(),
+        premium: os.premium,
+        buyer_invoice: None,
+        created_at: os.static_header.as_ref().and_then(|h| h.created_at),
+        expires_at: None,
+        ..Default::default()
+    }
+}
+
+/// One synthetic [`OrderMessage`] when `Success` arrives before any DM row exists (My Trades sidebar).
+pub(crate) fn try_placeholder_order_message_from_success(
+    os: &OrderSuccess,
+) -> Option<OrderMessage> {
+    let header = os.static_header.as_ref()?;
+    let order_id = os.order_id?;
+    let trade_index = os.trade_index.unwrap_or(header.trade_index);
+    let action = placeholder_action_for_order_success(os)?;
+    let sender = PublicKey::from_str(header.initiator_trade_pubkey.as_str()).ok()?;
+    let small = small_order_from_order_success(os);
+    let message = Message::new_order(
+        Some(order_id),
+        None,
+        Some(trade_index),
+        action,
+        Some(Payload::Order(small)),
+    );
+    Some(OrderMessage {
+        message,
+        timestamp: chrono::Utc::now().timestamp(),
+        sender,
+        order_id: Some(order_id),
+        trade_index,
+        sat_amount: None,
+        buyer_invoice: None,
+        order_kind: os.kind,
+        is_mine: Some(header.is_mine),
+        order_status: os.status,
+        read: true,
+        auto_popup_shown: true,
+    })
 }
 
 /// Per-order buyer invoice preference when we act as taker on a SELL listing.
@@ -822,6 +894,82 @@ pub fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
 }
 
 #[cfg(test)]
+mod order_success_placeholder_tests {
+    use super::*;
+    use nostr_sdk::Keys;
+
+    fn sample_order_success(
+        is_mine: bool,
+        status: Option<Status>,
+        kind: Option<mostro_core::order::Kind>,
+    ) -> OrderSuccess {
+        let keys = Keys::generate();
+        let order_id = uuid::Uuid::new_v4();
+        OrderSuccess {
+            order_id: Some(order_id),
+            kind,
+            amount: 100,
+            fiat_code: "EUR".to_string(),
+            fiat_amount: 50,
+            min_amount: None,
+            max_amount: None,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            status,
+            trade_index: Some(1),
+            static_header: Some(OrderChatStaticHeader {
+                order_id,
+                kind,
+                created_at: Some(1),
+                trade_index: 1,
+                initiator_trade_pubkey: keys.public_key().to_string(),
+                is_mine,
+            }),
+        }
+    }
+
+    #[test]
+    fn maker_placeholder_uses_new_order_action() {
+        let os = sample_order_success(
+            true,
+            Some(Status::Pending),
+            Some(mostro_core::order::Kind::Sell),
+        );
+        let msg = try_placeholder_order_message_from_success(&os).expect("msg");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
+        assert_eq!(msg.order_status, Some(Status::Pending));
+    }
+
+    #[test]
+    fn taker_waiting_buyer_invoice_uses_waiting_buyer_invoice_action() {
+        let os = sample_order_success(
+            false,
+            Some(Status::WaitingBuyerInvoice),
+            Some(mostro_core::order::Kind::Sell),
+        );
+        let msg = try_placeholder_order_message_from_success(&os).expect("msg");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::WaitingBuyerInvoice
+        );
+    }
+
+    #[test]
+    fn skips_without_static_header() {
+        let mut os = sample_order_success(
+            true,
+            Some(Status::Pending),
+            Some(mostro_core::order::Kind::Sell),
+        );
+        os.static_header = None;
+        assert!(try_placeholder_order_message_from_success(&os).is_none());
+    }
+}
+
+#[cfg(test)]
 mod timeline_step_tests {
     use super::*;
     use nostr_sdk::Keys;
@@ -936,7 +1084,7 @@ mod timeline_step_tests {
     }
 
     #[test]
-    fn buy_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+    fn buy_taker_pay_bond_invoice_waiting_taker_bond_maps_to_pending_order_step() {
         let m = sample_order_message(
             Action::PayBondInvoice,
             Some(mostro_core::order::Kind::Buy),
@@ -945,12 +1093,12 @@ mod timeline_step_tests {
         );
         assert_eq!(
             message_trade_timeline_step(&m),
-            FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder)
         );
     }
 
     #[test]
-    fn sell_taker_pay_bond_invoice_maps_to_seller_payment_step() {
+    fn sell_taker_pay_bond_invoice_waiting_taker_bond_maps_to_pending_order_step() {
         let m = sample_order_message(
             Action::PayBondInvoice,
             Some(mostro_core::order::Kind::Sell),
@@ -959,7 +1107,7 @@ mod timeline_step_tests {
         );
         assert_eq!(
             message_trade_timeline_step(&m),
-            FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
+            FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder)
         );
     }
 }
