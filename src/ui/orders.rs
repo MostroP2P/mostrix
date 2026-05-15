@@ -294,7 +294,10 @@ pub struct OrderMessage {
     pub buyer_invoice: Option<String>,
     /// Book side (`buy` / `sell`) for this trade, carried across DMs that omit `Payload::Order`.
     pub order_kind: Option<mostro_core::order::Kind>,
-    /// `true` = maker (created the order), `false` = taker, from local DB when known.
+    /// `true` = maker (created the order), `false` = taker.
+    ///
+    /// `None` = role not hydrated yet (e.g. first take-order DM before `save_order(false)`).
+    /// Populated from SQLite in the trade-DM listener after upsert (see `util::dm_utils`).
     pub is_mine: Option<bool>,
     /// Last known Mostro order status for this trade (payload or DB).
     pub order_status: Option<mostro_core::order::Status>,
@@ -362,6 +365,10 @@ pub fn invoice_popup_allowed_for_order_status(
 }
 
 /// Whether the local user must act on an invoice/payment popup (`AddInvoice`, `PayInvoice`, `PayBondInvoice`).
+///
+/// Buy/sell listing kind swaps which side is maker vs taker for each action. When [`OrderMessage::is_mine`]
+/// is still `None`, we assume **taker** (same as the Messages timeline): safe for the common pre-`save_order`
+/// take-order race; once the DM listener hydrates role from SQLite, `Some(true/false)` drives the decision.
 #[must_use]
 pub fn local_user_must_act_on_invoice_popup(msg: &OrderMessage, popup_action: &Action) -> bool {
     let is_maker = msg.is_mine.unwrap_or(false);
@@ -1335,6 +1342,35 @@ mod invoice_popup_role_tests {
         assert!(!local_user_must_act_on_invoice_popup(
             &m,
             &Action::PayBondInvoice
+        ));
+    }
+
+    /// When `is_mine` is still `None` (pre-`save_order` hydration), timeline defaults to taker;
+    /// buy taker must still see PayInvoice as actionable.
+    #[test]
+    fn buy_taker_unknown_role_still_acts_on_pay_invoice() {
+        let m = sample_order_message(
+            Action::PayInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            None,
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    /// Unknown role must not be treated as maker for buy AddInvoice (would block maker popup).
+    #[test]
+    fn buy_maker_unknown_role_does_not_act_on_add_invoice_via_taker_default() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            None,
+        );
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
         ));
     }
 }

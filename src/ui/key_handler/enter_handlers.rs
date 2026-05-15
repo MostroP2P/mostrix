@@ -975,6 +975,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                         scroll_y: 0,
                         action_selection: InvoiceNotificationActionSelection::Primary,
                     };
+                    // Acting party: invoice/payment input. Waiting party: read-only trade-status popup.
                     if local_user_must_act_on_invoice_popup(msg, &invoice_popup_action) {
                         let notification = order_message_to_notification(msg);
                         if invoice_popup_action == Action::AddInvoice {

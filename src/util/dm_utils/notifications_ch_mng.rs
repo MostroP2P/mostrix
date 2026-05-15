@@ -58,6 +58,8 @@ fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppS
             return false;
         }
 
+        // Role-aware gate: counterparty waiting on hold/bond/invoice should not get an input popup.
+        // Relies on `order_msg.is_mine` hydrated in the trade-DM path (post-upsert DB read).
         if !local_user_must_act_on_invoice_popup(order_msg, &notification.action) {
             log::debug!(
                 "[popup] suppressed invoice modal for {:?}: local user is not the acting party",
