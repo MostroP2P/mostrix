@@ -76,7 +76,7 @@ pub use async_tasks::{
 pub use confirmation::{handle_cancel_key, handle_confirm_key};
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
-pub use form_input::{handle_backspace, handle_char_input};
+pub use form_input::{handle_backspace, handle_char_input, is_creating_order_text_input};
 pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
@@ -1111,8 +1111,16 @@ pub fn handle_key_event(
         }
         // 'q' key removed - use Exit tab instead.
         // For confirmations, prefer using Enter on the focused button instead of 'y'/'n'.
+        KeyCode::Char('n') | KeyCode::Char('N') if is_creating_order_text_input(app) => {
+            handle_char_input(code, app, validate_range_amount);
+            Some(true)
+        }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             handle_cancel_key(app);
+            Some(true)
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if is_creating_order_text_input(app) => {
+            handle_char_input(code, app, validate_range_amount);
             Some(true)
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {

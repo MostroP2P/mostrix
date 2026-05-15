@@ -199,7 +199,9 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 ### Specialized Input
 
-- **Forms**: Character input and Backspace are handled by `handle_char_input` and `handle_backspace` for fields in `FormState`.
+- **Forms**: Character input and Backspace are handled by `form_input::handle_char_input` and `form_input::handle_backspace` for fields in `FormState` while `UiMode::UserMode(UserMode::CreatingOrder(_))`.
+  - **Create New Order** (`src/ui/order_form.rs`, `src/ui/orders.rs` — `FormState` / `FormField`): **Tab** / **Shift+Tab** cycle focus; **Space** toggles buy/sell on **Order Type** and single/range on **Fiat Amount**; **Enter** submits; **Esc** cancels.
+  - **Global shortcut guard**: `n` / `N` (cancel) and `c` / `C` (copy invoice / observer clear) are handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), those keys are routed to form typing instead (fixes payment method labels like **SEPA** / **Bizum**). Outside the form, `n` still drives confirmation cancel (`handle_cancel_key`); `c` still copies PayInvoice / PayBondInvoice invoices.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste)
@@ -228,6 +230,10 @@ Renders a table of pending orders from the Mostro network. Status and order kind
 
 Displays a list of direct messages related to the user's trades. Messages are tracked as `read` or `unread`. The detail panel includes a **trade timeline stepper** (six columns): **`FlowStep`** from `src/ui/orders.rs` (`message_trade_timeline_step`), with per-column copy from **`src/ui/constants.rs`** (`listing_timeline_labels`). See [buy order flow.md](buy%20order%20flow.md) and [sell order flow.md](sell%20order%20flow.md).
 
+- **Sidebar labels**: `message_action_compact_label_for_message` prefers **`order_status`** over raw **`action`** (e.g. **Pending order**, **Trade Completed**) so reboot replay does not show stale action text. Non-actionable rows opened with **Enter** use that compact label in an **`OperationResult::Info`** popup (`enter_handlers.rs`).
+- **Pending / bond-pending timeline**: `Status::Pending` and `Status::WaitingTakerBond` map to **`StepPendingOrder`** (discriminant **0**). The stepper uses `step_number() == 0`, so **no column is highlighted** (all steps gray) until the trade advances — avoids falsely lighting step 1 while the order is still on the book or awaiting bond.
+- **Post-success placeholder row**: when **`OperationResult::Success`** arrives before any DM row exists, `try_placeholder_order_message_from_success` (`orders.rs`) inserts one synthetic **`OrderMessage`** for My Trades / Messages (action from status: maker → `NewOrder`, taker → `PayBondInvoice` / `WaitingSellerToPay` / etc.; never synthetic `take-buy` / `take-sell`). **`main.rs`** also resyncs My Trades from DB after **`Success`**, not only after history delete.
+
 - **Enter** on a row: opens an invoice popup, a confirmation popup, the **rating** overlay (`RatingOrder`) when the daemon sent **`action: rate`**, or an info line for other actions (`src/ui/key_handler/enter_handlers.rs`).
 - **Rating overlay**: `render_rating_order` in `src/ui/tabs/tab_content.rs`; keys **Left/Right** or **+/-** adjust stars, **Enter** submits, **Esc** closes.
 - **Invoice popups (`NewMessageNotification`)**:
@@ -249,7 +255,9 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 A stateful form for creating new orders. It supports both fixed amounts and fiat ranges.
 
-**Source**: `src/ui/order_form.rs`
+**Fields** (`FormField` in `src/ui/orders.rs`): Order Type (toggle), Currency, Amount (sats), Fiat Amount (+ optional max when range), Payment Method, Premium (%), Invoice (optional), Expiration (days).
+
+**Source**: `src/ui/order_form.rs`, `src/ui/key_handler/form_input.rs`, `src/ui/key_handler/navigation.rs` (Tab focus)
 
 ### My Trades (Order In Progress) updates
 
