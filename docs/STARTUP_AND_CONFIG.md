@@ -135,14 +135,15 @@ Current startup behavior:
 Several background tasks are spawned to keep the UI and data in sync:
 
 1. **Order Refresh**: Periodically fetches pending orders from Mostro.
-2. **Trade Message Listener**: Listens for new messages related to active orders.
-3. **Network Status Monitor**:
+2. **Relay order DB reconcile** (startup + ~30s orders updater): `run_relay_order_db_reconcile_once` (bulk terminal sync from nostr order events) and `run_targeted_relay_order_db_reconcile_tick` (round-robin per-order fetch for local non-terminal trades with keys). See `relay_order_db_reconcile.rs` and **MESSAGE_FLOW_AND_PROTOCOL.md** (Relay → SQLite section).
+3. **Trade Message Listener**: Listens for new messages related to active orders.
+4. **Network Status Monitor**:
    - `spawn_network_status_monitor` runs every 5 seconds.
    - Re-checks relay reachability from disk settings and emits `NetworkStatus::Offline/Online`.
    - On `Offline`, startup overlay text indicates automatic retry.
    - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
      and reload runtime background tasks.
-4. **Admin Chat Scheduler** (shared-key model):
+5. **Admin Chat Scheduler** (shared-key model):
    - In the main event loop, when `user_role == Admin`, a 5-second interval triggers `spawn_admin_chat_fetch` (see `src/util/order_utils/fetch_scheduler.rs`).
    - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one admin chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
    - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
@@ -154,7 +155,7 @@ Several background tasks are spawned to keep the UI and data in sync:
 
 **Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers/startup.rs` (`apply_admin_chat_updates`)
 
-5. **DM Router Wiring (trade messages)**:
+6. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
    - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
    - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.

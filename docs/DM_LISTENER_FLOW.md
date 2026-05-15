@@ -159,6 +159,9 @@ This function is where `OrderMessage` is created/updated and pushed into `messag
 
 Key behaviors:
 
+- **Early return for non-trade hydration actions**  
+  `Action::NewOrder` and **`Action::CantDo`** return immediately (same as book-side noise). **`CantDo`** is an error response from Mostro (`Payload::CantDo`); it is handled on the **waiter** path (`order_utils/helper.rs` → user-facing `OperationResult`) and must **not** upsert SQLite or replace the per-order Messages row. Treating `CantDo` like a normal trade DM caused bogus order hydration after failed takes or invalid actions.
+
 - **DB refresh/upsert for certain actions**  
   For `add-invoice`, `pay-invoice`, and **`pay-bond-invoice`** (Mostro Phase 1.5+ anti-abuse bond) where the payload embeds an order, the listener persists/upserts the order row (including request id when available). `pay-bond-invoice` is additionally allow-listed for null `request_id` DMs (`src/util/order_utils/helper.rs`) since Mostro emits these unsolicited after a take.
 

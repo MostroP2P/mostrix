@@ -488,11 +488,33 @@ After a successful trade, Mostro may prompt with a DM whose **`action`** is **`r
 - **UI**: **`UiMode::RatingOrder`** (`src/ui/app_state.rs`) — star row **1–5** (`mostro_core::MIN_RATING` / `MAX_RATING`), **Left/Right** or **+/-** to adjust, **Enter** to submit, **Esc** to dismiss. Rendered in **`src/ui/tabs/tab_content.rs`** (`render_rating_order`), opened from Messages **Enter** when the selected message’s action is **`Rate`** (`src/ui/key_handler/enter_handlers.rs`).
 - **Send path**: **`execute_rate_user`** in **`src/util/order_utils/execute_send_msg.rs`** builds **`Message::new_order`** with **`Action::RateUser`**, **`Payload::RatingUser(rating)`**, and the trade **`order_id`**; **identity + trade keys** and **`send_dm` / `wait_for_dm`** match other trade messages. The response is expected to be **`Action::RateReceived`**. No counterparty pubkey is sent — Mostro resolves the peer server-side.
 
+## Relay → SQLite order status reconcile
+
+Mostrix can align local **`orders.status`** with **terminal** states published on Mostro nostr order events when trade DMs were missed or the client was offline.
+
+**Source**: `src/util/order_utils/relay_order_db_reconcile.rs`, wired from `src/util/order_utils/fetch_scheduler.rs` and startup in `src/main.rs`.
+
+| Path | When | What |
+|------|------|------|
+| **Bulk** | Orders updater tick (~30s) + **startup** | `fetch_mostro_order_events` → `aggregate_latest_orders_by_id` → `reconcile_terminal_order_statuses_from_relay` |
+| **Targeted** | Same tick + **startup** | `Order::list_ids_for_targeted_relay_reconcile` (non-terminal rows with `trade_keys`) → round-robin up to **`TARGETED_RELAY_RECONCILE_MAX_PER_TICK`** (5) per-order fetches → `reconcile_one_order_if_terminal` |
+
+`reconcile_one_order_if_terminal` only writes when the relay snapshot status is **terminal** (`is_terminal_trade_status`) and passes **`should_apply_status_transition`** (same monotonic rules as DM updates). Pending orders on the book are not “healed” from relay unless the relay reports a terminal outcome (e.g. **Expired**).
+
 ## Messages tab: trade timeline stepper (buy and sell listings)
 
-The Messages detail panel shows a **six-step** timeline for trades with known **`order_kind`**. The highlighted column comes from **`message_trade_timeline_step`** → **`FlowStep`** (`src/ui/orders.rs`): **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**, each with discriminants **1…6** for UI columns (sell swaps the first two phase columns vs buy). Resolution dispatches to **`buy_listing_flow_step`** or **`sell_listing_flow_step`**, combining **`OrderMessage::order_status`**, **`is_mine`** (maker/taker), and **`action`**, via **`listing_step_from_status(order_kind, status)`** (kind-specific status mapping) and kind-specific **`_flow_step_from_action`**. **`Action::Rate`** / **`RateReceived`** are handled before status so **`rate`** DMs without a full order payload still highlight the final step.
+The Messages detail panel shows a **six-step** timeline for trades with known **`order_kind`**. The highlighted column comes from **`message_trade_timeline_step`** → **`FlowStep`** (`src/ui/orders.rs`): **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**. Step enums use **`repr(u8)`** discriminants passed to **`FlowStep::step_number()`** (UI columns are **1…6** in `message_flow_tab.rs`; discriminant **0** = no highlight).
+
+Resolution dispatches to **`buy_listing_flow_step`** or **`sell_listing_flow_step`**, combining **`OrderMessage::order_status`**, **`is_mine`** (maker/taker), and **`action`**, via **`listing_step_from_status(order_kind, status)`** (kind-specific status mapping) and kind-specific **`_flow_step_from_action`**. **`Action::Rate`** / **`RateReceived`** are handled before status so **`rate`** DMs without a full order payload still highlight the final step.
+
+- **`Status::Pending`** / **`Status::WaitingTakerBond`** → **`StepPendingOrder`** (discriminant **0**): stepper shows **no** green/current column (all gray) until payment/bond phases start.
+- **`Status::Success`** → final column (**`StepRate`**, discriminant **6**); avoids snapping back to an older step when reboot replay delivers a pre-success DM after the trade completed.
 
 Step **wording** (strings per column) lives in **`src/ui/constants.rs`** (`StepLabel`, buy/sell step arrays); **`listing_timeline_labels`** selects the array by kind and role.
+
+**Sidebar / info popups**: `message_action_compact_label_for_message` maps status to short labels (**Pending order**, **Trade Completed**, …) so list text stays accurate after hydration.
+
+**Success-before-DM placeholder**: `try_placeholder_order_message_from_success` builds one synthetic **`OrderMessage`** when `OperationResult::Success` lands before any DM row (My Trades sidebar); placeholder **`action`** is status-driven and never uses synthetic **`take-buy`** / **`take-sell`** (those break Messages **Enter**). Applied in `order_ch_mng.rs` via `insert_placeholder_order_message_if_needed`.
 
 See **[buy order flow.md](buy%20order%20flow.md)** and **[sell order flow.md](sell%20order%20flow.md)** for product context and **[TUI_INTERFACE.md](TUI_INTERFACE.md)** for **`UiMode`** overlays.
 

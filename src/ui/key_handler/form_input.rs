@@ -2,6 +2,15 @@ use crate::ui::orders::FormField;
 use crate::ui::{AppState, TakeOrderState, UiMode, UserMode};
 use crossterm::event::KeyCode;
 
+/// True when the create-order form has a text-editable field focused (not buy/sell toggle).
+pub fn is_creating_order_text_input(app: &AppState) -> bool {
+    matches!(
+        app.mode,
+        UiMode::UserMode(UserMode::CreatingOrder(ref form))
+            if form.focused != FormField::OrderType
+    )
+}
+
 /// Handle character input for forms
 pub fn handle_char_input(
     code: KeyCode,
@@ -96,5 +105,25 @@ pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut 
             // Validate after deletion
             validate_range_amount(take_state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{FormState, UserRole};
+
+    #[test]
+    fn creating_order_text_input_excludes_order_type_toggle() {
+        let mut app = AppState::new(UserRole::User);
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+        assert!(is_creating_order_text_input(&app));
+
+        if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
+            form.focused = FormField::OrderType;
+        }
+        assert!(!is_creating_order_text_input(&app));
     }
 }

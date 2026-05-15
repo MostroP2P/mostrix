@@ -238,6 +238,7 @@ The `orders` table is essential for:
 
 - **Trade Keys**: Stored as hex-encoded secret keys. **Critical security data** - these keys are needed to decrypt messages for each trade.
 - **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic. Status writes are guarded for monotonic progression where applicable (stale/out-of-order DMs should not move an order backward in the trade phase graph); see `should_apply_status_transition` in `src/util/order_utils/helper.rs` and **DM_LISTENER_FLOW.md**.
+- **Relay terminal reconcile**: `src/util/order_utils/relay_order_db_reconcile.rs` can set **`orders.status`** from the latest Mostro nostr order event when the relay reports a **terminal** status and the local row is still non-terminal. Runs on startup and on the periodic orders updater (`fetch_scheduler.rs`). Targeted mode (`Order::list_ids_for_targeted_relay_reconcile`) only considers rows with **`trade_keys`** set and status not in `TERMINAL_ORDER_HISTORY_STATUSES` (`helper.rs`). Does not replace trade-DM hydration for active phases; complements it when the client missed the final DM.
 - **Maker/Taker persistence**: `save_order(..., is_maker)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow).
 
 **Source**: `src/models.rs:154`

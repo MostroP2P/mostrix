@@ -73,7 +73,7 @@ fn foo(msg: &crate::ui::DisputeChatMessage) { /* ... */ }
 - **Extract helpers**: Break complex functions into smaller, focused helpers.
 - **Use private functions**: Create internal helper functions when needed.
 
-**Example**: If `handle_key_event` grows too large, split it into `handle_navigation_keys`, `handle_form_input`, etc.
+**Example**: If `handle_key_event` grows too large, split it into `handle_navigation_keys`, `handle_form_input`, etc. Form typing lives in **`src/ui/key_handler/form_input.rs`**; global keys like **`n`** (cancel) and **`c`** (copy) must not swallow characters when **`is_creating_order_text_input`** is true — add guarded arms in `mod.rs` before the generic `Char(_)` handler.
 
 ### 5. Module and Function Organization
 
