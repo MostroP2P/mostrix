@@ -1254,7 +1254,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Buy),
             Some(true),
         );
-        assert!(!local_user_must_act_on_invoice_popup(&m, &Action::PayInvoice));
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
     }
 
     #[test]
@@ -1264,7 +1267,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Buy),
             Some(false),
         );
-        assert!(local_user_must_act_on_invoice_popup(&m, &Action::PayInvoice));
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
     }
 
     #[test]
@@ -1274,7 +1280,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Sell),
             Some(true),
         );
-        assert!(local_user_must_act_on_invoice_popup(&m, &Action::PayInvoice));
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
     }
 
     #[test]
@@ -1284,7 +1293,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Sell),
             Some(false),
         );
-        assert!(!local_user_must_act_on_invoice_popup(&m, &Action::PayInvoice));
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
     }
 
     #[test]
@@ -1294,7 +1306,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Buy),
             Some(true),
         );
-        assert!(local_user_must_act_on_invoice_popup(&m, &Action::AddInvoice));
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
+        ));
     }
 
     #[test]
@@ -1304,7 +1319,10 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Sell),
             Some(false),
         );
-        assert!(local_user_must_act_on_invoice_popup(&m, &Action::AddInvoice));
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
+        ));
     }
 
     #[test]
@@ -1314,6 +1332,9 @@ mod invoice_popup_role_tests {
             Some(mostro_core::order::Kind::Buy),
             Some(true),
         );
-        assert!(!local_user_must_act_on_invoice_popup(&m, &Action::PayBondInvoice));
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
     }
 }

@@ -1,9 +1,9 @@
 // Notifications channel manager - handles message notifications from async tasks
 use crate::settings::load_settings_from_disk;
+use crate::ui::orders::BuyerInvoicePreference;
 use crate::ui::orders::{
     invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
 };
-use crate::ui::orders::BuyerInvoicePreference;
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification, UiMode,
 };
