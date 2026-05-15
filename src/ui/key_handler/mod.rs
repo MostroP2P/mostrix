@@ -967,7 +967,11 @@ pub fn handle_key_event(
                 }
                 UiMode::NewMessageNotification(
                     _,
-                    Action::AddInvoice | Action::PayInvoice | Action::PayBondInvoice,
+                    Action::AddInvoice
+                    | Action::PayInvoice
+                    | Action::PayBondInvoice
+                    | Action::WaitingSellerToPay
+                    | Action::WaitingBuyerInvoice,
                     ref mut invoice_state,
                 ) => {
                     return Some(update_invoice_notification_action_selection(
