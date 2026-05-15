@@ -9,7 +9,8 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::orders::{
-    invoice_popup_allowed_for_order_status, strip_new_order_messages_and_clamp_selected,
+    invoice_popup_allowed_for_order_status, message_action_compact_label_for_message,
+    strip_new_order_messages_and_clamp_selected,
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
@@ -1051,9 +1052,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 }
             } else {
                 // Non-actionable messages: show info popup (no "send" semantics).
-                let notification = order_message_to_notification(msg);
-                app.mode =
-                    UiMode::OperationResult(OperationResult::Info(notification.message_preview));
+                let popup_message = message_action_compact_label_for_message(msg).to_string();
+                app.mode = UiMode::OperationResult(OperationResult::Info(popup_message));
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
