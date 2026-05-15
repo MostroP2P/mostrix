@@ -722,7 +722,7 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             | Status::Dispute
             | Status::SettledByAdmin
             | Status::CompletedByAdmin => {
-                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder))
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder))
             }
         },
     }
