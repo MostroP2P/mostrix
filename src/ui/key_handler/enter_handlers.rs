@@ -9,7 +9,8 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::orders::{
-    invoice_popup_allowed_for_order_status, message_action_compact_label_for_message,
+    invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
+    message_action_compact_label_for_message, order_message_to_waiting_notification,
     strip_new_order_messages_and_clamp_selected,
 };
 use crate::ui::{
@@ -966,25 +967,35 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             let action = inner_message_kind.action.clone();
             if let Some(invoice_popup_action) = invoice_popup_action_for_message_action(&action) {
                 if invoice_popup_allowed_for_order_status(&invoice_popup_action, msg.order_status) {
-                    // Show invoice/payment popup only when the phase still requires it.
-                    let notification = order_message_to_notification(msg);
-                    if invoice_popup_action == Action::AddInvoice {
-                        app.mode = present_add_invoice_popup(
-                            &mut app.buyer_invoice_preference,
-                            notification,
-                        );
+                    let invoice_state = InvoiceInputState {
+                        invoice_input: String::new(),
+                        focused: false,
+                        just_pasted: false,
+                        copied_to_clipboard: false,
+                        scroll_y: 0,
+                        action_selection: InvoiceNotificationActionSelection::Primary,
+                    };
+                    // Acting party: invoice/payment input. Waiting party: read-only trade-status popup.
+                    if local_user_must_act_on_invoice_popup(msg, &invoice_popup_action) {
+                        let notification = order_message_to_notification(msg);
+                        if invoice_popup_action == Action::AddInvoice {
+                            app.mode = present_add_invoice_popup(
+                                &mut app.buyer_invoice_preference,
+                                notification,
+                            );
+                        } else {
+                            app.mode = UiMode::NewMessageNotification(
+                                notification,
+                                invoice_popup_action,
+                                invoice_state,
+                            );
+                        }
                     } else {
-                        let invoice_state = InvoiceInputState {
-                            invoice_input: String::new(),
-                            focused: false,
-                            just_pasted: false,
-                            copied_to_clipboard: false,
-                            scroll_y: 0,
-                            action_selection: InvoiceNotificationActionSelection::Primary,
-                        };
+                        let notification = order_message_to_waiting_notification(msg);
+                        let waiting_action = notification.action.clone();
                         app.mode = UiMode::NewMessageNotification(
                             notification,
-                            invoice_popup_action,
+                            waiting_action,
                             invoice_state,
                         );
                     }

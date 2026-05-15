@@ -294,7 +294,10 @@ pub struct OrderMessage {
     pub buyer_invoice: Option<String>,
     /// Book side (`buy` / `sell`) for this trade, carried across DMs that omit `Payload::Order`.
     pub order_kind: Option<mostro_core::order::Kind>,
-    /// `true` = maker (created the order), `false` = taker, from local DB when known.
+    /// `true` = maker (created the order), `false` = taker.
+    ///
+    /// `None` = role not hydrated yet (e.g. first take-order DM before `save_order(false)`).
+    /// Populated from SQLite in the trade-DM listener after upsert (see `util::dm_utils`).
     pub is_mine: Option<bool>,
     /// Last known Mostro order status for this trade (payload or DB).
     pub order_status: Option<mostro_core::order::Status>,
@@ -324,6 +327,8 @@ pub struct MessageNotification {
     pub action: Action,
     pub sat_amount: Option<i64>,
     pub invoice: Option<String>,
+    /// Long explanatory text for waiting-phase popups.
+    pub body: Option<String>,
 }
 
 /// Whether an invoice modal is appropriate for the current trade phase.
@@ -357,6 +362,116 @@ pub fn invoice_popup_allowed_for_order_status(
         ),
         _ => false,
     }
+}
+
+/// Whether the local user must act on an invoice/payment popup (`AddInvoice`, `PayInvoice`, `PayBondInvoice`).
+///
+/// Buy/sell listing kind swaps which side is maker vs taker for each action. When [`OrderMessage::is_mine`]
+/// is still `None`, we assume **taker** (same as the Messages timeline): safe for the common pre-`save_order`
+/// take-order race; once the DM listener hydrates role from SQLite, `Some(true/false)` drives the decision.
+#[must_use]
+pub fn local_user_must_act_on_invoice_popup(msg: &OrderMessage, popup_action: &Action) -> bool {
+    let is_maker = msg.is_mine.unwrap_or(false);
+    match (msg.order_kind, popup_action) {
+        (Some(mostro_core::order::Kind::Buy), Action::AddInvoice) => is_maker,
+        (Some(mostro_core::order::Kind::Buy), Action::PayInvoice | Action::PayBondInvoice) => {
+            !is_maker
+        }
+        (Some(mostro_core::order::Kind::Sell), Action::AddInvoice) => !is_maker,
+        (Some(mostro_core::order::Kind::Sell), Action::PayInvoice | Action::PayBondInvoice) => {
+            is_maker
+        }
+        (None, Action::PayInvoice | Action::PayBondInvoice) => msg
+            .buyer_invoice
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        (None, Action::AddInvoice) => false,
+        _ => false,
+    }
+}
+
+/// Explanatory text when the local user is waiting on the counterparty (no invoice action required).
+#[must_use]
+pub fn waiting_phase_description(msg: &OrderMessage) -> &'static str {
+    let is_maker = msg.is_mine.unwrap_or(false);
+    let action = msg.message.get_inner_message_kind().action.clone();
+    match (msg.order_kind, is_maker, action) {
+        (
+            Some(mostro_core::order::Kind::Buy),
+            true,
+            Action::WaitingSellerToPay | Action::PayInvoice,
+        ) => "Your order was taken. Waiting for the seller to pay the hold invoice. You will be prompted to add your Lightning invoice when it is your turn.",
+        (
+            Some(mostro_core::order::Kind::Sell),
+            false,
+            Action::WaitingSellerToPay | Action::PayInvoice,
+        ) => "Waiting for the seller to pay the hold invoice.",
+        (
+            Some(mostro_core::order::Kind::Buy),
+            false,
+            Action::WaitingBuyerInvoice | Action::AddInvoice,
+        ) => "Waiting for the buyer to add their Lightning invoice.",
+        (
+            Some(mostro_core::order::Kind::Sell),
+            true,
+            Action::WaitingBuyerInvoice | Action::AddInvoice,
+        ) => "Waiting for the buyer to add their Lightning invoice.",
+        (_, true, Action::PayBondInvoice) => {
+            "Waiting for the taker to pay the anti-abuse bond."
+        }
+        _ => "Waiting for the counterparty. No action is required from you right now.",
+    }
+}
+
+/// Short phase title for waiting-phase popups.
+#[must_use]
+pub fn waiting_phase_short_label(msg: &OrderMessage) -> &'static str {
+    let is_maker = msg.is_mine.unwrap_or(false);
+    let action = msg.message.get_inner_message_kind().action.clone();
+    match (msg.order_kind, is_maker, action) {
+        (_, true, Action::PayBondInvoice) => "Waiting for Taker Bond",
+        (
+            Some(mostro_core::order::Kind::Buy),
+            true,
+            Action::WaitingSellerToPay | Action::PayInvoice,
+        )
+        | (
+            Some(mostro_core::order::Kind::Sell),
+            false,
+            Action::WaitingSellerToPay | Action::PayInvoice,
+        ) => "Waiting for Seller to Pay",
+        (
+            Some(mostro_core::order::Kind::Buy),
+            false,
+            Action::WaitingBuyerInvoice | Action::AddInvoice,
+        )
+        | (
+            Some(mostro_core::order::Kind::Sell),
+            true,
+            Action::WaitingBuyerInvoice | Action::AddInvoice,
+        ) => "Waiting for Buyer to Add Invoice",
+        _ => "Trade status",
+    }
+}
+
+/// UI action for a waiting-phase popup (preserves phase semantics for rendering).
+#[must_use]
+pub fn waiting_popup_action_for_message(msg: &OrderMessage) -> Action {
+    match msg.message.get_inner_message_kind().action {
+        Action::WaitingBuyerInvoice | Action::AddInvoice => Action::WaitingBuyerInvoice,
+        _ => Action::WaitingSellerToPay,
+    }
+}
+
+/// Build a waiting-phase notification from an order message row.
+#[must_use]
+pub fn order_message_to_waiting_notification(msg: &OrderMessage) -> MessageNotification {
+    let mut notification = order_message_to_notification(msg);
+    notification.message_preview = waiting_phase_short_label(msg).to_string();
+    notification.body = Some(waiting_phase_description(msg).to_string());
+    notification.action = waiting_popup_action_for_message(msg);
+    notification
 }
 
 /// State for handling invoice input in AddInvoice notifications
@@ -496,6 +611,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         action,
         sat_amount: msg.sat_amount,
         invoice: msg.buyer_invoice.clone(),
+        body: None,
     }
 }
 
@@ -1109,5 +1225,152 @@ mod timeline_step_tests {
             message_trade_timeline_step(&m),
             FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder)
         );
+    }
+}
+
+#[cfg(test)]
+mod invoice_popup_role_tests {
+    use super::*;
+
+    fn sample_order_message(
+        action: Action,
+        order_kind: Option<mostro_core::order::Kind>,
+        is_mine: Option<bool>,
+    ) -> OrderMessage {
+        let keys = nostr_sdk::Keys::generate();
+        OrderMessage {
+            message: Message::new_order(None, None, None, action, None),
+            timestamp: 0,
+            sender: keys.public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind,
+            is_mine,
+            order_status: None,
+            read: false,
+            auto_popup_shown: false,
+        }
+    }
+
+    #[test]
+    fn buy_maker_waiting_seller_pay_does_not_act_on_pay_invoice() {
+        let m = sample_order_message(
+            Action::WaitingSellerToPay,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+        );
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    #[test]
+    fn buy_taker_pays_hold_invoice() {
+        let m = sample_order_message(
+            Action::PayInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    #[test]
+    fn sell_maker_pays_hold_invoice() {
+        let m = sample_order_message(
+            Action::PayInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    #[test]
+    fn sell_taker_waiting_seller_pay_does_not_act_on_pay_invoice() {
+        let m = sample_order_message(
+            Action::WaitingSellerToPay,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+        );
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    #[test]
+    fn buy_maker_adds_invoice() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
+        ));
+    }
+
+    #[test]
+    fn sell_taker_adds_invoice() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
+        ));
+    }
+
+    #[test]
+    fn buy_maker_does_not_pay_bond() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+        );
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    /// When `is_mine` is still `None` (pre-`save_order` hydration), timeline defaults to taker;
+    /// buy taker must still see PayInvoice as actionable.
+    #[test]
+    fn buy_taker_unknown_role_still_acts_on_pay_invoice() {
+        let m = sample_order_message(
+            Action::PayInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            None,
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayInvoice
+        ));
+    }
+
+    /// Unknown role must not be treated as maker for buy AddInvoice (would block maker popup).
+    #[test]
+    fn buy_maker_unknown_role_does_not_act_on_add_invoice_via_taker_default() {
+        let m = sample_order_message(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            None,
+        );
+        assert!(!local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::AddInvoice
+        ));
     }
 }

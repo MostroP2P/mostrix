@@ -203,6 +203,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             action: action.clone(),
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),
+            body: None,
         };
 
         let invoice_state = InvoiceInputState {

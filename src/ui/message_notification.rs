@@ -499,6 +499,95 @@ fn render_pay_bond_invoice(
     );
 }
 
+/// Inset a rect horizontally so wrapped text does not touch popup borders.
+fn inset_horizontal(area: Rect, pad: u16) -> Rect {
+    if area.width <= pad.saturating_mul(2) {
+        return area;
+    }
+    Rect {
+        x: area.x.saturating_add(pad),
+        y: area.y,
+        width: area.width.saturating_sub(pad.saturating_mul(2)),
+        height: area.height,
+    }
+}
+
+/// Waiting-phase popup when the local user has no invoice/payment action yet.
+fn render_waiting_phase_popup(
+    f: &mut ratatui::Frame,
+    popup: Rect,
+    notification: &MessageNotification,
+    invoice_state: &InvoiceInputState,
+) {
+    let [inner] = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+        .margin(1)
+        .areas(popup);
+
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // phase label
+            Constraint::Length(1), // spacer
+            Constraint::Length(5), // description (fixed height; avoids pushing buttons down)
+            Constraint::Length(1), // spacer before buttons
+            Constraint::Length(3), // action buttons
+            Constraint::Length(1), // help text
+        ],
+    )
+    .split(inner);
+
+    let order_id_str = helpers::format_order_id(notification.order_id);
+    render_order_id_header(f, chunks[0], &order_id_str);
+
+    render_message_preview(f, chunks[1], &notification.message_preview, true);
+
+    let body_text = notification
+        .body
+        .as_deref()
+        .unwrap_or("Waiting for the counterparty. No action is required from you right now.");
+    f.render_widget(
+        Paragraph::new(body_text)
+            .style(Style::default().fg(Color::White))
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .alignment(ratatui::layout::Alignment::Center),
+        inset_horizontal(chunks[3], 2),
+    );
+
+    helpers::render_yes_no_buttons(
+        f,
+        chunks[5],
+        matches!(
+            invoice_state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        ),
+        "Ok",
+        "Cancel Order",
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[6],
+    );
+}
+
 /// Renders default notification popup for other actions
 fn render_default_notification(
     f: &mut ratatui::Frame,
@@ -575,6 +664,8 @@ pub fn render_message_notification(
         }
         // Bond popup is one row taller for the "Locked, not spent" explanation line.
         mostro_core::prelude::Action::PayBondInvoice => (90, 20),
+        mostro_core::prelude::Action::WaitingSellerToPay
+        | mostro_core::prelude::Action::WaitingBuyerInvoice => (90, 16),
         _ => (70, 8),
     };
 
@@ -585,6 +676,8 @@ pub fn render_message_notification(
         mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
         mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
         mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
+        mostro_core::prelude::Action::WaitingSellerToPay
+        | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status",
         _ => "📨 New Message",
     };
 
@@ -603,6 +696,10 @@ pub fn render_message_notification(
         }
         mostro_core::prelude::Action::PayBondInvoice => {
             render_pay_bond_invoice(f, popup, notification, invoice_state);
+        }
+        mostro_core::prelude::Action::WaitingSellerToPay
+        | mostro_core::prelude::Action::WaitingBuyerInvoice => {
+            render_waiting_phase_popup(f, popup, notification, invoice_state);
         }
         _ => {
             render_default_notification(f, popup, notification);

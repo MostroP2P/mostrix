@@ -414,6 +414,35 @@ async fn upsert_order_from_trade_dm(
     }
 }
 
+/// Resolve maker/taker for [`crate::ui::OrderMessage::is_mine`] after a trade DM is stored.
+///
+/// Callers must pass SQLite **after** [`upsert_order_from_trade_dm`], not the pre-upsert snapshot
+/// (see `handle_trade_dm_for_order`).
+///
+/// # Why `Option<bool>`
+///
+/// - [`crate::util::db_utils::save_order`] always writes `is_mine` (`true` = maker, `false` = taker).
+/// - [`crate::models::Order::upsert_from_small_order_dm`] may insert a row first and defaults new
+///   rows to maker; that must not be treated as role-known until `save_order` runs.
+///
+/// # Branches
+///
+/// - **Row existed before upsert** (create/take already persisted): post-upsert `is_mine` is trusted.
+/// - **No row before upsert** (typical taker race: `TrackOrder` before `save_order(false)`): keep
+///   `None` unless an earlier Messages row already carried role; UI helpers then default to taker.
+fn effective_is_mine_for_trade_dm_message(
+    had_local_row_before_upsert: bool,
+    post_upsert_is_mine: Option<bool>,
+    prior_message_is_mine: Option<bool>,
+) -> Option<bool> {
+    if had_local_row_before_upsert {
+        // Maker after `send_new_order`, or taker after `take_order` — DB role is authoritative.
+        return post_upsert_is_mine.or(prior_message_is_mine);
+    }
+    // First DM before `save_order`: ignore upsert's maker default (`true` in SQLite).
+    prior_message_is_mine
+}
+
 /// Handle a single decoded trade DM for a given order/trade index.
 #[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
@@ -436,7 +465,10 @@ async fn handle_trade_dm_for_order(
         return;
     }
 
+    // Snapshot before upsert: used for status/cancel paths and to detect whether `save_order`
+    // already established maker/taker (vs a DM-only row inserted below).
     let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
+    let had_local_row_before_upsert = db_order.is_some();
     let status_from_db = db_order
         .as_ref()
         .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
@@ -592,8 +624,18 @@ async fn handle_trade_dm_for_order(
         }
     }
 
-    // `Order.is_mine` is `bool` (not `Option<bool>`) so taker (`false`) is never confused with “unknown”.
-    let effective_is_mine = db_order.as_ref().map(|r| r.is_mine).or(prior_is_mine);
+    // Re-read after upsert so `OrderMessage.is_mine` matches SQLite once `save_order` ran.
+    // Without this, we kept the pre-upsert `db_order` snapshot and makers could stay `None`
+    // while invoice/waiting popups gated on [`crate::ui::orders::local_user_must_act_on_invoice_popup`].
+    let post_upsert_is_mine = Order::get_by_id(pool, &order_id.to_string())
+        .await
+        .ok()
+        .map(|r| r.is_mine);
+    let effective_is_mine = effective_is_mine_for_trade_dm_message(
+        had_local_row_before_upsert,
+        post_upsert_is_mine,
+        prior_is_mine,
+    );
 
     let baseline_status = status_from_db.or(prior_order_status);
     let should_accept_candidate = status_candidate
@@ -1570,12 +1612,41 @@ pub async fn listen_for_order_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::trade_message_is_terminal;
+    use super::{effective_is_mine_for_trade_dm_message, trade_message_is_terminal};
     use mostro_core::prelude::{Action, Message};
 
     #[test]
     fn action_only_canceled_is_terminal() {
         let message = Message::new_order(None, None, None, Action::Canceled, None);
         assert!(trade_message_is_terminal(&message));
+    }
+
+    #[test]
+    fn effective_is_mine_uses_post_upsert_db_when_row_existed() {
+        assert_eq!(
+            effective_is_mine_for_trade_dm_message(true, Some(true), None),
+            Some(true)
+        );
+        assert_eq!(
+            effective_is_mine_for_trade_dm_message(true, Some(false), None),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn effective_is_mine_ignores_dm_upsert_default_without_prior_save_order_row() {
+        // DM-only insert defaults to maker in SQLite; do not treat as authoritative yet.
+        assert_eq!(
+            effective_is_mine_for_trade_dm_message(false, Some(true), None),
+            None
+        );
+    }
+
+    #[test]
+    fn effective_is_mine_keeps_prior_message_role_before_db_row() {
+        assert_eq!(
+            effective_is_mine_for_trade_dm_message(false, Some(true), Some(false)),
+            Some(false)
+        );
     }
 }
