@@ -160,7 +160,14 @@ This function is where `OrderMessage` is created/updated and pushed into `messag
 Key behaviors:
 
 - **Early return for non-trade hydration actions**  
-  `Action::NewOrder` and **`Action::CantDo`** return immediately (same as book-side noise). **`CantDo`** is an error response from Mostro (`Payload::CantDo`); it is handled on the **waiter** path (`order_utils/helper.rs` → user-facing `OperationResult`) and must **not** upsert SQLite or replace the per-order Messages row. Treating `CantDo` like a normal trade DM caused bogus order hydration after failed takes or invalid actions.
+  **`Action::CantDo`** returns immediately. It is an error response from Mostro (`Payload::CantDo`); it is handled on the **waiter** path (`order_utils/helper.rs` → user-facing `OperationResult`) and must **not** upsert SQLite or replace the per-order Messages row.
+
+- **Trade-DM `Action::NewOrder` (special cases only)**  
+  Create-order `NewOrder` uses the **waiter** path (`send_new_order`), not this listener. On a tracked trade subscription, `try_handle_new_order_trade_dm` handles only:
+  - pre-Active **taker** republish → delete stale take row and remove from Messages;
+  - pre-Active **maker** republish → revert DB to `pending`, remove from Messages, refresh My Trades maker-book cache;
+  - **range child** listing (`Payload::Order` + `pending`, no local row) → `save_order` + track.
+  When that helper returns `false`, the message continues through generic trade-DM hydration. Replayed `NewOrder` must not replace an established non-`NewOrder` Messages row (`new_order_would_regress_messages_row`).
 
 - **DB refresh/upsert for certain actions**  
   For `add-invoice`, `pay-invoice`, and **`pay-bond-invoice`** (Mostro Phase 1.5+ anti-abuse bond) where the payload embeds an order, the listener persists/upserts the order row (including request id when available). `pay-bond-invoice` is additionally allow-listed for null `request_id` DMs (`src/util/order_utils/helper.rs`) since Mostro emits these unsolicited after a take.

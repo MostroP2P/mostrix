@@ -563,9 +563,19 @@ async fn persist_range_child_listing_from_new_order(
     true
 }
 
+/// Returns `true` when a replayed trade-DM `NewOrder` would overwrite a non-`NewOrder` Messages row.
+fn new_order_would_regress_messages_row(action: &Action, existing_action: &Action) -> bool {
+    matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder)
+}
+
 /// Handle `Action::NewOrder` on the trade-DM listener (not the create-order waiter).
 ///
-/// Returns `true` when the message was consumed (caller should return).
+/// Returns `true` only for handled special cases (caller may return early):
+/// - pre-Active taker republish (drop stale take row),
+/// - pre-Active maker republish (revert to `pending`, refresh maker-book cache),
+/// - range child listing (no local row, `save_order` ok).
+///
+/// Returns `false` for all other trade-DM `NewOrder` shapes; caller continues generic hydration.
 async fn try_handle_new_order_trade_dm(
     messages: &Arc<Mutex<Vec<OrderMessage>>>,
     order_id: Uuid,
@@ -645,8 +655,10 @@ async fn handle_trade_dm_for_order(
     if matches!(action, Action::CantDo) {
         return;
     }
+    // Trade-DM `NewOrder` special cases only (create-order `NewOrder` uses the waiter path).
+    // Unhandled shapes fall through to generic hydration with `new_order_would_regress_messages_row`.
     if matches!(action, Action::NewOrder) {
-        let _ = try_handle_new_order_trade_dm(
+        if try_handle_new_order_trade_dm(
             messages,
             order_id,
             trade_index,
@@ -654,8 +666,14 @@ async fn handle_trade_dm_for_order(
             pool,
             trade_keys,
         )
-        .await;
-        return;
+        .await
+        {
+            return;
+        }
+        log::debug!(
+            "Trade-DM NewOrder not handled by republish/range-child path; continuing generic hydration order_id={}",
+            order_id
+        );
     }
 
     // Snapshot before upsert: used for status/cancel paths and to detect whether `save_order`
@@ -909,7 +927,9 @@ async fn handle_trade_dm_for_order(
     let should_replace_row = match &existing_message_data {
         None => true,
         Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status)) => {
-            if timestamp > *existing_timestamp {
+            if new_order_would_regress_messages_row(&action, existing_action) {
+                false
+            } else if timestamp > *existing_timestamp {
                 true
             } else if timestamp == *existing_timestamp {
                 action != *existing_action
@@ -1791,8 +1811,13 @@ pub async fn listen_for_order_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_is_mine_for_trade_dm_message, trade_message_is_terminal};
-    use mostro_core::prelude::{Action, Message};
+    use super::{
+        effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
+        is_pre_active_taker_take, new_order_would_regress_messages_row,
+        small_order_pending_from_new_order_payload, trade_message_is_terminal,
+    };
+    use crate::models::Order;
+    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
 
     #[test]
     fn action_only_canceled_is_terminal() {
@@ -1827,5 +1852,87 @@ mod tests {
             effective_is_mine_for_trade_dm_message(false, Some(true), Some(false)),
             Some(false)
         );
+    }
+
+    fn sample_order_row(is_mine: bool, status: &str) -> Order {
+        Order {
+            id: Some("00000000-0000-0000-0000-000000000001".to_string()),
+            kind: Some("buy".to_string()),
+            status: Some(status.to_string()),
+            amount: 1000,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "bank".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            is_mine,
+            buyer_invoice: None,
+            request_id: Some(1),
+            trade_index: Some(1),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        }
+    }
+
+    #[test]
+    fn small_order_pending_from_new_order_requires_pending_status() {
+        let pending = SmallOrder {
+            status: Some(Status::Pending),
+            ..Default::default()
+        };
+        let active = SmallOrder {
+            status: Some(Status::Active),
+            ..Default::default()
+        };
+        assert!(
+            small_order_pending_from_new_order_payload(&Some(Payload::Order(pending))).is_some()
+        );
+        assert!(
+            small_order_pending_from_new_order_payload(&Some(Payload::Order(active))).is_none()
+        );
+        assert!(small_order_pending_from_new_order_payload(&None).is_none());
+    }
+
+    #[test]
+    fn pre_active_taker_take_predicate() {
+        let row = sample_order_row(false, "waiting-payment");
+        assert!(is_pre_active_taker_take(&row));
+        assert!(!is_pre_active_maker_listing(&row));
+    }
+
+    #[test]
+    fn pre_active_maker_listing_predicate() {
+        let row = sample_order_row(true, "waiting-taker-bond");
+        assert!(is_pre_active_maker_listing(&row));
+        assert!(!is_pre_active_taker_take(&row));
+    }
+
+    #[test]
+    fn active_trade_is_not_pre_active_special_case() {
+        let maker = sample_order_row(true, "active");
+        let taker = sample_order_row(false, "active");
+        assert!(!is_pre_active_maker_listing(&maker));
+        assert!(!is_pre_active_taker_take(&taker));
+    }
+
+    #[test]
+    fn new_order_does_not_regress_non_new_order_messages_row() {
+        assert!(new_order_would_regress_messages_row(
+            &Action::NewOrder,
+            &Action::PayBondInvoice,
+        ));
+        assert!(!new_order_would_regress_messages_row(
+            &Action::NewOrder,
+            &Action::NewOrder,
+        ));
+        assert!(!new_order_would_regress_messages_row(
+            &Action::PayInvoice,
+            &Action::NewOrder,
+        ));
     }
 }
