@@ -174,21 +174,35 @@ pub fn build_active_order_chat_list(
     rows
 }
 
+fn fatal_on_poisoned_messages_lock(e: impl std::fmt::Display) {
+    crate::util::request_fatal_restart(format!(
+        "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+    ));
+}
+
 /// My Trades row count from the shared projection (navigation clamping).
 #[must_use]
 pub fn active_order_chat_list_len(app: &AppState) -> usize {
     match app.messages.lock() {
-        Ok(g) => build_active_order_chat_list(&g, &app.my_trades_maker_book).len(),
-        Err(_) => 0,
+        Ok(guard) => build_active_order_chat_list(&guard, &app.my_trades_maker_book).len(),
+        Err(e) => {
+            fatal_on_poisoned_messages_lock(e);
+            0
+        }
     }
 }
 
 /// My Trades sidebar/action projection from current [`AppState`] (clones `messages` once).
 #[must_use]
 pub fn active_order_chat_list_snapshot(app: &AppState) -> Vec<OrderChatListItem> {
-    let messages = match app.messages.lock() {
-        Ok(g) => g.clone(),
-        Err(_) => return Vec::new(),
-    };
-    build_active_order_chat_list(&messages, &app.my_trades_maker_book)
+    match app.messages.lock() {
+        Ok(guard) => {
+            let messages = guard.clone();
+            build_active_order_chat_list(&messages, &app.my_trades_maker_book)
+        }
+        Err(e) => {
+            fatal_on_poisoned_messages_lock(e);
+            Vec::new()
+        }
+    }
 }
