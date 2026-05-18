@@ -49,7 +49,7 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
                 &mut messages,
                 &mut app.selected_message_idx,
             );
-            let n = build_active_order_chat_list(&messages).len();
+            let n = build_active_order_chat_list(&messages, &app.my_trades_maker_book).len();
             if n == 0 {
                 app.selected_order_chat_idx = 0;
             } else if app.selected_order_chat_idx >= n {

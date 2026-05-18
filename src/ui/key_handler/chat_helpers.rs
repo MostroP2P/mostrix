@@ -1,4 +1,4 @@
-use crate::ui::helpers::build_active_order_chat_list;
+use crate::ui::helpers::active_order_chat_list_snapshot;
 use crate::ui::{
     helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
     OperationResult, RatingOrderState, UiMode, ViewingMessageButtonSelection,
@@ -125,8 +125,7 @@ pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
 
 /// Resolve selected MyTrades order id + status from the same projection used by sidebar rendering.
 pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, Option<Status>)> {
-    let messages_snapshot = app.messages.lock().ok()?.clone();
-    let rows = build_active_order_chat_list(&messages_snapshot);
+    let rows = active_order_chat_list_snapshot(app);
     rows.get(app.selected_order_chat_idx).and_then(|row| {
         Uuid::parse_str(&row.order_id)
             .ok()

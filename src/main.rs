@@ -11,7 +11,8 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup, sync_user_order_history_messages_from_db,
+    load_user_order_chats_at_startup, refresh_my_trades_maker_book_cache,
+    sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
@@ -29,7 +30,8 @@ use crate::util::{
         spawn_admin_chat_fetch, spawn_user_order_chat_fetch, start_fetch_scheduler,
         validate_range_amount, FetchSchedulerResult,
     },
-    set_dm_router_cmd_tx, set_fatal_error_tx, spawn_save_attachment, StartupDmHydration,
+    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
+    StartupDmHydration,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -208,6 +210,7 @@ async fn main() -> Result<(), anyhow::Error> {
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
         anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
     })?;
+    set_order_result_tx(order_result_tx.clone()).map_err(|msg| anyhow::anyhow!(msg))?;
 
     // Configure Nostr client.
     let my_keys = settings
@@ -437,8 +440,19 @@ async fn main() -> Result<(), anyhow::Error> {
                     // flows. Do not tie this to arbitrary `OperationResult::Success`.
                     let resync_my_trades_from_db =
                         matches!(&result, OperationResult::OrderHistoryDeleted { .. });
+                    let refresh_maker_book_cache = matches!(
+                        &result,
+                        OperationResult::MyTradesMakerBookChanged
+                            | OperationResult::Success(_)
+                    );
 
-                    handle_operation_result(result, &mut app);
+                    if refresh_maker_book_cache && app.user_role == UserRole::User {
+                        refresh_my_trades_maker_book_cache(&pool, &mut app).await;
+                    }
+
+                    if !matches!(result, OperationResult::MyTradesMakerBookChanged) {
+                        handle_operation_result(result, &mut app);
+                    }
                     if resync_my_trades_from_db && app.user_role == UserRole::User {
                         sync_user_order_history_messages_from_db(&pool, &mut app).await;
                     }

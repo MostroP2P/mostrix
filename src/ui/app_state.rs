@@ -13,6 +13,7 @@ use crate::ui::chat::{
     AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeFilter, OrderChatLastSeen,
     UserOrderChatMessage,
 };
+use crate::ui::helpers::OrderChatListItem;
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
     BuyerInvoicePreference, InvoiceInputState, KeyInputState, MessageNotification,
@@ -163,6 +164,8 @@ pub struct AppState {
     pub order_chat_input_enabled: bool,
     /// Per-order static header (id, kind, created_at, trade index, initiator) from take/create and DB.
     pub order_chat_static: HashMap<Uuid, OrderChatStaticHeader>,
+    /// Maker `pending` listings on the book without a trade-DM row in Messages (refreshed on events).
+    pub my_trades_maker_book: Vec<OrderChatListItem>,
     pub order_chats: HashMap<String, Vec<UserOrderChatMessage>>, // Chat messages per order id
     pub order_chat_scrollview_state: tui_scrollview::ScrollViewState,
     pub order_chat_selected_message_idx: Option<usize>,
@@ -245,6 +248,7 @@ impl AppState {
             order_chat_input: String::new(),
             order_chat_input_enabled: true,
             order_chat_static: HashMap::new(),
+            my_trades_maker_book: Vec::new(),
             order_chats: HashMap::new(),
             order_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
             order_chat_selected_message_idx: None,

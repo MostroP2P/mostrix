@@ -1,4 +1,4 @@
-use crate::ui::helpers::build_active_order_chat_list;
+use crate::ui::helpers::active_order_chat_list_len;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
@@ -257,16 +257,12 @@ fn handle_up_key(
                     } else if app.selected_message_idx > 0 {
                         app.selected_message_idx -= 1;
                     }
-                    // Mark selected message as read
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let n = match app.messages.lock() {
-                    Ok(g) => build_active_order_chat_list(&g).len(),
-                    Err(_) => 0,
-                };
+                let n = active_order_chat_list_len(app);
                 if n > 0 && app.selected_order_chat_idx > 0 {
                     app.selected_order_chat_idx -= 1;
                 }
@@ -412,16 +408,12 @@ fn handle_down_key(
                     } else if app.selected_message_idx < messages_len.saturating_sub(1) {
                         app.selected_message_idx += 1;
                     }
-                    // Mark selected message as read
                     if let Some(msg) = messages.get_mut(app.selected_message_idx) {
                         msg.read = true;
                     }
                 }
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
-                let n = match app.messages.lock() {
-                    Ok(g) => build_active_order_chat_list(&g).len(),
-                    Err(_) => 0,
-                };
+                let n = active_order_chat_list_len(app);
                 if n > 0 && app.selected_order_chat_idx < n.saturating_sub(1) {
                     app.selected_order_chat_idx += 1;
                 }

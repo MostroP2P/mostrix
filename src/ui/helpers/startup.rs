@@ -6,6 +6,7 @@ use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::order_chat_projection::order_chat_list_item_from_db_order;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
     AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
@@ -148,6 +149,25 @@ pub async fn load_user_order_chats_at_startup(
         .await
         .unwrap_or_default();
     apply_user_order_chat_updates(app, updates);
+    refresh_my_trades_maker_book_cache(pool, app).await;
+}
+
+/// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (maker + `pending` only).
+pub async fn refresh_my_trades_maker_book_cache(pool: &SqlitePool, app: &mut AppState) {
+    let rows = match Order::get_user_history_orders(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!(
+                "Failed to load orders for My Trades maker-book cache: {}",
+                e
+            );
+            return;
+        }
+    };
+    app.my_trades_maker_book = rows
+        .iter()
+        .filter_map(order_chat_list_item_from_db_order)
+        .collect();
 }
 
 fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
@@ -163,8 +183,6 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    // Use non-NewOrder actions for history projection so My Trades can be DB-fed
-    // without polluting Messages-tab rows that are intentionally stripped.
     let action = match kind {
         Some(OrderKind::Buy) => Action::TakeBuy,
         Some(OrderKind::Sell) => Action::TakeSell,
@@ -212,7 +230,6 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         is_mine: Some(order.is_mine),
         order_status: status,
         read: true,
-        // This is need to avoid the missing visualization of the invoice popup when the order is in the WaitingBuyerInvoice status
         auto_popup_shown: !matches!(status, Some(Status::WaitingBuyerInvoice)),
     };
     Some(history_message)
