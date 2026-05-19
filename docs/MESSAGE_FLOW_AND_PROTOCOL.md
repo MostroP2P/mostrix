@@ -579,10 +579,10 @@ Database operations (saving orders, updating trade indices) log errors but don't
 
 Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_privkey` ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
-| Action | Trade outcome | Typical payload today | Planned payload |
-|--------|---------------|----------------------|-----------------|
-| `AdminSettle` | Pay buyer (release escrow to buyer) | `null` | `Payload::BondResolution` via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) |
-| `AdminCancel` | Refund seller | `null` | same |
+| Action | Trade outcome | Payload (via `BondSlashChoice`) |
+|--------|---------------|--------------------------------|
+| `AdminSettle` | Pay buyer (release escrow to buyer) | `None` → `null`; slash variants → `BondResolution` |
+| `AdminCancel` | Refund seller | same |
 
 **Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
@@ -591,7 +591,7 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
 - **Post-slash payout**: slashed bonds may trigger `Action::AddBondInvoice` to the non-slashed party (daemon PR [#738](https://github.com/MostroP2P/mostro/pull/738)); handled on the trader notification path, not admin UI.
 
-**Entry points (today):** `execute_finalize_dispute` → `execute_admin_settle` / `execute_admin_cancel` in `src/util/order_utils/`.
+**Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel`. UI still passes `BondSlashChoice::default()` until the slash picker lands.
 
 ## Stateless Recovery
 

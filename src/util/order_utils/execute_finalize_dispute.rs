@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::models::AdminDispute;
 use crate::util::mostro_info::MostroInstanceInfo;
 
-use super::{execute_admin_cancel, execute_admin_settle};
+use super::{execute_admin_cancel, execute_admin_settle, BondSlashChoice};
 
 /// Finalize a dispute by either settling (paying buyer) or canceling (refunding seller).
 ///
@@ -23,6 +23,7 @@ use super::{execute_admin_cancel, execute_admin_settle};
 /// # Arguments
 ///
 /// * `dispute_id` - The UUID of the dispute to finalize
+/// * `bond` - Anti-abuse bond slash choice for the wire payload
 /// * `client` - The Nostr client for sending messages
 /// * `mostro_pubkey` - The public key of the Mostro daemon
 /// * `pool` - The database connection pool for updating dispute status
@@ -43,8 +44,10 @@ use super::{execute_admin_cancel, execute_admin_settle};
 /// - Failed to serialize the message
 /// - Failed to send the DM
 /// - Failed to update dispute status in database
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_finalize_dispute(
     dispute_id: &Uuid,
+    bond: BondSlashChoice,
     admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
@@ -52,7 +55,6 @@ pub async fn execute_finalize_dispute(
     is_settle: bool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // First, fetch the dispute and check if it's already finalized
     let dispute_id_str = dispute_id.to_string();
     let dispute: AdminDispute = sqlx::query_as::<_, AdminDispute>(
         r#"SELECT * FROM admin_disputes WHERE dispute_id = ? LIMIT 1"#,
@@ -61,7 +63,6 @@ pub async fn execute_finalize_dispute(
     .fetch_one(pool)
     .await?;
 
-    // Check if dispute is already finalized - block further actions
     if dispute.is_finalized() {
         let action_name = if is_settle {
             "AdminSettle"
@@ -76,7 +77,6 @@ pub async fn execute_finalize_dispute(
         ));
     }
 
-    // Check if the specific action can be performed
     if is_settle && !dispute.can_settle() {
         return Err(anyhow::anyhow!(
             "Cannot settle dispute {}: action not allowed in current state",
@@ -90,13 +90,12 @@ pub async fn execute_finalize_dispute(
         ));
     }
 
-    // Parse the related order ID (stored in AdminDispute.id) - this is the ID Mostro expects
     let order_id = Uuid::parse_str(&dispute.id)?;
 
-    // Execute the appropriate action (settle or cancel) using the order ID
     let result = if is_settle {
         execute_admin_settle(
             &order_id,
+            bond,
             admin_keys,
             client,
             mostro_pubkey,
@@ -106,6 +105,7 @@ pub async fn execute_finalize_dispute(
     } else {
         execute_admin_cancel(
             &order_id,
+            bond,
             admin_keys,
             client,
             mostro_pubkey,
@@ -114,9 +114,8 @@ pub async fn execute_finalize_dispute(
         .await
     };
 
-    result?; // Propagate error if action failed
+    result?;
 
-    // Update dispute status in database using the order_id (primary key)
     if is_settle {
         AdminDispute::set_status_settled(pool, &dispute.id).await?;
     } else {
@@ -129,6 +128,11 @@ pub async fn execute_finalize_dispute(
         "canceled (seller refunded)"
     };
 
-    log::info!("✅ Dispute {} {}!", dispute_id, action_name);
+    log::info!(
+        "✅ Dispute {} {} ({})!",
+        dispute_id,
+        action_name,
+        bond.log_context()
+    );
     Ok(())
 }

@@ -36,17 +36,27 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use crate::settings::load_settings_from_disk;
+use crate::ui::key_handler::admin_handlers::{
+    execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+};
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
-use crate::ui::key_handler::message_handlers::submit_add_invoice;
+use crate::ui::key_handler::message_handlers::{
+    handle_enter_message_notification, handle_enter_rating_order, handle_enter_viewing_message,
+    submit_add_invoice,
+};
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
     save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
     validate_ln_address_format,
 };
+use crate::ui::key_handler::validation::{
+    validate_currency, validate_mostro_pubkey, validate_relay,
+};
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
+use crate::util::order_utils::BondSlashChoice;
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
@@ -56,9 +66,6 @@ fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
         _ => None,
     }
 }
-use crate::ui::key_handler::validation::{
-    validate_currency, validate_mostro_pubkey, validate_relay,
-};
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
     Mnemonic::generate(12)
@@ -358,16 +365,6 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
         },
     );
 }
-
-// Admin handlers moved to admin_handlers.rs
-use crate::ui::key_handler::admin_handlers::{
-    execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
-};
-
-// Message handlers moved to message_handlers.rs
-use crate::ui::key_handler::message_handlers::{
-    handle_enter_message_notification, handle_enter_rating_order, handle_enter_viewing_message,
-};
 
 /// Handle Enter key - dispatches to mode-specific handlers
 pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) -> bool {
@@ -681,7 +678,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }) => {
             if selected_button {
                 // YES selected - execute the finalization action
-                execute_finalize_dispute_action(app, dispute_id, ctx, is_settle);
+                // TODO(bond-slash UI): pass admin-selected bond; default preserves legacy null payload.
+                execute_finalize_dispute_action(
+                    app,
+                    dispute_id,
+                    ctx,
+                    is_settle,
+                    BondSlashChoice::default(),
+                );
             } else {
                 // NO selected - go back to finalization popup
                 app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {

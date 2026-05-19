@@ -22,7 +22,7 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 ## Admin
 
 - **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, shared-keys chat, workflows
-- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Pay buyer / refund seller; **bond slash** on `admin-settle` / `admin-cancel` (`BondSlashChoice` + `mostro-core` 0.11.3 — protocol helpers done, TUI/execute wiring pending)
+- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Pay buyer / refund seller; **bond slash** via `BondSlashChoice` (execute layer wired; TUI slash picker + `bond_enabled` gating pending)
 
 ## Contributing & tooling
 

@@ -10,8 +10,9 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 |-------|--------|--------|
 | **`mostro-core` 0.11.3** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
-| **Execute layer** (`execute_admin_settle` / `cancel`) | Pending | Still sends `payload: null`; step 3 will pass `BondSlashChoice` |
+| **Execute layer** (`execute_admin_settle` / `cancel`) | Done | Accepts `BondSlashChoice`; uses `to_optional_payload()` on the wire |
 | **TUI** (slash picker + confirm summary) | Pending | Still two-step: outcome → confirm only |
+| **`bond_enabled` gating** (kind 38385) | Pending | Skip slash UI when instance bonds are off |
 
 Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html). Daemon bond payout (`Action::AddBondInvoice`, Mostro PR [#738](https://github.com/MostroP2P/mostro/pull/738)) is documented under trade flows, not admin finalization.
 
@@ -35,7 +36,7 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 9. **Confirm** *(planned)*: Yes/No popup summarizing outcome + bond choice
 10. **Execute**: Press Enter on confirm — sends encrypted DM to Mostro
 
-**Current UI (until step 4–5 land):** steps 7 → confirm (no bond slash step); wire payload is always `null`.
+**Current UI (until steps 8–9 land):** steps 7 → confirm (no bond slash step); execute uses `BondSlashChoice::default()` (`None` → `payload: null`).
 
 ## Finalization Actions
 
@@ -149,7 +150,7 @@ Message::new_dispute(
     None,
     None,
     Action::AdminSettle, // or AdminCancel
-    bond.to_optional_payload(), // None for no slash; Some(BondResolution) when slashing; today: execute still passes None
+    bond.to_optional_payload(), // None → null; slash variants → BondResolution
 )
 ```
 
@@ -178,6 +179,16 @@ Internally, Mostrix:
 - Looks up the dispute in the local `admin_disputes` table by its **dispute_id**.
 - Reads the corresponding **order ID** from the `id` column.
 - Uses that order ID as the first parameter of `Message::new_dispute`, matching what Mostro expects for finalization actions.
+
+### Execute API
+
+Call chain from the TUI (today):
+
+1. [`execute_finalize_dispute_action`](../src/ui/key_handler/admin_handlers.rs) — spawns async task with `bond: BondSlashChoice` (currently `BondSlashChoice::default()` from [`enter_handlers.rs`](../src/ui/key_handler/enter_handlers.rs)).
+2. [`execute_finalize_dispute`](../src/util/order_utils/execute_finalize_dispute.rs) — DB guards, then dispatches settle or cancel with the same `bond`.
+3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())`, logs include `bond.log_context()`.
+
+Success toasts use the same bond phrase (e.g. `settled (buyer paid) (no bond slash)`).
 
 ### Authentication
 
@@ -301,8 +312,8 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 
 - `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, `Payload::BondResolution` mapping, wire tests
 - `src/ui/dispute_finalization_popup.rs` - Popup rendering logic
-- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle implementation (payload wiring pending)
-- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel implementation (payload wiring pending)
+- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle + `BondSlashChoice` payload
+- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel + `BondSlashChoice` payload
 - `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
 - `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
 - `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending
