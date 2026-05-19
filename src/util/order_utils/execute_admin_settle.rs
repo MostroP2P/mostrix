@@ -42,8 +42,8 @@ pub async fn execute_admin_settle(
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Create AdminSettle message
-    // No payload needed - just the order ID (Mostro expects the order UUID here)
+    // Create AdminSettle message (order UUID in `id`; dispute UUID is local-only).
+    // TODO(bond-slash): accept `BondSlashChoice` and pass `bond.to_optional_payload()` here.
     let settle_message =
         Message::new_dispute(Some(*order_id), None, None, Action::AdminSettle, None)
             .as_json()

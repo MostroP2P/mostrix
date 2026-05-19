@@ -75,7 +75,7 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-   - **Finalization**: Press **Shift+F** to open the dispute finalization popup from the Disputes in Progress tab
+   - **Finalization**: Press **Shift+F** to open the dispute finalization popup from the Disputes in Progress tab (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)). **Planned:** after choosing Pay Buyer or Refund Seller, pick a **bond slash** option (none / buyer / seller / both) when the Mostro instance has anti-abuse bonds enabled; [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) and protocol `bond_resolution` payload are implemented, UI and `execute_admin_*` wiring are not yet.
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
@@ -353,7 +353,7 @@ pub struct SolverDisputeInfo {
 
 **Identity & Status**:
 
-- **`id`**: Unique identifier (UUID) for the **order** associated with this dispute. Mostrix stores this as the primary key in the `admin_disputes` table and uses it as the ID sent to Mostro when performing admin finalization actions (AdminSettle/AdminCancel).
+- **`id`**: Unique identifier (UUID) for the **order** associated with this dispute. Mostrix stores this as the primary key in the `admin_disputes` table and uses it as the ID sent to Mostro when performing admin finalization actions (`AdminSettle` / `AdminCancel`). Optional [`bond_resolution`](https://mostro.network/protocol/admin_settle_order.html) payload (slash buyer/seller/both/none) will be attached via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) once the execute layer and TUI are wired.
 - **`kind`**: Order kind (e.g., "Buy" or "Sell")
 - **`status`**: Current dispute status (see [Dispute States](#dispute-states) section)
 - **`order_previous_status`**: The order's status before the dispute was initiated

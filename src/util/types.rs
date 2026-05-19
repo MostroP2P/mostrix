@@ -39,6 +39,9 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::InvalidParameters => {
             "Invalid parameters - check your order details".to_string()
         }
+        CantDoReason::InvalidPayload => {
+            "Invalid payload - check bond slash choices or message format".to_string()
+        }
         CantDoReason::OrderAlreadyCanceled => "Order is already canceled".to_string(),
         CantDoReason::CantCreateUser => "Cannot create user - please contact support".to_string(),
         CantDoReason::IsNotYourOrder => "This is not your order".to_string(),

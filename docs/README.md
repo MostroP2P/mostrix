@@ -22,7 +22,7 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 ## Admin
 
 - **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, shared-keys chat, workflows
-- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Pay buyer / refund seller popups
+- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Pay buyer / refund seller; **bond slash** on `admin-settle` / `admin-cancel` (`BondSlashChoice` + `mostro-core` 0.11.3 — protocol helpers done, TUI/execute wiring pending)
 
 ## Contributing & tooling
 
@@ -36,5 +36,5 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Implementation plans (AI / contributors)
 
-- Tracked Markdown plans for larger features live under **[`.cursor/plans/`](../.cursor/plans/README.md)** (git-tracked; see root `.gitignore` exceptions). Use them to capture design decisions and link to `src/` paths for codegen and reviews.
+- Tracked Markdown plans for larger features live under **[`.cursor/plans/`](../.cursor/plans/README.md)** (git-tracked; see root `.gitignore` exceptions). Use them to capture design decisions and link to `src/` paths for codegen and reviews. Current: [admin dispute bond slash](../.cursor/plans/admin_dispute_bond_slash.plan.md).
 

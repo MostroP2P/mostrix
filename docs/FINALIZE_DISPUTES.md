@@ -4,6 +4,17 @@
 
 This document describes how admins finalize disputes in Mostrix after reviewing the case and communicating with the buyer and seller.
 
+### Implementation status (anti-abuse bond slash)
+
+| Layer | Status | Notes |
+|-------|--------|--------|
+| **`mostro-core` 0.11.3** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload` |
+| **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
+| **Execute layer** (`execute_admin_settle` / `cancel`) | Pending | Still sends `payload: null`; step 3 will pass `BondSlashChoice` |
+| **TUI** (slash picker + confirm summary) | Pending | Still two-step: outcome → confirm only |
+
+Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html). Daemon bond payout (`Action::AddBondInvoice`, Mostro PR [#738](https://github.com/MostroP2P/mostro/pull/738)) is documented under trade flows, not admin finalization.
+
 ## User Flow
 
 1. **Navigate to Disputes**: Admin opens the "Disputes in Progress" tab
@@ -19,8 +30,12 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
    - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Shift+F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
-7. **Choose Action**: Use Left/Right arrows to select action button
-8. **Execute**: Press Enter to execute the selected action
+7. **Choose trade outcome**: Use Left/Right arrows — **Pay Buyer** (`AdminSettle`) or **Refund Seller** (`AdminCancel`), or **Exit**
+8. **Choose bond slash** *(planned)*: Four options — no slash, slash buyer, slash seller, slash both (skipped when instance `bond_enabled` is false)
+9. **Confirm** *(planned)*: Yes/No popup summarizing outcome + bond choice
+10. **Execute**: Press Enter on confirm — sends encrypted DM to Mostro
+
+**Current UI (until step 4–5 land):** steps 7 → confirm (no bond slash step); wire payload is always `null`.
 
 ## Finalization Actions
 
@@ -42,6 +57,23 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 
 - **Effect**: Returns to dispute management without taking action
 - **Use Case**: Need more information, want to continue chatting with parties
+
+### Bond resolution (anti-abuse bonds)
+
+Independent of settle vs cancel: the admin chooses whether to **slash** posted anti-abuse bonds. Valid on both `admin-settle` and `admin-cancel` only.
+
+| Choice | `slash_seller` | `slash_buyer` | When to use |
+|--------|----------------|---------------|-------------|
+| No bond slash | false | false | Release bonds; no penalty |
+| Slash buyer bond | false | true | Buyer at fault (e.g. false claim on sell order) |
+| Slash seller bond | true | false | Seller at fault |
+| Slash both bonds | true | true | Both parties violated rules |
+
+Mostrix maps these via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs): `to_optional_payload()` sends `payload: null` for **no slash** and `Payload::BondResolution` only when a side is slashed. Use `to_payload()` if you need an explicit `{false, false}` object (same server semantics as null).
+
+If the daemon rejects a slash (e.g. side has no bond row), Mostro may reply with `CantDo(InvalidPayload)` — surfaced as *"Invalid payload - check bond slash choices or message format"* ([`get_cant_do_description`](../src/util/types.rs)).
+
+After a slash, the non-slashed party may receive `Action::AddBondInvoice` to claim their share of the bond (see Mostro anti-abuse bond spec / PR #738); that is handled on the **trader** path, not in the admin finalization popup.
 
 ## UI Components
 
@@ -105,17 +137,41 @@ The popup displays comprehensive dispute information:
 
 ### Message Structure
 
-Both finalization actions use the same message structure:
+Both finalization actions use `Message::new_dispute` with the **order** UUID (from `admin_disputes.id`), not the dispute UUID:
 
 ```rust
+use crate::util::order_utils::BondSlashChoice;
+
+let bond = BondSlashChoice::SlashBuyer; // example
+
 Message::new_dispute(
-    Some(order_id),  // UUID of the order associated with this dispute (Mostro expects the order ID)
-    None,            // No request_id needed
-    None,            // No trade_index needed
-    action,          // AdminSettle or AdminCancel
-    None             // No payload needed
+    Some(order_id),
+    None,
+    None,
+    Action::AdminSettle, // or AdminCancel
+    bond.to_optional_payload(), // None for no slash; Some(BondResolution) when slashing; today: execute still passes None
 )
 ```
+
+Example JSON (settle + slash buyer), per [protocol](https://mostro.network/protocol/admin_settle_order.html):
+
+```json
+{
+  "dispute": {
+    "version": 1,
+    "id": "<order-uuid>",
+    "action": "admin-settle",
+    "payload": {
+      "bond_resolution": {
+        "slash_seller": false,
+        "slash_buyer": true
+      }
+    }
+  }
+}
+```
+
+> **Note:** Mostrix serializes `Message::Dispute` (not the `order` wrapper shown in some protocol examples); `mostro-core` accepts both shapes on decode. The `id` field is always the **order** id.
 
 Internally, Mostrix:
 
@@ -243,9 +299,11 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 
 ## Related Files
 
+- `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, `Payload::BondResolution` mapping, wire tests
 - `src/ui/dispute_finalization_popup.rs` - Popup rendering logic
-- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle implementation
-- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel implementation
+- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle implementation (payload wiring pending)
+- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel implementation (payload wiring pending)
+- `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
 - `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
 - `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending
 - `src/ui/key_handler/mod.rs` - Chat input handling and clipboard operations

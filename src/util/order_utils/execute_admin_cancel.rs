@@ -42,8 +42,8 @@ pub async fn execute_admin_cancel(
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Create AdminCancel message
-    // No payload needed - just the order ID (Mostro expects the order UUID here)
+    // Create AdminCancel message (order UUID in `id`; dispute UUID is local-only).
+    // TODO(bond-slash): accept `BondSlashChoice` and pass `bond.to_optional_payload()` here.
     let cancel_message =
         Message::new_dispute(Some(*order_id), None, None, Action::AdminCancel, None)
             .as_json()
