@@ -221,6 +221,11 @@ cargo clippy --all-targets --all-features  # Lint code
 
 **Example**: `AppState` uses `Arc<Mutex<>>` for thread-safe access to messages and trade indices.
 
+## Dependencies
+
+- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the same minor line as the Mostro daemon you test against (currently **0.11.3**). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix.
+- **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) for `admin-settle` / `admin-cancel` payloads; see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
+
 ## Summary Checklist
 
 When writing or reviewing code, ensure:

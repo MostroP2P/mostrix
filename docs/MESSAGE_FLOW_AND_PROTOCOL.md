@@ -547,6 +547,10 @@ If the response's `request_id` doesn't match the sent request, the operation is 
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
 
+### `CantDo` reasons (`mostro-core` 0.11.3+)
+
+User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_description`](../src/util/types.rs). Notable for admin work: **`InvalidPayload`** — wrong payload shape or impossible values (e.g. `bond_resolution` slashing a side with no bond). Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)); they surface via waiters / `OperationResult` popups.
+
 ## Admin Chat Fetch (Single-Flight, Shared-Key Based)
 
 When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys**.
@@ -570,6 +574,24 @@ This avoids overlapping relay queries and duplicate work when the 5‑second tic
 
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.
+
+## Admin dispute finalization (`AdminSettle` / `AdminCancel`)
+
+Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_privkey` ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
+
+| Action | Trade outcome | Typical payload today | Planned payload |
+|--------|---------------|----------------------|-----------------|
+| `AdminSettle` | Pay buyer (release escrow to buyer) | `null` | `Payload::BondResolution` via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) |
+| `AdminCancel` | Refund seller | `null` | same |
+
+**Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
+
+- **Client types**: `mostro-core` 0.11.3 — `BondResolution`, `Payload::BondResolution`.
+- **Mostrix helper**: `BondSlashChoice::to_payload()` builds the wire payload; unit tests in `bond_resolution.rs`.
+- **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
+- **Post-slash payout**: slashed bonds may trigger `Action::AddBondInvoice` to the non-slashed party (daemon PR [#738](https://github.com/MostroP2P/mostro/pull/738)); handled on the trader notification path, not admin UI.
+
+**Entry points (today):** `execute_finalize_dispute` → `execute_admin_settle` / `execute_admin_cancel` in `src/util/order_utils/`.
 
 ## Stateless Recovery
 

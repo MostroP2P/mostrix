@@ -1,4 +1,5 @@
 // Order utilities module
+mod bond_resolution;
 mod execute_add_invoice;
 mod execute_admin_add_solver;
 mod execute_admin_cancel;
@@ -13,6 +14,7 @@ mod send_new_order;
 mod take_order;
 
 // Re-export public functions
+pub use bond_resolution::BondSlashChoice;
 pub use execute_add_invoice::execute_add_invoice;
 pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_admin_cancel::execute_admin_cancel;
