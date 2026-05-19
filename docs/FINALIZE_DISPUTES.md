@@ -69,7 +69,7 @@ Independent of settle vs cancel: the admin chooses whether to **slash** posted a
 | Slash seller bond | true | false | Seller at fault |
 | Slash both bonds | true | true | Both parties violated rules |
 
-Mostrix maps these to [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) → `Payload::BondResolution`. Legacy clients used `payload: null` (server treats as no slash); new code uses explicit `{false, false}` via `BondSlashChoice::None`.
+Mostrix maps these via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs): `to_optional_payload()` sends `payload: null` for **no slash** and `Payload::BondResolution` only when a side is slashed. Use `to_payload()` if you need an explicit `{false, false}` object (same server semantics as null).
 
 If the daemon rejects a slash (e.g. side has no bond row), Mostro may reply with `CantDo(InvalidPayload)` — surfaced as *"Invalid payload - check bond slash choices or message format"* ([`get_cant_do_description`](../src/util/types.rs)).
 
@@ -149,7 +149,7 @@ Message::new_dispute(
     None,
     None,
     Action::AdminSettle, // or AdminCancel
-    bond.to_optional_payload(), // Some(Payload::BondResolution(...)) when wired; today: None
+    bond.to_optional_payload(), // None for no slash; Some(BondResolution) when slashing; today: execute still passes None
 )
 ```
 

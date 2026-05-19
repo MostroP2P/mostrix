@@ -587,7 +587,7 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 **Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
 - **Client types**: `mostro-core` 0.11.3 — `BondResolution`, `Payload::BondResolution`.
-- **Mostrix helper**: `BondSlashChoice::to_payload()` builds the wire payload; unit tests in `bond_resolution.rs`.
+- **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
 - **Post-slash payout**: slashed bonds may trigger `Action::AddBondInvoice` to the non-slashed party (daemon PR [#738](https://github.com/MostroP2P/mostro/pull/738)); handled on the trader notification path, not admin UI.
 
