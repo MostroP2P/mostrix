@@ -1,9 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use mostro_core::prelude::{Payload, Peer, SmallOrder, Status, UserInfo};
 
-use crate::ui::OrderMessage;
+use crate::models::Order;
+use crate::ui::{AppState, OrderMessage};
 
 /// One row in the My Trades sidebar, derived from order DMs. Live status, amounts, and `Payload::Peer`
 /// ratings. Static id/kind/created/trade/initiator come from [`crate::ui::AppState::order_chat_static`].
@@ -22,6 +24,35 @@ pub struct OrderChatListItem {
     /// Reputation for the buyer/seller trade pubkey when the daemon sent `Payload::Peer` with matching pubkey.
     pub buyer_reputation: Option<UserInfo>,
     pub seller_reputation: Option<UserInfo>,
+}
+
+/// Maker listings back on the book (`pending`) with no active trade-DM row in Messages.
+#[must_use]
+pub fn order_chat_list_item_from_db_order(order: &Order) -> Option<OrderChatListItem> {
+    if !order.is_mine {
+        return None;
+    }
+    let status = order
+        .status
+        .as_deref()
+        .and_then(|s| Status::from_str(s).ok());
+    if status != Some(Status::Pending) {
+        return None;
+    }
+    let order_id = order.id.as_deref()?.to_string();
+    Some(OrderChatListItem {
+        order_id,
+        status,
+        amount: Some(order.amount),
+        fiat: Some((order.fiat_amount, order.fiat_code.clone())),
+        trade_index: order.trade_index,
+        payment_method: Some(order.payment_method.clone()),
+        premium: Some(order.premium),
+        buyer_trade_pubkey: None,
+        seller_trade_pubkey: None,
+        buyer_reputation: None,
+        seller_reputation: None,
+    })
 }
 
 fn merge_order_fields(entry: &mut OrderChatListItem, order: &SmallOrder, msg: &OrderMessage) {
@@ -69,11 +100,19 @@ fn status_from_message(msg: &OrderMessage) -> Option<Status> {
     msg.order_status
 }
 
-/// Shared projection for the "My Trades" sidebar and Enter/action handlers.
-///
-/// Important: ordering must stay stable and match the sidebar ordering, otherwise
-/// `selected_order_chat_idx` can desync from the action target.
-pub fn build_active_order_chat_list(messages: &[OrderMessage]) -> Vec<OrderChatListItem> {
+fn sort_order_chat_rows(rows: &mut [OrderChatListItem]) {
+    rows.sort_by(|a, b| match (a.trade_index, b.trade_index) {
+        (Some(ia), Some(ib)) => match ib.cmp(&ia) {
+            Ordering::Equal => a.order_id.cmp(&b.order_id),
+            o => o,
+        },
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.order_id.cmp(&b.order_id),
+    });
+}
+
+fn build_order_chat_list_from_messages(messages: &[OrderMessage]) -> Vec<OrderChatListItem> {
     let mut by_order: HashMap<String, OrderChatListItem> = HashMap::new();
     for msg in messages {
         let Some(order_id) = msg.order_id else {
@@ -101,17 +140,69 @@ pub fn build_active_order_chat_list(messages: &[OrderMessage]) -> Vec<OrderChatL
                 entry
             });
     }
+    by_order.into_values().collect()
+}
 
-    let mut rows: Vec<OrderChatListItem> = by_order.into_values().collect();
-    // Newest trades first: higher NIP-06 trade index ⇒ more recently allocated key.
-    rows.sort_by(|a, b| match (a.trade_index, b.trade_index) {
-        (Some(ia), Some(ib)) => match ib.cmp(&ia) {
-            Ordering::Equal => a.order_id.cmp(&b.order_id),
-            o => o,
-        },
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => a.order_id.cmp(&b.order_id),
-    });
+/// Append maker-on-book rows that have no trade-DM row in Messages (DM rows win on duplicate id).
+fn append_maker_book_rows_without_dm(
+    rows: &mut Vec<OrderChatListItem>,
+    maker_book: &[OrderChatListItem],
+) {
+    let message_ids: std::collections::HashSet<String> =
+        rows.iter().map(|r| r.order_id.clone()).collect();
+    for item in maker_book {
+        if !message_ids.contains(&item.order_id) {
+            rows.push(item.clone());
+        }
+    }
+}
+
+/// Shared projection for the "My Trades" sidebar and Enter/action handlers.
+///
+/// Trade DMs in `messages` take precedence; `maker_book` fills maker `pending` rows with no DM row
+/// (e.g. after a pre-Active taker cancel republish).
+///
+/// Important: ordering must stay stable and match the sidebar ordering, otherwise
+/// `selected_order_chat_idx` can desync from the action target.
+pub fn build_active_order_chat_list(
+    messages: &[OrderMessage],
+    maker_book: &[OrderChatListItem],
+) -> Vec<OrderChatListItem> {
+    let mut rows = build_order_chat_list_from_messages(messages);
+    append_maker_book_rows_without_dm(&mut rows, maker_book);
+    sort_order_chat_rows(&mut rows);
     rows
+}
+
+fn fatal_on_poisoned_messages_lock(e: impl std::fmt::Display) {
+    crate::util::request_fatal_restart(format!(
+        "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+    ));
+}
+
+/// My Trades row count from the shared projection (navigation clamping).
+#[must_use]
+pub fn active_order_chat_list_len(app: &AppState) -> usize {
+    match app.messages.lock() {
+        Ok(guard) => build_active_order_chat_list(&guard, &app.my_trades_maker_book).len(),
+        Err(e) => {
+            fatal_on_poisoned_messages_lock(e);
+            0
+        }
+    }
+}
+
+/// My Trades sidebar/action projection from current [`AppState`] (clones `messages` once).
+#[must_use]
+pub fn active_order_chat_list_snapshot(app: &AppState) -> Vec<OrderChatListItem> {
+    match app.messages.lock() {
+        Ok(guard) => {
+            let messages = guard.clone();
+            build_active_order_chat_list(&messages, &app.my_trades_maker_book)
+        }
+        Err(e) => {
+            fatal_on_poisoned_messages_lock(e);
+            Vec::new()
+        }
+    }
 }

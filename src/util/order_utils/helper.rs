@@ -76,7 +76,7 @@ pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
         Action::WaitingSellerToPay | Action::PayInvoice => Some(Status::WaitingPayment),
         Action::PayBondInvoice => Some(Status::WaitingTakerBond),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
-        Action::FiatSentOk => Some(Status::Success),
+        Action::FiatSentOk => Some(Status::FiatSent),
         Action::Release | Action::Released => Some(Status::Success),
         _ => None,
     }
@@ -101,7 +101,7 @@ fn status_phase_rank_for_actor(
     kind: Option<mostro_core::order::Kind>,
 ) -> Option<u8> {
     match status {
-        Status::Pending => Some(0),
+        Status::Pending | Status::WaitingTakerBond => Some(0),
         // Stage ordering follows listing kind progression (same for maker/taker):
         // Buy listing:  waiting-payment -> waiting-buyer-invoice
         // Sell listing: waiting-buyer-invoice -> waiting-payment
@@ -665,6 +665,16 @@ mod tests {
             Some(mostro_core::order::Kind::Buy),
         );
         assert!(!allow);
+    }
+
+    #[test]
+    fn waiting_taker_bond_can_revert_to_pending() {
+        let kind = Some(mostro_core::order::Kind::Buy);
+        assert!(should_apply_status_transition(
+            Some(Status::WaitingTakerBond),
+            Status::Pending,
+            kind,
+        ));
     }
 
     #[test]

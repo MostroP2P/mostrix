@@ -15,7 +15,7 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
     HELP_KEY,
 };
-use crate::ui::helpers::{build_active_order_chat_list, format_user_rating};
+use crate::ui::helpers::{active_order_chat_list_snapshot, format_user_rating};
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -136,11 +136,7 @@ fn build_order_chat_content(
 }
 
 pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
-    let messages_snapshot = match app.messages.lock() {
-        Ok(g) => g.clone(),
-        Err(_) => Vec::new(),
-    };
-    let active_orders = build_active_order_chat_list(&messages_snapshot);
+    let active_orders = active_order_chat_list_snapshot(app);
 
     let chunks = Layout::new(
         Direction::Horizontal,

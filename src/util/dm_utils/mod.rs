@@ -4,12 +4,14 @@
 mod dm_helpers;
 mod notifications_ch_mng;
 mod order_ch_mng;
+mod order_result_tx;
 
 pub use dm_helpers::seed_admin_chat_last_seen;
 pub use notifications_ch_mng::{
     apply_saved_ln_address_invoice_choice, handle_message_notification, present_add_invoice_popup,
 };
 pub use order_ch_mng::handle_operation_result;
+pub use order_result_tx::{set_order_result_tx, try_notify_my_trades_maker_book_changed};
 
 use anyhow::Result;
 use mostro_core::prelude::*;
@@ -27,7 +29,7 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
-use crate::util::db_utils::{delete_order_by_id, update_order_status};
+use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_giftwrap_to_recipient;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
@@ -370,6 +372,42 @@ fn is_pre_active_status(status: Status) -> bool {
     )
 }
 
+fn order_status_from_row(row: &Order) -> Option<Status> {
+    row.status.as_ref().and_then(|s| Status::from_str(s).ok())
+}
+
+fn is_pre_active_taker_take(row: &Order) -> bool {
+    !row.is_mine
+        && order_status_from_row(row)
+            .map(is_pre_active_status)
+            .unwrap_or(false)
+}
+
+fn is_pre_active_maker_listing(row: &Order) -> bool {
+    row.is_mine
+        && order_status_from_row(row)
+            .map(is_pre_active_status)
+            .unwrap_or(false)
+}
+
+/// Drop SQLite row and Messages-tab entries for a taker take that ended before Active.
+async fn drop_pre_active_taker_take(
+    pool: &sqlx::SqlitePool,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    order_id: Uuid,
+    log_context: &str,
+) {
+    if let Err(e) = delete_order_by_id(pool, &order_id.to_string()).await {
+        log::warn!(
+            "Failed to delete pre-Active taker row on {} {}: {}",
+            log_context,
+            order_id,
+            e
+        );
+    }
+    remove_order_from_messages(messages, order_id);
+}
+
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
 /// `SmallOrder` (e.g. `add-invoice`, `pay-invoice`, `buyer-took-order`, `hold-invoice-payment-accepted`).
 async fn upsert_order_from_trade_dm(
@@ -392,6 +430,7 @@ async fn upsert_order_from_trade_dm(
         (Action::HoldInvoicePaymentAccepted, Some(Payload::Order(o))) => {
             ("HoldInvoicePaymentAccepted", o.clone())
         }
+        (Action::NewOrder, Some(Payload::Order(o))) => ("NewOrder", o.clone()),
         _ => return,
     };
     let msg_request_id = request_id.and_then(|u| i64::try_from(u).ok());
@@ -430,6 +469,158 @@ async fn upsert_order_from_trade_dm(
 /// - **Row existed before upsert** (create/take already persisted): post-upsert `is_mine` is trusted.
 /// - **No row before upsert** (typical taker race: `TrackOrder` before `save_order(false)`): keep
 ///   `None` unless an earlier Messages row already carried role; UI helpers then default to taker.
+fn try_send_track_order(order_id: Uuid, trade_index: i64) {
+    let Ok(guard) = DM_ROUTER_CMD_TX.lock() else {
+        return;
+    };
+    if let Some(tx) = guard.as_ref() {
+        let _ = tx.send(DmRouterCmd::TrackOrder {
+            order_id,
+            trade_index,
+        });
+    }
+}
+
+/// `NewOrder` + `Payload::Order` with `status: pending` — book republish or range child listing.
+fn small_order_pending_from_new_order_payload(payload: &Option<Payload>) -> Option<SmallOrder> {
+    match payload.as_ref()? {
+        Payload::Order(o) if o.status == Some(Status::Pending) => Some(o.clone()),
+        _ => None,
+    }
+}
+
+/// Maker listing returns to the book after a pre-Active taker cancel (`NewOrder` republish).
+async fn revert_maker_to_pending_on_book_republish(
+    pool: &sqlx::SqlitePool,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    order_id: Uuid,
+    trade_index: i64,
+    inner_kind: &MessageKind,
+    trade_keys: &Keys,
+) {
+    upsert_order_from_trade_dm(
+        pool,
+        order_id,
+        &Action::NewOrder,
+        &inner_kind.payload,
+        inner_kind.request_id,
+        trade_keys,
+    )
+    .await;
+    if let Err(e) = update_order_status(pool, &order_id.to_string(), Status::Pending).await {
+        log::warn!(
+            "Failed to revert maker order {} to pending after NewOrder republish: {}",
+            order_id,
+            e
+        );
+    }
+
+    remove_order_from_messages(messages, order_id);
+    try_notify_my_trades_maker_book_changed();
+
+    log::info!(
+        "Order {} reverted to pending on book (NewOrder republish, trade_index={}); removed from Messages",
+        order_id,
+        trade_index
+    );
+}
+
+/// Range-order child listing on a fresh trade key when no local row exists yet.
+async fn persist_range_child_listing_from_new_order(
+    pool: &sqlx::SqlitePool,
+    order_id: Uuid,
+    trade_index: i64,
+    small_order: &SmallOrder,
+    request_id: u64,
+    trade_keys: &Keys,
+) -> bool {
+    if let Err(e) = save_order(
+        small_order.clone(),
+        trade_keys,
+        request_id,
+        trade_index,
+        pool,
+        true,
+    )
+    .await
+    {
+        log::error!(
+            "Failed to persist range child order {} from NewOrder DM: {}",
+            order_id,
+            e
+        );
+        return false;
+    }
+
+    try_send_track_order(order_id, trade_index);
+    try_notify_my_trades_maker_book_changed();
+
+    log::info!(
+        "Persisted new pending child listing {} from NewOrder DM (trade_index={})",
+        order_id,
+        trade_index
+    );
+    true
+}
+
+/// Returns `true` when a replayed trade-DM `NewOrder` would overwrite a non-`NewOrder` Messages row.
+fn new_order_would_regress_messages_row(action: &Action, existing_action: &Action) -> bool {
+    matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder)
+}
+
+/// Handle `Action::NewOrder` on the trade-DM listener (not the create-order waiter).
+///
+/// Returns `true` only for handled special cases (caller may return early):
+/// - pre-Active taker republish (drop stale take row),
+/// - pre-Active maker republish (revert to `pending`, refresh maker-book cache),
+/// - range child listing (no local row, `save_order` ok).
+///
+/// Returns `false` for all other trade-DM `NewOrder` shapes; caller continues generic hydration.
+async fn try_handle_new_order_trade_dm(
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    order_id: Uuid,
+    trade_index: i64,
+    inner_kind: &MessageKind,
+    pool: &sqlx::SqlitePool,
+    trade_keys: &Keys,
+) -> bool {
+    let Some(small_order) = small_order_pending_from_new_order_payload(&inner_kind.payload) else {
+        return false;
+    };
+
+    let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
+
+    if let Some(ref row) = db_order {
+        if is_pre_active_taker_take(row) {
+            drop_pre_active_taker_take(pool, messages, order_id, "NewOrder book republish").await;
+            return true;
+        }
+        if is_pre_active_maker_listing(row) {
+            revert_maker_to_pending_on_book_republish(
+                pool,
+                messages,
+                order_id,
+                trade_index,
+                inner_kind,
+                trade_keys,
+            )
+            .await;
+            return true;
+        }
+        return false;
+    }
+
+    persist_range_child_listing_from_new_order(
+        pool,
+        order_id,
+        trade_index,
+        &small_order,
+        inner_kind.request_id.unwrap_or(0),
+        trade_keys,
+    )
+    .await
+}
+
 fn effective_is_mine_for_trade_dm_message(
     had_local_row_before_upsert: bool,
     post_upsert_is_mine: Option<bool>,
@@ -461,17 +652,35 @@ async fn handle_trade_dm_for_order(
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
-    if matches!(action, Action::NewOrder | Action::CantDo) {
+    if matches!(action, Action::CantDo) {
         return;
+    }
+    // Trade-DM `NewOrder` special cases only (create-order `NewOrder` uses the waiter path).
+    // Unhandled shapes fall through to generic hydration with `new_order_would_regress_messages_row`.
+    if matches!(action, Action::NewOrder) {
+        if try_handle_new_order_trade_dm(
+            messages,
+            order_id,
+            trade_index,
+            inner_kind,
+            pool,
+            trade_keys,
+        )
+        .await
+        {
+            return;
+        }
+        log::debug!(
+            "Trade-DM NewOrder not handled by republish/range-child path; continuing generic hydration order_id={}",
+            order_id
+        );
     }
 
     // Snapshot before upsert: used for status/cancel paths and to detect whether `save_order`
     // already established maker/taker (vs a DM-only row inserted below).
     let db_order = Order::get_by_id(pool, &order_id.to_string()).await.ok();
     let had_local_row_before_upsert = db_order.is_some();
-    let status_from_db = db_order
-        .as_ref()
-        .and_then(|r| r.status.as_ref().and_then(|s| Status::from_str(s).ok()));
+    let status_from_db = db_order.as_ref().and_then(order_status_from_row);
 
     let status_candidate = resolved_status_candidate(&action, &inner_kind.payload);
 
@@ -479,17 +688,9 @@ async fn handle_trade_dm_for_order(
     // keeping it as terminal trade state.
     if matches!(action, Action::Canceled)
         && inner_kind.payload.is_none()
-        && db_order.as_ref().map(|r| !r.is_mine).unwrap_or(false)
-        && status_from_db.map(is_pre_active_status).unwrap_or(false)
+        && db_order.as_ref().is_some_and(is_pre_active_taker_take)
     {
-        if let Err(e) = delete_order_by_id(pool, &order_id.to_string()).await {
-            log::warn!(
-                "Failed to delete pre-Active taker-canceled order {}: {}",
-                order_id,
-                e
-            );
-        }
-        remove_order_from_messages(messages, order_id);
+        drop_pre_active_taker_take(pool, messages, order_id, "Canceled").await;
         return;
     }
 
@@ -726,9 +927,7 @@ async fn handle_trade_dm_for_order(
     let should_replace_row = match &existing_message_data {
         None => true,
         Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status)) => {
-            // Never let replayed `NewOrder` replace an already-established trade row.
-            // Otherwise Messages can regress to only NewOrder rows, which the UI strips.
-            if matches!(action, Action::NewOrder) && !matches!(existing_action, Action::NewOrder) {
+            if new_order_would_regress_messages_row(&action, existing_action) {
                 false
             } else if timestamp > *existing_timestamp {
                 true
@@ -1612,8 +1811,13 @@ pub async fn listen_for_order_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_is_mine_for_trade_dm_message, trade_message_is_terminal};
-    use mostro_core::prelude::{Action, Message};
+    use super::{
+        effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
+        is_pre_active_taker_take, new_order_would_regress_messages_row,
+        small_order_pending_from_new_order_payload, trade_message_is_terminal,
+    };
+    use crate::models::Order;
+    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
 
     #[test]
     fn action_only_canceled_is_terminal() {
@@ -1648,5 +1852,87 @@ mod tests {
             effective_is_mine_for_trade_dm_message(false, Some(true), Some(false)),
             Some(false)
         );
+    }
+
+    fn sample_order_row(is_mine: bool, status: &str) -> Order {
+        Order {
+            id: Some("00000000-0000-0000-0000-000000000001".to_string()),
+            kind: Some("buy".to_string()),
+            status: Some(status.to_string()),
+            amount: 1000,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "bank".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            is_mine,
+            buyer_invoice: None,
+            request_id: Some(1),
+            trade_index: Some(1),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        }
+    }
+
+    #[test]
+    fn small_order_pending_from_new_order_requires_pending_status() {
+        let pending = SmallOrder {
+            status: Some(Status::Pending),
+            ..Default::default()
+        };
+        let active = SmallOrder {
+            status: Some(Status::Active),
+            ..Default::default()
+        };
+        assert!(
+            small_order_pending_from_new_order_payload(&Some(Payload::Order(pending))).is_some()
+        );
+        assert!(
+            small_order_pending_from_new_order_payload(&Some(Payload::Order(active))).is_none()
+        );
+        assert!(small_order_pending_from_new_order_payload(&None).is_none());
+    }
+
+    #[test]
+    fn pre_active_taker_take_predicate() {
+        let row = sample_order_row(false, "waiting-payment");
+        assert!(is_pre_active_taker_take(&row));
+        assert!(!is_pre_active_maker_listing(&row));
+    }
+
+    #[test]
+    fn pre_active_maker_listing_predicate() {
+        let row = sample_order_row(true, "waiting-taker-bond");
+        assert!(is_pre_active_maker_listing(&row));
+        assert!(!is_pre_active_taker_take(&row));
+    }
+
+    #[test]
+    fn active_trade_is_not_pre_active_special_case() {
+        let maker = sample_order_row(true, "active");
+        let taker = sample_order_row(false, "active");
+        assert!(!is_pre_active_maker_listing(&maker));
+        assert!(!is_pre_active_taker_take(&taker));
+    }
+
+    #[test]
+    fn new_order_does_not_regress_non_new_order_messages_row() {
+        assert!(new_order_would_regress_messages_row(
+            &Action::NewOrder,
+            &Action::PayBondInvoice,
+        ));
+        assert!(!new_order_would_regress_messages_row(
+            &Action::NewOrder,
+            &Action::NewOrder,
+        ));
+        assert!(!new_order_would_regress_messages_row(
+            &Action::PayInvoice,
+            &Action::NewOrder,
+        ));
     }
 }

@@ -141,7 +141,7 @@ fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget>
         }
     };
 
-    build_active_order_chat_list(&messages_snapshot)
+    build_active_order_chat_list(&messages_snapshot, &app.my_trades_maker_book)
         .get(app.selected_order_chat_idx)
         .map(|row| OrderChatTarget {
             order_id: row.order_id.clone(),

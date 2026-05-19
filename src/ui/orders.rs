@@ -162,6 +162,8 @@ pub enum OperationResult {
         deleted_order_ids: Vec<uuid::Uuid>,
         message: String,
     },
+    /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
+    MyTradesMakerBookChanged,
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).
