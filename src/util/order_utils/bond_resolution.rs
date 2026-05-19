@@ -25,7 +25,6 @@ impl Default for BondSlashChoice {
     }
 }
 
-
 // BondSlashChoice implementation
 impl BondSlashChoice {
     /// All choices in UI display order.
