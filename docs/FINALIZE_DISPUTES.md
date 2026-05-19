@@ -36,7 +36,7 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 9. **Confirm** *(planned)*: Yes/No popup summarizing outcome + bond choice
 10. **Execute**: Press Enter on confirm — sends encrypted DM to Mostro
 
-**Current UI (until step 4–5 land):** steps 7 → confirm (no bond slash step); execute uses `BondSlashChoice::default()` (`None` → `payload: null`).
+**Current UI (until steps 8–9 land):** steps 7 → confirm (no bond slash step); execute uses `BondSlashChoice::default()` (`None` → `payload: null`).
 
 ## Finalization Actions
 
