@@ -672,13 +672,20 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
 
             match FinalizeDisputePopupButton::from_index(selected_button_index) {
                 Some(FinalizeDisputePopupButton::BondSlash) => {
-                    app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
-                        dispute_id,
-                        selected_button_index,
-                        bond,
-                        slash_submenu_open: true,
-                        slash_submenu_index: bond.choice_index(),
-                    });
+                    if dispute_is_finalized {
+                        let _ = ctx.order_result_tx.send(OperationResult::Error(
+                            "Cannot finalize: dispute is already finalized".to_string(),
+                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    } else {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                            dispute_id,
+                            selected_button_index,
+                            bond,
+                            slash_submenu_open: true,
+                            slash_submenu_index: bond.choice_index(),
+                        });
+                    }
                     true
                 }
                 Some(button) => handle_enter_finalize_popup(
