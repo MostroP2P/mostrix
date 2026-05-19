@@ -140,7 +140,7 @@ The popup displays comprehensive dispute information:
 Both finalization actions use `Message::new_dispute` with the **order** UUID (from `admin_disputes.id`), not the dispute UUID:
 
 ```rust
-use mostrix::util::order_utils::BondSlashChoice;
+use crate::util::order_utils::BondSlashChoice;
 
 let bond = BondSlashChoice::SlashBuyer; // example
 
