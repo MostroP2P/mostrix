@@ -4,6 +4,7 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
+use super::BondSlashChoice;
 use crate::util::dm_utils::send_dm;
 use crate::util::mostro_info::MostroInstanceInfo;
 
@@ -20,6 +21,7 @@ use crate::util::mostro_info::MostroInstanceInfo;
 /// # Arguments
 ///
 /// * `order_id` - The UUID of the order associated with this dispute (Mostro expects this ID)
+/// * `bond` - Anti-abuse bond slash choice (`to_optional_payload()` on the wire)
 /// * `client` - The Nostr client for sending messages
 /// * `mostro_pubkey` - The public key of the Mostro daemon
 ///
@@ -37,19 +39,18 @@ use crate::util::mostro_info::MostroInstanceInfo;
 /// - Failed to send the DM
 pub async fn execute_admin_cancel(
     order_id: &Uuid,
+    bond: BondSlashChoice,
     admin_keys: &Keys,
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Create AdminCancel message (order UUID in `id`; dispute UUID is local-only).
-    // TODO(bond-slash): accept `BondSlashChoice` and pass `bond.to_optional_payload()` here.
+    let payload = bond.to_optional_payload();
     let cancel_message =
-        Message::new_dispute(Some(*order_id), None, None, Action::AdminCancel, None)
+        Message::new_dispute(Some(*order_id), None, None, Action::AdminCancel, payload)
             .as_json()
             .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM using admin keys (signed gift wrap)
     send_dm(
         client,
         Some(admin_keys),
@@ -63,8 +64,30 @@ pub async fn execute_admin_cancel(
     .await?;
 
     log::info!(
-        "✅ Admin cancel (refund seller) message sent for order {}",
-        order_id
+        "✅ Admin cancel (refund seller) message sent for order {} ({})",
+        order_id,
+        bond.log_context()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::uuid;
+
+    #[test]
+    fn admin_cancel_none_omits_payload() {
+        let order_id = uuid!("308e1272-d5f4-47e6-bd97-3504baea9c23");
+        let msg = Message::new_dispute(
+            Some(order_id),
+            None,
+            None,
+            Action::AdminCancel,
+            BondSlashChoice::None.to_optional_payload(),
+        );
+        assert!(msg.verify());
+        let json = msg.as_json().expect("serialize");
+        assert!(json.contains("\"payload\":null"));
+    }
 }

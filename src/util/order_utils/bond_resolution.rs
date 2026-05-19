@@ -78,6 +78,16 @@ impl BondSlashChoice {
             _ => Some(self.to_payload()),
         }
     }
+
+    /// Short phrase for admin finalization log lines.
+    pub fn log_context(self) -> &'static str {
+        match self {
+            Self::None => "no bond slash",
+            Self::SlashBuyer => "slash buyer bond",
+            Self::SlashSeller => "slash seller bond",
+            Self::SlashBoth => "slash both bonds",
+        }
+    }
 }
 
 #[cfg(test)]

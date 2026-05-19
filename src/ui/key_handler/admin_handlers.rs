@@ -2,7 +2,9 @@ use crate::shared::permissions::SolverPermission;
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
 use crate::util::fatal::request_fatal_restart;
-use crate::util::order_utils::{execute_admin_add_solver, execute_finalize_dispute};
+use crate::util::order_utils::{
+    execute_admin_add_solver, execute_finalize_dispute, BondSlashChoice,
+};
 use uuid::Uuid;
 
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
@@ -136,6 +138,7 @@ pub(crate) fn execute_finalize_dispute_action(
     dispute_id: Uuid,
     ctx: &EnterKeyContext<'_>,
     is_settle: bool, // true = AdminSettle (pay buyer), false = AdminCancel (refund seller)
+    bond: BondSlashChoice,
 ) {
     let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
         app.mode = UiMode::OperationResult(OperationResult::Error(
@@ -162,6 +165,7 @@ pub(crate) fn execute_finalize_dispute_action(
     tokio::spawn(async move {
         match execute_finalize_dispute(
             &dispute_id,
+            bond,
             &admin_keys,
             &client_clone,
             current_mostro_pubkey,
@@ -178,8 +182,10 @@ pub(crate) fn execute_finalize_dispute_action(
                     "canceled (seller refunded)"
                 };
                 let _ = result_tx.send(OperationResult::Info(format!(
-                    "✅ Dispute {} {}!",
-                    dispute_id, action_name
+                    "✅ Dispute {} {} ({})!",
+                    dispute_id,
+                    action_name,
+                    bond.log_context()
                 )));
             }
             Err(e) => {
