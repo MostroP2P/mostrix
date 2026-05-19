@@ -136,7 +136,7 @@ Finalized disputes: pay/refund buttons are dimmed (body `—`); use **Esc** to l
 
 - Left/Right: Navigate 💰 Pay buyer | ↩️ Refund seller | Bond
 - Enter on Pay/Refund: Open confirmation
-- Enter on Bond slash: Open bond submenu overlay
+- Enter on Bond: Open bond submenu overlay
 - Esc: Close popup (or close submenu first if open)
 
 **In Bond Slash Submenu (overlay)**:
