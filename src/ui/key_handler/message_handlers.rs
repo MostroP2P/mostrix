@@ -5,7 +5,9 @@ use crate::ui::{
     ThreeState, UiMode, UserMode, UserRole, ViewingMessageButtonSelection,
 };
 use crate::util::db_utils::update_order_status;
-use crate::util::order_utils::{execute_add_invoice, execute_rate_user, execute_send_msg};
+use crate::util::order_utils::{
+    execute_add_bond_invoice, execute_add_invoice, execute_rate_user, execute_send_msg,
+};
 use mostro_core::order::Status;
 use mostro_core::prelude::*;
 use uuid::Uuid;
@@ -72,6 +74,53 @@ pub fn submit_add_invoice(
             }
             Err(e) => {
                 log::error!("Failed to add invoice: {}", e);
+                let _ = order_result_tx_clone.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+pub fn submit_add_bond_invoice(
+    app: &mut AppState,
+    ctx: &EnterKeyContext<'_>,
+    order_id: Uuid,
+    invoice_input: String,
+) {
+    if invoice_input.trim().is_empty() {
+        let _ = ctx.order_result_tx.send(OperationResult::Error(
+            "Invoice cannot be empty".to_string(),
+        ));
+        app.mode = role_default_mode(app.user_role);
+        return;
+    }
+
+    app.pending_post_take_operation_result = None;
+    app.mode = role_waiting_mode(app.user_role);
+
+    let order_result_tx_clone = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let mostro_info = ctx.mostro_info.clone();
+    tokio::spawn(async move {
+        match execute_add_bond_invoice(
+            &order_id,
+            &invoice_input,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = order_result_tx_clone.send(OperationResult::InvoiceSubmitted {
+                    message: "Bond payout invoice sent successfully".to_string(),
+                    remember_buyer_saved_ln_address_for_order: None,
+                });
+            }
+            Err(e) => {
+                log::error!("Failed to submit bond payout invoice: {}", e);
                 let _ = order_result_tx_clone.send(OperationResult::Error(e.to_string()));
             }
         }
@@ -278,6 +327,21 @@ pub fn handle_enter_message_notification(
                 invoice_state.invoice_input.clone(),
                 None,
             );
+        }
+        Action::AddBondInvoice => {
+            if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {
+                spawn_cancel_from_notification(app, ctx, order_id);
+                return;
+            }
+            let Some(order_id) = order_id else {
+                let _ = ctx
+                    .order_result_tx
+                    .send(OperationResult::Error("No order ID in message".to_string()));
+                app.mode = role_default_mode(app.user_role);
+                return;
+            };
+
+            submit_add_bond_invoice(app, ctx, order_id, invoice_state.invoice_input.clone());
         }
         Action::PayInvoice => {
             if should_send_cancel_from_invoice_popup(invoice_state.action_selection) {

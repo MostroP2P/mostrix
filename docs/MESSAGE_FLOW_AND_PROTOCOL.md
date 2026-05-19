@@ -589,9 +589,13 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 - **Client types**: `mostro-core` 0.11.3 — `BondResolution`, `Payload::BondResolution`.
 - **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
-- **Post-slash payout**: slashed bonds may trigger `Action::AddBondInvoice` to the non-slashed party (daemon PR [#738](https://github.com/MostroP2P/mostro/pull/738)); handled on the trader notification path, not admin UI.
+- **Post-slash payout**: `Action::AddBondInvoice` with `Payload::BondPayoutRequest` (order amount = counterparty share, `slashed_at` anchor for claim deadline). Mostrix:
+  - Parses amount from the DM in [`dm_utils`](../src/util/dm_utils/mod.rs)
+  - Auto-popup via [`notifications_ch_mng.rs`](../src/util/dm_utils/notifications_ch_mng.rs) (same pattern as `AddInvoice`)
+  - UI: `render_add_bond_invoice` in [`message_notification.rs`](../src/ui/message_notification.rs)
+  - Submit: [`execute_add_bond_invoice`](../src/util/order_utils/execute_add_invoice.rs) → `PaymentRequest` reply on the wire
 
-**Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel`. UI still passes `BondSlashChoice::default()` until the slash picker lands.
+**Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with admin slash picker ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
 ## Stateless Recovery
 

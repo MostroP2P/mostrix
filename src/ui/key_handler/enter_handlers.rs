@@ -61,6 +61,7 @@ use crate::util::order_utils::BondSlashChoice;
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
         Action::AddInvoice | Action::WaitingBuyerInvoice => Some(Action::AddInvoice),
+        Action::AddBondInvoice => Some(Action::AddBondInvoice),
         Action::PayInvoice | Action::WaitingSellerToPay => Some(Action::PayInvoice),
         Action::PayBondInvoice => Some(Action::PayBondInvoice),
         _ => None,
@@ -670,7 +671,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 })
                 .unwrap_or(false);
 
-            match FinalizeDisputePopupButton::from_index(selected_button_index) {
+            let bond_ui_enabled =
+                crate::util::mostro_info::instance_bonds_enabled(ctx.mostro_info.as_ref());
+            let mut button_index = selected_button_index;
+            if !bond_ui_enabled && button_index > 1 {
+                button_index = 0;
+            }
+
+            match FinalizeDisputePopupButton::from_index(button_index, bond_ui_enabled) {
                 Some(FinalizeDisputePopupButton::BondSlash) => {
                     if dispute_is_finalized {
                         let _ = ctx.order_result_tx.send(OperationResult::Error(
@@ -1012,6 +1020,12 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                                 &mut app.buyer_invoice_preference,
                                 notification,
                             );
+                        } else if invoice_popup_action == Action::AddBondInvoice {
+                            app.mode = UiMode::NewMessageNotification(
+                                notification,
+                                Action::AddBondInvoice,
+                                invoice_state,
+                            );
                         } else {
                             app.mode = UiMode::NewMessageNotification(
                                 notification,
@@ -1031,6 +1045,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 } else if matches!(
                     action,
                     Action::AddInvoice
+                        | Action::AddBondInvoice
                         | Action::PayInvoice
                         | Action::PayBondInvoice
                         | Action::WaitingBuyerInvoice

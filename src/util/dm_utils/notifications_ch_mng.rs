@@ -178,7 +178,10 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
     // Only show popup automatically for PayInvoice / PayBondInvoice / AddInvoice,
     // and only if we haven't already shown it for this message.
     match notification.action {
-        Action::PayInvoice | Action::PayBondInvoice | Action::AddInvoice => {
+        Action::PayInvoice
+        | Action::PayBondInvoice
+        | Action::AddInvoice
+        | Action::AddBondInvoice => {
             let should_show_popup = check_if_popup_should_be_shown(&notification, app);
             if !should_show_popup {
                 return;
@@ -187,6 +190,13 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
             if matches!(notification.action, Action::AddInvoice) {
                 app.mode =
                     present_add_invoice_popup(&mut app.buyer_invoice_preference, notification);
+            } else if matches!(notification.action, Action::AddBondInvoice) {
+                let invoice_state = invoice_state_for_add_invoice(String::new(), true);
+                app.mode = UiMode::NewMessageNotification(
+                    notification,
+                    Action::AddBondInvoice,
+                    invoice_state,
+                );
             } else {
                 // PayInvoice (trade hold) or PayBondInvoice (anti-abuse bond): both use the
                 // same display-only InvoiceInputState. The popup variant is selected by the

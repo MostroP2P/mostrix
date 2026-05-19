@@ -75,7 +75,7 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-   - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller / bond slash with overlay submenu; **Esc** to close). Confirm step shows bond recap. Execute: `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with `bond.to_optional_payload()`. **Pending:** hide bond UI when instance `bond_enabled` is false (kind 38385). See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
+   - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller / optional bond slash when instance `bond_enabled` is true on kind 38385; **Esc** to close). Confirm shows bond recap when bonds are enabled. Execute: `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with `bond.to_optional_payload()`. See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation

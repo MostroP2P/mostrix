@@ -280,7 +280,10 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             // would drop the popup.
             if matches!(
                 action,
-                Action::AddInvoice | Action::PayInvoice | Action::PayBondInvoice
+                Action::AddInvoice
+                    | Action::AddBondInvoice
+                    | Action::PayInvoice
+                    | Action::PayBondInvoice
             ) {
                 app.pending_post_take_operation_result = Some(result);
             } else {

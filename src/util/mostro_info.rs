@@ -44,6 +44,8 @@ pub struct MostroInstanceInfo {
     pub max_orders_per_response: Option<u32>,
     pub fee: Option<f64>,
     pub pow: Option<u32>,
+    /// Anti-abuse bond feature flag from kind-38385 tag `bond_enabled` (`"true"` / `"false"`).
+    pub bond_enabled: Option<bool>,
     pub hold_invoice_expiration_window: Option<u64>,
     pub hold_invoice_cltv_delta: Option<u32>,
     pub invoice_expiration_window: Option<u64>,
@@ -101,6 +103,22 @@ pub fn nostr_pow_from_instance(instance: Option<&MostroInstanceInfo>) -> u8 {
         .unwrap_or(0)
 }
 
+/// Whether the connected Mostro instance has anti-abuse bonds enabled (kind 38385 `bond_enabled`).
+///
+/// Treats missing instance info or an absent/false tag as disabled so slash UI stays hidden
+/// until the daemon explicitly advertises `"true"`.
+pub fn instance_bonds_enabled(instance: Option<&MostroInstanceInfo>) -> bool {
+    instance.and_then(|i| i.bond_enabled) == Some(true)
+}
+
+fn parse_bond_enabled(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Some(true),
+        "false" | "0" | "no" => Some(false),
+        _ => None,
+    }
+}
+
 /// Build a `MostroInstanceInfo` from the tags of a kind 38385 event.
 ///
 /// Unknown tags are ignored. Missing tags simply leave the corresponding
@@ -147,6 +165,9 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
             }
             "pow" => {
                 info.pow = MostroInstanceInfo::parse_u32(value);
+            }
+            "bond_enabled" => {
+                info.bond_enabled = parse_bond_enabled(value);
             }
             "hold_invoice_expiration_window" => {
                 info.hold_invoice_expiration_window = MostroInstanceInfo::parse_u64(value);
@@ -310,6 +331,43 @@ mod tests {
             nostr_pow_from_instance(Some(&MostroInstanceInfo::default())),
             0
         );
+    }
+
+    #[test]
+    fn parse_bond_enabled_tag_values() {
+        assert_eq!(parse_bond_enabled("true"), Some(true));
+        assert_eq!(parse_bond_enabled("TRUE"), Some(true));
+        assert_eq!(parse_bond_enabled("false"), Some(false));
+        assert_eq!(parse_bond_enabled("invalid"), None);
+    }
+
+    #[test]
+    fn instance_bonds_enabled_requires_explicit_true() {
+        assert!(!instance_bonds_enabled(None));
+        assert!(!instance_bonds_enabled(
+            Some(&MostroInstanceInfo::default())
+        ));
+        assert!(!instance_bonds_enabled(Some(&MostroInstanceInfo {
+            bond_enabled: Some(false),
+            ..Default::default()
+        })));
+        assert!(instance_bonds_enabled(Some(&MostroInstanceInfo {
+            bond_enabled: Some(true),
+            ..Default::default()
+        })));
+    }
+
+    #[test]
+    fn parse_bond_enabled_from_tags() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["bond_enabled", "true"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.bond_enabled, Some(true));
+
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["bond_enabled", "false"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.bond_enabled, Some(false));
     }
 
     #[test]

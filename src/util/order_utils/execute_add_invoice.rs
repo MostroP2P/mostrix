@@ -1,4 +1,4 @@
-// Execute add invoice functionality
+// Execute add invoice / add bond payout invoice functionality
 use anyhow::Result;
 use lightning_invoice::Bolt11Invoice as Invoice;
 use lnurl::lightning_address::LightningAddress;
@@ -23,64 +23,56 @@ fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error> {
     Ok(invoice)
 }
 
-pub async fn execute_add_invoice(
+async fn payment_request_payload_for_invoice(invoice: &str) -> Result<Option<Payload>> {
+    let ln_addr = LightningAddress::from_str(invoice.trim());
+    if ln_addr.is_ok() {
+        crate::util::ln_address::ln_address_pay_request_reachable(invoice.trim())
+            .await
+            .map_err(|e| anyhow::anyhow!("Lightning address not verified: {}", e))?;
+        Ok(Some(Payload::PaymentRequest(
+            None,
+            invoice.trim().to_string(),
+            None,
+        )))
+    } else {
+        match is_valid_invoice(invoice) {
+            Ok(i) => Ok(Some(Payload::PaymentRequest(None, i.to_string(), None))),
+            Err(e) => Err(anyhow::anyhow!("Invalid invoice: {}", e)),
+        }
+    }
+}
+
+async fn execute_payment_request_reply(
     order_id: &Uuid,
     invoice: &str,
+    action: Action,
     pool: &sqlx::sqlite::SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Get order from order id
     let order = Order::get_by_id(pool, &order_id.to_string()).await?;
-    // Get trade keys of specific order
     let trade_keys = order
         .trade_keys
         .clone()
         .ok_or(anyhow::anyhow!("Missing trade keys"))?;
-
     let order_trade_keys = Keys::parse(&trade_keys)?;
+    let payload = payment_request_payload_for_invoice(invoice).await?;
 
-    // Check invoice string
-    let ln_addr = LightningAddress::from_str(invoice.trim());
-    let payload = if ln_addr.is_ok() {
-        crate::util::ln_address::ln_address_pay_request_reachable(invoice.trim())
-            .await
-            .map_err(|e| anyhow::anyhow!("Lightning address not verified: {}", e))?;
-        Some(Payload::PaymentRequest(
-            None,
-            invoice.trim().to_string(),
-            None,
-        ))
-    } else {
-        match is_valid_invoice(invoice) {
-            Ok(i) => Some(Payload::PaymentRequest(None, i.to_string(), None)),
-            Err(e) => {
-                return Err(anyhow::anyhow!("Invalid invoice: {}", e));
-            }
-        }
-    };
-
-    // Create request id
     let request_id = Uuid::new_v4().as_u128() as u64;
-    // Create AddInvoice message
-    let add_invoice_message = Message::new_order(
+    let message = Message::new_order(
         Some(*order_id),
         Some(request_id),
         None,
-        Action::AddInvoice,
+        action.clone(),
         payload,
     );
 
-    //
     let identity_keys = crate::models::User::get_identity_keys(pool).await?;
-
-    // Serialize the message
-    let message_json = add_invoice_message
+    let message_json = message
         .as_json()
         .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM
     let sent_message = send_dm(
         client,
         Some(&identity_keys),
@@ -92,24 +84,71 @@ pub async fn execute_add_invoice(
         mostro_instance,
     );
 
-    // Wait for the DM to be sent from mostro
     let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
-
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
-    // Handle the response
     let Some((response_message, _, _)) = messages.first() else {
+        if action == Action::AddBondInvoice {
+            // Mostro may accept the bolt11 without a follow-up DM.
+            return Ok(());
+        }
         return Err(anyhow::anyhow!(
-            "No response received from Mostro for AddInvoice"
+            "No response received from Mostro for {:?}",
+            action
         ));
     };
+
     let inner_message = handle_mostro_response(response_message, request_id)?;
+
+    if action == Action::AddBondInvoice {
+        return Ok(());
+    }
+
     match inner_message.action {
-        Action::WaitingSellerToPay => Ok(()),
-        Action::HoldInvoicePaymentAccepted => Ok(()),
+        Action::WaitingSellerToPay | Action::HoldInvoicePaymentAccepted => Ok(()),
         _ => Err(anyhow::anyhow!(
             "Unexpected action: {:?}",
             inner_message.action
         )),
     }
+}
+
+pub async fn execute_add_invoice(
+    order_id: &Uuid,
+    invoice: &str,
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<()> {
+    execute_payment_request_reply(
+        order_id,
+        invoice,
+        Action::AddInvoice,
+        pool,
+        client,
+        mostro_pubkey,
+        mostro_instance,
+    )
+    .await
+}
+
+pub async fn execute_add_bond_invoice(
+    order_id: &Uuid,
+    invoice: &str,
+    pool: &sqlx::sqlite::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<()> {
+    execute_payment_request_reply(
+        order_id,
+        invoice,
+        Action::AddBondInvoice,
+        pool,
+        client,
+        mostro_pubkey,
+        mostro_instance,
+    )
+    .await
 }

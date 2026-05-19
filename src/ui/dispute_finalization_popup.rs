@@ -19,6 +19,8 @@ pub fn render_finalization_popup(
     slash_submenu_open: bool,
     slash_submenu_index: usize,
 ) {
+    let bond_ui_enabled =
+        crate::util::mostro_info::instance_bonds_enabled(app.mostro_info.as_ref());
     // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
     let dispute = app
         .admin_disputes_in_progress
@@ -160,9 +162,16 @@ pub fn render_finalization_popup(
 
     // Buttons area - pass dispute status to check if finalized
     let dispute_is_finalized = is_dispute_finalized(selected_dispute).unwrap_or(false);
-    render_action_buttons(f, chunks[1], selected_button, bond, dispute_is_finalized);
+    render_action_buttons(
+        f,
+        chunks[1],
+        selected_button,
+        bond,
+        dispute_is_finalized,
+        bond_ui_enabled,
+    );
 
-    if slash_submenu_open {
+    if bond_ui_enabled && slash_submenu_open {
         dispute_bond_slash_popup::render_bond_slash_overlay(f, popup, slash_submenu_index);
     }
 }
@@ -373,17 +382,25 @@ fn render_action_buttons(
     selected_button: usize,
     bond: BondSlashChoice,
     is_finalized: bool,
+    bond_ui_enabled: bool,
 ) {
-    // Create three equal-width buttons side by side
-    let button_chunks = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-        ],
-    )
-    .split(area);
+    let button_chunks = if bond_ui_enabled {
+        Layout::new(
+            Direction::Horizontal,
+            [
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+            ],
+        )
+        .split(area)
+    } else {
+        Layout::new(
+            Direction::Horizontal,
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .split(area)
+    };
 
     // Button 0: Pay buyer (settle in buyer's favor)
     let pay_buyer_style = if is_finalized {
@@ -447,29 +464,30 @@ fn render_action_buttons(
         );
     }
 
-    // Button 2: Bond slash (body shows current choice)
-    let bond_label = bond.label();
-    let bond_style = if selected_button == 2 {
-        Style::default()
-            .bg(PRIMARY_COLOR)
-            .fg(BACKGROUND_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(PRIMARY_COLOR)
-    };
-    let bond_block = Block::default()
-        .title("Bond")
-        .borders(Borders::ALL)
-        .style(bond_style);
-    let bond_text = Paragraph::new(bond_label)
-        .alignment(ratatui::layout::Alignment::Center)
-        .style(bond_style);
-    f.render_widget(bond_block, button_chunks[2]);
-    let inner = button_chunks[2].inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-    f.render_widget(bond_text, inner);
+    if bond_ui_enabled {
+        let bond_label = bond.label();
+        let bond_style = if selected_button == 2 {
+            Style::default()
+                .bg(PRIMARY_COLOR)
+                .fg(BACKGROUND_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(PRIMARY_COLOR)
+        };
+        let bond_block = Block::default()
+            .title("Bond")
+            .borders(Borders::ALL)
+            .style(bond_style);
+        let bond_text = Paragraph::new(bond_label)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(bond_style);
+        f.render_widget(bond_block, button_chunks[2]);
+        let inner = button_chunks[2].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        f.render_widget(bond_text, inner);
+    }
 }
 
 /// Helper function to center a rect

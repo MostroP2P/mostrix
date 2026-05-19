@@ -12,9 +12,10 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | Accepts `BondSlashChoice`; uses `to_optional_payload()` on the wire |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
-| **`bond_enabled` gating** (kind 38385) | Pending | Skip slash UI when instance bonds are off |
+| **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
+| **Trader `AddBondInvoice`** | Done | Bond payout invoice popup + `execute_add_bond_invoice` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
 
-Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html). Daemon bond payout (`Action::AddBondInvoice`, Mostro PR [#738](https://github.com/MostroP2P/mostro/pull/738)) is documented under trade flows, not admin finalization.
+Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
 ## User Flow
 
@@ -31,12 +32,12 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
    - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Shift+F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
-7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), or **Bond** (body shows [`BondSlashChoice::label()`](../src/util/order_utils/bond_resolution.rs), default 🔓 *No bond slash*). **Esc** closes the popup (no separate Exit button).
+7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), and **Bond** when the instance advertises `bond_enabled: true` on kind **38385** (otherwise a two-button layout only). Bond body shows [`BondSlashChoice::label()`](../src/util/order_utils/bond_resolution.rs) (default 🔓 *No bond slash*). **Esc** closes the popup (no separate Exit button).
 8. **Bond slash submenu** (optional): With **Bond** focused, **Enter** opens overlay **⚔️ Bond resolution**; ↑/↓ among four labeled choices; **Enter** applies; **Esc** closes submenu only.
 9. **Confirm**: **Enter** on pay/refund opens Yes/No — title e.g. `⚠️ Confirm 💰 Pay buyer`, description + **Bond:** recap (`bond.label()`).
 10. **Execute**: **Enter** on Yes — sends encrypted DM to Mostro.
 
-**Current UI:** single finalize popup (7–8) → confirm with bond recap (9) → execute (10). `bond_enabled` gating (hide bond button) still pending.
+**Current UI:** single finalize popup (7–8) → confirm with bond recap when bonds enabled (9) → execute (10).
 
 ## Finalization Actions
 
@@ -74,7 +75,11 @@ Mostrix maps these via [`BondSlashChoice`](../src/util/order_utils/bond_resoluti
 
 If the daemon rejects a slash (e.g. side has no bond row), Mostro may reply with `CantDo(InvalidPayload)` — surfaced as *"Invalid payload - check bond slash choices or message format"* ([`get_cant_do_description`](../src/util/types.rs)).
 
-After a slash, the non-slashed party may receive `Action::AddBondInvoice` to claim their share of the bond (see Mostro anti-abuse bond spec / PR #738); that is handled on the **trader** path, not in the admin finalization popup.
+After a slash, the non-slashed party may receive `Action::AddBondInvoice` (`Payload::BondPayoutRequest`) to claim their counterparty share; Mostrix opens the same invoice-input popup as `AddInvoice` (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)), not the admin finalization popup.
+
+### Instance `bond_enabled` (kind 38385)
+
+Mostro always emits a `bond_enabled` tag (`"true"` / `"false"`). Mostrix reads it via [`instance_bonds_enabled()`](../src/util/mostro_info.rs): only `"true"` shows the Bond button and confirm bond recap. Fetch instance info from the **Mostro Info** tab (Enter) so gating reflects the connected daemon.
 
 ## UI Components
 
