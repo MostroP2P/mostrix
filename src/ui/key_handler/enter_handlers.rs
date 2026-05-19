@@ -637,8 +637,22 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             dispute_id,
             selected_button_index,
+            bond,
+            slash_submenu_open,
+            slash_submenu_index,
         }) => {
-            // Check if dispute is finalized
+            if slash_submenu_open {
+                let chosen = BondSlashChoice::from_choice_index(slash_submenu_index);
+                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                    dispute_id,
+                    selected_button_index,
+                    bond: chosen,
+                    slash_submenu_open: false,
+                    slash_submenu_index,
+                });
+                return true;
+            }
+
             use std::str::FromStr;
             let dispute_is_finalized = app
                 .admin_disputes_in_progress
@@ -656,12 +670,29 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 })
                 .unwrap_or(false);
 
-            // Handle Enter in finalization popup
             match FinalizeDisputePopupButton::from_index(selected_button_index) {
+                Some(FinalizeDisputePopupButton::BondSlash) => {
+                    if dispute_is_finalized {
+                        let _ = ctx.order_result_tx.send(OperationResult::Error(
+                            "Cannot finalize: dispute is already finalized".to_string(),
+                        ));
+                        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+                    } else {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                            dispute_id,
+                            selected_button_index,
+                            bond,
+                            slash_submenu_open: true,
+                            slash_submenu_index: bond.choice_index(),
+                        });
+                    }
+                    true
+                }
                 Some(button) => handle_enter_finalize_popup(
                     app,
                     button,
                     dispute_id,
+                    bond,
                     dispute_is_finalized,
                     ctx.order_result_tx,
                 ),
@@ -674,24 +705,18 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             dispute_id,
             is_settle,
+            bond,
             selected_button,
         }) => {
             if selected_button {
-                // YES selected - execute the finalization action
-                // TODO(bond-slash UI): pass admin-selected bond; default preserves legacy null payload.
-                execute_finalize_dispute_action(
-                    app,
-                    dispute_id,
-                    ctx,
-                    is_settle,
-                    BondSlashChoice::default(),
-                );
+                execute_finalize_dispute_action(app, dispute_id, ctx, is_settle, bond);
             } else {
-                // NO selected - go back to finalization popup
                 app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
-                    // Restore the button that was selected: 0=Pay Buyer, 1=Refund Seller
                     selected_button_index: if is_settle { 0 } else { 1 },
+                    bond,
+                    slash_submenu_open: false,
+                    slash_submenu_index: bond.choice_index(),
                 });
             }
             true

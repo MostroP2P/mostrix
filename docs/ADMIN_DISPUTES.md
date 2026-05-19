@@ -75,7 +75,7 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-   - **Finalization**: Press **Shift+F** to open the dispute finalization popup from the Disputes in Progress tab (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)). Execute path: `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with `bond.to_optional_payload()`. **Planned:** bond-slash picker in the TUI and gating on instance `bond_enabled` (kind 38385); today the UI passes `BondSlashChoice::default()` (`None` → `payload: null`).
+   - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller / bond slash with overlay submenu; **Esc** to close). Confirm step shows bond recap. Execute: `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with `bond.to_optional_payload()`. **Pending:** hide bond UI when instance `bond_enabled` is false (kind 38385). See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
@@ -353,7 +353,7 @@ pub struct SolverDisputeInfo {
 
 **Identity & Status**:
 
-- **`id`**: Unique identifier (UUID) for the **order** associated with this dispute. Mostrix stores this as the primary key in the `admin_disputes` table and uses it as the ID sent to Mostro when performing admin finalization actions (`AdminSettle` / `AdminCancel`). Optional [`bond_resolution`](https://mostro.network/protocol/admin_settle_order.html) payload is sent via [`BondSlashChoice::to_optional_payload()`](../src/util/order_utils/bond_resolution.rs) on the execute path; the TUI still defaults to no slash until the slash picker lands.
+- **`id`**: Unique identifier (UUID) for the **order** associated with this dispute. Mostrix stores this as the primary key in the `admin_disputes` table and uses it as the ID sent to Mostro when performing admin finalization actions (`AdminSettle` / `AdminCancel`). Optional [`bond_resolution`](https://mostro.network/protocol/admin_settle_order.html) payload is sent via [`BondSlashChoice::to_optional_payload()`](../src/util/order_utils/bond_resolution.rs) from the admin’s choice on the finalize popup (default 🔓 no slash).
 - **`kind`**: Order kind (e.g., "Buy" or "Sell")
 - **`status`**: Current dispute status (see [Dispute States](#dispute-states) section)
 - **`order_previous_status`**: The order's status before the dispute was initiated

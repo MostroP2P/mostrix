@@ -180,21 +180,39 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. }) => {
-            // Cancel finalization, return to managing disputes
-            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+            slash_submenu_open,
+            dispute_id,
+            selected_button_index,
+            bond,
+            slash_submenu_index,
+            ..
+        }) => {
+            if *slash_submenu_open {
+                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                    dispute_id: *dispute_id,
+                    selected_button_index: *selected_button_index,
+                    bond: *bond,
+                    slash_submenu_open: false,
+                    slash_submenu_index: *slash_submenu_index,
+                });
+            } else {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            }
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             dispute_id,
             is_settle,
+            bond,
             ..
         }) => {
-            // Cancel confirmation, return to finalization popup
             app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                 dispute_id: *dispute_id,
-                // Restore the button that was selected: 0=Pay Buyer, 1=Refund Seller
                 selected_button_index: if *is_settle { 0 } else { 1 },
+                bond: *bond,
+                slash_submenu_open: false,
+                slash_submenu_index: bond.choice_index(),
             });
             true
         }

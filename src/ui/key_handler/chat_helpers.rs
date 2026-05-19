@@ -158,12 +158,12 @@ pub fn build_rating_state_for_mytrades(
     })
 }
 
-/// Finalization popup button index: 0 = Pay Buyer, 1 = Refund Seller, 2 = Exit.
+/// Finalization popup button index: 0 = Pay Buyer, 1 = Refund Seller, 2 = Bond slash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinalizeDisputePopupButton {
     PayBuyer,
     RefundSeller,
-    Exit,
+    BondSlash,
 }
 
 impl FinalizeDisputePopupButton {
@@ -171,58 +171,39 @@ impl FinalizeDisputePopupButton {
         match i {
             0 => Some(Self::PayBuyer),
             1 => Some(Self::RefundSeller),
-            2 => Some(Self::Exit),
+            2 => Some(Self::BondSlash),
             _ => None,
         }
     }
 }
 
-/// Handle Enter in the finalization popup: transition to confirmation or back to managing dispute.
+/// Handle Enter on Pay Buyer or Refund Seller: transition to confirmation with stored bond.
 pub fn handle_enter_finalize_popup(
     app: &mut AppState,
     button: FinalizeDisputePopupButton,
     dispute_id: uuid::Uuid,
+    bond: crate::util::order_utils::BondSlashChoice,
     dispute_is_finalized: bool,
     order_result_tx: &UnboundedSender<OperationResult>,
 ) -> bool {
-    match button {
-        FinalizeDisputePopupButton::PayBuyer => {
-            if dispute_is_finalized {
-                let _ = order_result_tx.send(OperationResult::Error(
-                    "Cannot finalize: dispute is already finalized".to_string(),
-                ));
-                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-            } else {
-                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
-                    dispute_id,
-                    // is_settle: true = Pay Buyer
-                    is_settle: true,
-                    // selected_button: true = Yes
-                    selected_button: true,
-                });
-            }
-            true
-        }
-        FinalizeDisputePopupButton::RefundSeller => {
-            if dispute_is_finalized {
-                let _ = order_result_tx.send(OperationResult::Error(
-                    "Cannot finalize: dispute is already finalized".to_string(),
-                ));
-                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-            } else {
-                app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
-                    dispute_id,
-                    // is_settle: false = Refund Seller
-                    is_settle: false,
-                    // selected_button: true = Yes
-                    selected_button: true,
-                });
-            }
-            true
-        }
-        FinalizeDisputePopupButton::Exit => {
-            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-            true
-        }
+    let is_settle = match button {
+        FinalizeDisputePopupButton::PayBuyer => true,
+        FinalizeDisputePopupButton::RefundSeller => false,
+        FinalizeDisputePopupButton::BondSlash => return false,
+    };
+
+    if dispute_is_finalized {
+        let _ = order_result_tx.send(OperationResult::Error(
+            "Cannot finalize: dispute is already finalized".to_string(),
+        ));
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+    } else {
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
+            dispute_id,
+            is_settle,
+            bond,
+            selected_button: true,
+        });
     }
+    true
 }

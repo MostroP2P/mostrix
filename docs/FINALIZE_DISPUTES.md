@@ -11,7 +11,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **`mostro-core` 0.11.3** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | Accepts `BondSlashChoice`; uses `to_optional_payload()` on the wire |
-| **TUI** (slash picker + confirm summary) | Pending | Still two-step: outcome → confirm only |
+| **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
 | **`bond_enabled` gating** (kind 38385) | Pending | Skip slash UI when instance bonds are off |
 
 Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html). Daemon bond payout (`Action::AddBondInvoice`, Mostro PR [#738](https://github.com/MostroP2P/mostro/pull/738)) is documented under trade flows, not admin finalization.
@@ -31,12 +31,12 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
    - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Shift+F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
-7. **Choose trade outcome**: Use Left/Right arrows — **Pay Buyer** (`AdminSettle`) or **Refund Seller** (`AdminCancel`), or **Exit**
-8. **Choose bond slash** *(planned)*: Four options — no slash, slash buyer, slash seller, slash both (skipped when instance `bond_enabled` is false)
-9. **Confirm** *(planned)*: Yes/No popup summarizing outcome + bond choice
-10. **Execute**: Press Enter on confirm — sends encrypted DM to Mostro
+7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), or **Bond** (body shows [`BondSlashChoice::label()`](../src/util/order_utils/bond_resolution.rs), default 🔓 *No bond slash*). **Esc** closes the popup (no separate Exit button).
+8. **Bond slash submenu** (optional): With **Bond** focused, **Enter** opens overlay **⚔️ Bond resolution**; ↑/↓ among four labeled choices; **Enter** applies; **Esc** closes submenu only.
+9. **Confirm**: **Enter** on pay/refund opens Yes/No — title e.g. `⚠️ Confirm 💰 Pay buyer`, description + **Bond:** recap (`bond.label()`).
+10. **Execute**: **Enter** on Yes — sends encrypted DM to Mostro.
 
-**Current UI (until steps 8–9 land):** steps 7 → confirm (no bond slash step); execute uses `BondSlashChoice::default()` (`None` → `payload: null`).
+**Current UI:** single finalize popup (7–8) → confirm with bond recap (9) → execute (10). `bond_enabled` gating (hide bond button) still pending.
 
 ## Finalization Actions
 
@@ -56,19 +56,19 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 
 ### Exit
 
-- **Effect**: Returns to dispute management without taking action
+- **Effect**: Press **Esc** on the finalize popup to return to dispute management without taking action
 - **Use Case**: Need more information, want to continue chatting with parties
 
 ### Bond resolution (anti-abuse bonds)
 
 Independent of settle vs cancel: the admin chooses whether to **slash** posted anti-abuse bonds. Valid on both `admin-settle` and `admin-cancel` only.
 
-| Choice | `slash_seller` | `slash_buyer` | When to use |
-|--------|----------------|---------------|-------------|
-| No bond slash | false | false | Release bonds; no penalty |
-| Slash buyer bond | false | true | Buyer at fault (e.g. false claim on sell order) |
-| Slash seller bond | true | false | Seller at fault |
-| Slash both bonds | true | true | Both parties violated rules |
+| Choice | TUI label (`label()`) | `slash_seller` | `slash_buyer` | When to use |
+|--------|----------------------|----------------|---------------|-------------|
+| No bond slash | 🔓 No bond slash | false | false | Release bonds; no penalty |
+| Slash buyer bond | ⚔️ Slash buyer bond | false | true | Buyer at fault (e.g. false claim on sell order) |
+| Slash seller bond | ⚔️ Slash seller bond | true | false | Seller at fault |
+| Slash both bonds | ⚔️ Slash both bonds | true | true | Both parties violated rules |
 
 Mostrix maps these via [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs): `to_optional_payload()` sends `payload: null` for **no slash** and `Payload::BondResolution` only when a side is slashed. Use `to_payload()` if you need an explicit `{false, false}` object (same server semantics as null).
 
@@ -108,11 +108,15 @@ The popup displays comprehensive dispute information:
 
 > **Note**: The fiat currency code IS displayed alongside the amount. Previous documentation listed "Fiat amount and currency" but did not clarify the format. ✅ **Confirmed working**.
 
-**Action Buttons**:
+**Action Buttons** (three columns, Left/Right focus):
 
-- Pay Buyer (Full) - Green background when selected
-- Refund Seller (Full) - Red background when selected
-- Exit - Gray/default when selected
+| Button | When selected | Enter |
+|--------|---------------|-------|
+| **💰 Pay buyer** | Green highlight | Open confirm (settle) |
+| **↩️ Refund seller** | Red highlight | Open confirm (cancel) |
+| **Bond** | Primary highlight; body = `bond.label()` | Open bond overlay submenu |
+
+Finalized disputes: pay/refund buttons are dimmed (body `—`); use **Esc** to leave. Bond focus may remain on index 2 for display.
 
 ### Keyboard Navigation
 
@@ -130,9 +134,16 @@ The popup displays comprehensive dispute information:
 
 **In Finalization Popup**:
 
-- Left/Right: Navigate between action buttons (cycles through 3 buttons)
-- Enter: Execute selected action
-- Esc: Cancel and return to dispute list
+- Left/Right: Navigate 💰 Pay buyer | ↩️ Refund seller | Bond
+- Enter on Pay/Refund: Open confirmation
+- Enter on Bond: Open bond submenu overlay
+- Esc: Close popup (or close submenu first if open)
+
+**In Bond Slash Submenu (overlay)**:
+
+- Up/Down: Highlight choice (no slash, slash buyer, slash seller, slash both)
+- Enter: Apply choice and return to main finalize popup
+- Esc: Close submenu without applying
 
 ## Protocol Details
 
@@ -184,11 +195,25 @@ Internally, Mostrix:
 
 Call chain from the TUI (today):
 
-1. [`execute_finalize_dispute_action`](../src/ui/key_handler/admin_handlers.rs) — spawns async task with `bond: BondSlashChoice` (currently `BondSlashChoice::default()` from [`enter_handlers.rs`](../src/ui/key_handler/enter_handlers.rs)).
+1. [`execute_finalize_dispute_action`](../src/ui/key_handler/admin_handlers.rs) — spawns async task with `bond` from `ConfirmFinalizeDispute` (chosen on the finalize popup / overlay).
 2. [`execute_finalize_dispute`](../src/util/order_utils/execute_finalize_dispute.rs) — DB guards, then dispatches settle or cancel with the same `bond`.
 3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())`, logs include `bond.log_context()`.
 
 Success toasts use the same bond phrase (e.g. `settled (buyer paid) (no bond slash)`).
+
+### UI state (`AdminMode`)
+
+Finalize flow uses a single [`ReviewingDisputeForFinalization`](../src/ui/admin_state.rs) mode (no separate full-screen bond step):
+
+- `dispute_id`, `selected_button_index` (0=pay, 1=refund, 2=bond)
+- `bond: BondSlashChoice` (default `None`)
+- `slash_submenu_open`, `slash_submenu_index` — overlay while picking bond
+
+Confirm: [`ConfirmFinalizeDispute`](../src/ui/admin_state.rs) carries `is_settle`, `bond`, `selected_button` (Yes/No).
+
+### Confirmation popup
+
+Rendered by [`dispute_finalization_confirm.rs`](../src/ui/dispute_finalization_confirm.rs): outcome title with emoji, short description, **Bond:** line with `bond.label()`, Yes/No. **Esc** or **No** returns to finalize popup preserving `bond`.
 
 ### Authentication
 
@@ -311,7 +336,9 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 ## Related Files
 
 - `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, `Payload::BondResolution` mapping, wire tests
-- `src/ui/dispute_finalization_popup.rs` - Popup rendering logic
+- `src/ui/dispute_finalization_popup.rs` - Finalize popup (💰 pay / ↩️ refund / Bond + overlay trigger)
+- `src/ui/dispute_bond_slash_popup.rs` - `render_bond_slash_overlay` on finalize popup
+- `src/ui/dispute_finalization_confirm.rs` - Yes/No confirm with bond recap
 - `src/util/order_utils/execute_admin_settle.rs` - AdminSettle + `BondSlashChoice` payload
 - `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel + `BondSlashChoice` payload
 - `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
