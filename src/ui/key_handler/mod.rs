@@ -250,10 +250,20 @@ fn handle_clipboard_copy(invoice: String) -> bool {
     }
 }
 
-/// Cycle through 3 buttons (Pay Buyer, Refund Seller, Exit) for dispute finalization
+/// Cycle bond slash options (Up/Down) in the picker popup.
+fn cycle_bond_slash_choice(selected_choice_index: &mut usize, direction: KeyCode) {
+    let len = crate::util::order_utils::BondSlashChoice::ALL.len();
+    if direction == KeyCode::Up {
+        *selected_choice_index = selected_choice_index.saturating_sub(1);
+    } else {
+        *selected_choice_index = (*selected_choice_index + 1).min(len.saturating_sub(1));
+    }
+}
+
+/// Cycle through 3 buttons (Pay Buyer, Refund Seller, Bond slash) for dispute finalization
 fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode, is_finalized: bool) {
     if is_finalized {
-        // If finalized, only allow Exit button (button 2)
+        // Finalized disputes: focus bond button only; exit via Esc
         *selected_button = 2;
         return;
     }
@@ -748,8 +758,10 @@ pub fn handle_key_event(
                     if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
                         app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                             dispute_id,
-                            // Default to first button (Pay Buyer)
                             selected_button_index: 0,
+                            bond: crate::util::order_utils::BondSlashChoice::None,
+                            slash_submenu_open: false,
+                            slash_submenu_index: 0,
                         });
                         return Some(true);
                     }
@@ -982,8 +994,9 @@ pub fn handle_key_event(
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
                     ref mut selected_button_index,
+                    slash_submenu_open: false,
+                    ..
                 }) => {
-                    // Check if dispute is finalized to skip disabled buttons
                     let dispute_is_finalized = app
                         .admin_disputes_in_progress
                         .iter()
@@ -1000,6 +1013,16 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
+            if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                slash_submenu_open: true,
+                ref mut slash_submenu_index,
+                ..
+            }) = app.mode
+            {
+                cycle_bond_slash_choice(slash_submenu_index, code);
+                return Some(true);
+            }
+
             // Handle chat message navigation when input is disabled (Disputes in Progress)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {

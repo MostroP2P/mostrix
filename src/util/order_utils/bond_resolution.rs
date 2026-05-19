@@ -35,13 +35,23 @@ impl BondSlashChoice {
         Self::SlashBoth,
     ];
 
-    /// Human-readable label for TUI display.
+    /// Index in [`Self::ALL`] for TUI list selection.
+    pub fn choice_index(self) -> usize {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(0)
+    }
+
+    /// Choice at `index` in [`Self::ALL`], or [`Self::None`] if out of range.
+    pub fn from_choice_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(Self::None)
+    }
+
+    /// Human-readable label for TUI display (includes choice emoji).
     pub fn label(self) -> &'static str {
         match self {
-            Self::None => "No bond slash",
-            Self::SlashBuyer => "Slash buyer bond",
-            Self::SlashSeller => "Slash seller bond",
-            Self::SlashBoth => "Slash both bonds",
+            Self::None => "🔓 No bond slash",
+            Self::SlashBuyer => "⚔️ Slash buyer bond",
+            Self::SlashSeller => "⚔️ Slash seller bond",
+            Self::SlashBoth => "⚔️ Slash both bonds",
         }
     }
 
@@ -112,6 +122,14 @@ mod tests {
                 other => panic!("expected BondResolution payload, got {other:?}"),
             },
             other => panic!("expected Dispute message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choice_index_roundtrip() {
+        for (i, choice) in BondSlashChoice::ALL.iter().enumerate() {
+            assert_eq!(choice.choice_index(), i);
+            assert_eq!(BondSlashChoice::from_choice_index(i), *choice);
         }
     }
 

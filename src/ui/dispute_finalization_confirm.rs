@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization confirmation popup
 pub fn render_finalization_confirm(
@@ -11,6 +12,7 @@ pub fn render_finalization_confirm(
     app: &super::AppState,
     dispute_id: &uuid::Uuid,
     is_settle: bool,
+    bond: BondSlashChoice,
     selected_button: bool,
 ) {
     // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
@@ -63,27 +65,27 @@ pub fn render_finalization_confirm(
 
     let area = f.area();
     let popup_width = 70.min(area.width.saturating_sub(4));
-    let popup_height = 15.min(area.height.saturating_sub(2));
+    let popup_height = 17.min(area.height.saturating_sub(2));
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
     // Determine action details
     let (action_title, action_description, action_color) = if is_settle {
         (
-            "Pay Buyer (AdminSettle)",
-            "This will settle the dispute in favor of the buyer.\nThe buyer will receive the full escrow amount.",
+            "💰 Pay buyer",
+            "Settle in favor of the buyer.\nBuyer receives the full escrow amount.",
             Color::Green,
         )
     } else {
         (
-            "Refund Seller (AdminCancel)",
-            "This will cancel the order and refund the seller.\nThe seller will receive the full escrow amount back.",
+            "↩️ Refund seller",
+            "Cancel the order and refund the seller.\nSeller receives the full escrow amount back.",
             Color::Red,
         )
     };
 
     let block = Block::default()
-        .title(format!("⚠️  Confirm {}", action_title))
+        .title(format!("⚠️ Confirm {action_title}"))
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
 
@@ -97,6 +99,7 @@ pub fn render_finalization_confirm(
             Constraint::Length(1), // dispute ID
             Constraint::Length(1), // spacer
             Constraint::Length(3), // action description
+            Constraint::Length(1), // bond slash recap
             Constraint::Length(1), // spacer
             Constraint::Length(3), // buttons
             Constraint::Length(1), // help text
@@ -131,8 +134,17 @@ pub fn render_finalization_confirm(
         chunks[3],
     );
 
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Bond: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(bond.label(), Style::default().fg(PRIMARY_COLOR)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[4],
+    );
+
     // Yes/No buttons
-    let button_area = chunks[5];
+    let button_area = chunks[6];
     let button_width = 15;
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
@@ -242,7 +254,7 @@ pub fn render_finalization_confirm(
             Span::styled(" to confirm", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[6],
+        chunks[7],
     );
 
     // Help text for Esc key - second line
@@ -258,6 +270,6 @@ pub fn render_finalization_confirm(
             Span::styled(" to cancel", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[7],
+        chunks[8],
     );
 }

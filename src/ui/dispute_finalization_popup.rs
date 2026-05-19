@@ -4,8 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use super::dispute_bond_slash_popup;
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::helpers::{format_user_rating, is_dispute_finalized};
+use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization popup with full dispute details and action buttons
 pub fn render_finalization_popup(
@@ -13,6 +15,9 @@ pub fn render_finalization_popup(
     app: &AppState,
     dispute_id: &uuid::Uuid,
     selected_button: usize,
+    bond: BondSlashChoice,
+    slash_submenu_open: bool,
+    slash_submenu_index: usize,
 ) {
     // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
     let dispute = app
@@ -155,7 +160,11 @@ pub fn render_finalization_popup(
 
     // Buttons area - pass dispute status to check if finalized
     let dispute_is_finalized = is_dispute_finalized(selected_dispute).unwrap_or(false);
-    render_action_buttons(f, chunks[1], selected_button, dispute_is_finalized);
+    render_action_buttons(f, chunks[1], selected_button, bond, dispute_is_finalized);
+
+    if slash_submenu_open {
+        dispute_bond_slash_popup::render_bond_slash_overlay(f, popup, slash_submenu_index);
+    }
 }
 
 /// Render detailed dispute information
@@ -357,11 +366,12 @@ fn render_dispute_details(
     f.render_widget(paragraph, area);
 }
 
-/// Render the three action buttons at the bottom
+/// Render Pay Buyer, Refund Seller, and Bond slash action buttons at the bottom.
 fn render_action_buttons(
     f: &mut ratatui::Frame,
     area: Rect,
     selected_button: usize,
+    bond: BondSlashChoice,
     is_finalized: bool,
 ) {
     // Create three equal-width buttons side by side
@@ -375,9 +385,8 @@ fn render_action_buttons(
     )
     .split(area);
 
-    // Button 0: Pay Buyer (Full) - disabled if finalized
+    // Button 0: Pay buyer (settle in buyer's favor)
     let pay_buyer_style = if is_finalized {
-        // Disabled style
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM)
@@ -390,26 +399,25 @@ fn render_action_buttons(
         Style::default().fg(Color::Green)
     };
     let pay_buyer_block = Block::default()
-        .title(if is_finalized {
-            "Pay Buyer (Disabled)"
-        } else {
-            "Pay Buyer (Full)"
-        })
+        .title("💰 Pay buyer")
         .borders(Borders::ALL)
         .style(pay_buyer_style);
-    let pay_buyer_text = Paragraph::new(if is_finalized { "N/A" } else { "AdminSettle" })
-        .alignment(ratatui::layout::Alignment::Center)
-        .style(pay_buyer_style);
     f.render_widget(pay_buyer_block, button_chunks[0]);
-    let inner = button_chunks[0].inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-    f.render_widget(pay_buyer_text, inner);
+    if is_finalized {
+        let inner = button_chunks[0].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        f.render_widget(
+            Paragraph::new("—")
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(pay_buyer_style),
+            inner,
+        );
+    }
 
-    // Button 1: Refund Seller (Full) - disabled if finalized
+    // Button 1: Refund seller
     let refund_seller_style = if is_finalized {
-        // Disabled style
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM)
@@ -422,45 +430,46 @@ fn render_action_buttons(
         Style::default().fg(Color::Red)
     };
     let refund_seller_block = Block::default()
-        .title(if is_finalized {
-            "Refund Seller (Disabled)"
-        } else {
-            "Refund Seller (Full)"
-        })
+        .title("↩️ Refund seller")
         .borders(Borders::ALL)
-        .style(refund_seller_style);
-    let refund_seller_text = Paragraph::new(if is_finalized { "N/A" } else { "AdminCancel" })
-        .alignment(ratatui::layout::Alignment::Center)
         .style(refund_seller_style);
     f.render_widget(refund_seller_block, button_chunks[1]);
-    let inner = button_chunks[1].inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-    f.render_widget(refund_seller_text, inner);
+    if is_finalized {
+        let inner = button_chunks[1].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        f.render_widget(
+            Paragraph::new("—")
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(refund_seller_style),
+            inner,
+        );
+    }
 
-    // Button 2: Exit
-    let exit_style = if selected_button == 2 {
+    // Button 2: Bond slash (body shows current choice)
+    let bond_label = bond.label();
+    let bond_style = if selected_button == 2 {
         Style::default()
-            .bg(Color::Gray)
-            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .fg(BACKGROUND_COLOR)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(PRIMARY_COLOR)
     };
-    let exit_block = Block::default()
-        .title("Exit")
+    let bond_block = Block::default()
+        .title("Bond")
         .borders(Borders::ALL)
-        .style(exit_style);
-    let exit_text = Paragraph::new("No Action")
+        .style(bond_style);
+    let bond_text = Paragraph::new(bond_label)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(exit_style);
-    f.render_widget(exit_block, button_chunks[2]);
+        .style(bond_style);
+    f.render_widget(bond_block, button_chunks[2]);
     let inner = button_chunks[2].inner(ratatui::layout::Margin {
         vertical: 1,
         horizontal: 1,
     });
-    f.render_widget(exit_text, inner);
+    f.render_widget(bond_text, inner);
 }
 
 /// Helper function to center a rect

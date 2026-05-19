@@ -1,5 +1,6 @@
 use crate::shared::permissions::SolverPermission;
 use crate::ui::KeyInputState;
+use crate::util::order_utils::BondSlashChoice;
 
 #[derive(Clone, Debug)]
 pub struct AddSolverState {
@@ -24,13 +25,20 @@ pub enum AdminMode {
     ManagingDispute,               // Mode for "Disputes in Progress" tab
     ReviewingDisputeForFinalization {
         dispute_id: uuid::Uuid,
-        /// Index of the selected button: 0=Pay Buyer, 1=Refund Seller, 2=Exit
+        /// Index of the selected button: 0=Pay Buyer, 1=Refund Seller, 2=Bond slash
         selected_button_index: usize,
+        /// Anti-abuse bond slash choice (default: no slash).
+        bond: BondSlashChoice,
+        /// When true, show the bond slash overlay submenu.
+        slash_submenu_open: bool,
+        /// Highlighted index in [`BondSlashChoice::ALL`] while submenu is open.
+        slash_submenu_index: usize,
     },
     ConfirmFinalizeDispute {
         dispute_id: uuid::Uuid,
         /// true=Pay Buyer, false=Refund Seller
         is_settle: bool,
+        bond: BondSlashChoice,
         /// true=Yes, false=No
         selected_button: bool,
     },

@@ -397,10 +397,13 @@ No: paste BOLT11 or Lightning address manually."
         exit_confirm::render_exit_confirm(f, *selected_button);
     }
 
-    // Dispute finalization popup
+    // Dispute finalization popup (bond slash submenu overlays when open)
     if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
         dispute_id,
         selected_button_index,
+        bond,
+        slash_submenu_open,
+        slash_submenu_index,
     }) = &app.mode
     {
         dispute_finalization_popup::render_finalization_popup(
@@ -408,6 +411,9 @@ No: paste BOLT11 or Lightning address manually."
             app,
             dispute_id,
             *selected_button_index,
+            *bond,
+            *slash_submenu_open,
+            *slash_submenu_index,
         );
     }
 
@@ -415,6 +421,7 @@ No: paste BOLT11 or Lightning address manually."
     if let UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
         dispute_id,
         is_settle,
+        bond,
         selected_button,
     }) = &app.mode
     {
@@ -423,6 +430,7 @@ No: paste BOLT11 or Lightning address manually."
             app,
             dispute_id,
             *is_settle,
+            *bond,
             *selected_button,
         );
     }
