@@ -89,7 +89,8 @@ async fn execute_payment_request_reply(
         mostro_instance,
     );
 
-    let recv_event = match wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await {
+    let recv_event = match wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await
+    {
         Ok(events) => events,
         Err(e) if action == Action::AddBondInvoice && is_wait_for_dm_timeout(&e) => {
             // Mostro may accept the bolt11 without a follow-up DM.
