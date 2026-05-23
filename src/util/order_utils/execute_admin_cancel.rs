@@ -60,9 +60,6 @@ pub async fn execute_admin_cancel(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    let admin_keys_log = admin_keys.secret_key().to_bech32()?;
-    log::info!("admin_keys dispute: {}", admin_keys_log);
-
     let sent_message = send_dm(
         client,
         Some(admin_keys),

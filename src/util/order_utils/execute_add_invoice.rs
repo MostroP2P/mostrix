@@ -12,6 +12,11 @@ use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;
 
+/// Matches the timeout branch in [`wait_for_dm`].
+fn is_wait_for_dm_timeout(err: &anyhow::Error) -> bool {
+    err.to_string() == "Timeout waiting for DM or gift wrap event"
+}
+
 /// Verify if an invoice is valid
 fn is_valid_invoice(payment_request: &str) -> Result<Invoice, anyhow::Error> {
     let invoice =
@@ -84,7 +89,14 @@ async fn execute_payment_request_reply(
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = match wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await {
+        Ok(events) => events,
+        Err(e) if action == Action::AddBondInvoice && is_wait_for_dm_timeout(&e) => {
+            // Mostro may accept the bolt11 without a follow-up DM.
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
     let Some((response_message, _, _)) = messages.first() else {
@@ -151,4 +163,17 @@ pub async fn execute_add_bond_invoice(
         mostro_instance,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_dm_timeout_is_recognized_for_add_bond_invoice() {
+        let timeout = anyhow::anyhow!("Timeout waiting for DM or gift wrap event");
+        assert!(is_wait_for_dm_timeout(&timeout));
+        let canceled = anyhow::anyhow!("DM waiter canceled before receiving an event");
+        assert!(!is_wait_for_dm_timeout(&canceled));
+    }
 }
