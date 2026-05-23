@@ -176,17 +176,9 @@ pub(crate) fn execute_finalize_dispute_action(
         .await
         {
             Ok(_) => {
-                let action_name = if is_settle {
-                    "settled (buyer paid)"
-                } else {
-                    "canceled (seller refunded)"
-                };
-                let _ = result_tx.send(OperationResult::Info(format!(
-                    "✅ Dispute {} {} ({})!",
-                    dispute_id,
-                    action_name,
-                    bond.log_context()
-                )));
+                let _ = result_tx.send(OperationResult::Info(
+                    bond.finalize_success_message(dispute_id, is_settle),
+                ));
             }
             Err(e) => {
                 log::error!("Failed to finalize dispute: {}", e);

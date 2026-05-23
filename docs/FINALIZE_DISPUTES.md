@@ -10,7 +10,8 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 |-------|--------|--------|
 | **`mostro-core` 0.11.3** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
-| **Execute layer** (`execute_admin_settle` / `cancel`) | Done | Accepts `BondSlashChoice`; uses `to_optional_payload()` on the wire |
+| **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`; `CantDo` before DB update |
+| **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
 | **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
 | **Trader `AddBondInvoice`** | Done | Bond payout invoice popup + `execute_add_bond_invoice` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
@@ -32,12 +33,13 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
    - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Shift+F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
-7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), and **Bond** when the instance advertises `bond_enabled: true` on kind **38385** (otherwise a two-button layout only). Bond body shows [`BondSlashChoice::label()`](../src/util/order_utils/bond_resolution.rs) (default 🔓 *No bond slash*). **Esc** closes the popup (no separate Exit button).
+7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), and **Bond** when the instance advertises `bond_enabled: true` on kind **38385** (otherwise a two-button layout only). Button **titles** use the outcome labels; the **body** shows protocol names **`Admin settle`** / **`Admin cancel`** (and `bond.label()` on Bond). **Esc** closes the popup (no separate Exit button).
 8. **Bond slash submenu** (optional): With **Bond** focused, **Enter** opens overlay **⚔️ Bond resolution**; ↑/↓ among four labeled choices; **Enter** applies; **Esc** closes submenu only.
 9. **Confirm**: **Enter** on pay/refund opens Yes/No — title e.g. `⚠️ Confirm 💰 Pay buyer`, description + **Bond:** recap (`bond.label()`).
-10. **Execute**: **Enter** on Yes — sends encrypted DM to Mostro.
+10. **Execute**: **Enter** on Yes — UI enters `AdminMode::WaitingDisputeFinalization`, sends encrypted DM to Mostro, waits for reply.
+11. **Result**: Success → multi-line **Operation Successful** popup; failure (timeout, `CantDo`, wrong action) → **Operation Failed** with daemon text. **Esc** / **Enter** closes; disputes list refreshes on success (`"Dispute finalized"` marker in `main.rs`).
 
-**Current UI:** single finalize popup (7–8) → confirm with bond recap when bonds enabled (9) → execute (10).
+**Current UI:** single finalize popup (7–8) → confirm with bond recap when bonds enabled (9) → wait + result (10–11).
 
 ## Finalization Actions
 
@@ -115,13 +117,13 @@ The popup displays comprehensive dispute information:
 
 **Action Buttons** (three columns, Left/Right focus):
 
-| Button | When selected | Enter |
-|--------|---------------|-------|
-| **💰 Pay buyer** | Green highlight | Open confirm (settle) |
-| **↩️ Refund seller** | Red highlight | Open confirm (cancel) |
-| **Bond** | Primary highlight; body = `bond.label()` | Open bond overlay submenu |
+| Button (title bar) | Inner body (active) | When selected | Enter |
+|--------------------|---------------------|---------------|-------|
+| **💰 Pay buyer** | `Admin settle` | Green highlight | Open confirm (settle) |
+| **↩️ Refund seller** | `Admin cancel` | Red highlight | Open confirm (cancel) |
+| **Bond** | `bond.label()` | Primary highlight | Open bond overlay submenu |
 
-Finalized disputes: pay/refund buttons are dimmed (body `—`); use **Esc** to leave. Bond focus may remain on index 2 for display.
+Finalized disputes: pay/refund buttons are dimmed (inner body `—`); use **Esc** to leave. Bond focus may remain on index 2 for display.
 
 ### Keyboard Navigation
 
@@ -202,9 +204,26 @@ Call chain from the TUI (today):
 
 1. [`execute_finalize_dispute_action`](../src/ui/key_handler/admin_handlers.rs) — spawns async task with `bond` from `ConfirmFinalizeDispute` (chosen on the finalize popup / overlay).
 2. [`execute_finalize_dispute`](../src/util/order_utils/execute_finalize_dispute.rs) — DB guards, then dispatches settle or cancel with the same `bond`.
-3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())`, logs include `bond.log_context()`.
+3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())` with `request_id`, `wait_for_dm`, and `handle_mostro_response` (surfaces `CantDo` before DB update). Success requires `AdminSettled` / `AdminCanceled` from Mostro.
 
-Success toasts use the same bond phrase (e.g. `settled (buyer paid) (no bond slash)`).
+Success popup (`OperationResult::Info`) is built by [`BondSlashChoice::finalize_success_message`](../src/util/order_utils/bond_resolution.rs) and rendered with newline-aware, word-boundary wrapping in [`operation_result.rs`](../src/ui/operation_result.rs) (dynamic popup height).
+
+Example layout:
+
+```text
+Dispute finalized
+
+Outcome:
+Admin cancel — seller refunded
+
+Bond:
+⚔️ Slash buyer bond
+
+Dispute ID:
+8397bc78-7c98-4b4f-bb49-40c7101391b0
+```
+
+(Settle uses `Admin settle — buyer paid`.)
 
 ### UI state (`AdminMode`)
 
@@ -228,11 +247,14 @@ Rendered by [`dispute_finalization_confirm.rs`](../src/ui/dispute_finalization_c
 
 ### Expected Responses
 
-After sending a finalization action, Mostro should respond with:
+After sending a finalization action, Mostro replies over the same admin DM channel:
 
-- Success confirmation
-- Updated dispute status
-- Transaction details
+| Request | Success action | Failure |
+|---------|----------------|---------|
+| `AdminSettle` | `AdminSettled` | `CantDo` (e.g. `InvalidPayload` for bad bond slash) |
+| `AdminCancel` | `AdminCanceled` | same |
+
+Mostrix waits with `wait_for_dm` and validates via `handle_mostro_response` before updating `admin_disputes`.
 
 ## Database Updates
 
@@ -246,14 +268,16 @@ After successful finalization:
 
 Possible error scenarios:
 
-- Mostro daemon unresponsive
+- Mostro daemon unresponsive or **`wait_for_dm` timeout** (15s)
 - Invalid admin credentials
-- Dispute already finalized
+- Dispute already finalized (blocked before send)
 - Network/relay issues
 - Dispute not found (e.g., dispute was removed or ID is invalid)
+- **`CantDo` from Mostro** (e.g. `InvalidPayload` for impossible bond slash) — surfaced via `handle_mostro_response` / [`get_cant_do_description`](../src/util/types.rs); **local DB is not updated**
+- Unexpected response action (not `AdminSettled` / `AdminCanceled`)
 - **Data integrity error**: Missing required fields (buyer_pubkey or seller_pubkey)
 
-All errors are displayed in a result popup with appropriate error messages. The finalization popup includes robust error handling:
+Errors use the same word-wrapped **Operation Failed** popup as other flows (`operation_result.rs`). The finalization popup includes robust error handling:
 
 - **Dispute Not Found**: If a dispute ID is invalid or the dispute is no longer available, a clear error popup is displayed with the dispute ID and instructions to close it (Press ESC or ENTER).
 - **Data Integrity Error**: If a dispute is missing required fields (`buyer_pubkey` or `seller_pubkey`), a dedicated error popup is displayed explaining that the database entry is incomplete and the dispute cannot be finalized. This validation happens both when taking a dispute (prevents saving incomplete data) and when viewing the finalization popup.
@@ -340,12 +364,14 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 
 ## Related Files
 
-- `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, `Payload::BondResolution` mapping, wire tests
-- `src/ui/dispute_finalization_popup.rs` - Finalize popup (💰 pay / ↩️ refund / Bond + overlay trigger)
+- `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, wire mapping, `finalize_success_message`
+- `src/ui/dispute_finalization_popup.rs` - Finalize popup (titles + inner `Admin settle` / `Admin cancel` / bond label)
+- `src/ui/operation_result.rs` - Success/error popups (word wrap, dynamic height for `Info`)
+- `src/ui/key_handler/admin_handlers.rs` - `execute_finalize_dispute_action`, waiting mode, result channel
 - `src/ui/dispute_bond_slash_popup.rs` - `render_bond_slash_overlay` on finalize popup
 - `src/ui/dispute_finalization_confirm.rs` - Yes/No confirm with bond recap
-- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle + `BondSlashChoice` payload
-- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel + `BondSlashChoice` payload
+- `src/util/order_utils/execute_admin_settle.rs` - AdminSettle; waits for `AdminSettled`
+- `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel; waits for `AdminCanceled`
 - `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
 - `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
 - `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending

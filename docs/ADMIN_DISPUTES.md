@@ -75,7 +75,7 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
-   - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller / optional bond slash when instance `bond_enabled` is true on kind 38385; **Esc** to close). Confirm shows bond recap when bonds are enabled. Execute: `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with `bond.to_optional_payload()`. See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
+   - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller bodies show **Admin settle** / **Admin cancel**; optional bond slash when instance `bond_enabled` is true on kind 38385; **Esc** to close). Confirm shows bond recap when bonds are enabled. Execute: `execute_finalize_dispute` → `execute_admin_settle` / `execute_admin_cancel` (`request_id`, `wait_for_dm`, `handle_mostro_response` for `CantDo`); success toast via `BondSlashChoice::finalize_success_message`. See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
@@ -416,7 +416,7 @@ This comprehensive information allows admins to:
 Once a dispute is finalized (status: `Settled`, `SellerRefunded`, or `Released`), the AdminSettle and AdminCancel actions are blocked at multiple levels:
 
 - **Model Layer**: `AdminDispute::is_finalized()` returns `true` for finalized disputes. The helper methods `can_settle()` and `can_cancel()` return `false` when finalized.
-- **UI Layer**: The finalization popup disables and grays out the "Pay Buyer" and "Refund Seller" buttons, showing "N/A" instead of the action names.
+- **UI Layer**: The finalization popup disables and grays out the pay/refund buttons (inner body `—`).
 - **Handler Layer**: `execute_finalize_dispute()` checks the dispute state before executing any action. If the dispute is already finalized, it returns an error: "Cannot execute [action]: dispute is already finalized".
 - **Key Handler Layer**: When pressing Enter on a disabled action button, an error message is displayed: "Cannot finalize: dispute is already finalized".
 

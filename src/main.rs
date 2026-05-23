@@ -433,7 +433,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     // Check if this is a dispute-related result before handling
                     let is_dispute_related = matches!(&result, OperationResult::Info(msg)
                         if (msg.contains("Dispute") && msg.contains("taken successfully"))
-                        || (msg.contains("Dispute") && (msg.contains("settled") || msg.contains("canceled"))));
+                        || msg.contains("Dispute finalized"));
                     // Only bulk-delete should rehydrate Messages + `order_chat_static` from DB:
                     // `sync_user_order_history_messages_from_db` replaces per-order rows with
                     // synthetic TakeBuy/TakeSell actions, which breaks Messages-tab Enter / invoice

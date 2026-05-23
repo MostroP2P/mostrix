@@ -60,6 +60,9 @@ pub async fn execute_take_dispute(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
+    let admin_keys_log = admin_keys.secret_key().to_bech32()?;
+    log::info!("admin_keys dispute: {}", admin_keys_log);
+
     // Send the DM using admin keys (signed gift wrap)
     let sent_message = send_dm(
         client,

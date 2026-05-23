@@ -5,8 +5,9 @@ use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
 use super::BondSlashChoice;
-use crate::util::dm_utils::send_dm;
+use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
+use crate::util::order_utils::helper::handle_mostro_response;
 
 /// Settle a dispute in favor of the buyer (AdminSettle action).
 /// This pays the full escrow amount to the buyer.
@@ -27,8 +28,8 @@ use crate::util::mostro_info::MostroInstanceInfo;
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if the settle message was successfully sent, or an error
-/// if the operation failed.
+/// Returns `Ok(())` if Mostro confirms with `AdminSettled`, or an error
+/// if the operation failed (including `CantDo` from the daemon).
 ///
 /// # Errors
 ///
@@ -36,7 +37,9 @@ use crate::util::mostro_info::MostroInstanceInfo;
 /// - Settings are not initialized
 /// - Admin private key is not configured
 /// - Failed to serialize the message
-/// - Failed to send the DM
+/// - Failed to send or receive the DM
+/// - Mostro replies with `CantDo`
+/// - Unexpected response action or sender
 pub async fn execute_admin_settle(
     order_id: &Uuid,
     bond: BondSlashChoice,
@@ -45,13 +48,19 @@ pub async fn execute_admin_settle(
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
+    let request_id = Uuid::new_v4().as_u128() as u64;
     let payload = bond.to_optional_payload();
-    let settle_message =
-        Message::new_dispute(Some(*order_id), None, None, Action::AdminSettle, payload)
-            .as_json()
-            .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
+    let settle_message = Message::new_dispute(
+        Some(*order_id),
+        Some(request_id),
+        None,
+        Action::AdminSettle,
+        payload,
+    )
+    .as_json()
+    .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    send_dm(
+    let sent_message = send_dm(
         client,
         Some(admin_keys),
         admin_keys,
@@ -60,11 +69,27 @@ pub async fn execute_admin_settle(
         None,
         false,
         mostro_instance,
-    )
-    .await?;
+    );
+
+    let recv_event = wait_for_dm(admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let messages = parse_dm_events(recv_event, admin_keys, None).await;
+    let Some((response_message, _, sender_pubkey)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    };
+    if *sender_pubkey != mostro_pubkey {
+        return Err(anyhow::anyhow!("Received response from wrong sender"));
+    }
+
+    let inner_message = handle_mostro_response(response_message, request_id)?;
+    if inner_message.action != Action::AdminSettled {
+        return Err(anyhow::anyhow!(
+            "Unexpected action in response: {:?}",
+            inner_message.action
+        ));
+    }
 
     log::info!(
-        "✅ Admin settle (pay buyer) message sent for order {} ({})",
+        "✅ Admin settle (pay buyer) confirmed for order {} ({})",
         order_id,
         bond.log_context()
     );

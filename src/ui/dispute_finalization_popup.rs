@@ -419,19 +419,16 @@ fn render_action_buttons(
         .title("💰 Pay buyer")
         .borders(Borders::ALL)
         .style(pay_buyer_style);
+    let pay_buyer_inner_label = if is_finalized { "—" } else { "Admin settle" };
+    let pay_buyer_text = Paragraph::new(pay_buyer_inner_label)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(pay_buyer_style);
     f.render_widget(pay_buyer_block, button_chunks[0]);
-    if is_finalized {
-        let inner = button_chunks[0].inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        f.render_widget(
-            Paragraph::new("—")
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(pay_buyer_style),
-            inner,
-        );
-    }
+    let pay_buyer_inner = button_chunks[0].inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    f.render_widget(pay_buyer_text, pay_buyer_inner);
 
     // Button 1: Refund seller
     let refund_seller_style = if is_finalized {
@@ -450,19 +447,16 @@ fn render_action_buttons(
         .title("↩️ Refund seller")
         .borders(Borders::ALL)
         .style(refund_seller_style);
+    let refund_seller_inner_label = if is_finalized { "—" } else { "Admin cancel" };
+    let refund_seller_text = Paragraph::new(refund_seller_inner_label)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(refund_seller_style);
     f.render_widget(refund_seller_block, button_chunks[1]);
-    if is_finalized {
-        let inner = button_chunks[1].inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        f.render_widget(
-            Paragraph::new("—")
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(refund_seller_style),
-            inner,
-        );
-    }
+    let refund_seller_inner = button_chunks[1].inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    f.render_widget(refund_seller_text, refund_seller_inner);
 
     if bond_ui_enabled {
         let bond_label = bond.label();

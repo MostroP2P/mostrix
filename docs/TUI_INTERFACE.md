@@ -148,6 +148,8 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 
 **Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum). The enum includes **`TradeClosed { order_id, message }`** for flows that must drop an order from the Messages list before showing a toast; **`handle_operation_result`** (`src/util/dm_utils/order_ch_mng.rs`) normalizes it to **`Info(message)`** after side effects.
 
+**`OperationResult::Info` / `Error` text**: `render_operation_result` splits on newlines, wraps at word boundaries (avoids mid-word breaks on long UUIDs), and sizes the popup from line count. Admin dispute **finalization success** uses a structured multi-line body from `BondSlashChoice::finalize_success_message` (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
+
 ```rust
 // Operation result popup overlay (shared)
 if let UiMode::OperationResult(result) = &app.mode {

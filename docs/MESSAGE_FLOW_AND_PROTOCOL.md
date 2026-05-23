@@ -597,6 +597,34 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 
 **Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with admin slash picker ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
+**Request/response (admin keys, same pattern as `execute_admin_add_solver`):**
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Execute as execute_admin_settle/cancel
+    participant Relays
+    participant Mostro
+
+    TUI->>Execute: finalize (bond, order_id)
+    Execute->>Relays: AdminSettle or AdminCancel DM (request_id)
+    Relays->>Mostro: encrypted dispute message
+    Mostro-->>Relays: AdminSettled / AdminCanceled or CantDo
+    Relays-->>Execute: wait_for_dm (15s)
+    alt success
+        Execute-->>TUI: Ok → DB status update + finalize_success_message popup
+    else CantDo / timeout / wrong action
+        Execute-->>TUI: Err → Operation Failed (no DB update)
+    end
+```
+
+| Outbound | Inbound success | Inbound failure |
+|----------|-----------------|-----------------|
+| `AdminSettle` | `AdminSettled` | `CantDo` → `handle_mostro_response` → user string |
+| `AdminCancel` | `AdminCanceled` | same |
+
+`execute_finalize_dispute` updates `admin_disputes` only after the low-level execute call returns `Ok`.
+
 ## Stateless Recovery
 
 Mostrix's message handling is designed to be stateless:
