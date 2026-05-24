@@ -139,7 +139,7 @@ pub fn handle_confirm_key(
                         "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
                     ));
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(crate::ui::OperationResult::Error(
+                    app.mode = UiMode::operation_result(crate::ui::OperationResult::Error(
                         "Internal error. Please restart Mostrix.".to_string(),
                     ));
                     return true;
@@ -152,7 +152,7 @@ pub fn handle_confirm_key(
                 ctx.mostro_info_tx.clone(),
                 true,
             );
-            app.mode = crate::ui::UiMode::OperationResult(crate::ui::OperationResult::Info(
+            app.mode = crate::ui::UiMode::operation_result(crate::ui::OperationResult::Info(
                 "Fetching Mostro instance info...".to_string(),
             ));
             true
@@ -176,7 +176,7 @@ pub fn handle_confirm_key(
         }
         UiMode::ConfirmLnAddress(addr, _) => {
             spawn_verify_and_save_ln_address_task(addr.clone(), ctx.ln_address_result_tx.clone());
-            app.mode = UiMode::OperationResult(OperationResult::Info(
+            app.mode = UiMode::operation_result(OperationResult::Info(
                 "Verifying Lightning address...".to_string(),
             ));
             true
@@ -259,7 +259,7 @@ pub fn handle_confirm_key(
                 }
                 Err(e) => {
                     log::error!("{e}");
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
             true

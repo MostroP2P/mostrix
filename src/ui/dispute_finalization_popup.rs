@@ -19,6 +19,8 @@ pub fn render_finalization_popup(
     slash_submenu_open: bool,
     slash_submenu_index: usize,
 ) {
+    let bond_ui_enabled =
+        crate::util::mostro_info::instance_bonds_enabled(app.mostro_info.as_ref());
     // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
     let dispute = app
         .admin_disputes_in_progress
@@ -160,9 +162,16 @@ pub fn render_finalization_popup(
 
     // Buttons area - pass dispute status to check if finalized
     let dispute_is_finalized = is_dispute_finalized(selected_dispute).unwrap_or(false);
-    render_action_buttons(f, chunks[1], selected_button, bond, dispute_is_finalized);
+    render_action_buttons(
+        f,
+        chunks[1],
+        selected_button,
+        bond,
+        dispute_is_finalized,
+        bond_ui_enabled,
+    );
 
-    if slash_submenu_open {
+    if bond_ui_enabled && slash_submenu_open {
         dispute_bond_slash_popup::render_bond_slash_overlay(f, popup, slash_submenu_index);
     }
 }
@@ -373,17 +382,25 @@ fn render_action_buttons(
     selected_button: usize,
     bond: BondSlashChoice,
     is_finalized: bool,
+    bond_ui_enabled: bool,
 ) {
-    // Create three equal-width buttons side by side
-    let button_chunks = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-        ],
-    )
-    .split(area);
+    let button_chunks = if bond_ui_enabled {
+        Layout::new(
+            Direction::Horizontal,
+            [
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+            ],
+        )
+        .split(area)
+    } else {
+        Layout::new(
+            Direction::Horizontal,
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .split(area)
+    };
 
     // Button 0: Pay buyer (settle in buyer's favor)
     let pay_buyer_style = if is_finalized {
@@ -402,19 +419,16 @@ fn render_action_buttons(
         .title("💰 Pay buyer")
         .borders(Borders::ALL)
         .style(pay_buyer_style);
+    let pay_buyer_inner_label = if is_finalized { "—" } else { "Admin settle" };
+    let pay_buyer_text = Paragraph::new(pay_buyer_inner_label)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(pay_buyer_style);
     f.render_widget(pay_buyer_block, button_chunks[0]);
-    if is_finalized {
-        let inner = button_chunks[0].inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        f.render_widget(
-            Paragraph::new("—")
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(pay_buyer_style),
-            inner,
-        );
-    }
+    let pay_buyer_inner = button_chunks[0].inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    f.render_widget(pay_buyer_text, pay_buyer_inner);
 
     // Button 1: Refund seller
     let refund_seller_style = if is_finalized {
@@ -433,43 +447,41 @@ fn render_action_buttons(
         .title("↩️ Refund seller")
         .borders(Borders::ALL)
         .style(refund_seller_style);
-    f.render_widget(refund_seller_block, button_chunks[1]);
-    if is_finalized {
-        let inner = button_chunks[1].inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        f.render_widget(
-            Paragraph::new("—")
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(refund_seller_style),
-            inner,
-        );
-    }
-
-    // Button 2: Bond slash (body shows current choice)
-    let bond_label = bond.label();
-    let bond_style = if selected_button == 2 {
-        Style::default()
-            .bg(PRIMARY_COLOR)
-            .fg(BACKGROUND_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(PRIMARY_COLOR)
-    };
-    let bond_block = Block::default()
-        .title("Bond")
-        .borders(Borders::ALL)
-        .style(bond_style);
-    let bond_text = Paragraph::new(bond_label)
+    let refund_seller_inner_label = if is_finalized { "—" } else { "Admin cancel" };
+    let refund_seller_text = Paragraph::new(refund_seller_inner_label)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(bond_style);
-    f.render_widget(bond_block, button_chunks[2]);
-    let inner = button_chunks[2].inner(ratatui::layout::Margin {
+        .style(refund_seller_style);
+    f.render_widget(refund_seller_block, button_chunks[1]);
+    let refund_seller_inner = button_chunks[1].inner(ratatui::layout::Margin {
         vertical: 1,
         horizontal: 1,
     });
-    f.render_widget(bond_text, inner);
+    f.render_widget(refund_seller_text, refund_seller_inner);
+
+    if bond_ui_enabled {
+        let bond_label = bond.label();
+        let bond_style = if selected_button == 2 {
+            Style::default()
+                .bg(PRIMARY_COLOR)
+                .fg(BACKGROUND_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(PRIMARY_COLOR)
+        };
+        let bond_block = Block::default()
+            .title("Bond")
+            .borders(Borders::ALL)
+            .style(bond_style);
+        let bond_text = Paragraph::new(bond_label)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(bond_style);
+        f.render_widget(bond_block, button_chunks[2]);
+        let inner = button_chunks[2].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        f.render_widget(bond_text, inner);
+    }
 }
 
 /// Helper function to center a rect

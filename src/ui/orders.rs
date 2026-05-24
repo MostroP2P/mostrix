@@ -164,6 +164,11 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).
+    OpenInvoicePopup {
+        notification: MessageNotification,
+        order_message: Box<OrderMessage>,
+    },
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).
@@ -362,6 +367,12 @@ pub fn invoice_popup_allowed_for_order_status(
                     | mostro_core::order::Status::SettledHoldInvoice
             ) | None
         ),
+        Action::AddBondInvoice => !matches!(
+            order_status,
+            Some(
+                mostro_core::order::Status::Canceled | mostro_core::order::Status::CanceledByAdmin
+            )
+        ),
         _ => false,
     }
 }
@@ -383,6 +394,7 @@ pub fn local_user_must_act_on_invoice_popup(msg: &OrderMessage, popup_action: &A
         (Some(mostro_core::order::Kind::Sell), Action::PayInvoice | Action::PayBondInvoice) => {
             is_maker
         }
+        (_, Action::AddBondInvoice) => true,
         (None, Action::PayInvoice | Action::PayBondInvoice) => msg
             .buyer_invoice
             .as_ref()
@@ -585,6 +597,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     let action_str = match action {
         Action::NewOrder => "New Order created",
         Action::AddInvoice => "Invoice Request",
+        Action::AddBondInvoice => "Bond Payout Invoice",
         Action::PayInvoice => "Payment Request",
         Action::PayBondInvoice => "Bond Invoice",
         Action::TakeSell => "Take Sell",
@@ -606,6 +619,17 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         _ => "Message",
     };
 
+    let body = if matches!(action, Action::AddBondInvoice) {
+        match inner_message_kind.payload.as_ref() {
+            Some(Payload::BondPayoutRequest(req)) => {
+                Some(bond_payout_notification_body(req.slashed_at))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     MessageNotification {
         order_id: msg.order_id,
         message_preview: action_str.to_string(),
@@ -613,14 +637,22 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         action,
         sat_amount: msg.sat_amount,
         invoice: msg.buyer_invoice.clone(),
-        body: None,
+        body,
     }
+}
+
+fn bond_payout_notification_body(slashed_at: i64) -> String {
+    let anchor = chrono::DateTime::from_timestamp(slashed_at, 0)
+        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("Slash recorded: {anchor}. Claim deadline = anchor + instance payout window.")
 }
 
 /// Short, UI-friendly action label for the messages sidebar.
 pub fn message_action_compact_label(action: &Action) -> &'static str {
     match action {
         Action::AddInvoice => "Invoice Request",
+        Action::AddBondInvoice => "Bond Payout Invoice",
         Action::PayInvoice => "Payment Request",
         Action::PayBondInvoice => "Bond Invoice",
         Action::WaitingBuyerInvoice => "Waiting Buyer Invoice",

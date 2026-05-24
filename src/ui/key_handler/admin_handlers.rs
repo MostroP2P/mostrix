@@ -39,7 +39,7 @@ pub(crate) fn execute_take_dispute_action(
     };
     // Spawn async task to take dispute
     let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
-        app.mode = UiMode::OperationResult(OperationResult::Error(
+        app.mode = UiMode::operation_result(OperationResult::Error(
             "Admin private key not configured".to_string(),
         ));
         return;
@@ -84,7 +84,7 @@ pub(crate) fn execute_add_solver_action(
     ctx: &EnterKeyContext<'_>,
 ) {
     let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
-        app.mode = UiMode::OperationResult(OperationResult::Error(
+        app.mode = UiMode::operation_result(OperationResult::Error(
             "Admin private key not configured".to_string(),
         ));
         return;
@@ -141,7 +141,7 @@ pub(crate) fn execute_finalize_dispute_action(
     bond: BondSlashChoice,
 ) {
     let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
-        app.mode = UiMode::OperationResult(OperationResult::Error(
+        app.mode = UiMode::operation_result(OperationResult::Error(
             "Admin private key not configured".to_string(),
         ));
         return;
@@ -176,17 +176,9 @@ pub(crate) fn execute_finalize_dispute_action(
         .await
         {
             Ok(_) => {
-                let action_name = if is_settle {
-                    "settled (buyer paid)"
-                } else {
-                    "canceled (seller refunded)"
-                };
-                let _ = result_tx.send(OperationResult::Info(format!(
-                    "✅ Dispute {} {} ({})!",
-                    dispute_id,
-                    action_name,
-                    bond.log_context()
-                )));
+                let _ = result_tx.send(OperationResult::Info(
+                    bond.finalize_success_message(dispute_id, is_settle),
+                ));
             }
             Err(e) => {
                 log::error!("Failed to finalize dispute: {}", e);
@@ -224,7 +216,7 @@ pub(crate) fn handle_enter_admin_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
         }
@@ -254,7 +246,7 @@ pub(crate) fn handle_enter_admin_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
         }
@@ -270,7 +262,7 @@ pub(crate) fn handle_enter_admin_mode(
                     }
                     Err(e) => {
                         log::error!("{e}");
-                        app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
                     }
                 }
             } else {

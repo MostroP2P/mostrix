@@ -111,6 +111,15 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     );
     push_opt_f64(&mut lines, "Fee (fraction)", info.fee);
     push_opt_u32(&mut lines, "Required PoW", info.pow);
+    push_kv(
+        &mut lines,
+        "Anti-abuse bonds",
+        match info.bond_enabled {
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+            None => "unknown",
+        },
+    );
 
     lines.push(Line::default());
 

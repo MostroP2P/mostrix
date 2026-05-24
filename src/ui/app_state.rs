@@ -31,7 +31,7 @@ pub enum UiMode {
     /// Rate the trade counterparty (1–5); Mostro resolves peer from order id.
     RatingOrder(RatingOrderState),
     NewMessageNotification(MessageNotification, Action, InvoiceInputState), // Popup for new message with invoice input state
-    OperationResult(OperationResult), // Show operation result (success or error)
+    OperationResult(Box<OperationResult>), // Show operation result (success or error)
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     /// Full descriptions for every Settings menu item (Shift+H on Settings); 2nd = mode to restore on close
     SettingsInstructionsPopup(UserRole, Box<UiMode>),
@@ -68,6 +68,12 @@ pub enum UiMode {
     AdminMode(AdminMode),
 }
 
+impl UiMode {
+    pub fn operation_result(result: OperationResult) -> Self {
+        Self::OperationResult(Box::new(result))
+    }
+}
+
 impl Clone for UiMode {
     fn clone(&self) -> Self {
         match self {
@@ -81,7 +87,9 @@ impl Clone for UiMode {
                     invoice_state.clone(),
                 )
             }
-            UiMode::OperationResult(result) => UiMode::OperationResult(result.clone()),
+            UiMode::OperationResult(result) => {
+                UiMode::OperationResult(Box::new((**result).clone()))
+            }
             UiMode::HelpPopup(tab, previous_mode) => {
                 UiMode::HelpPopup(*tab, Box::new((**previous_mode).clone()))
             }

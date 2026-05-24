@@ -155,6 +155,19 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         _ => {}
     }
 
+    if let OperationResult::OpenInvoicePopup {
+        notification,
+        order_message,
+    } = &result
+    {
+        crate::util::dm_utils::notifications_ch_mng::apply_open_invoice_popup_from_execute(
+            app,
+            notification.clone(),
+            order_message,
+        );
+        return;
+    }
+
     // Handle PaymentRequestRequired - show invoice popup for buy orders
     if let OperationResult::PaymentRequestRequired {
         order,
@@ -176,7 +189,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
                         "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
                     ));
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                    app.mode = UiMode::operation_result(OperationResult::Error(
                         "Internal error. Please restart Mostrix.".to_string(),
                     ));
                     return;
@@ -235,7 +248,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
                         "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
                     ));
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                    app.mode = UiMode::operation_result(OperationResult::Error(
                         "Internal error. Please restart Mostrix.".to_string(),
                     ));
                     return;
@@ -260,7 +273,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         OperationResult::ObserverChatError(msg) => {
             app.observer_loading = false;
             app.observer_error = Some(msg.clone());
-            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
         _ => {}
@@ -269,10 +282,10 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     // Set appropriate result mode based on current state
     match &app.mode {
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
-            app.mode = UiMode::OperationResult(result);
+            app.mode = UiMode::operation_result(result);
         }
         UiMode::UserMode(UserMode::WaitingAddInvoice) => {
-            app.mode = UiMode::OperationResult(result);
+            app.mode = UiMode::operation_result(result);
         }
         UiMode::NewMessageNotification(_, action, _) => {
             // Do not replace AddInvoice/PayInvoice/PayBondInvoice popups: the take-order task
@@ -280,18 +293,21 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             // would drop the popup.
             if matches!(
                 action,
-                Action::AddInvoice | Action::PayInvoice | Action::PayBondInvoice
+                Action::AddInvoice
+                    | Action::AddBondInvoice
+                    | Action::PayInvoice
+                    | Action::PayBondInvoice
             ) {
                 app.pending_post_take_operation_result = Some(result);
             } else {
-                app.mode = UiMode::OperationResult(result);
+                app.mode = UiMode::operation_result(result);
             }
         }
         UiMode::ConfirmSavedLnAddressForInvoice(..) => {
             app.pending_post_take_operation_result = Some(result);
         }
         _ => {
-            app.mode = UiMode::OperationResult(result);
+            app.mode = UiMode::operation_result(result);
         }
     }
 }

@@ -6,6 +6,44 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use super::{OperationResult, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::orders::OrderSuccess;
 
+/// Split on newlines, then wrap each paragraph at word boundaries.
+fn wrap_message_lines(message: &str, width: usize) -> Vec<Line<'static>> {
+    let wrap_width = width.max(10);
+    let mut lines = Vec::new();
+
+    for paragraph in message.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.len() + 1 + word.len() <= wrap_width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(Line::from(std::mem::take(&mut current)));
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            lines.push(Line::from(current));
+        }
+    }
+
+    lines
+}
+
+fn info_popup_height(message: &str, popup_width: u16) -> u16 {
+    let inner_width = popup_width.saturating_sub(2) as usize;
+    let content_lines = wrap_message_lines(message, inner_width).len();
+    // content + blank line + footer + top/bottom border padding
+    (content_lines + 4).clamp(8, 22) as u16
+}
+
 pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult) {
     let area: Rect = f.area();
     let popup_width = 70;
@@ -14,12 +52,13 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         OperationResult::PaymentRequestRequired { .. }
         | OperationResult::ObserverChatLoaded(_)
         | OperationResult::ObserverChatError(_) => 8,
+        OperationResult::Info(message) => info_popup_height(message, popup_width),
         OperationResult::Error(_)
-        | OperationResult::Info(_)
         | OperationResult::InvoiceSubmitted { .. }
         | OperationResult::TradeClosed { .. }
         | OperationResult::OrderHistoryDeleted { .. }
-        | OperationResult::MyTradesMakerBookChanged => 8,
+        | OperationResult::MyTradesMakerBookChanged
+        | OperationResult::OpenInvoicePopup { .. } => 8,
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -151,18 +190,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let inner = block.inner(popup);
             f.render_widget(block, popup);
 
-            // Wrap error message if too long (accounting for borders)
-            let error_lines: Vec<Line> = error_msg
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(inner.width as usize - 2)
-                .map(|chunk| Line::from(chunk.iter().collect::<String>()))
-                .collect();
-
-            let mut lines = vec![];
-            for line in error_lines {
-                lines.push(line);
-            }
+            let mut lines = wrap_message_lines(error_msg, inner.width as usize);
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
                 "Press ESC or ENTER to close",
@@ -185,18 +213,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let inner = block.inner(popup);
             f.render_widget(block, popup);
 
-            // Wrap message if too long (accounting for borders)
-            let info_lines: Vec<Line> = message
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(inner.width as usize - 2)
-                .map(|chunk| Line::from(chunk.iter().collect::<String>()))
-                .collect();
-
-            let mut lines = vec![];
-            for line in info_lines {
-                lines.push(line);
-            }
+            let mut lines = wrap_message_lines(message, inner.width as usize);
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
                 "Press ESC or ENTER to close",
@@ -235,6 +252,6 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OperationResult::MyTradesMakerBookChanged => {}
+        OperationResult::MyTradesMakerBookChanged | OperationResult::OpenInvoicePopup { .. } => {}
     }
 }

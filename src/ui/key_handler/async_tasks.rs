@@ -53,7 +53,7 @@ const POISONED_UI_FATAL: &str = "Internal error. Please restart Mostrix.";
 fn apply_poisoned_mutex_ui_fatal(app: &mut AppState, user_message: String) {
     request_fatal_restart(user_message);
     app.fatal_exit_on_close = true;
-    app.mode = UiMode::OperationResult(OperationResult::Error(POISONED_UI_FATAL.to_string()));
+    app.mode = UiMode::operation_result(OperationResult::Error(POISONED_UI_FATAL.to_string()));
 }
 
 fn clear_messages_or_fatal(app: &mut AppState) -> Result<(), ()> {
@@ -179,7 +179,7 @@ pub async fn apply_pending_key_reload(
                 }
                 if let Some(err) = reload_error {
                     app.pending_key_reload = false;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(err));
+                    app.mode = UiMode::operation_result(OperationResult::Error(err));
                 } else if let Ok(new_mostro_pubkey) =
                     PublicKey::from_str(&latest_settings.mostro_pubkey)
                 {
@@ -200,7 +200,7 @@ pub async fn apply_pending_key_reload(
                             ));
                             app.pending_key_reload = false;
                             app.fatal_exit_on_close = true;
-                            app.mode = UiMode::OperationResult(OperationResult::Error(
+                            app.mode = UiMode::operation_result(OperationResult::Error(
                                 "Internal error. Please restart Mostrix.".to_string(),
                             ));
                             return;
@@ -277,16 +277,16 @@ pub async fn apply_pending_key_reload(
                     app.backup_requires_restart = false;
                     app.pending_key_reload = false;
                     app.mode = match router_reg {
-                        Ok(()) => UiMode::OperationResult(OperationResult::Info(
+                        Ok(()) => UiMode::operation_result(OperationResult::Info(
                             "Keys reloaded. Active session state has been reset.".to_string(),
                         )),
-                        Err(msg) => UiMode::OperationResult(OperationResult::Error(format!(
+                        Err(msg) => UiMode::operation_result(OperationResult::Error(format!(
                             "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
                         ))),
                     };
                 } else {
                     app.pending_key_reload = false;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    app.mode = UiMode::operation_result(OperationResult::Error(format!(
                         "Invalid Mostro pubkey after key reload: {}",
                         latest_settings.mostro_pubkey
                     )));
@@ -294,7 +294,7 @@ pub async fn apply_pending_key_reload(
             }
             Err(e) => {
                 app.pending_key_reload = false;
-                app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                app.mode = UiMode::operation_result(OperationResult::Error(format!(
                     "Invalid identity key after reload: {}",
                     e
                 )));
@@ -302,7 +302,7 @@ pub async fn apply_pending_key_reload(
         },
         Err(e) => {
             app.pending_key_reload = false;
-            app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+            app.mode = UiMode::operation_result(OperationResult::Error(format!(
                 "Failed to load settings for key reload: {}",
                 e
             )));
@@ -366,7 +366,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
                 "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
             ));
             app.fatal_exit_on_close = true;
-            app.mode = UiMode::OperationResult(OperationResult::Error(
+            app.mode = UiMode::operation_result(OperationResult::Error(
                 "Internal error. Please restart Mostrix.".to_string(),
             ));
             return Err("Internal error. Please restart Mostrix.".to_string());

@@ -260,26 +260,33 @@ fn cycle_bond_slash_choice(selected_choice_index: &mut usize, direction: KeyCode
     }
 }
 
-/// Cycle through 3 buttons (Pay Buyer, Refund Seller, Bond slash) for dispute finalization
-fn cycle_finalization_button(selected_button: &mut usize, direction: KeyCode, is_finalized: bool) {
+/// Cycle finalize popup buttons (Pay Buyer, Refund Seller, optional Bond slash).
+fn cycle_finalization_button(
+    selected_button: &mut usize,
+    direction: KeyCode,
+    is_finalized: bool,
+    bond_ui_enabled: bool,
+) {
+    let max_index = if bond_ui_enabled { 2 } else { 1 };
+
     if is_finalized {
-        // Finalized disputes: focus bond button only; exit via Esc
-        *selected_button = 2;
+        if bond_ui_enabled {
+            *selected_button = 2;
+        }
         return;
     }
 
-    // Normal navigation when not finalized
     if direction == KeyCode::Left {
         *selected_button = if *selected_button == 0 {
-            2
+            max_index
         } else {
-            *selected_button - 1
+            selected_button.saturating_sub(1)
         };
     } else {
-        *selected_button = if *selected_button == 2 {
+        *selected_button = if *selected_button >= max_index {
             0
         } else {
-            *selected_button + 1
+            selected_button.saturating_add(1)
         };
     }
 }
@@ -309,7 +316,11 @@ pub fn handle_mouse_invoice_paste_fallback(event: &Event, app: &mut AppState) ->
         mouse_event.column,
         mouse_event.row
     );
-    let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode
+    let UiMode::NewMessageNotification(
+        _,
+        Action::AddInvoice | Action::AddBondInvoice,
+        ref mut invoice_state,
+    ) = app.mode
     else {
         return false;
     };
@@ -447,7 +458,12 @@ pub fn handle_key_event(
     }
 
     // AddInvoice popup paste fallback for terminals without bracketed paste support.
-    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
+    if let UiMode::NewMessageNotification(
+        _,
+        Action::AddInvoice | Action::AddBondInvoice,
+        ref mut invoice_state,
+    ) = app.mode
+    {
         if is_paste_shortcut(&key_event) {
             if let Some(text) = read_clipboard_text_best_effort() {
                 let filtered_text: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -694,7 +710,12 @@ pub fn handle_key_event(
     }
 
     // Handle invoice input first (before other key handling)
-    if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
+    if let UiMode::NewMessageNotification(
+        _,
+        Action::AddInvoice | Action::AddBondInvoice,
+        ref mut invoice_state,
+    ) = app.mode
+    {
         if invoice_state.focused && handle_invoice_input(code, invoice_state) {
             return Some(true); // Skip further processing
         }
@@ -808,7 +829,7 @@ pub fn handle_key_event(
                 if is_terminal_order_status(status) {
                     app.mode = UiMode::ConfirmDeleteHistoryOrder(order_id, true);
                 } else {
-                    app.mode = UiMode::OperationResult(OperationResult::Info(
+                    app.mode = UiMode::operation_result(OperationResult::Info(
                         "Delete is only available for terminal orders.".to_string(),
                     ));
                 }
@@ -835,7 +856,7 @@ pub fn handle_key_event(
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "Cancel is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
@@ -853,7 +874,7 @@ pub fn handle_key_event(
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "FiatSent is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
@@ -871,7 +892,7 @@ pub fn handle_key_event(
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "Release is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
@@ -980,6 +1001,7 @@ pub fn handle_key_event(
                 UiMode::NewMessageNotification(
                     _,
                     Action::AddInvoice
+                    | Action::AddBondInvoice
                     | Action::PayInvoice
                     | Action::PayBondInvoice
                     | Action::WaitingSellerToPay
@@ -1003,8 +1025,15 @@ pub fn handle_key_event(
                         .find(|d| d.dispute_id == dispute_id.to_string())
                         .and_then(is_dispute_finalized)
                         .unwrap_or(false);
+                    let bond_ui_enabled =
+                        crate::util::mostro_info::instance_bonds_enabled(app.mostro_info.as_ref());
 
-                    cycle_finalization_button(selected_button_index, code, dispute_is_finalized);
+                    cycle_finalization_button(
+                        selected_button_index,
+                        code,
+                        dispute_is_finalized,
+                        bond_ui_enabled,
+                    );
                     return Some(true);
                 }
                 _ => {}

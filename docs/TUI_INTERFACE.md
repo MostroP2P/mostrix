@@ -146,7 +146,17 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 
 **Example**: Rendering the `OperationResult` popup.
 
-**Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum). The enum includes **`TradeClosed { order_id, message }`** for flows that must drop an order from the Messages list before showing a toast; **`handle_operation_result`** (`src/util/dm_utils/order_ch_mng.rs`) normalizes it to **`Info(message)`** after side effects.
+**Source**: `src/ui/operation_result.rs` (rendering), `src/ui/orders.rs` (`OperationResult` enum). Notable variants handled in [`handle_operation_result`](../src/util/dm_utils/order_ch_mng.rs):
+
+| Variant | Effect |
+|---------|--------|
+| `Success` | My Trades placeholder + `order_chat_static` |
+| `PaymentRequestRequired` | Opens Pay / bond invoice popup (`NewMessageNotification`) |
+| `OpenInvoicePopup` | Opens Add Invoice or waiting popup from synchronous execute (bond payout reply); does **not** show the operation-result modal |
+| `InvoiceSubmitted` | Normalized to `Info` toast after optional buyer LN-address preference |
+| `TradeClosed` / `OrderHistoryDeleted` | Side effects on Messages list, then `Info` toast |
+
+**`OperationResult::Info` / `Error` text**: `render_operation_result` splits on newlines, wraps at word boundaries (avoids mid-word breaks on long UUIDs), and sizes the popup from line count. Admin dispute **finalization success** uses a structured multi-line body from `BondSlashChoice::finalize_success_message` (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
 ```rust
 // Operation result popup overlay (shared)

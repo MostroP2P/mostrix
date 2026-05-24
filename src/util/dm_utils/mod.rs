@@ -430,6 +430,9 @@ async fn upsert_order_from_trade_dm(
         (Action::HoldInvoicePaymentAccepted, Some(Payload::Order(o))) => {
             ("HoldInvoicePaymentAccepted", o.clone())
         }
+        (Action::AddBondInvoice, Some(Payload::BondPayoutRequest(req))) => {
+            ("AddBondInvoice", req.order.clone())
+        }
         (Action::NewOrder, Some(Payload::Order(o))) => ("NewOrder", o.clone()),
         _ => return,
     };
@@ -721,6 +724,10 @@ async fn handle_trade_dm_for_order(
             Some(Payload::Order(order)) => (Some(order.amount), None),
             _ => (None, None),
         },
+        Action::AddBondInvoice => match &inner_kind.payload {
+            Some(Payload::BondPayoutRequest(req)) => (Some(req.order.amount), None),
+            _ => (None, None),
+        },
         _ => (None, None),
     };
 
@@ -729,7 +736,7 @@ async fn handle_trade_dm_for_order(
         Action::PayInvoice | Action::PayBondInvoice => {
             invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
         }
-        Action::AddInvoice => sat_amount.is_some(),
+        Action::AddInvoice | Action::AddBondInvoice => sat_amount.is_some(),
         _ => true,
     };
 

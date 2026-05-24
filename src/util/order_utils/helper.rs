@@ -583,6 +583,7 @@ pub(super) fn handle_mostro_response(
     } else if inner_message.action != Action::RateReceived
         && inner_message.action != Action::NewOrder
         && inner_message.action != Action::AddInvoice
+        && inner_message.action != Action::AddBondInvoice
         && inner_message.action != Action::PayInvoice
         && inner_message.action != Action::PayBondInvoice
     {

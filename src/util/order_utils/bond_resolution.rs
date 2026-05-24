@@ -98,6 +98,19 @@ impl BondSlashChoice {
             Self::SlashBoth => "slash both bonds",
         }
     }
+
+    /// Multi-line text for the post-finalization success popup (`OperationResult::Info`).
+    pub fn finalize_success_message(self, dispute_id: uuid::Uuid, is_settle: bool) -> String {
+        let outcome = if is_settle {
+            "Admin settle — buyer paid"
+        } else {
+            "Admin cancel — seller refunded"
+        };
+        format!(
+            "Dispute finalized\n\nOutcome:\n{outcome}\n\nBond:\n{}\n\nDispute ID:\n{dispute_id}",
+            self.label(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +136,17 @@ mod tests {
             },
             other => panic!("expected Dispute message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn finalize_success_message_is_multiline() {
+        let dispute_id = uuid!("8397bc78-7c98-4b4f-bb49-40c7101391b0");
+        let msg = BondSlashChoice::SlashBuyer.finalize_success_message(dispute_id, false);
+        assert!(msg.contains("Dispute finalized"));
+        assert!(msg.contains("Admin cancel — seller refunded"));
+        assert!(msg.contains("⚔️ Slash buyer bond"));
+        assert!(msg.contains(&dispute_id.to_string()));
+        assert!(msg.contains('\n'));
     }
 
     #[test]

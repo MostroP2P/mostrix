@@ -589,9 +589,76 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 - **Client types**: `mostro-core` 0.11.3 — `BondResolution`, `Payload::BondResolution`.
 - **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
-- **Post-slash payout**: slashed bonds may trigger `Action::AddBondInvoice` to the non-slashed party (daemon PR [#738](https://github.com/MostroP2P/mostro/pull/738)); handled on the trader notification path, not admin UI.
+- **Post-slash payout**: `Action::AddBondInvoice` with `Payload::BondPayoutRequest` (order amount = counterparty share, `slashed_at` anchor for claim deadline). Mostrix:
+  - Parses amount from the DM in [`dm_utils`](../src/util/dm_utils/mod.rs)
+  - Auto-popup via [`notifications_ch_mng.rs`](../src/util/dm_utils/notifications_ch_mng.rs) (same pattern as `AddInvoice`)
+  - UI: `render_add_bond_invoice` in [`message_notification.rs`](../src/ui/message_notification.rs)
+  - Submit: [`execute_bond_payment_request_reply`](../src/util/order_utils/execute_add_invoice.rs) (via `execute_add_bond_invoice`) — sends `PaymentRequest` on the wire with `request_id`, then `wait_for_dm` (15s).
 
-**Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel`. UI still passes `BondSlashChoice::default()` until the slash picker lands.
+**Bond payout submit outcomes** (`execute_add_bond_invoice` → `Result<Option<OperationResult>>`):
+
+| Mostro reply | Mostrix result | UI |
+|--------------|----------------|-----|
+| `WaitingBuyerInvoice`, `AddInvoice`, `WaitingSellerToPay`, … | `Some(OpenInvoicePopup { … })` | Next popup via [`apply_open_invoice_popup_from_execute`](../src/util/dm_utils/notifications_ch_mng.rs): **Add Invoice** if [`local_user_must_act_on_invoice_popup`](../src/ui/orders.rs), else waiting-phase popup |
+| `PayBondInvoice` / `PayInvoice` + `PaymentRequest` | `Some(PaymentRequestRequired { … })` | Bond or hold invoice popup (same as take-order) |
+| `CantDo` | `Err` | Operation Failed |
+| Timeout / empty DM | `Ok(None)` | Success toast only (“Bond payout invoice sent successfully”) |
+
+Example: on a **sell** listing, after the taker pays the anti-abuse bond and submits a bond-payout bolt11, Mostro may reply with `waiting-buyer-invoice`; Mostrix should open the **Add Invoice** popup for the taker (buyer) without requiring a manual trip through the Messages tab.
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Execute as execute_add_bond_invoice
+    participant Relays
+    participant Mostro
+
+    TUI->>Execute: bond payout bolt11 (AddBondInvoice)
+    Execute->>Relays: PaymentRequest DM (request_id)
+    Relays->>Mostro: encrypted order message
+    Mostro-->>Relays: e.g. WaitingBuyerInvoice / PayBondInvoice / CantDo
+    Relays-->>Execute: wait_for_dm (15s)
+    alt follow-up action
+        Execute-->>TUI: OpenInvoicePopup or PaymentRequestRequired
+        TUI->>TUI: apply_open_invoice_popup_from_execute
+    else timeout or empty
+        Execute-->>TUI: Ok → InvoiceSubmitted toast
+    else CantDo
+        Execute-->>TUI: Err
+    end
+```
+
+`AddInvoice` (regular trade invoice, not bond payout) still uses [`execute_payment_request_reply`](../src/util/order_utils/execute_add_invoice.rs) and expects `WaitingSellerToPay` or `HoldInvoicePaymentAccepted`; it does **not** treat `wait_for_dm` timeout as success.
+
+**Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with admin slash picker ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
+
+**Request/response (admin keys, same pattern as `execute_admin_add_solver`):**
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Execute as execute_admin_settle/cancel
+    participant Relays
+    participant Mostro
+
+    TUI->>Execute: finalize (bond, order_id)
+    Execute->>Relays: AdminSettle or AdminCancel DM (request_id)
+    Relays->>Mostro: encrypted dispute message
+    Mostro-->>Relays: AdminSettled / AdminCanceled or CantDo
+    Relays-->>Execute: wait_for_dm (15s)
+    alt success
+        Execute-->>TUI: Ok → DB status update + finalize_success_message popup
+    else CantDo / timeout / wrong action
+        Execute-->>TUI: Err → Operation Failed (no DB update)
+    end
+```
+
+| Outbound | Inbound success | Inbound failure |
+|----------|-----------------|-----------------|
+| `AdminSettle` | `AdminSettled` | `CantDo` → `handle_mostro_response` → user string |
+| `AdminCancel` | `AdminCanceled` | same |
+
+`execute_finalize_dispute` updates `admin_disputes` only after the low-level execute call returns `Ok`.
 
 ## Stateless Recovery
 

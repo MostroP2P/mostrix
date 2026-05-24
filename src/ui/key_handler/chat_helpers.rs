@@ -167,11 +167,11 @@ pub enum FinalizeDisputePopupButton {
 }
 
 impl FinalizeDisputePopupButton {
-    pub fn from_index(i: usize) -> Option<Self> {
+    pub fn from_index(i: usize, bond_ui_enabled: bool) -> Option<Self> {
         match i {
             0 => Some(Self::PayBuyer),
             1 => Some(Self::RefundSeller),
-            2 => Some(Self::BondSlash),
+            2 if bond_ui_enabled => Some(Self::BondSlash),
             _ => None,
         }
     }

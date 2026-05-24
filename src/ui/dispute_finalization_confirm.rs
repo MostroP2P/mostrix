@@ -15,6 +15,8 @@ pub fn render_finalization_confirm(
     bond: BondSlashChoice,
     selected_button: bool,
 ) {
+    let bond_ui_enabled =
+        crate::util::mostro_info::instance_bonds_enabled(app.mostro_info.as_ref());
     // Find the dispute by dispute_id (or fallback to order_id for backwards compatibility)
     let dispute = app
         .admin_disputes_in_progress
@@ -92,21 +94,27 @@ pub fn render_finalization_confirm(
     let inner_area = block.inner(popup);
     f.render_widget(block, popup);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // dispute ID
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // action description
-            Constraint::Length(1), // bond slash recap
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // buttons
-            Constraint::Length(1), // help text
-            Constraint::Length(1), // help text for esc
-        ],
-    )
-    .split(inner_area);
+    let mut constraints = vec![
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // dispute ID
+        Constraint::Length(1), // spacer
+        Constraint::Length(3), // action description
+    ];
+    if bond_ui_enabled {
+        constraints.push(Constraint::Length(1)); // bond slash recap
+    }
+    constraints.extend([
+        Constraint::Length(1), // spacer
+        Constraint::Length(3), // buttons
+        Constraint::Length(1), // help text
+        Constraint::Length(1), // help text for esc
+    ]);
+    let chunks = Layout::new(Direction::Vertical, constraints).split(inner_area);
+
+    let bond_chunk = if bond_ui_enabled { 4 } else { usize::MAX };
+    let buttons_chunk = if bond_ui_enabled { 6 } else { 5 };
+    let help_chunk = buttons_chunk + 1;
+    let esc_help_chunk = help_chunk + 1;
 
     // Dispute ID
     f.render_widget(
@@ -134,17 +142,19 @@ pub fn render_finalization_confirm(
         chunks[3],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Bond: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(bond.label(), Style::default().fg(PRIMARY_COLOR)),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[4],
-    );
+    if bond_ui_enabled {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Bond: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(bond.label(), Style::default().fg(PRIMARY_COLOR)),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[bond_chunk],
+        );
+    }
 
     // Yes/No buttons
-    let button_area = chunks[6];
+    let button_area = chunks[buttons_chunk];
     let button_width = 15;
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
@@ -254,7 +264,7 @@ pub fn render_finalization_confirm(
             Span::styled(" to confirm", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[7],
+        chunks[help_chunk],
     );
 
     // Help text for Esc key - second line
@@ -270,6 +280,6 @@ pub fn render_finalization_confirm(
             Span::styled(" to cancel", Style::default()),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[8],
+        chunks[esc_help_chunk],
     );
 }
