@@ -593,7 +593,42 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
   - Parses amount from the DM in [`dm_utils`](../src/util/dm_utils/mod.rs)
   - Auto-popup via [`notifications_ch_mng.rs`](../src/util/dm_utils/notifications_ch_mng.rs) (same pattern as `AddInvoice`)
   - UI: `render_add_bond_invoice` in [`message_notification.rs`](../src/ui/message_notification.rs)
-  - Submit: [`execute_add_bond_invoice`](../src/util/order_utils/execute_add_invoice.rs) → `PaymentRequest` reply on the wire
+  - Submit: [`execute_bond_payment_request_reply`](../src/util/order_utils/execute_add_invoice.rs) (via `execute_add_bond_invoice`) — sends `PaymentRequest` on the wire with `request_id`, then `wait_for_dm` (15s).
+
+**Bond payout submit outcomes** (`execute_add_bond_invoice` → `Result<Option<OperationResult>>`):
+
+| Mostro reply | Mostrix result | UI |
+|--------------|----------------|-----|
+| `WaitingBuyerInvoice`, `AddInvoice`, `WaitingSellerToPay`, … | `Some(OpenInvoicePopup { … })` | Next popup via [`apply_open_invoice_popup_from_execute`](../src/util/dm_utils/notifications_ch_mng.rs): **Add Invoice** if [`local_user_must_act_on_invoice_popup`](../src/ui/orders.rs), else waiting-phase popup |
+| `PayBondInvoice` / `PayInvoice` + `PaymentRequest` | `Some(PaymentRequestRequired { … })` | Bond or hold invoice popup (same as take-order) |
+| `CantDo` | `Err` | Operation Failed |
+| Timeout / empty DM | `Ok(None)` | Success toast only (“Bond payout invoice sent successfully”) |
+
+Example: on a **sell** listing, after the taker pays the anti-abuse bond and submits a bond-payout bolt11, Mostro may reply with `waiting-buyer-invoice`; Mostrix should open the **Add Invoice** popup for the taker (buyer) without requiring a manual trip through the Messages tab.
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Execute as execute_add_bond_invoice
+    participant Relays
+    participant Mostro
+
+    TUI->>Execute: bond payout bolt11 (AddBondInvoice)
+    Execute->>Relays: PaymentRequest DM (request_id)
+    Relays->>Mostro: encrypted order message
+    Mostro-->>Relays: e.g. WaitingBuyerInvoice / PayBondInvoice / CantDo
+    Relays-->>Execute: wait_for_dm (15s)
+    alt follow-up action
+        Execute-->>TUI: OpenInvoicePopup or PaymentRequestRequired
+        TUI->>TUI: apply_open_invoice_popup_from_execute
+    else timeout or empty
+        Execute-->>TUI: Ok → InvoiceSubmitted toast
+    else CantDo
+        Execute-->>TUI: Err
+    end
+```
+
+`AddInvoice` (regular trade invoice, not bond payout) still uses [`execute_payment_request_reply`](../src/util/order_utils/execute_add_invoice.rs) and expects `WaitingSellerToPay` or `HoldInvoicePaymentAccepted`; it does **not** treat `wait_for_dm` timeout as success.
 
 **Entry points:** `execute_finalize_dispute(dispute_id, bond, …)` → `execute_admin_settle` / `execute_admin_cancel` with admin slash picker ([FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 

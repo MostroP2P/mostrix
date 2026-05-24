@@ -275,7 +275,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     "First-run backup flow: failed to load generated user mnemonic: {}",
                     e
                 );
-                app.mode = UiMode::OperationResult(OperationResult::Error(
+                app.mode = UiMode::operation_result(OperationResult::Error(
                     "First-run setup completed, but mnemonic backup could not be loaded from the database. Please use Settings -> Generate New Keys and back up the new 12 words immediately.".to_string(),
                 ));
             }
@@ -381,7 +381,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     dispute_task.abort();
                     message_listener_handle.abort();
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                    app.mode = UiMode::operation_result(OperationResult::Error(msg));
                 }
             }
             net = network_status_rx.recv() => {
@@ -495,7 +495,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             app.mode = UiMode::BackupNewKeys(mnemonic);
                         }
                         Err(error_msg) => {
-                            app.mode = UiMode::OperationResult(OperationResult::Error(error_msg));
+                            app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
                         }
                     }
                 }
@@ -508,7 +508,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             app.mode = UiMode::BackupNewKeys(mnemonic);
                         }
                         Err(error_msg) => {
-                            app.mode = UiMode::OperationResult(OperationResult::Error(error_msg));
+                            app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
                         }
                     }
                 }
@@ -557,7 +557,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
                             app.mostro_info = *info;
-                            app.mode = crate::ui::UiMode::OperationResult(
+                            app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );
                         }
@@ -566,7 +566,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                         MostroInfoFetchResult::Err(e) => {
                             app.mostro_info = None;
-                            app.mode = crate::ui::UiMode::OperationResult(
+                            app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Error(e),
                             );
                         }
@@ -710,7 +710,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     dispute_task.abort();
                     message_listener_handle.abort();
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                    app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     0
                 }
             };
@@ -734,7 +734,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     dispute_task.abort();
                     message_listener_handle.abort();
                     app.fatal_exit_on_close = true;
-                    app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+                    app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     continue;
                 }
             };

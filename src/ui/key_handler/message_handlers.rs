@@ -113,7 +113,10 @@ pub fn submit_add_bond_invoice(
         )
         .await
         {
-            Ok(_) => {
+            Ok(Some(follow_up)) => {
+                let _ = order_result_tx_clone.send(follow_up);
+            }
+            Ok(None) => {
                 let _ = order_result_tx_clone.send(OperationResult::InvoiceSubmitted {
                     message: "Bond payout invoice sent successfully".to_string(),
                     remember_buyer_saved_ln_address_for_order: None,

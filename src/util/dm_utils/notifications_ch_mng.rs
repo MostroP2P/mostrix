@@ -3,6 +3,7 @@ use crate::settings::load_settings_from_disk;
 use crate::ui::orders::BuyerInvoicePreference;
 use crate::ui::orders::{
     invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
+    order_message_to_notification, order_message_to_waiting_notification, OrderMessage,
 };
 use crate::ui::{
     AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification, UiMode,
@@ -171,6 +172,73 @@ pub fn apply_saved_ln_address_invoice_choice(
             invoice_state_for_add_invoice(String::new(), true),
         );
     }
+}
+
+fn invoice_popup_mode(
+    buyer_invoice_preference: &mut HashMap<Uuid, BuyerInvoicePreference>,
+    notification: MessageNotification,
+) -> UiMode {
+    match notification.action {
+        Action::AddInvoice => present_add_invoice_popup(buyer_invoice_preference, notification),
+        Action::AddBondInvoice => {
+            let invoice_state = invoice_state_for_add_invoice(String::new(), true);
+            UiMode::NewMessageNotification(notification, Action::AddBondInvoice, invoice_state)
+        }
+        Action::PayInvoice | Action::PayBondInvoice => {
+            let action = notification.action.clone();
+            let invoice_state = InvoiceInputState {
+                invoice_input: String::new(),
+                focused: false,
+                just_pasted: false,
+                copied_to_clipboard: false,
+                scroll_y: 0,
+                action_selection: InvoiceNotificationActionSelection::Primary,
+            };
+            UiMode::NewMessageNotification(notification, action, invoice_state)
+        }
+        Action::WaitingBuyerInvoice | Action::WaitingSellerToPay => {
+            let action = notification.action.clone();
+            let invoice_state = invoice_state_for_add_invoice(String::new(), false);
+            UiMode::NewMessageNotification(notification, action, invoice_state)
+        }
+        _ => unreachable!(
+            "apply_open_invoice_popup_from_execute only passes invoice/waiting actions"
+        ),
+    }
+}
+
+/// Apply invoice or waiting-phase popup after a synchronous protocol reply (bond payout, etc.).
+pub fn apply_open_invoice_popup_from_execute(
+    app: &mut AppState,
+    notification: MessageNotification,
+    order_message: &OrderMessage,
+) {
+    let gate_action = match notification.action {
+        Action::WaitingBuyerInvoice | Action::WaitingSellerToPay => Action::AddInvoice,
+        ref other => other.clone(),
+    };
+    if !invoice_popup_allowed_for_order_status(&gate_action, order_message.order_status) {
+        return;
+    }
+    if local_user_must_act_on_invoice_popup(order_message, &gate_action) {
+        let mut actionable = notification;
+        if matches!(
+            actionable.action,
+            Action::WaitingBuyerInvoice | Action::WaitingSellerToPay
+        ) {
+            actionable = order_message_to_notification(order_message);
+            actionable.action = Action::AddInvoice;
+        }
+        app.mode = invoice_popup_mode(&mut app.buyer_invoice_preference, actionable);
+        return;
+    }
+    let waiting = order_message_to_waiting_notification(order_message);
+    let action = waiting.action.clone();
+    app.mode = UiMode::NewMessageNotification(
+        waiting,
+        action,
+        invoice_state_for_add_invoice(String::new(), false),
+    );
 }
 
 /// Handle message notification from the notification channel

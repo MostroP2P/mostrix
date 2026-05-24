@@ -414,7 +414,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::ConfirmSavedLnAddressForInvoice(notification, selected_button) => {
             if selected_button {
                 let Some(order_id) = notification.order_id else {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                    app.mode = UiMode::operation_result(OperationResult::Error(
                         "No order ID for AddInvoice".to_string(),
                     ));
                     return true;
@@ -424,7 +424,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     Ok(s) => s.ln_address.trim().to_string(),
                     Err(e) => {
                         log::error!("Failed to load settings from disk: {}", e);
-                        app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                        app.mode = UiMode::operation_result(OperationResult::Error(format!(
                             "Failed to load settings from disk: {}",
                             e
                         )));
@@ -432,7 +432,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     }
                 };
                 if trimmed.is_empty() {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                    app.mode = UiMode::operation_result(OperationResult::Error(
                         "No saved Lightning address in settings".to_string(),
                     ));
                     return true;
@@ -528,7 +528,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) => {
             if selected_button {
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Deleting selected terminal order from local history...".to_string(),
                 ));
                 spawn_delete_single_terminal_order_task(
@@ -543,7 +543,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::ConfirmBulkDeleteHistory(selected_button) => {
             if selected_button {
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Cleaning up success/canceled orders from local history...".to_string(),
                 ));
                 spawn_bulk_history_cleanup_task(ctx.pool.clone(), ctx.order_result_tx.clone());
@@ -563,7 +563,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             let mnemonic = match generate_mnemonic_12_words() {
                 Ok(m) => m,
                 Err(e) => {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    app.mode = UiMode::operation_result(OperationResult::Error(format!(
                         "Failed to generate mnemonic: {}",
                         e
                     )));
@@ -574,7 +574,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             let derived_nsec = match derive_identity_nsec_from_mnemonic(&mnemonic) {
                 Ok(nsec) => nsec,
                 Err(e) => {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(format!(
+                    app.mode = UiMode::operation_result(OperationResult::Error(format!(
                         "Failed to derive nsec from mnemonic: {}",
                         e
                     )));
@@ -595,14 +595,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             );
 
             app.mode =
-                UiMode::OperationResult(OperationResult::Info("Saving new keys...".to_string()));
+                UiMode::operation_result(OperationResult::Info("Saving new keys...".to_string()));
             true
         }
         UiMode::BackupNewKeys(_) => {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
                 app.pending_key_reload = true;
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Reloading keys and resetting active session...".to_string(),
                 ));
                 true
@@ -756,7 +756,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
         }
@@ -797,7 +797,7 @@ fn handle_enter_settings_mode(
                     ctx.mostro_info_tx.clone(),
                     true,
                 );
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Fetching Mostro instance info...".to_string(),
                 ));
             }
@@ -813,7 +813,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
         }
@@ -845,14 +845,14 @@ fn handle_enter_settings_mode(
                 });
             }
             Err(e) => {
-                app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                app.mode = UiMode::operation_result(OperationResult::Error(e));
             }
         },
         UiMode::ConfirmLnAddress(addr, selected_button) => {
             if selected_button {
                 let addr_clone = addr.clone();
                 spawn_verify_and_save_ln_address_task(addr_clone, ctx.ln_address_result_tx.clone());
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Verifying Lightning address...".to_string(),
                 ));
             } else {
@@ -876,7 +876,7 @@ fn handle_enter_settings_mode(
                 }
                 Err(e) => {
                     // Show error popup
-                    app.mode = UiMode::OperationResult(OperationResult::Error(e));
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
                 }
             }
         }
@@ -930,7 +930,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             ctx.client.clone(),
             ctx.mostro_info_tx.clone(),
         );
-        app.mode = UiMode::OperationResult(OperationResult::Info(
+        app.mode = UiMode::operation_result(OperationResult::Info(
             "Fetching Mostro instance info...".to_string(),
         ));
     } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
@@ -1062,7 +1062,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     } else {
                         "Trade already advanced; invoice action no longer required.".to_string()
                     };
-                    app.mode = UiMode::OperationResult(OperationResult::Info(info));
+                    app.mode = UiMode::operation_result(OperationResult::Info(info));
                 }
             } else if matches!(
                 action,
@@ -1101,14 +1101,14 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                         selected_rating: 3,
                     });
                 } else {
-                    app.mode = UiMode::OperationResult(OperationResult::Error(
+                    app.mode = UiMode::operation_result(OperationResult::Error(
                         "No order ID for rating".to_string(),
                     ));
                 }
             } else {
                 // Non-actionable messages: show info popup (no "send" semantics).
                 let popup_message = message_action_compact_label_for_message(msg).to_string();
-                app.mode = UiMode::OperationResult(OperationResult::Info(popup_message));
+                app.mode = UiMode::operation_result(OperationResult::Info(popup_message));
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
@@ -1117,14 +1117,14 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if key_str.is_empty() {
             let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
-            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
         if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
             let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
-            app.mode = UiMode::OperationResult(OperationResult::Error(msg));
+            app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
@@ -1189,7 +1189,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             Some(SettingsMenuAction::ViewSeedWords) => {
                 spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());
-                app.mode = UiMode::OperationResult(OperationResult::Info(
+                app.mode = UiMode::operation_result(OperationResult::Info(
                     "Loading seed words...".to_string(),
                 ));
             }

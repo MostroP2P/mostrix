@@ -164,6 +164,11 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).
+    OpenInvoicePopup {
+        notification: MessageNotification,
+        order_message: Box<OrderMessage>,
+    },
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).

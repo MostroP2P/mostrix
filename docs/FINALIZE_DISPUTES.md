@@ -14,7 +14,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
 | **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
-| **Trader `AddBondInvoice`** | Done | Bond payout invoice popup + `execute_add_bond_invoice` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
+| **Trader `AddBondInvoice`** | Done | Payout popup + `execute_add_bond_invoice`; `wait_for_dm` + follow-up via `OpenInvoicePopup` / `PaymentRequestRequired` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
 
 Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle_order.html), [Admin Cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
@@ -77,7 +77,7 @@ Mostrix maps these via [`BondSlashChoice`](../src/util/order_utils/bond_resoluti
 
 If the daemon rejects a slash (e.g. side has no bond row), Mostro may reply with `CantDo(InvalidPayload)` — surfaced as *"Invalid payload - check bond slash choices or message format"* ([`get_cant_do_description`](../src/util/types.rs)).
 
-After a slash, the non-slashed party may receive `Action::AddBondInvoice` (`Payload::BondPayoutRequest`) to claim their counterparty share; Mostrix opens the same invoice-input popup as `AddInvoice` (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)), not the admin finalization popup.
+After a slash, the non-slashed party may receive `Action::AddBondInvoice` (`Payload::BondPayoutRequest`) to claim their counterparty share; Mostrix opens the bond payout invoice popup (not the admin finalization popup). When they submit their bolt11, `execute_add_bond_invoice` waits for Mostro’s next DM and chains into the normal trade flow—for example `waiting-buyer-invoice` on a sell take opens the **Add Invoice** popup for the buyer/taker. See the bond payout submit table in [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md).
 
 ### Instance `bond_enabled` (kind 38385)
 
@@ -373,6 +373,8 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 - `src/util/order_utils/execute_admin_settle.rs` - AdminSettle; waits for `AdminSettled`
 - `src/util/order_utils/execute_admin_cancel.rs` - AdminCancel; waits for `AdminCanceled`
 - `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
+- `src/util/order_utils/execute_add_invoice.rs` - `execute_add_invoice`, `execute_add_bond_invoice` / `execute_bond_payment_request_reply`
+- `src/util/dm_utils/notifications_ch_mng.rs` - `apply_open_invoice_popup_from_execute`, `present_add_invoice_popup`
 - `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
 - `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending
 - `src/ui/key_handler/mod.rs` - Chat input handling and clipboard operations

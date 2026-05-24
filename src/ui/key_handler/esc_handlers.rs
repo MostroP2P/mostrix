@@ -66,7 +66,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         UiMode::NewMessageNotification(_, _, _) => {
             // Dismiss notification; if take-order finished while this popup was open, show that result now.
             app.mode = if let Some(r) = app.pending_post_take_operation_result.take() {
-                UiMode::OperationResult(r)
+                UiMode::operation_result(r)
             } else {
                 default_mode.clone()
             };
@@ -74,7 +74,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         }
         UiMode::ConfirmSavedLnAddressForInvoice(..) => {
             app.mode = if let Some(r) = app.pending_post_take_operation_result.take() {
-                UiMode::OperationResult(r)
+                UiMode::operation_result(r)
             } else {
                 default_mode.clone()
             };
@@ -165,7 +165,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
                 app.pending_key_reload = true;
-                app.mode = UiMode::OperationResult(crate::ui::OperationResult::Info(
+                app.mode = UiMode::operation_result(crate::ui::OperationResult::Info(
                     "Reloading keys and resetting active session...".to_string(),
                 ));
                 true

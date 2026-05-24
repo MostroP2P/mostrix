@@ -829,7 +829,7 @@ pub fn handle_key_event(
                 if is_terminal_order_status(status) {
                     app.mode = UiMode::ConfirmDeleteHistoryOrder(order_id, true);
                 } else {
-                    app.mode = UiMode::OperationResult(OperationResult::Info(
+                    app.mode = UiMode::operation_result(OperationResult::Info(
                         "Delete is only available for terminal orders.".to_string(),
                     ));
                 }
@@ -856,7 +856,7 @@ pub fn handle_key_event(
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "Cancel is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
@@ -874,7 +874,7 @@ pub fn handle_key_event(
                 KeyCode::Char('f') | KeyCode::Char('F') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "FiatSent is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
@@ -892,7 +892,7 @@ pub fn handle_key_event(
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
-                            app.mode = UiMode::OperationResult(OperationResult::Info(
+                            app.mode = UiMode::operation_result(OperationResult::Info(
                                 "Release is disabled for terminal orders.".to_string(),
                             ));
                             return Some(true);
