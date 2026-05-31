@@ -17,7 +17,10 @@ use crate::ui::key_handler::chat_helpers::{
     resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
-    helpers::{get_visible_attachment_messages, is_dispute_finalized},
+    helpers::{
+        active_order_chat_list_snapshot, get_order_attachment_messages,
+        get_visible_attachment_messages, is_dispute_finalized,
+    },
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     InvoiceNotificationActionSelection, LnAddressVerifyResult, MostroInfoFetchResult,
     OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
@@ -586,6 +589,62 @@ pub fn handle_key_event(
         }
     }
 
+    // User order chat save attachment popup: Up/Down to select, Enter to save, Esc to cancel
+    if let UiMode::UserSaveAttachmentPopup(ref pinned_order_id, selected_idx) = app.mode {
+        let list_len = get_order_attachment_messages(app, pinned_order_id).len();
+        match code {
+            KeyCode::Esc => {
+                app.mode = UiMode::UserMode(UserMode::Normal);
+                return Some(true);
+            }
+            KeyCode::Up => {
+                if selected_idx > 0 {
+                    if let UiMode::UserSaveAttachmentPopup(_, ref mut idx) = app.mode {
+                        *idx = selected_idx - 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Down => {
+                if list_len > 0 && selected_idx + 1 < list_len {
+                    if let UiMode::UserSaveAttachmentPopup(_, ref mut idx) = app.mode {
+                        *idx = selected_idx + 1;
+                    }
+                }
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                if let Some(tx) = save_attachment_tx {
+                    let list = get_order_attachment_messages(app, pinned_order_id);
+                    if let Some(msg) = list.get(selected_idx) {
+                        if let Some(att) = &msg.attachment {
+                            let mut attachment = att.clone();
+                            let order_id = pinned_order_id.clone();
+                            let pool = pool.clone();
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                if attachment.decryption_key.is_none() {
+                                    if let Ok(order) =
+                                        crate::models::Order::get_by_id(&pool, &order_id).await
+                                    {
+                                        attachment.decryption_key =
+                                            crate::util::chat_utils::order_chat_decryption_key_bytes(
+                                                &order,
+                                            );
+                                    }
+                                }
+                                let _ = tx.send((order_id, attachment));
+                            });
+                        }
+                    }
+                }
+                app.mode = UiMode::UserMode(UserMode::Normal);
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
+    }
+
     // Observer save attachment popup: Up/Down to select, Enter to save, Esc to cancel
     if let UiMode::ObserverSaveAttachmentPopup(selected_idx) = app.mode {
         let list_len = app
@@ -705,6 +764,19 @@ pub fn handle_key_event(
             if has_attachments {
                 app.mode = UiMode::ObserverSaveAttachmentPopup(0);
                 return Some(true);
+            }
+        }
+        if let Tab::User(UserTab::MyTrades) = app.active_tab {
+            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+                if let Some(row) =
+                    active_order_chat_list_snapshot(app).get(app.selected_order_chat_idx)
+                {
+                    let list = get_order_attachment_messages(app, &row.order_id);
+                    if !list.is_empty() {
+                        app.mode = UiMode::UserSaveAttachmentPopup(row.order_id.clone(), 0);
+                        return Some(true);
+                    }
+                }
             }
         }
     }
@@ -1118,6 +1190,15 @@ pub fn handle_key_event(
                 }
             }
 
+            // My Trades: PageUp/PageDown scroll the order chat
+            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+                if let Tab::User(UserTab::MyTrades) = app.active_tab {
+                    if chat_helpers::scroll_order_chat_messages(app, code) {
+                        return Some(true);
+                    }
+                }
+            }
+
             Some(true)
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -1160,6 +1241,13 @@ pub fn handle_key_event(
                         if chat_helpers::jump_to_chat_bottom(app, &dispute_id_key) {
                             return Some(true);
                         }
+                    }
+                }
+            }
+            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+                if let Tab::User(UserTab::MyTrades) = app.active_tab {
+                    if chat_helpers::jump_to_order_chat_bottom(app) {
+                        return Some(true);
                     }
                 }
             }

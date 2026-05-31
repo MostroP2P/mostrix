@@ -42,6 +42,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::UserSaveAttachmentPopup(_, _) => {
+            app.mode = UiMode::UserMode(UserMode::Normal);
+            true
+        }
         UiMode::OperationResult(_) => {
             if app.fatal_exit_on_close {
                 return false;

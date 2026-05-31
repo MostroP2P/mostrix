@@ -143,15 +143,16 @@ Several background tasks are spawned to keep the UI and data in sync:
    - On `Offline`, startup overlay text indicates automatic retry.
    - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
      and reload runtime background tasks.
-5. **Admin Chat Scheduler** (shared-key model):
-   - In the main event loop, when `user_role == Admin`, a 5-second interval triggers `spawn_admin_chat_fetch` (see `src/util/order_utils/fetch_scheduler.rs`).
-   - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one admin chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
-   - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
-   - Fetches NIP‑59 `GiftWrap` events addressed to each shared key's public key (ECDH-derived, same model as `mostro-chat`).
-   - Uses per‑party `last_seen_timestamp` values to request only new events.
-   - Delegates application of updates to `ui::helpers::apply_admin_chat_updates` (implemented in `src/ui/helpers/startup.rs`), which:
-     - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
-     - Persists updated buyer/seller chat cursors in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`).
+5. **Shared chat relay poll** (`admin_chat_interval`, 2 seconds in `src/main.rs`):
+   - **Admin role**: triggers `spawn_admin_chat_fetch` → `fetch_admin_chat_updates` (see `src/util/order_utils/fetch_scheduler.rs`).
+     - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
+     - Fetches NIP‑59 `GiftWrap` events addressed to each shared key's public key (ECDH-derived, same model as `mostro-chat`).
+     - Uses per‑party `last_seen_timestamp` values to request only new events.
+     - Delegates application of updates to `ui::helpers::apply_admin_chat_updates` (implemented in `src/ui/helpers/startup.rs`), which:
+       - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
+       - Persists updated buyer/seller chat cursors in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`).
+   - **User role**: triggers `spawn_user_order_chat_fetch` → `fetch_user_order_chat_updates` on the same timer (shared keys from `order_chat_shared_key_hex` or `trade_keys` + `counterparty_pubkey`; applied via `apply_user_order_chat_updates`).
+   - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one shared-key chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
 
 **Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers/startup.rs` (`apply_admin_chat_updates`)
 
@@ -180,6 +181,14 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
   - **Instant UI restore** after restart.
   - **Incremental network sync** without replaying the full chat history from relays.
 
+### User order chat restore at startup (My Trades)
+
+For **User** role, Mostrix restores peer-to-peer order chat alongside trade DMs:
+
+- Cached transcripts live under `~/.mostrix/orders_chat/<order_id>.txt` and are loaded into `AppState.order_chats` by `load_user_order_chats_at_startup`.
+- An immediate relay fetch (`fetch_user_order_chat_updates`) merges any newer gift-wrap messages; subsequent polls run every **2 seconds** on the shared `admin_chat_interval` timer via `spawn_user_order_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs`.
+- `apply_user_order_chat_updates` skips relay echoes of the local trade pubkey and deduplicates by `(timestamp, content)` so optimistic **You** sends are not mirrored as **Peer**. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
+
 ## Main Event Loop
 
 The TUI runs in a `tokio::select!` loop that handles (among others):
@@ -188,7 +197,7 @@ The TUI runs in a `tokio::select!` loop that handles (among others):
 2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
 3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
 4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.
-5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers).
+5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
 
 **Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`).
 

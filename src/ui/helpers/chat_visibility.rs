@@ -1,4 +1,4 @@
-use crate::ui::{AppState, ChatParty, ChatSender, DisputeChatMessage};
+use crate::ui::{AppState, ChatParty, ChatSender, DisputeChatMessage, UserOrderChatMessage};
 
 /// Returns true if this message should be shown in the given party's chat view.
 pub fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
@@ -36,6 +36,27 @@ pub fn get_visible_attachment_messages<'a>(
             message_visible_for_party(msg, app.active_chat_party) && msg.attachment.is_some()
         })
         .collect()
+}
+
+/// Returns attachment messages for the given order chat.
+pub fn get_order_attachment_messages<'a>(
+    app: &'a AppState,
+    order_id: &str,
+) -> Vec<&'a UserOrderChatMessage> {
+    app.order_chats
+        .get(order_id)
+        .map(|messages| {
+            messages
+                .iter()
+                .filter(|msg| msg.attachment.is_some())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Returns the number of attachment messages in the given order chat.
+pub fn count_order_attachments(app: &AppState, order_id: &str) -> usize {
+    get_order_attachment_messages(app, order_id).len()
 }
 
 /// Returns the currently selected chat message (by index) for the given dispute, or None.

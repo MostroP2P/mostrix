@@ -376,6 +376,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_SHIFT_F_FIAT_SENT.to_string(),
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
                 HELP_MY_TRADES_SHIFT_V_RATE.to_string(),
+                HELP_MY_TRADES_CTRL_S_ATTACH.to_string(),
                 HELP_MY_TRADES_SHIFT_H_HELP.to_string(),
             ],
         ),

@@ -9,13 +9,15 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use uuid::Uuid;
 
 use crate::ui::constants::{
-    FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-    FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL,
-    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_I_DISABLE,
-    FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
-    HELP_KEY,
+    FOOTER_CTRL_S_SAVE_FILE, FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND,
+    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, FOOTER_MYTRADES_SELECT_ORDER,
+    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+    FOOTER_MYTRADES_SHIFT_I_DISABLE, FOOTER_MYTRADES_SHIFT_I_ENABLE,
+    FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE, HELP_KEY,
 };
-use crate::ui::helpers::{active_order_chat_list_snapshot, format_user_rating};
+use crate::ui::helpers::{
+    active_order_chat_list_snapshot, count_order_attachments, format_user_rating,
+};
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -106,6 +108,11 @@ fn build_order_chat_content(
             UserChatSender::You => Color::Cyan,
             UserChatSender::Peer => Color::Green,
         };
+        let content_color = if msg.attachment.is_some() {
+            Color::Yellow
+        } else {
+            color
+        };
         let ts = DateTime::from_timestamp(msg.timestamp, 0)
             .map(|dt| dt.format("%d-%m-%Y %H:%M").to_string())
             .unwrap_or_else(|| "unknown time".to_string());
@@ -115,13 +122,18 @@ fn build_order_chat_content(
         if peer_is_right_aligned {
             lines.push(header.into_right_aligned_line());
             for line in wrapped_lines {
-                lines
-                    .push(Span::styled(line, Style::default().fg(color)).into_right_aligned_line());
+                lines.push(
+                    Span::styled(line, Style::default().fg(content_color))
+                        .into_right_aligned_line(),
+                );
             }
         } else {
             lines.push(Line::from(header));
             for line in wrapped_lines {
-                lines.push(Line::from(Span::styled(line, Style::default().fg(color))));
+                lines.push(Line::from(Span::styled(
+                    line,
+                    Style::default().fg(content_color),
+                )));
             }
         }
         lines.push(Line::from(""));
@@ -355,6 +367,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     } else {
         1
     };
+    let footer_height =
+        footer_height.saturating_add(if app.attachment_toast.is_some() { 1 } else { 0 });
+
+    let file_count = count_order_attachments(app, &selected.order_id);
+    let ctrl_s_hint = if file_count > 0 {
+        FOOTER_CTRL_S_SAVE_FILE
+    } else {
+        ""
+    };
 
     let main_chunks = Layout::new(
         Direction::Vertical,
@@ -386,23 +407,61 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .get(&selected.order_id)
         .cloned()
         .unwrap_or_default();
-    let mut scroll_view = ScrollView::new(Size::new(
-        main_chunks[1].width.saturating_sub(2),
-        main_chunks[1].height.saturating_sub(2),
-    ))
-    .scrollbars_visibility(ScrollbarVisibility::Always);
-    let (chat_lines, content_width, line_starts) = build_order_chat_content(
-        &chat_messages,
-        main_chunks[1].width.saturating_sub(4).max(1),
-    );
+    let message_count = chat_messages.len();
+    let chat_title = if message_count > 0 {
+        if file_count > 0 {
+            format!(
+                "Order Chat ({} messages, {} file(s))",
+                message_count, file_count
+            )
+        } else {
+            format!("Order Chat ({} messages)", message_count)
+        }
+    } else {
+        "Order Chat (no messages)".to_string()
+    };
+    let chat_area = main_chunks[1];
+    let chat_block = Block::default()
+        .title(chat_title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR));
+    let chat_inner = chat_block.inner(chat_area);
+    f.render_widget(chat_block, chat_area);
+
+    // Match disputes/observer chat: content width reserves one column for the vertical scrollbar.
+    let content_width = chat_inner.width.saturating_sub(1).max(1);
+    let (chat_lines, _, line_starts) = build_order_chat_content(&chat_messages, content_width);
     app.order_chat_line_starts = line_starts;
+    let content_height = chat_lines.len().min(u16::MAX as usize) as u16;
+
+    if message_count > 0 {
+        let order_id_key = selected.order_id.clone();
+        if let Some((ref prev_id, last_count)) = app.order_chat_scroll_tracker {
+            if *prev_id == order_id_key {
+                if message_count > last_count {
+                    app.order_chat_scrollview_state.scroll_to_bottom();
+                }
+            } else {
+                app.order_chat_scrollview_state.scroll_to_bottom();
+            }
+        } else {
+            app.order_chat_scrollview_state.scroll_to_bottom();
+        }
+        app.order_chat_scroll_tracker = Some((order_id_key, message_count));
+    } else {
+        app.order_chat_scroll_tracker = Some((selected.order_id.clone(), 0));
+    }
+
+    let mut scroll_view = ScrollView::new(Size::new(content_width, content_height.max(1)))
+        .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
+    let content_rect = Rect::new(0, 0, content_width, content_height.max(1));
     scroll_view.render_widget(
-        Paragraph::new(chat_lines.clone()).wrap(Wrap { trim: true }),
-        Rect::new(0, 0, content_width.max(1), (chat_lines.len() as u16).max(1)),
+        Paragraph::new(chat_lines).wrap(Wrap { trim: true }),
+        content_rect,
     );
     f.render_stateful_widget(
         scroll_view,
-        main_chunks[1],
+        chat_inner,
         &mut app.order_chat_scrollview_state,
     );
 
@@ -431,9 +490,21 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
     let footer_area = main_chunks[3];
     let footer_width = footer_area.width;
-    let footer_text: Text<'static> = if footer_width < 50 {
-        Text::raw(HELP_KEY)
-    } else if footer_height >= 3 {
+    let base_footer_lines: u16 = if footer_width < 50 {
+        1
+    } else if can_fit_three_line_footer {
+        3
+    } else if can_fit_two_line_footer {
+        2
+    } else {
+        1
+    };
+    let has_toast = app.attachment_toast.is_some();
+    let hint_lines = base_footer_lines;
+
+    let footer_body: Text<'static> = if footer_width < 50 {
+        Text::raw(format!("{HELP_KEY}{ctrl_s_hint}"))
+    } else if hint_lines >= 3 {
         if app.order_chat_input_enabled {
             Text::from(vec![
                 Line::from(format!(
@@ -450,10 +521,11 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}",
+                    "{} | {} | {}{}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    ctrl_s_hint,
                 )),
             ])
         } else {
@@ -469,14 +541,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}",
+                    "{} | {} | {}{}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    ctrl_s_hint,
                 )),
             ])
         }
-    } else if footer_height == 2 {
+    } else if hint_lines >= 2 {
         if app.order_chat_input_enabled {
             Text::from(vec![
                 Line::from(format!(
@@ -488,12 +561,13 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
                 )),
                 Line::from(format!(
-                    "{} | {} | {} | {} | {}",
+                    "{} | {} | {} | {} | {}{}",
                     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    ctrl_s_hint,
                 )),
             ])
         } else {
@@ -507,11 +581,12 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
                 )),
                 Line::from(format!(
-                    "{} | {} | {} | {}",
+                    "{} | {} | {} | {}{}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    ctrl_s_hint,
                 )),
             ])
         }
@@ -534,13 +609,30 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 FOOTER_MYTRADES_SHIFT_C_CANCEL
             )
         };
-        Text::raw(base)
+        Text::raw(format!("{base}{ctrl_s_hint}"))
     };
 
-    f.render_widget(
-        Paragraph::new(footer_text).wrap(Wrap { trim: true }),
-        footer_area,
-    );
+    if has_toast {
+        let chunks = Layout::new(
+            Direction::Vertical,
+            [Constraint::Length(1), Constraint::Length(hint_lines.max(1))],
+        )
+        .split(footer_area);
+        let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
+        f.render_widget(
+            Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
+            chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(footer_body).wrap(Wrap { trim: true }),
+            chunks[1],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(footer_body).wrap(Wrap { trim: true }),
+            footer_area,
+        );
+    }
 }
 
 pub fn push_local_order_chat_message(

@@ -39,6 +39,8 @@ pub enum UiMode {
     SaveAttachmentPopup(usize),
     /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
     ObserverSaveAttachmentPopup(usize),
+    /// User order chat save attachment popup: pinned order id + list index (Ctrl+S on My Trades tab).
+    UserSaveAttachmentPopup(String, usize),
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -98,6 +100,9 @@ impl Clone for UiMode {
             }
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
+            UiMode::UserSaveAttachmentPopup(order_id, idx) => {
+                UiMode::UserSaveAttachmentPopup(order_id.clone(), *idx)
+            }
             UiMode::AddMostroPubkey(state) => UiMode::AddMostroPubkey(state.clone()),
             UiMode::ConfirmMostroPubkey(key, selected) => {
                 UiMode::ConfirmMostroPubkey(key.clone(), *selected)
