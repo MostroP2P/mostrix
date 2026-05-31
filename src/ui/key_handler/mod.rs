@@ -590,18 +590,8 @@ pub fn handle_key_event(
     }
 
     // User order chat save attachment popup: Up/Down to select, Enter to save, Esc to cancel
-    if matches!(app.mode, UiMode::UserSaveAttachmentPopup(_)) {
-        let order_id = active_order_chat_list_snapshot(app)
-            .get(app.selected_order_chat_idx)
-            .map(|row| row.order_id.clone());
-        let list_len = order_id
-            .as_ref()
-            .map(|id| get_order_attachment_messages(app, id).len())
-            .unwrap_or(0);
-        let selected_idx = match &app.mode {
-            UiMode::UserSaveAttachmentPopup(i) => *i,
-            _ => 0,
-        };
+    if let UiMode::UserSaveAttachmentPopup(ref pinned_order_id, selected_idx) = app.mode {
+        let list_len = get_order_attachment_messages(app, pinned_order_id).len();
         match code {
             KeyCode::Esc => {
                 app.mode = UiMode::UserMode(UserMode::Normal);
@@ -609,7 +599,7 @@ pub fn handle_key_event(
             }
             KeyCode::Up => {
                 if selected_idx > 0 {
-                    if let UiMode::UserSaveAttachmentPopup(ref mut idx) = app.mode {
+                    if let UiMode::UserSaveAttachmentPopup(_, ref mut idx) = app.mode {
                         *idx = selected_idx - 1;
                     }
                 }
@@ -617,19 +607,19 @@ pub fn handle_key_event(
             }
             KeyCode::Down => {
                 if list_len > 0 && selected_idx + 1 < list_len {
-                    if let UiMode::UserSaveAttachmentPopup(ref mut idx) = app.mode {
+                    if let UiMode::UserSaveAttachmentPopup(_, ref mut idx) = app.mode {
                         *idx = selected_idx + 1;
                     }
                 }
                 return Some(true);
             }
             KeyCode::Enter => {
-                if let (Some(tx), Some(order_id)) = (save_attachment_tx, order_id.as_ref()) {
-                    let list = get_order_attachment_messages(app, order_id);
+                if let Some(tx) = save_attachment_tx {
+                    let list = get_order_attachment_messages(app, pinned_order_id);
                     if let Some(msg) = list.get(selected_idx) {
                         if let Some(att) = &msg.attachment {
                             let mut attachment = att.clone();
-                            let order_id = order_id.clone();
+                            let order_id = pinned_order_id.clone();
                             let pool = pool.clone();
                             let tx = tx.clone();
                             tokio::spawn(async move {
@@ -783,7 +773,7 @@ pub fn handle_key_event(
                 {
                     let list = get_order_attachment_messages(app, &row.order_id);
                     if !list.is_empty() {
-                        app.mode = UiMode::UserSaveAttachmentPopup(0);
+                        app.mode = UiMode::UserSaveAttachmentPopup(row.order_id.clone(), 0);
                         return Some(true);
                     }
                 }

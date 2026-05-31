@@ -212,8 +212,8 @@ pub fn ui_draw(
     }
 
     // User order chat save attachment popup (Ctrl+S on My Trades tab)
-    if let UiMode::UserSaveAttachmentPopup(selected_idx) = &app.mode {
-        save_attachment_popup::render_user_save_attachment_popup(f, app, *selected_idx);
+    if let UiMode::UserSaveAttachmentPopup(order_id, selected_idx) = &app.mode {
+        save_attachment_popup::render_user_save_attachment_popup(f, app, order_id, *selected_idx);
     }
 
     // Shared settings popups

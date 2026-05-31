@@ -462,7 +462,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = default_mode;
             true
         }
-        UiMode::UserSaveAttachmentPopup(_) => {
+        UiMode::UserSaveAttachmentPopup(_, _) => {
             app.mode = UiMode::UserMode(UserMode::Normal);
             true
         }

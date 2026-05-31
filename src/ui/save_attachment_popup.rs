@@ -6,9 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::ui::helpers::{
-    active_order_chat_list_snapshot, get_order_attachment_messages, get_visible_attachment_messages,
-};
+use crate::ui::helpers::{get_order_attachment_messages, get_visible_attachment_messages};
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 use super::chat::ChatAttachmentType;
@@ -186,14 +184,9 @@ pub fn render_observer_save_attachment_popup(
 pub fn render_user_save_attachment_popup(
     f: &mut ratatui::Frame,
     app: &AppState,
+    order_id: &str,
     selected_idx: usize,
 ) {
-    let active_orders = active_order_chat_list_snapshot(app);
-    let order_id = match active_orders.get(app.selected_order_chat_idx) {
-        Some(row) => row.order_id.as_str(),
-        None => return,
-    };
-
     let list = get_order_attachment_messages(app, order_id);
     if list.is_empty() {
         return;

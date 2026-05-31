@@ -306,7 +306,7 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 
 - **Path**: `~/.mostrix/orders_chat/<order_id>.txt`
 - **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats`, seeds `order_chat_last_seen`, then runs an initial `fetch_user_order_chat_updates` relay backfill.
-- **Periodic relay sync (User role)**: every 2 seconds (`admin_chat_interval` in `src/main.rs`), `spawn_user_order_chat_fetch` polls active orders via `fetch_user_order_chat_updates`. Uses the same single-flight `CHAT_MESSAGES_SEMAPHORE` as admin chat so overlapping fetches are skipped. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
+- **Periodic relay sync (User role)**: on the shared **`admin_chat_interval`** timer (every **2 seconds** in `src/main.rs`), the User-role branch calls `spawn_user_order_chat_fetch`, which polls active orders via `fetch_user_order_chat_updates`. Uses the same single-flight `CHAT_MESSAGES_SEMAPHORE` as admin chat so overlapping fetches are skipped. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
 - **Incremental merge**: `apply_user_order_chat_updates` in `src/ui/helpers/startup.rs`:
   - **Skip own relay echoes**: each `OrderChatUpdate` carries `local_trade_pubkey`; messages whose decrypted `sender_pubkey` matches are ignored (same rule as admin chat and Mostro Mobile — avoids showing your send on both **You** and **Peer** after the optimistic local append on Enter).
   - **Dedup**: `(timestamp, content)` regardless of sender, so the same gift-wrap is not appended twice when `last_seen` still includes that timestamp.
@@ -561,7 +561,7 @@ User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_
 
 When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys**.
 
-- **Trigger**: Every 5 seconds (`admin_chat_interval` in `src/main.rs`), only when `app.user_role == UserRole::Admin`.
+- **Trigger**: Every **2 seconds** on the shared **`admin_chat_interval`** timer in `src/main.rs` when `app.user_role == UserRole::Admin` (the same timer’s User-role branch calls `spawn_user_order_chat_fetch` instead).
 - **Shared keys**: For each `AdminDispute` in `InProgress` state, the database may hold `buyer_shared_key_hex` / `seller_shared_key_hex`. At runtime these are converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
 - **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, the current disputes, `admin_chat_last_seen`, and the channel to send results.
 - **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) ensures that only one admin chat fetch runs concurrently. If a previous fetch is still running, subsequent ticks are skipped until the flag is cleared.
@@ -576,7 +576,7 @@ When the user is in **Admin** mode, the main event loop runs a periodic admin ch
   - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.
 - **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. From the dispute chat, the admin presses **Ctrl+S** to open a **Save attachment** popup listing all attachments for the current dispute/party; they select one with ↑/↓ and press Enter to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
-This avoids overlapping relay queries and duplicate work when the 5‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
+This avoids overlapping relay queries and duplicate work when the 2‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
 
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.

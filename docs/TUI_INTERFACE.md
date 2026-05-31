@@ -122,7 +122,7 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
     SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
-    UserSaveAttachmentPopup(usize),          // My Trades order chat: list index (Ctrl+S opens, ↑↓/Enter/Esc in popup)
+    UserSaveAttachmentPopup(String, usize),  // My Trades: pinned order_id + attachment list index (Ctrl+S opens, ↑↓/Enter/Esc in popup)
 
     // User-specific modes
     UserMode(UserMode),
@@ -402,7 +402,7 @@ The key handler processes input in this order:
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The main loop (every 5 seconds when in Admin mode) calls `spawn_admin_chat_fetch`, which runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard ensures only one fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
+  - The main loop calls `spawn_admin_chat_fetch` every **2 seconds** on the shared `admin_chat_interval` timer when in Admin mode (User mode uses the same timer for `spawn_user_order_chat_fetch`). Each spawn runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard (`CHAT_MESSAGES_SEMAPHORE`) ensures only one shared-key chat fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
     - Fetches `GiftWrap` events addressed to each shared key's public key (7-day rolling window).

@@ -328,9 +328,9 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 None => (content.clone(), None),
             };
 
-            let is_duplicate = messages_vec
-                .iter()
-                .any(|m| m.timestamp == ts && m.content == msg_content);
+            let is_duplicate = messages_vec.iter().any(|m| {
+                m.sender == UserChatSender::Peer && m.timestamp == ts && m.content == msg_content
+            });
             if is_duplicate {
                 if ts > max_ts {
                     max_ts = ts;
