@@ -105,6 +105,8 @@ pub struct OrderChatLastSeen {
 #[derive(Clone, Debug)]
 pub struct OrderChatUpdate {
     pub order_id: String,
+    /// Local trade public key for this order; used to skip relay echoes of our own sends.
+    pub local_trade_pubkey: PublicKey,
     /// (content, timestamp, sender_pubkey)
     pub messages: Vec<(String, i64, PublicKey)>,
 }

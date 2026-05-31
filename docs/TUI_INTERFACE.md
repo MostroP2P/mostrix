@@ -122,6 +122,7 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
     SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
+    UserSaveAttachmentPopup(usize),          // My Trades order chat: list index (Ctrl+S opens, ↑↓/Enter/Esc in popup)
 
     // User-specific modes
     UserMode(UserMode),
@@ -168,15 +169,16 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable.
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll and Ctrl+S for attachments.
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
-**Save attachment popup (Ctrl+S in Disputes in Progress or Observer tab)**:
+**Save attachment popup (Ctrl+S in Disputes in Progress, Observer tab, or My Trades)**:
 
-- **Open**: When managing a dispute or viewing an observer chat, press **Ctrl+S** to open a centered popup listing all file/image attachments. In Disputes in Progress, attachments are scoped to the current dispute and active party (Buyer or Seller). In Observer mode, attachments are drawn from all observer messages. If there are no attachments, Ctrl+S does nothing.
+- **Open**: When managing a dispute, viewing an observer chat, or on **My Trades** with a selected active order, press **Ctrl+S** to open a centered popup listing all file/image attachments. In Disputes in Progress, attachments are scoped to the current dispute and active party (Buyer or Seller). In Observer mode, attachments are drawn from all observer messages. On My Trades, attachments come from the selected order’s chat transcript (`get_order_attachment_messages`). If there are no attachments, Ctrl+S does nothing.
 - **In popup**: **↑/↓** change selection, **Enter** saves the selected attachment to `~/.mostrix/downloads/`, **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
-- **Source**: `src/ui/save_attachment_popup.rs` (rendering for both dispute and observer popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`).
+- **My Trades decrypt**: when the sender did not embed a key in the attachment JSON, Mostrix derives the shared ChaCha20 key from `order_chat_shared_key_hex` or ECDH (`order_chat_decryption_key_bytes` in `src/util/chat_utils.rs`) before writing the file.
+- **Source**: `src/ui/save_attachment_popup.rs` (dispute, observer, and user order popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`, `FOOTER_CTRL_S_SAVE_FILE`).
 
 Backup New Keys popup (first launch + key rotation):
 
@@ -278,6 +280,8 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Live (from DMs)**: **status**, **amount / fiats**, **payment method**, **premium**, and **buyer/seller rating** (when present) still come from the message projection (see below).
 - **Privacy / ratings**: there is no placeholder row for **`Privacy:`** / **`Buyer -`** / **`Seller -`** until trade privacy can be sourced from the same context as disputes (DM `SmallOrder` does not carry those flags). **Buyer Rating:** / **Seller Rating:** lines are shown only when reputation exists: `helpers::build_active_order_chat_list` merges `Payload::Peer` with `UserInfo` when `peer.pubkey` matches `buyer_trade_pubkey` / `seller_trade_pubkey` from `Payload::Order`, and the header uses `helpers::format_user_rating` for display.
 - **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
+- **Chat scrolling**: message history uses `tui_scrollview::ScrollView` with full content height (not viewport height) and an always-visible vertical scrollbar — same pattern as Disputes in Progress and Observer. **PgUp/PgDn** scroll the chat; **End** jumps to the latest messages. Auto-scroll-to-bottom runs when new messages arrive, when switching orders, or after sending (`order_chat_scroll_tracker`, `scroll_order_chat_messages` / `scroll_order_chat_after_send` in `src/ui/key_handler/chat_helpers.rs`).
+- **Attachments (receive)**: encrypted file/image messages from the counterparty show as yellow lines with 🖼/📎 icons; the chat block title adds a file count; a yellow toast appears briefly when a new attachment is merged from relay. **Ctrl+S** opens the save popup (see above). Sending attachments from Mostrix is not implemented yet (receive/save only).
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Footer shortcuts (width-aware)**:
   - **Shift+I** toggles chat input.
@@ -285,6 +289,8 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+F** mark fiat sent (YES/NO popup).
   - **Shift+R** release sats (YES/NO popup).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
+  - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
+  - **Ctrl+S** save attachment (when the selected order has attachments).
   - **Shift+H** opens the shortcuts popup for the current tab.
 - **Projection vs static**: the DM-based list row (`OrderChatListItem` in `src/ui/helpers/order_chat_projection.rs`) holds **live** fields only: `status`, first-seen **economic** snapshot from `Payload::Order` (amount, fiat, payment, premium), `trade_index` (from any message in the order), and buyer/seller **trade pubkeys** plus **reputation** from `Payload::Peer`. It no longer carries kind, `created_at`, or initiator metadata (those are on `order_chat_static` above).
 - **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row. **Trade ID** in the header still falls back to projection `trade_index` if a static entry is not yet in the map (e.g. race before the result handler runs).

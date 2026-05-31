@@ -118,6 +118,37 @@ pub fn jump_to_chat_bottom(app: &mut AppState, dispute_id_key: &str) -> bool {
     true
 }
 
+/// Scroll user order chat (PageUp/PageDown). Returns true if scrolling occurred.
+pub fn scroll_order_chat_messages(
+    app: &mut AppState,
+    direction: crossterm::event::KeyCode,
+) -> bool {
+    match direction {
+        crossterm::event::KeyCode::PageUp => {
+            app.order_chat_scrollview_state.scroll_page_up();
+            true
+        }
+        crossterm::event::KeyCode::PageDown => {
+            app.order_chat_scrollview_state.scroll_page_down();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Jump to the bottom of the user order chat (latest messages).
+pub fn jump_to_order_chat_bottom(app: &mut AppState) -> bool {
+    app.order_chat_scrollview_state.scroll_to_bottom();
+    true
+}
+
+/// After sending a local message, scroll to the latest line and update the tracker.
+pub fn scroll_order_chat_after_send(app: &mut AppState, order_id: &str) {
+    app.order_chat_scrollview_state.scroll_to_bottom();
+    let count = app.order_chats.get(order_id).map(|m| m.len()).unwrap_or(0);
+    app.order_chat_scroll_tracker = Some((order_id.to_string(), count));
+}
+
 /// Resolve the currently selected order id for the MyTrades (Order Chat) tab.
 pub fn resolve_selected_mytrades_order_id(app: &AppState) -> Option<Uuid> {
     resolve_selected_mytrades_order_status(app).map(|(order_id, _)| order_id)

@@ -17,8 +17,8 @@ pub use chat_storage::{
     load_chat_from_file, load_order_chat_from_file, save_chat_message, save_order_chat_message,
 };
 pub use chat_visibility::{
-    count_visible_attachments, get_selected_chat_message, get_visible_attachment_messages,
-    message_visible_for_party,
+    count_order_attachments, count_visible_attachments, get_order_attachment_messages,
+    get_selected_chat_message, get_visible_attachment_messages, message_visible_for_party,
 };
 pub use formatting::{format_order_id, format_user_rating, is_dispute_finalized};
 pub use layout::{

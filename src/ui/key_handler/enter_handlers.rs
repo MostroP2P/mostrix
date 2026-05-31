@@ -3,7 +3,8 @@ use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
-    handle_enter_finalize_popup, message_counter, FinalizeDisputePopupButton,
+    handle_enter_finalize_popup, message_counter, scroll_order_chat_after_send,
+    FinalizeDisputePopupButton,
 };
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
@@ -356,6 +357,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
                 .or_default()
                 .push(local_msg.clone());
             save_order_chat_message(&target.order_id, &local_msg);
+            scroll_order_chat_after_send(app, &target.order_id);
         },
         |target, content| {
             spawn_user_order_chat_send_task(ctx, target.order_id, content);
@@ -458,6 +460,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         UiMode::ObserverSaveAttachmentPopup(_) => {
             // Handled in key_handler/mod.rs
             app.mode = default_mode;
+            true
+        }
+        UiMode::UserSaveAttachmentPopup(_) => {
+            app.mode = UiMode::UserMode(UserMode::Normal);
             true
         }
         UiMode::OperationResult(_) => {

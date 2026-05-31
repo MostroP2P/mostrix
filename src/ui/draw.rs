@@ -211,6 +211,11 @@ pub fn ui_draw(
         save_attachment_popup::render_observer_save_attachment_popup(f, app, *selected_idx);
     }
 
+    // User order chat save attachment popup (Ctrl+S on My Trades tab)
+    if let UiMode::UserSaveAttachmentPopup(selected_idx) = &app.mode {
+        save_attachment_popup::render_user_save_attachment_popup(f, app, *selected_idx);
+    }
+
     // Shared settings popups
     if let UiMode::AddMostroPubkey(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(

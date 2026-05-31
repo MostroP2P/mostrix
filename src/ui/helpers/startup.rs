@@ -311,19 +311,51 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
             .get(&order_id)
             .and_then(|s| s.last_seen_timestamp)
             .unwrap_or(0);
-        for (content, ts, _sender_pubkey) in update.messages {
-            let msg = UserOrderChatMessage {
-                sender: UserChatSender::Peer,
-                content,
-                timestamp: ts,
-                attachment: None,
-            };
-            let duplicated = messages_vec
-                .iter()
-                .any(|m| m.timestamp == msg.timestamp && m.content == msg.content);
-            if duplicated {
+        for (content, ts, sender_pubkey) in update.messages {
+            // Skip relay echoes of messages we already added locally on send (mirror admin chat).
+            if sender_pubkey == update.local_trade_pubkey {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
                 continue;
             }
+
+            let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
+                Some((attachment, display)) => {
+                    let filename = attachment.filename.clone();
+                    (display, Some((attachment, filename)))
+                }
+                None => (content.clone(), None),
+            };
+
+            let is_duplicate = messages_vec
+                .iter()
+                .any(|m| m.timestamp == ts && m.content == msg_content);
+            if is_duplicate {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                continue;
+            }
+
+            if let Some((_, filename_for_toast)) = &attachment_opt {
+                app.attachment_toast = Some(build_attachment_toast(filename_for_toast));
+            }
+
+            let msg = match attachment_opt {
+                Some((attachment, _)) => UserOrderChatMessage {
+                    sender: UserChatSender::Peer,
+                    content: msg_content,
+                    timestamp: ts,
+                    attachment: Some(attachment),
+                },
+                None => UserOrderChatMessage {
+                    sender: UserChatSender::Peer,
+                    content: msg_content,
+                    timestamp: ts,
+                    attachment: None,
+                },
+            };
             save_order_chat_message(&order_id, &msg);
             messages_vec.push(msg);
             if ts > max_ts {

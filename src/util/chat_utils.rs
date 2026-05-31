@@ -71,6 +71,22 @@ pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
         .map(|shared| shared.keys().clone())
 }
 
+/// 32-byte ChaCha20 key for decrypting order-chat attachments (shared ECDH secret).
+pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
+    if let Some(hex) = order.order_chat_shared_key_hex.as_deref() {
+        if let Some(keys) = keys_from_shared_hex(hex) {
+            return Some(keys.secret_key().secret_bytes().to_vec());
+        }
+    }
+    let trade_keys_hex = order.trade_keys.as_deref()?;
+    let trade_sk = SecretKey::from_str(trade_keys_hex).ok()?;
+    let trade_keys = Keys::new(trade_sk);
+    let cp = order.counterparty_pubkey.as_deref()?;
+    let cp_pk = PublicKey::parse(cp).ok()?;
+    derive_shared_keys(Some(&trade_keys), Some(&cp_pk))
+        .map(|k| k.secret_key().secret_bytes().to_vec())
+}
+
 /// Resolve the order-chat counterparty pubkey and the shared-key hex used for chat GiftWraps.
 ///
 /// This is only possible once `SmallOrder` includes both `buyer_trade_pubkey` and
@@ -393,6 +409,7 @@ pub async fn fetch_user_order_chat_updates(
         if !messages.is_empty() {
             updates.push(OrderChatUpdate {
                 order_id: row.id,
+                local_trade_pubkey: trade_keys.public_key(),
                 messages,
             });
         }
