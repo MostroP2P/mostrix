@@ -174,7 +174,7 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
 
 - All persisted admin disputes are loaded from the `admin_disputes` table.
 - For disputes in `InProgress` state, `ui::helpers::recover_admin_chat_from_files`:
-  - Reads chat transcripts from `~/.mostrix/<dispute_id>.txt` (if present).
+  - Reads chat transcripts from `~/.mostrix/disputes_chat/<dispute_id>.txt` (if present).
   - Reconstructs `AppState.admin_dispute_chats` so the "Disputes in Progress" tab immediately shows prior messages.
   - Updates in‑memory `admin_chat_last_seen` entries for Buyer and Seller based on file timestamps.
 - Subsequent background NIP‑59 fetches use the stored `buyer_chat_last_seen` / `seller_chat_last_seen` values as cursors, ensuring:
@@ -186,6 +186,7 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
 For **User** role, Mostrix restores peer-to-peer order chat alongside trade DMs:
 
 - Cached transcripts live under `~/.mostrix/orders_chat/<order_id>.txt` and are loaded into `AppState.order_chats` by `load_user_order_chats_at_startup`.
+- **Attachment rows in transcripts** are stored as **JSON** (`image_encrypted` / `file_encrypted` via `serialize_attachment_for_transcript`) so **Ctrl+S** and file counts work immediately after restart; legacy `[Image: … - Ctrl+S to save]` lines are hydrated in memory when relay returns the same attachment at the same timestamp.
 - An immediate relay fetch (`fetch_user_order_chat_updates`) merges any newer gift-wrap messages; subsequent polls run every **2 seconds** on the shared `admin_chat_interval` timer via `spawn_user_order_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs`.
 - `apply_user_order_chat_updates` skips relay echoes of the local trade pubkey and deduplicates by `(timestamp, content)` so optimistic **You** sends are not mirrored as **Peer**. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
 
@@ -206,12 +207,18 @@ The TUI runs in a `tokio::select!` loop that handles (among others):
 loop {
     tokio::select! {
         // fatal_error_rx, network_status_rx, ...
-        result = order_result_rx.recv() => { /* handle_operation_result + side effects */ }
+        result = order_result_rx.recv() => { apply_order_result(...) }
         ln_address_verify = ln_address_result_rx.recv() => { /* map LnAddressVerifyResult → OperationResult */ }
         // key_rotation_rx, seed_words_rx, message_notification_rx, ...
         maybe_event = events.next() => { /* handle_key_event, paste, mouse */ }
-        _ = refresh_interval.tick() => { /* keep UI alive */ }
+        _ = refresh_interval.tick() => { /* 150 ms — redraw even without input */ }
     }
+    // Before every frame (not only on keypress):
+    drain_save_attachment_queue(...)   // start Blossom downloads queued by Ctrl+S popups
+    drain_order_result_queue(...)    // apply OperationResult (e.g. "Saved to …") for async tasks
+    expire_attachment_toast(&mut app);
     terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
 }
 ```
+
+**Why drain before draw:** My Trades **Enter** on the save-attachment popup may enqueue the download asynchronously (DB lookup for decryption key). Without draining `save_attachment_rx` / `order_result_rx` on each frame, the success popup could appear only after an unrelated keypress. The **150 ms** `refresh_interval` tick plus this drain keeps attachment save feedback timely.

@@ -62,7 +62,69 @@ use zeroize::Zeroizing;
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
+/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: OperationResult) {
+    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
+        if (msg.contains("Dispute") && msg.contains("taken successfully"))
+            || msg.contains("Dispute finalized"));
+    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
+    let refresh_maker_book_cache = matches!(
+        &result,
+        OperationResult::MyTradesMakerBookChanged | OperationResult::Success(_)
+    );
+
+    if refresh_maker_book_cache && app.user_role == UserRole::User {
+        refresh_my_trades_maker_book_cache(pool, app).await;
+    }
+
+    if !matches!(result, OperationResult::MyTradesMakerBookChanged) {
+        handle_operation_result(result, app);
+    }
+    if resync_my_trades_from_db && app.user_role == UserRole::User {
+        sync_user_order_history_messages_from_db(pool, app).await;
+    }
+
+    if is_dispute_related && app.user_role == UserRole::Admin {
+        match AdminDispute::get_all(pool).await {
+            Ok(all_disputes) => {
+                app.admin_disputes_in_progress = all_disputes;
+                app.selected_in_progress_idx = 0;
+                log::info!(
+                    "Refreshed admin disputes list: {} total disputes",
+                    app.admin_disputes_in_progress.len()
+                );
+            }
+            Err(e) => {
+                log::warn!("Failed to refresh admin disputes: {}", e);
+            }
+        }
+    }
+}
+
+/// Drains pending save-attachment jobs and spawns download tasks.
+fn drain_save_attachment_queue(
+    save_attachment_rx: &mut UnboundedReceiver<(String, ChatAttachment)>,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
+        spawn_save_attachment(dispute_id, attachment, order_result_tx.clone());
+    }
+}
+
+/// Drains completed background tasks so the UI can show popups without waiting for input.
+async fn drain_order_result_queue(
+    order_result_rx: &mut UnboundedReceiver<OperationResult>,
+    pool: &SqlitePool,
+    app: &mut AppState,
+) {
+    while let Ok(result) = order_result_rx.try_recv() {
+        apply_order_result(pool, app, result).await;
+    }
+}
+
+use crate::ui::{AdminMode, AdminTab, AppState, ChatAttachment, Tab, UiMode, UserRole};
+use sqlx::SqlitePool;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Initialize logger function
 fn setup_logger(level: &str) -> Result<(), fern::InitError> {
@@ -430,50 +492,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
-                    // Check if this is a dispute-related result before handling
-                    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
-                        if (msg.contains("Dispute") && msg.contains("taken successfully"))
-                        || msg.contains("Dispute finalized"));
-                    // Only bulk-delete should rehydrate Messages + `order_chat_static` from DB:
-                    // `sync_user_order_history_messages_from_db` replaces per-order rows with
-                    // synthetic TakeBuy/TakeSell actions, which breaks Messages-tab Enter / invoice
-                    // flows. Do not tie this to arbitrary `OperationResult::Success`.
-                    let resync_my_trades_from_db =
-                        matches!(&result, OperationResult::OrderHistoryDeleted { .. });
-                    let refresh_maker_book_cache = matches!(
-                        &result,
-                        OperationResult::MyTradesMakerBookChanged
-                            | OperationResult::Success(_)
-                    );
-
-                    if refresh_maker_book_cache && app.user_role == UserRole::User {
-                        refresh_my_trades_maker_book_cache(&pool, &mut app).await;
-                    }
-
-                    if !matches!(result, OperationResult::MyTradesMakerBookChanged) {
-                        handle_operation_result(result, &mut app);
-                    }
-                    if resync_my_trades_from_db && app.user_role == UserRole::User {
-                        sync_user_order_history_messages_from_db(&pool, &mut app).await;
-                    }
-
-                    // If this is an Info result about taking or finalizing a dispute, refresh the disputes list
-                    if is_dispute_related && app.user_role == UserRole::Admin {
-                        match AdminDispute::get_all(&pool).await {
-                            Ok(all_disputes) => {
-                                app.admin_disputes_in_progress = all_disputes;
-                                // Reset selected index to ensure it's within bounds after refresh
-                                app.selected_in_progress_idx = 0;
-                                log::info!(
-                                    "Refreshed admin disputes list: {} total disputes",
-                                    app.admin_disputes_in_progress.len()
-                                );
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to refresh admin disputes: {}", e);
-                            }
-                        }
-                    }
+                    apply_order_result(&pool, &mut app, result).await;
                 }
             }
             ln_address_verify = ln_address_result_rx.recv() => {
@@ -657,14 +676,6 @@ async fn main() -> Result<(), anyhow::Error> {
                                 app.pending_admin_disputes_reload = false;
                                 load_admin_disputes_at_startup(&pool, &mut app).await;
                             }
-                            while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
-                                spawn_save_attachment(
-                                    dispute_id,
-                                    attachment,
-                                    order_result_tx.clone(),
-                                );
-                            }
-                            continue;
                         }
                         Some(false) => break,   // Exit requested (q key)
                         None => {
@@ -752,6 +763,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 app.selected_dispute_idx = 0;
             }
         }
+
+        // Process async completions before draw so popups appear without extra keypresses.
+        drain_save_attachment_queue(&mut save_attachment_rx, &order_result_tx);
+        drain_order_result_queue(&mut order_result_rx, &pool, &mut app).await;
 
         // Expire transient UI timers/toasts before rendering.
         expire_attachment_toast(&mut app);

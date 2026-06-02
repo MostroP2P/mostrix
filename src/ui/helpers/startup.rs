@@ -15,7 +15,9 @@ use crate::ui::{
 };
 use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
 
-use super::attachments::{build_attachment_toast, try_parse_attachment_message};
+use super::attachments::{
+    build_attachment_toast, legacy_placeholder_matches_filename, try_parse_attachment_message,
+};
 use super::chat_storage::{
     load_chat_from_file, load_order_chat_from_file, max_party_timestamps, save_chat_message,
     save_order_chat_message,
@@ -320,16 +322,50 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 continue;
             }
 
-            let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
-                Some((attachment, display)) => {
-                    let filename = attachment.filename.clone();
-                    (display, Some((attachment, filename)))
-                }
+            let (msg_content, attachment) = match try_parse_attachment_message(&content) {
+                Some((attachment, display)) => (display, Some(attachment)),
                 None => (content.clone(), None),
             };
 
+            if let Some(ref att) = attachment {
+                if let Some(idx) = messages_vec.iter().position(|m| {
+                    m.timestamp == ts
+                        && m.attachment.is_none()
+                        && legacy_placeholder_matches_filename(&m.content, &att.filename)
+                }) {
+                    let sender = messages_vec[idx].sender;
+                    messages_vec[idx] = UserOrderChatMessage {
+                        sender,
+                        content: msg_content.clone(),
+                        timestamp: ts,
+                        attachment: Some(att.clone()),
+                    };
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    continue;
+                }
+            }
+
             let is_duplicate = messages_vec.iter().any(|m| {
-                m.sender == UserChatSender::Peer && m.timestamp == ts && m.content == msg_content
+                if m.timestamp != ts {
+                    return false;
+                }
+                if m.content == msg_content {
+                    return true;
+                }
+                if let Some(att) = attachment.as_ref() {
+                    if m.attachment
+                        .as_ref()
+                        .is_some_and(|a| a.blossom_url == att.blossom_url)
+                    {
+                        return true;
+                    }
+                    if legacy_placeholder_matches_filename(&m.content, &att.filename) {
+                        return true;
+                    }
+                }
+                false
             });
             if is_duplicate {
                 if ts > max_ts {
@@ -338,23 +374,15 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 continue;
             }
 
-            if let Some((_, filename_for_toast)) = &attachment_opt {
-                app.attachment_toast = Some(build_attachment_toast(filename_for_toast));
+            if let Some(att) = &attachment {
+                app.attachment_toast = Some(build_attachment_toast(&att.filename));
             }
 
-            let msg = match attachment_opt {
-                Some((attachment, _)) => UserOrderChatMessage {
-                    sender: UserChatSender::Peer,
-                    content: msg_content,
-                    timestamp: ts,
-                    attachment: Some(attachment),
-                },
-                None => UserOrderChatMessage {
-                    sender: UserChatSender::Peer,
-                    content: msg_content,
-                    timestamp: ts,
-                    attachment: None,
-                },
+            let msg = UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: msg_content,
+                timestamp: ts,
+                attachment,
             };
             save_order_chat_message(&order_id, &msg);
             messages_vec.push(msg);
@@ -432,16 +460,52 @@ pub async fn apply_admin_chat_updates(
                     None,
                 ));
 
-            let (msg_content, attachment_opt) = match try_parse_attachment_message(&content) {
-                Some((attachment, display)) => {
-                    let filename = attachment.filename.clone();
-                    (display, Some((attachment, filename)))
-                }
+            let (msg_content, attachment) = match try_parse_attachment_message(&content) {
+                Some((attachment, display)) => (display, Some(attachment)),
                 None => (content.clone(), None),
             };
 
+            if let Some(ref att) = attachment {
+                if let Some(idx) = messages_vec.iter().position(|m| {
+                    m.timestamp == ts
+                        && m.sender == sender
+                        && m.target_party == target_party
+                        && m.attachment.is_none()
+                        && legacy_placeholder_matches_filename(&m.content, &att.filename)
+                }) {
+                    messages_vec[idx] = DisputeChatMessage {
+                        sender,
+                        content: msg_content.clone(),
+                        timestamp: ts,
+                        target_party,
+                        attachment: Some(att.clone()),
+                    };
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    continue;
+                }
+            }
+
             let is_duplicate = messages_vec.iter().any(|m: &DisputeChatMessage| {
-                m.timestamp == ts && m.sender == sender && m.content == msg_content
+                if m.timestamp != ts || m.sender != sender {
+                    return false;
+                }
+                if m.content == msg_content {
+                    return true;
+                }
+                if let Some(att) = attachment.as_ref() {
+                    if m.attachment
+                        .as_ref()
+                        .is_some_and(|a| a.blossom_url == att.blossom_url)
+                    {
+                        return true;
+                    }
+                    if legacy_placeholder_matches_filename(&m.content, &att.filename) {
+                        return true;
+                    }
+                }
+                false
             });
             if is_duplicate {
                 if ts > max_ts {
@@ -450,8 +514,8 @@ pub async fn apply_admin_chat_updates(
                 continue;
             }
 
-            if let Some((_, filename_for_toast)) = &attachment_opt {
-                app.attachment_toast = Some(build_attachment_toast(filename_for_toast));
+            if let Some(att) = &attachment {
+                app.attachment_toast = Some(build_attachment_toast(&att.filename));
                 if let Some(idx) = app
                     .admin_disputes_in_progress
                     .iter()
@@ -461,21 +525,12 @@ pub async fn apply_admin_chat_updates(
                     app.active_chat_party = party;
                 }
             }
-            let msg = match attachment_opt {
-                Some((attachment, _)) => DisputeChatMessage {
-                    sender,
-                    content: msg_content,
-                    timestamp: ts,
-                    target_party,
-                    attachment: Some(attachment),
-                },
-                None => DisputeChatMessage {
-                    sender,
-                    content: msg_content,
-                    timestamp: ts,
-                    target_party,
-                    attachment: None,
-                },
+            let msg = DisputeChatMessage {
+                sender,
+                content: msg_content,
+                timestamp: ts,
+                target_party,
+                attachment,
             };
             save_chat_message(&dispute_key, &msg);
             messages_vec.push(msg);

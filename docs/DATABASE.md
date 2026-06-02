@@ -415,17 +415,21 @@ Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on
   - Per‑dispute chat transcripts are stored as human‑readable text files:
 
     ```text
-    ~/.mostrix/<dispute_id>.txt
+    ~/.mostrix/disputes_chat/<dispute_id>.txt
     ```
 
-  - Each file contains a chronological log of messages with headers like `Admin to Buyer - dd-mm-yyyy - HH:MM:SS`.
+  - Each file contains a chronological log of messages with headers like `Admin to Buyer - dd-mm-yyyy - HH:MM:SS`. **Attachment metadata** is stored as **JSON** (`image_encrypted` / `file_encrypted`) via `serialize_attachment_for_transcript` so save popups work after restart; older `[Image: … - Ctrl+S to save]` placeholders are upgraded in memory when relay returns the same file.
   - At startup, `recover_admin_chat_from_files` rebuilds `admin_dispute_chats` in memory from these files and computes the latest buyer/seller timestamps.
   - These timestamps are persisted in `admin_disputes.buyer_chat_last_seen` and `admin_disputes.seller_chat_last_seen` via `update_chat_last_seen_by_dispute_id` (unified function that handles both parties based on an `is_buyer` flag and returns affected row count).
   - Background NIP‑59 fetches use the stored timestamps as cursors (7-day rolling window) to request only newer events, providing:
     - **Instant UI restore** for existing disputes.
     - **Incremental network sync** without replaying full history.
 
-This approach keeps the core message flow largely stateless while giving admin chat a robust, restart‑safe experience.
+- **User order chat (My Trades)**:
+  - Transcripts under `~/.mostrix/orders_chat/<order_id>.txt` (not in SQLite).
+  - Same JSON attachment persistence and legacy-placeholder hydration as admin chat; loaded by `load_user_order_chats_at_startup`. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
+
+This approach keeps the core trade DM flow largely stateless while giving admin and user order chat a robust, restart‑safe transcript cache.
 
 For more details, see:
 

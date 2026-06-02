@@ -6,7 +6,10 @@ use chrono::DateTime;
 
 use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage};
 
-use super::attachments::attachment_placeholder;
+use super::attachments::{
+    legacy_placeholder_matches_filename, message_fields_from_transcript_content,
+    serialize_attachment_for_transcript, try_parse_attachment_message,
+};
 use super::chat_render::wrap_text_to_lines;
 
 const DISPUTES_CHAT_DIR: &str = "disputes_chat";
@@ -100,6 +103,76 @@ fn parse_last_message_block(content: &str) -> Option<(ChatSender, Option<ChatPar
     parse_one_message_block(blocks.last()?)
 }
 
+fn transcript_body_for_order_message(message: &UserOrderChatMessage) -> String {
+    match &message.attachment {
+        Some(att) => serialize_attachment_for_transcript(att),
+        None => wrap_text_to_lines(&message.content, 80).join("\n"),
+    }
+}
+
+fn transcript_body_for_dispute_message(message: &DisputeChatMessage) -> String {
+    match &message.attachment {
+        Some(att) => serialize_attachment_for_transcript(att),
+        None => wrap_text_to_lines(&message.content, 80).join("\n"),
+    }
+}
+
+fn order_transcript_already_has_message(
+    last_sender: UserChatSender,
+    last_ts: i64,
+    last_body: &str,
+    message: &UserOrderChatMessage,
+) -> bool {
+    if last_sender != message.sender || last_ts != message.timestamp {
+        return false;
+    }
+    let body = transcript_body_for_order_message(message);
+    if last_body == body {
+        return true;
+    }
+    if let Some(att) = &message.attachment {
+        if try_parse_attachment_message(last_body)
+            .is_some_and(|(parsed, _)| parsed.blossom_url == att.blossom_url)
+        {
+            return true;
+        }
+        if legacy_placeholder_matches_filename(last_body, &att.filename) {
+            return true;
+        }
+    }
+    false
+}
+
+fn dispute_transcript_already_has_message(
+    last_sender: ChatSender,
+    last_target_party: Option<ChatParty>,
+    last_ts: i64,
+    last_body: &str,
+    message: &DisputeChatMessage,
+) -> bool {
+    if last_sender != message.sender
+        || last_ts != message.timestamp
+        || last_target_party != message.target_party
+    {
+        return false;
+    }
+    let body = transcript_body_for_dispute_message(message);
+    if last_body == body {
+        return true;
+    }
+    if let Some(att) = &message.attachment {
+        if try_parse_attachment_message(last_body)
+            .is_some_and(|(parsed, _)| parsed.blossom_url == att.blossom_url)
+        {
+            return true;
+        }
+        if legacy_placeholder_matches_filename(last_body, &att.filename) {
+            return true;
+        }
+    }
+    false
+}
+
 fn chat_file_path(kind: ChatStorageKind, chat_id: &str) -> Option<PathBuf> {
     if uuid::Uuid::parse_str(chat_id).is_err() {
         return None;
@@ -122,12 +195,13 @@ fn load_chat_from_file_by_kind(
     let mut messages = Vec::new();
     for block in content.split("\n\n").filter(|s| !s.trim().is_empty()) {
         if let Some((sender, target_party, ts, content_block)) = parse_one_message_block(block) {
+            let (content, attachment) = message_fields_from_transcript_content(&content_block);
             messages.push(DisputeChatMessage {
                 sender,
-                content: content_block,
+                content,
                 timestamp: ts,
                 target_party,
-                attachment: None,
+                attachment,
             });
         }
     }
@@ -146,11 +220,12 @@ fn load_order_chat_from_file_by_kind(
     let mut messages = Vec::new();
     for block in content.split("\n\n").filter(|s| !s.trim().is_empty()) {
         if let Some((sender, ts, content_block)) = parse_one_order_message_block(block) {
+            let (content, attachment) = message_fields_from_transcript_content(&content_block);
             messages.push(UserOrderChatMessage {
                 sender,
-                content: content_block,
+                content,
                 timestamp: ts,
-                attachment: None,
+                attachment,
             });
         }
     }
@@ -183,10 +258,7 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
         return;
     }
 
-    let content_block = match &message.attachment {
-        Some(att) => attachment_placeholder(att),
-        None => wrap_text_to_lines(&message.content, 80).join("\n"),
-    };
+    let content_block = transcript_body_for_order_message(message);
     if let Ok(existing) = fs::read_to_string(&file_path) {
         let blocks: Vec<&str> = existing
             .split("\n\n")
@@ -196,10 +268,12 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
             if let Some((last_sender, last_ts, last_content)) =
                 parse_one_order_message_block(last_block)
             {
-                if last_sender == message.sender
-                    && last_ts == message.timestamp
-                    && last_content == content_block
-                {
+                if order_transcript_already_has_message(
+                    last_sender,
+                    last_ts,
+                    &last_content,
+                    message,
+                ) {
                     return;
                 }
             }
@@ -276,20 +350,19 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
         return;
     }
 
-    let content_block = match &message.attachment {
-        Some(att) => attachment_placeholder(att),
-        None => wrap_text_to_lines(&message.content, 80).join("\n"),
-    };
+    let content_block = transcript_body_for_dispute_message(message);
 
     if let Ok(existing) = fs::read_to_string(&file_path) {
         if let Some((last_sender, last_target_party, last_ts, last_content)) =
             parse_last_message_block(&existing)
         {
-            if last_sender == message.sender
-                && last_ts == message.timestamp
-                && last_content == content_block
-                && last_target_party == message.target_party
-            {
+            if dispute_transcript_already_has_message(
+                last_sender,
+                last_target_party,
+                last_ts,
+                &last_content,
+                message,
+            ) {
                 return;
             }
         }
@@ -367,7 +440,44 @@ pub(crate) fn max_party_timestamps(messages: &[DisputeChatMessage]) -> (i64, i64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{ChatSender, DisputeChatMessage};
+    use crate::ui::{
+        ChatAttachment, ChatAttachmentType, ChatSender, DisputeChatMessage, UserChatSender,
+        UserOrderChatMessage,
+    };
+
+    use super::super::attachments::serialize_attachment_for_transcript;
+
+    #[test]
+    fn transcript_body_roundtrip_via_message_fields() {
+        let att = ChatAttachment {
+            blossom_url: "blossom://host/hash".to_string(),
+            filename: "doc.pdf".to_string(),
+            mime_type: None,
+            file_type: ChatAttachmentType::File,
+            decryption_key: None,
+        };
+        let json = serialize_attachment_for_transcript(&att);
+        let (content, restored) = message_fields_from_transcript_content(&json);
+        let restored = restored.expect("attachment");
+        assert_eq!(restored.blossom_url, att.blossom_url);
+        assert!(content.contains("doc.pdf"));
+
+        let msg = UserOrderChatMessage {
+            sender: UserChatSender::Peer,
+            content,
+            timestamp: 1_700_000_000,
+            attachment: Some(restored),
+        };
+        assert_eq!(transcript_body_for_order_message(&msg), json);
+    }
+
+    #[test]
+    fn legacy_placeholder_load_has_no_attachment_until_relay() {
+        let (content, attachment) =
+            message_fields_from_transcript_content("[Image: pic.png - Ctrl+S to save]");
+        assert!(attachment.is_none());
+        assert_eq!(content, "[Image: pic.png - Ctrl+S to save]");
+    }
 
     #[test]
     fn parse_order_block_supports_legacy_sender_labels() {

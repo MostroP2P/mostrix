@@ -139,7 +139,7 @@ fn handle_user_order_chat_input(
     key_event: &crossterm::event::KeyEvent,
 ) -> Option<bool> {
     if let Tab::User(UserTab::MyTrades) = app.active_tab {
-        if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) && app.order_chat_input_enabled {
+        if app.mode.user_my_trades_interactive() && app.order_chat_input_enabled {
             let has_shift = key_event
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::SHIFT);
@@ -767,7 +767,7 @@ pub fn handle_key_event(
             }
         }
         if let Tab::User(UserTab::MyTrades) = app.active_tab {
-            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+            if app.mode.user_my_trades_interactive() {
                 if let Some(row) =
                     active_order_chat_list_snapshot(app).get(app.selected_order_chat_idx)
                 {
@@ -1191,7 +1191,7 @@ pub fn handle_key_event(
             }
 
             // My Trades: PageUp/PageDown scroll the order chat
-            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+            if app.mode.user_my_trades_interactive() {
                 if let Tab::User(UserTab::MyTrades) = app.active_tab {
                     if chat_helpers::scroll_order_chat_messages(app, code) {
                         return Some(true);
@@ -1244,7 +1244,7 @@ pub fn handle_key_event(
                     }
                 }
             }
-            if matches!(app.mode, UiMode::UserMode(UserMode::Normal)) {
+            if app.mode.user_my_trades_interactive() {
                 if let Tab::User(UserTab::MyTrades) = app.active_tab {
                     if chat_helpers::jump_to_order_chat_bottom(app) {
                         return Some(true);
