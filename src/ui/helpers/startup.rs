@@ -347,8 +347,10 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 }
             }
 
+            // Relay rows are always Peer; only dedupe against existing Peer messages so an
+            // optimistic local You line cannot suppress a real counterparty message at the same second.
             let is_duplicate = messages_vec.iter().any(|m| {
-                if m.timestamp != ts {
+                if m.sender != UserChatSender::Peer || m.timestamp != ts {
                     return false;
                 }
                 if m.content == msg_content {

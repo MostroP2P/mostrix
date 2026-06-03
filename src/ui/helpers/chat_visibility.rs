@@ -38,7 +38,8 @@ pub fn get_visible_attachment_messages<'a>(
     messages
         .iter()
         .filter(|msg| {
-            message_visible_for_party(msg, app.active_chat_party) && msg.attachment.is_some()
+            message_visible_for_party(msg, app.active_chat_party)
+                && msg.attachment.as_ref().is_some_and(attachment_is_saveable)
         })
         .collect()
 }
