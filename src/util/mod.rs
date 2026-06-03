@@ -13,6 +13,7 @@ pub mod send_attachment;
 pub mod types;
 
 // Re-export commonly used items
+pub use crate::ui::helpers::PreparedOrderChatAttachment;
 pub use blossom::{
     blossom_url_to_https, decrypt_blob, encrypt_blob, fetch_blob, save_attachment_to_disk,
     spawn_save_attachment, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE, DEFAULT_BLOSSOM_SERVERS,
@@ -42,6 +43,7 @@ pub use mostro_info::{
 pub use network::{any_relay_reachable, connect_client_safely};
 pub use order_utils::{fetch_events_list, get_disputes, get_orders, send_new_order, take_order};
 pub use send_attachment::{
-    blossom_servers_from_settings, send_order_chat_attachment, spawn_send_order_chat_attachment,
+    blossom_servers_from_settings, send_prepared_order_chat_attachment,
+    spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
 pub use types::{get_cant_do_description, Event, ListKind};

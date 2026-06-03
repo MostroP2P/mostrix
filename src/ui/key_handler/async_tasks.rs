@@ -650,8 +650,8 @@ pub struct AppChannels {
     pub user_order_chat_updates_rx: UnboundedReceiver<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
     pub save_attachment_tx: UnboundedSender<(String, ChatAttachment)>,
     pub save_attachment_rx: UnboundedReceiver<(String, ChatAttachment)>,
-    pub send_order_attachment_tx: UnboundedSender<(String, std::path::PathBuf)>,
-    pub send_order_attachment_rx: UnboundedReceiver<(String, std::path::PathBuf)>,
+    pub send_order_attachment_tx: UnboundedSender<crate::util::SendOrderAttachmentJob>,
+    pub send_order_attachment_rx: UnboundedReceiver<crate::util::SendOrderAttachmentJob>,
     pub mostro_info_tx: UnboundedSender<MostroInfoFetchResult>,
     pub mostro_info_rx: UnboundedReceiver<MostroInfoFetchResult>,
     pub dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
@@ -680,7 +680,7 @@ pub fn create_app_channels() -> AppChannels {
     let (save_attachment_tx, save_attachment_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
     let (send_order_attachment_tx, send_order_attachment_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, std::path::PathBuf)>();
+        tokio::sync::mpsc::unbounded_channel::<crate::util::SendOrderAttachmentJob>();
     let (mostro_info_tx, mostro_info_rx) =
         tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
     let (dm_subscription_tx, dm_subscription_rx) =

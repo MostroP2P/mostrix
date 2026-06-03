@@ -201,7 +201,7 @@ The TUI runs in a `tokio::select!` loop that handles (among others):
 2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
 3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
 4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.
-5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers, including **`save_attachment_tx`/`rx`** for Ctrl+S downloads and **`send_order_attachment_tx`/`rx`** for outbound My Trades uploads). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
+5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers, including **`save_attachment_tx`/`rx`** for Ctrl+S downloads and **`send_order_attachment_tx`/`rx`** for outbound My Trades uploads via `SendOrderAttachmentJob`). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
 
 **Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`).
 
@@ -225,4 +225,4 @@ loop {
 }
 ```
 
-**Why drain before draw:** My Trades **Enter** on the save-attachment popup may enqueue the download asynchronously (DB lookup for decryption key). Outbound sends enqueue on `send_order_attachment_rx` the same way. Without draining `save_attachment_rx`, `send_order_attachment_rx`, and `order_result_rx` on each frame, success/error popups could appear only after an unrelated keypress. The **150 ms** `refresh_interval` tick plus this drain keeps attachment save and send feedback timely.
+**Why drain before draw:** My Trades **Enter** on the save-attachment popup may enqueue the download asynchronously (DB lookup for decryption key). Outbound sends enqueue on `send_order_attachment_rx` the same way (`FromPath` or `RetryPrepared`). Without draining `save_attachment_rx`, `send_order_attachment_rx`, and `order_result_rx` on each frame, success/error popups (including upload-ok/send-failed) could appear only after an unrelated keypress. The **150 ms** `refresh_interval` tick plus this drain keeps attachment save and send feedback timely.

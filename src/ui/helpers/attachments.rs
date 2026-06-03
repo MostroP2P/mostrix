@@ -150,6 +150,15 @@ pub struct OutboundAttachmentPayload {
     pub display_content: String,
 }
 
+/// Blossom upload done; order-chat DM still pending or failed (retry without re-upload).
+#[derive(Clone, Debug)]
+pub struct PreparedOrderChatAttachment {
+    pub order_id: String,
+    pub blossom_url: String,
+    pub filename: String,
+    pub outbound: OutboundAttachmentPayload,
+}
+
 /// Builds `image_encrypted` JSON for order chat (shared-key decrypt; no embedded `key`).
 pub fn build_image_encrypted_json(
     blossom_url: &str,

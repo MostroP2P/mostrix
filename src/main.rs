@@ -36,7 +36,6 @@ use crate::util::{
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
-use std::path::PathBuf;
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -115,7 +114,7 @@ fn drain_save_attachment_queue(
 
 /// Drains pending send-attachment jobs (encrypt → Blossom → order chat DM).
 fn drain_send_order_attachment_queue(
-    send_attachment_rx: &mut UnboundedReceiver<(String, PathBuf)>,
+    send_attachment_rx: &mut UnboundedReceiver<crate::util::SendOrderAttachmentJob>,
     client: &Client,
     pool: &SqlitePool,
     settings: &Settings,
@@ -123,10 +122,9 @@ fn drain_send_order_attachment_queue(
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     let servers = blossom_servers_from_settings(settings);
-    while let Ok((order_id, path)) = send_attachment_rx.try_recv() {
+    while let Ok(job) = send_attachment_rx.try_recv() {
         spawn_send_order_chat_attachment(
-            order_id,
-            path,
+            job,
             client.clone(),
             pool.clone(),
             servers.clone(),

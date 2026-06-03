@@ -175,6 +175,11 @@ pub enum OperationResult {
         chat_message: crate::ui::UserOrderChatMessage,
         info_message: String,
     },
+    /// Blossom upload succeeded but order-chat DM failed; prepared payload kept for retry.
+    OrderChatAttachmentSendFailed {
+        prepared: crate::ui::helpers::PreparedOrderChatAttachment,
+        error: String,
+    },
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).

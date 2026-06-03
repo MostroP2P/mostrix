@@ -156,7 +156,8 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 | `OpenInvoicePopup` | Opens Add Invoice or waiting popup from synchronous execute (bond payout reply); does **not** show the operation-result modal |
 | `InvoiceSubmitted` | Normalized to `Info` toast after optional buyer LN-address preference |
 | `TradeClosed` / `OrderHistoryDeleted` | Side effects on Messages list, then `Info` toast |
-| `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save, then normalized to `Info` (`Attachment sent: …`) |
+| `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save; clears `pending_order_attachment_sends`; then normalized to `Info` (`Attachment sent: …`) |
+| `OrderChatAttachmentSendFailed` | Stores `PreparedOrderChatAttachment` in `AppState.pending_order_attachment_sends`; normalized to `Error` (Blossom URL + retry hint) |
 
 **`OperationResult::Info` / `Error` text**: `render_operation_result` splits on newlines, wraps at word boundaries (avoids mid-word breaks on long UUIDs), and sizes the popup from line count. Admin dispute **finalization success** uses a structured multi-line body from `BondSlashChoice::finalize_success_message` (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
@@ -293,7 +294,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
 - **Chat scrolling**: message history uses `tui_scrollview::ScrollView` with full content height (not viewport height) and an always-visible vertical scrollbar — same pattern as Disputes in Progress and Observer. **PgUp/PgDn** scroll the chat; **End** jumps to the latest messages. Auto-scroll-to-bottom runs when new messages arrive, when switching orders, or after sending (`order_chat_scroll_tracker`, `scroll_order_chat_messages` / `scroll_order_chat_after_send` in `src/ui/key_handler/chat_helpers.rs`).
 - **Attachments (receive + transcript)**: encrypted file/image messages show as yellow lines with 🖼/📎 icons; the block title adds a file count; a yellow toast appears on new **peer** relay merges. Transcripts under `~/.mostrix/orders_chat/` persist attachment metadata as **JSON** so **Ctrl+S** works after restart (legacy placeholder lines hydrate from relay). **Ctrl+S** opens the save popup (see above).
-- **Attachments (send — backend only)**: Phase B implements encrypt → Blossom upload → shared-key DM in `src/util/send_attachment.rs` (`send_order_attachment_tx` / `send_order_attachment_rx` on `AppChannels`). **Ctrl+O / file picker (Phase C)** is not wired yet; until then, sends are only triggerable by enqueueing `(order_id, path)` on `send_order_attachment_tx`. Success uses `OperationResult::OrderChatAttachmentSent` → `Info` popup (no inbound “file received” toast on send).
+- **Attachments (send — backend only)**: Phase B in `src/util/send_attachment.rs`: validate → encrypt (shared key) → Blossom upload (NIP-24242 auth signed with **order trade key**) → shared-key DM. Channel: `send_order_attachment_tx` / `send_order_attachment_rx` with `SendOrderAttachmentJob::FromPath` or `RetryPrepared` (DM-only retry after upload). **`AppState.pending_order_attachment_sends`** holds prepared payloads when upload succeeds but chat send fails. **Ctrl+O / file picker (Phase C)** not wired yet.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Footer shortcuts (width-aware)**:
   - **Shift+I** toggles chat input.

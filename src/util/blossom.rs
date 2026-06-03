@@ -177,8 +177,8 @@ fn normalize_blossom_server_base(server: &str) -> String {
 }
 
 /// Builds a signed NIP-24242 authorization event for Blossom upload.
-fn blossom_upload_auth_header(blob_hash_hex: &str) -> Result<String> {
-    let keys = Keys::generate();
+/// Must use the same identity that publishes the corresponding chat message (order trade key).
+pub(crate) fn blossom_upload_auth_header(blob_hash_hex: &str, keys: &Keys) -> Result<String> {
     let now = Timestamp::now().as_secs();
     let expiration = (now + 3600).to_string();
     let tags = vec![
@@ -189,20 +189,25 @@ fn blossom_upload_auth_header(blob_hash_hex: &str) -> Result<String> {
     ];
     let signed = EventBuilder::new(BLOSSOM_AUTH_KIND, "")
         .tags(tags)
-        .sign_with_keys(&keys)
+        .sign_with_keys(keys)
         .map_err(|e| anyhow!("sign Blossom auth event: {}", e))?;
     let json = signed.as_json();
     Ok(format!("Nostr {}", BASE64.encode(json.as_bytes())))
 }
 
 /// Uploads an encrypted blob to one Blossom server. Returns HTTPS URL `{server}/{hash}`.
-pub async fn upload_blob(http: &Client, server_base: &str, blob: &[u8]) -> Result<String> {
+pub async fn upload_blob(
+    http: &Client,
+    server_base: &str,
+    blob: &[u8],
+    auth_keys: &Keys,
+) -> Result<String> {
     let base = normalize_blossom_server_base(server_base);
     if base.is_empty() {
         return Err(anyhow!("empty Blossom server URL"));
     }
     let hash_hex = sha256_hex(blob);
-    let auth = blossom_upload_auth_header(&hash_hex)?;
+    let auth = blossom_upload_auth_header(&hash_hex, auth_keys)?;
     let url = format!("{base}/upload");
     let res = http
         .put(&url)
@@ -227,13 +232,14 @@ pub async fn upload_blob_with_retry(
     http: &Client,
     servers: &[String],
     blob: &[u8],
+    auth_keys: &Keys,
 ) -> Result<String> {
     if servers.is_empty() {
         return Err(anyhow!("no Blossom servers configured"));
     }
     let mut last_err = anyhow!("no upload attempt");
     for server in servers {
-        match upload_blob(http, server, blob).await {
+        match upload_blob(http, server, blob, auth_keys).await {
             Ok(url) => return Ok(url),
             Err(e) => {
                 log::warn!("Blossom upload failed for {}: {}", server, e);
@@ -353,5 +359,18 @@ mod tests {
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn upload_auth_event_uses_signer_pubkey() {
+        use nostr_sdk::prelude::Event;
+
+        let keys = Keys::generate();
+        let header = blossom_upload_auth_header("deadbeef", &keys).expect("auth header");
+        let b64 = header.strip_prefix("Nostr ").expect("Nostr prefix");
+        let json = BASE64.decode(b64).expect("base64");
+        let json_str = std::str::from_utf8(&json).expect("utf8");
+        let event = Event::from_json(json_str).expect("event json");
+        assert_eq!(event.pubkey, keys.public_key());
     }
 }
