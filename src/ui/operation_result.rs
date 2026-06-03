@@ -58,7 +58,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::TradeClosed { .. }
         | OperationResult::OrderHistoryDeleted { .. }
         | OperationResult::MyTradesMakerBookChanged
-        | OperationResult::OpenInvoicePopup { .. } => 8,
+        | OperationResult::OpenInvoicePopup { .. }
+        | OperationResult::OrderChatAttachmentSent { .. } => 8,
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -252,6 +253,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OperationResult::MyTradesMakerBookChanged | OperationResult::OpenInvoicePopup { .. } => {}
+        OperationResult::MyTradesMakerBookChanged
+        | OperationResult::OpenInvoicePopup { .. }
+        | OperationResult::OrderChatAttachmentSent { .. } => {}
     }
 }

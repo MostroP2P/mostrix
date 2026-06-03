@@ -169,6 +169,12 @@ pub enum OperationResult {
         notification: MessageNotification,
         order_message: Box<OrderMessage>,
     },
+    /// User order chat attachment sent successfully (append local row + show info).
+    OrderChatAttachmentSent {
+        order_id: String,
+        chat_message: crate::ui::UserOrderChatMessage,
+        info_message: String,
+    },
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).

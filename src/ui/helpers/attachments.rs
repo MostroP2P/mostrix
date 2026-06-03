@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use nostr_sdk::serde_json::{from_str as json_from_str, to_string as json_to_string, Value};
@@ -141,7 +142,89 @@ pub(crate) fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachm
     Some((attachment, display))
 }
 
-pub(crate) fn build_attachment_toast(filename: &str) -> (String, Instant) {
+/// Outbound attachment wire JSON + in-memory metadata after a successful send.
+#[derive(Clone, Debug)]
+pub struct OutboundAttachmentPayload {
+    pub json_body: String,
+    pub attachment: ChatAttachment,
+    pub display_content: String,
+}
+
+/// Builds `image_encrypted` JSON for order chat (shared-key decrypt; no embedded `key`).
+pub fn build_image_encrypted_json(
+    blossom_url: &str,
+    filename: &str,
+    mime_type: &str,
+    nonce: &[u8],
+    original_size: usize,
+    encrypted_size: usize,
+) -> Result<OutboundAttachmentPayload> {
+    if nonce.len() != 12 {
+        return Err(anyhow::anyhow!(
+            "attachment nonce must be 12 bytes, got {}",
+            nonce.len()
+        ));
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert("type".into(), Value::String("image_encrypted".into()));
+    obj.insert("blossom_url".into(), Value::String(blossom_url.to_string()));
+    obj.insert("nonce".into(), Value::String(BASE64.encode(nonce)));
+    obj.insert("filename".into(), Value::String(filename.to_string()));
+    obj.insert("mime_type".into(), Value::String(mime_type.to_string()));
+    obj.insert("original_size".into(), Value::Number(original_size.into()));
+    obj.insert(
+        "encrypted_size".into(),
+        Value::Number(encrypted_size.into()),
+    );
+    let json_body = json_to_string(&Value::Object(obj))?;
+    let (attachment, display_content) = try_parse_attachment_message(&json_body)
+        .ok_or_else(|| anyhow::anyhow!("failed to build attachment display from JSON"))?;
+    Ok(OutboundAttachmentPayload {
+        json_body,
+        attachment,
+        display_content,
+    })
+}
+
+/// Builds `file_encrypted` JSON for order chat.
+pub fn build_file_encrypted_json(
+    blossom_url: &str,
+    filename: &str,
+    mime_type: &str,
+    file_type: &str,
+    nonce: &[u8],
+    original_size: usize,
+    encrypted_size: usize,
+) -> Result<OutboundAttachmentPayload> {
+    if nonce.len() != 12 {
+        return Err(anyhow::anyhow!(
+            "attachment nonce must be 12 bytes, got {}",
+            nonce.len()
+        ));
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert("type".into(), Value::String("file_encrypted".into()));
+    obj.insert("blossom_url".into(), Value::String(blossom_url.to_string()));
+    obj.insert("nonce".into(), Value::String(BASE64.encode(nonce)));
+    obj.insert("filename".into(), Value::String(filename.to_string()));
+    obj.insert("mime_type".into(), Value::String(mime_type.to_string()));
+    obj.insert("file_type".into(), Value::String(file_type.to_string()));
+    obj.insert("original_size".into(), Value::Number(original_size.into()));
+    obj.insert(
+        "encrypted_size".into(),
+        Value::Number(encrypted_size.into()),
+    );
+    let json_body = json_to_string(&Value::Object(obj))?;
+    let (attachment, display_content) = try_parse_attachment_message(&json_body)
+        .ok_or_else(|| anyhow::anyhow!("failed to build attachment display from JSON"))?;
+    Ok(OutboundAttachmentPayload {
+        json_body,
+        attachment,
+        display_content,
+    })
+}
+
+pub fn build_attachment_toast(filename: &str) -> (String, Instant) {
     (
         format!("📎 File received: {} — Ctrl+S to save", filename),
         Instant::now(),
@@ -210,5 +293,40 @@ mod tests {
         assert!(restored.is_some());
         assert_eq!(restored.unwrap().blossom_url, att.blossom_url);
         assert!(content.contains("photo.png"));
+    }
+
+    #[test]
+    fn build_image_encrypted_json_roundtrip() {
+        let nonce = [7u8; 12];
+        let out = build_image_encrypted_json(
+            "https://blossom.example/abc",
+            "pic.png",
+            "image/png",
+            &nonce,
+            100,
+            120,
+        )
+        .expect("build");
+        assert!(out.json_body.contains("image_encrypted"));
+        assert!(!out.json_body.contains("\"key\""));
+        let parsed = try_parse_attachment_message(&out.json_body).expect("parse");
+        assert_eq!(parsed.0.filename, "pic.png");
+    }
+
+    #[test]
+    fn build_file_encrypted_json_includes_file_type() {
+        let nonce = [1u8; 12];
+        let out = build_file_encrypted_json(
+            "https://blossom.example/def",
+            "doc.pdf",
+            "application/pdf",
+            "document",
+            &nonce,
+            50,
+            70,
+        )
+        .expect("build");
+        assert!(out.json_body.contains("file_encrypted"));
+        assert!(out.json_body.contains("document"));
     }
 }

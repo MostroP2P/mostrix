@@ -140,6 +140,19 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         }
         result = OperationResult::Info(message);
     }
+    if let OperationResult::OrderChatAttachmentSent {
+        order_id,
+        chat_message,
+        info_message,
+    } = result
+    {
+        crate::ui::helpers::save_order_chat_message(&order_id, &chat_message);
+        app.order_chats
+            .entry(order_id.clone())
+            .or_default()
+            .push(chat_message);
+        result = OperationResult::Info(info_message);
+    }
 
     match &result {
         OperationResult::Success(os) => {
