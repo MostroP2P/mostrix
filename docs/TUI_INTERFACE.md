@@ -122,7 +122,7 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
     SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
-    UserSaveAttachmentPopup(String, usize),  // My Trades: pinned order_id + attachment list index (Ctrl+S opens, ↑↓/Enter/Esc in popup)
+    UserSaveAttachmentPopup(String, usize),  // My Trades: pinned order_id + list index (Ctrl+S; order_id pinned so sidebar changes do not retarget save)
 
     // User-specific modes
     UserMode(UserMode),
@@ -176,9 +176,11 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Save attachment popup (Ctrl+S in Disputes in Progress, Observer tab, or My Trades)**:
 
 - **Open**: When managing a dispute, viewing an observer chat, or on **My Trades** with a selected active order, press **Ctrl+S** to open a centered popup listing all file/image attachments. In Disputes in Progress, attachments are scoped to the current dispute and active party (Buyer or Seller). In Observer mode, attachments are drawn from all observer messages. On My Trades, attachments come from the selected order’s chat transcript (`get_order_attachment_messages`). If there are no attachments, Ctrl+S does nothing.
-- **In popup**: **↑/↓** change selection, **Enter** saves the selected attachment to `~/.mostrix/downloads/`, **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
+- **In popup**: **↑/↓** change selection, **Enter** enqueues the selected attachment on `save_attachment_tx` and closes the popup; **Esc** cancels. Other keys are absorbed. Footer shows "↑↓ Select, Enter Save, Esc Cancel".
+- **Async download + popup**: `spawn_save_attachment` runs on a Tokio task and sends `OperationResult::Info` ("Saved to …") or `Error` on `order_result_tx`. The main loop applies those results in `apply_order_result` and also **`try_recv`s both channels before every frame** (`drain_save_attachment_queue`, `drain_order_result_queue` in `src/main.rs`) so the operation-result modal appears without waiting for another key (My Trades may enqueue the job after a short async DB key lookup).
+- **Saveable list**: only attachments with a non-empty Blossom URL appear in the popup (`attachment_is_saveable` / `get_order_attachment_messages` in `src/ui/helpers/chat_visibility.rs`).
 - **My Trades decrypt**: when the sender did not embed a key in the attachment JSON, Mostrix derives the shared ChaCha20 key from `order_chat_shared_key_hex` or ECDH (`order_chat_decryption_key_bytes` in `src/util/chat_utils.rs`) before writing the file.
-- **Source**: `src/ui/save_attachment_popup.rs` (dispute, observer, and user order popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`, `FOOTER_CTRL_S_SAVE_FILE`).
+- **Source**: `src/ui/save_attachment_popup.rs` (dispute, observer, and user order popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/main.rs` (queue drain), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`, `FOOTER_CTRL_S_SAVE_FILE`).
 
 Backup New Keys popup (first launch + key rotation):
 
@@ -271,6 +273,14 @@ A stateful form for creating new orders. It supports both fixed amounts and fiat
 
 **Source**: `src/ui/order_form.rs`, `src/ui/key_handler/form_input.rs`, `src/ui/key_handler/navigation.rs` (Tab focus)
 
+### My Trades interactive mode (`user_my_trades_interactive`)
+
+**Source**: `src/ui/app_state.rs` — `UiMode::default_for_role`, `UiMode::user_my_trades_interactive`
+
+- On **`AppState::new`** and **`switch_role`**, user mode starts in **`UiMode::UserMode(UserMode::Normal)`** (not bare `UiMode::Normal` alone).
+- **Chat input**, **Ctrl+S**, **PgUp/PgDn/End** scroll, and related shortcuts are active only when `app.mode.user_my_trades_interactive()` is true: `UiMode::Normal` **or** `UiMode::UserMode(UserMode::Normal)`.
+- Popups (save attachment, operation result, viewing message, etc.) set other `UiMode` variants; shortcuts resume when the popup closes back to normal user mode.
+
 ### My Trades (Order In Progress) updates
 
 The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows richer order context and cleaner chat readability:
@@ -281,7 +291,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Privacy / ratings**: there is no placeholder row for **`Privacy:`** / **`Buyer -`** / **`Seller -`** until trade privacy can be sourced from the same context as disputes (DM `SmallOrder` does not carry those flags). **Buyer Rating:** / **Seller Rating:** lines are shown only when reputation exists: `helpers::build_active_order_chat_list` merges `Payload::Peer` with `UserInfo` when `peer.pubkey` matches `buyer_trade_pubkey` / `seller_trade_pubkey` from `Payload::Order`, and the header uses `helpers::format_user_rating` for display.
 - **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
 - **Chat scrolling**: message history uses `tui_scrollview::ScrollView` with full content height (not viewport height) and an always-visible vertical scrollbar — same pattern as Disputes in Progress and Observer. **PgUp/PgDn** scroll the chat; **End** jumps to the latest messages. Auto-scroll-to-bottom runs when new messages arrive, when switching orders, or after sending (`order_chat_scroll_tracker`, `scroll_order_chat_messages` / `scroll_order_chat_after_send` in `src/ui/key_handler/chat_helpers.rs`).
-- **Attachments (receive)**: encrypted file/image messages from the counterparty show as yellow lines with 🖼/📎 icons; the chat block title adds a file count; a yellow toast appears briefly when a new attachment is merged from relay. **Ctrl+S** opens the save popup (see above). Sending attachments from Mostrix is not implemented yet (receive/save only).
+- **Attachments (receive + transcript)**: encrypted file/image messages show as yellow lines with 🖼/📎 icons; the block title adds a file count; a yellow toast appears on new relay merges. Transcripts under `~/.mostrix/orders_chat/` persist attachment metadata as **JSON** so **Ctrl+S** works after restart (legacy placeholder lines hydrate from relay). **Ctrl+S** opens the save popup (see above). Sending attachments from Mostrix is not implemented yet (receive/save only).
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Footer shortcuts (width-aware)**:
   - **Shift+I** toggles chat input.
@@ -415,7 +425,7 @@ The key handler processes input in this order:
     - For each in‑progress dispute, chat transcripts are stored as human‑readable files under:
 
       ```text
-      ~/.mostrix/<dispute_id>.txt
+      ~/.mostrix/disputes_chat/<dispute_id>.txt
       ```
 
     - On startup, `recover_admin_chat_from_files`:

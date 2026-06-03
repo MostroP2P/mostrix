@@ -19,7 +19,7 @@ use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_user_rating,
 };
 use crate::ui::UserOrderChatMessage;
-use crate::ui::{AppState, UiMode, UserChatSender, UserMode};
+use crate::ui::{AppState, UserChatSender};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// `Order ID: …` for the sidebar — same style as disputes; shows the full id when it fits the column.
@@ -465,8 +465,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         &mut app.order_chat_scrollview_state,
     );
 
-    let input_active =
-        matches!(app.mode, UiMode::UserMode(UserMode::Normal)) && app.order_chat_input_enabled;
+    let input_active = app.mode.user_my_trades_interactive() && app.order_chat_input_enabled;
     f.render_widget(
         Paragraph::new(app.order_chat_input.clone())
             .wrap(Wrap { trim: false })

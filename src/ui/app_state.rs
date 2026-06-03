@@ -74,6 +74,20 @@ impl UiMode {
     pub fn operation_result(result: OperationResult) -> Self {
         Self::OperationResult(Box::new(result))
     }
+
+    /// Default interactive mode after startup or role switch.
+    pub fn default_for_role(user_role: UserRole) -> Self {
+        match user_role {
+            UserRole::User => UiMode::UserMode(UserMode::Normal),
+            UserRole::Admin => UiMode::AdminMode(AdminMode::Normal),
+        }
+    }
+
+    /// Whether My Trades chat input, Ctrl+S, and scroll shortcuts should be active.
+    #[must_use]
+    pub fn user_my_trades_interactive(&self) -> bool {
+        matches!(self, UiMode::Normal | UiMode::UserMode(UserMode::Normal))
+    }
 }
 
 impl Clone for UiMode {
@@ -250,7 +264,7 @@ impl AppState {
             admin_chat_scroll_tracker: None,
             admin_chat_last_seen: HashMap::new(),
             selected_settings_option: 0,
-            mode: UiMode::Normal,
+            mode: UiMode::default_for_role(user_role),
             messages: Arc::new(Mutex::new(Vec::new())),
             active_order_trade_indices: Arc::new(Mutex::new(HashMap::new())),
             dropped_user_history_order_ids: Arc::new(Mutex::new(HashSet::new())),
@@ -313,7 +327,7 @@ impl AppState {
     pub fn switch_role(&mut self, new_role: UserRole) {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
-        self.mode = UiMode::Normal;
+        self.mode = UiMode::default_for_role(new_role);
         self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
         self.selected_in_progress_idx = 0;

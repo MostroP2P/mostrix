@@ -1,5 +1,7 @@
 use crate::ui::{AppState, ChatParty, ChatSender, DisputeChatMessage, UserOrderChatMessage};
 
+use super::attachments::attachment_is_saveable;
+
 /// Returns true if this message should be shown in the given party's chat view.
 pub fn message_visible_for_party(msg: &DisputeChatMessage, active_chat_party: ChatParty) -> bool {
     match msg.sender {
@@ -16,7 +18,10 @@ pub fn count_visible_attachments(
 ) -> usize {
     messages
         .iter()
-        .filter(|msg| message_visible_for_party(msg, active_chat_party) && msg.attachment.is_some())
+        .filter(|msg| {
+            message_visible_for_party(msg, active_chat_party)
+                && msg.attachment.as_ref().is_some_and(attachment_is_saveable)
+        })
         .count()
 }
 
@@ -33,7 +38,8 @@ pub fn get_visible_attachment_messages<'a>(
     messages
         .iter()
         .filter(|msg| {
-            message_visible_for_party(msg, app.active_chat_party) && msg.attachment.is_some()
+            message_visible_for_party(msg, app.active_chat_party)
+                && msg.attachment.as_ref().is_some_and(attachment_is_saveable)
         })
         .collect()
 }
@@ -48,7 +54,7 @@ pub fn get_order_attachment_messages<'a>(
         .map(|messages| {
             messages
                 .iter()
-                .filter(|msg| msg.attachment.is_some())
+                .filter(|msg| msg.attachment.as_ref().is_some_and(attachment_is_saveable))
                 .collect()
         })
         .unwrap_or_default()

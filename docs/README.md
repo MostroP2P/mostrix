@@ -4,16 +4,16 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Core runtime & data
 
-- **Startup & Configuration**: [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — Boot sequence, settings, background tasks, DM router wiring, reconnect
+- **Startup & Configuration**: [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — Boot sequence, settings, background tasks, DM router wiring, reconnect; main loop **drains save/operation-result channels before draw** (150 ms refresh)
 - **DM listener & router**: [DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md) — `listen_for_order_messages`, TrackOrder vs waiter, startup `fetch_events` replay, in-memory `OrderMessage` list; **`Action::CantDo`** ignored in `handle_trade_dm_for_order` (errors use waiter / `OperationResult`, not Messages upserts)
-- **Message Flow & Protocol**: [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — How Mostrix talks to Mostro over Nostr (orders, GiftWrap, restarts, cooperative cancel / `TradeClosed`); **My Trades user order chat** relay sync, own-message echo skip, attachment receive/save
+- **Message Flow & Protocol**: [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — How Mostrix talks to Mostro over Nostr (orders, GiftWrap, restarts, cooperative cancel / `TradeClosed`); **My Trades user order chat** relay sync, own-message echo skip, attachment receive/save, **JSON transcript persistence** (Ctrl+S after restart)
 - **PoW & outbound events**: [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) — Instance `pow` (kind 38385), `nostr_pow_from_instance`, Gift Wrap outer mining (`gift_wrap_from_seal_with_pow`)
 - **Database**: [DATABASE.md](DATABASE.md) — SQLite schema, `orders` / `users` / `admin_disputes`, migrations; **relay → SQLite reconcile** for terminal order statuses (`relay_order_db_reconcile.rs`)
 - **Key Management**: [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) — Deterministic derivation (NIP-06 path), identity vs trade keys
 
 ## UI & order flows
 
-- **TUI Interface**: [TUI_INTERFACE.md](TUI_INTERFACE.md) — Navigation, modes, state; create-order form input; **My Trades** order chat (scroll, receive attachments + Ctrl+S save, static `order_chat_static` header vs `build_active_order_chat_list` live fields); Messages timeline (`StepPendingOrder` = no highlighted column while `Pending` / `WaitingTakerBond`)
+- **TUI Interface**: [TUI_INTERFACE.md](TUI_INTERFACE.md) — Navigation, modes, state; create-order form input; **My Trades** (`user_my_trades_interactive`, scroll, receive attachments + Ctrl+S save with async result popup, `order_chat_static` vs live projection); Messages timeline (`StepPendingOrder` = no highlighted column while `Pending` / `WaitingTakerBond`)
 - **UI constants** (`src/ui/constants.rs`): Shared copy (footers, help, **`StepLabel`** for the Messages tab buy/sell timeline)
 - **Buy order flow (spec)**: [buy order flow.md](buy%20order%20flow.md) — Phase 1.5+ optional **anti-abuse bond** (`PayBondInvoice` / `WaitingTakerBond`) included as phase 0 for the taker
 - **Sell order flow (spec)**: [sell order flow.md](sell%20order%20flow.md) — Phase 1.5+ optional **anti-abuse bond** for the taker (buyer)
