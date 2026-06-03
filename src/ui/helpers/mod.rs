@@ -7,8 +7,11 @@ mod layout;
 mod order_chat_projection;
 mod startup;
 
-pub use attachments::expire_attachment_toast;
 pub(crate) use attachments::try_parse_attachment_message;
+pub use attachments::{
+    build_attachment_toast, build_file_encrypted_json, build_image_encrypted_json,
+    expire_attachment_toast, OutboundAttachmentPayload, PreparedOrderChatAttachment,
+};
 pub use chat_render::{
     build_chat_list_items, build_chat_scrollview_content, build_observer_scrollview_content,
     ChatScrollViewContent,

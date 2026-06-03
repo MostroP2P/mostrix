@@ -99,6 +99,8 @@ pub struct Settings {
     pub user_mode: String, // "user" or "admin", default "user"
     #[serde(default)]
     pub ln_address: String, // Lightning address for buyer receive; empty = unset
+    #[serde(default)]
+    pub blossom_servers: Vec<String>, // Blossom upload hosts; empty = built-in defaults
 }
 ```
 
@@ -113,6 +115,7 @@ pub struct Settings {
   - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
 - **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). The spawned task reports on **`ln_address_result_tx`** (`LnAddressVerifyResult`), not on `order_result_tx`, so settings verification does not share the order/dispute result queue. **Clear** removes the value without a network call.
+- **`blossom_servers`**: Optional list of HTTPS Blossom bases for **My Trades attachment upload** (Phase B). When empty, Mostrix uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs` (same defaults as Mostro Mobile). Example in repo `settings.toml`: commented `# blossom_servers = ["https://blossom.primal.net", …]`. Resolved at send time via `blossom_servers_from_settings` in `src/util/send_attachment.rs` (main loop reloads settings from disk when draining the send queue).
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 
@@ -198,7 +201,7 @@ The TUI runs in a `tokio::select!` loop that handles (among others):
 2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
 3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
 4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.
-5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
+5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers, including **`save_attachment_tx`/`rx`** for Ctrl+S downloads and **`send_order_attachment_tx`/`rx`** for outbound My Trades uploads via `SendOrderAttachmentJob`). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
 
 **Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`).
 
@@ -214,11 +217,12 @@ loop {
         _ = refresh_interval.tick() => { /* 150 ms — redraw even without input */ }
     }
     // Before every frame (not only on keypress):
-    drain_save_attachment_queue(...)   // start Blossom downloads queued by Ctrl+S popups
-    drain_order_result_queue(...)    // apply OperationResult (e.g. "Saved to …") for async tasks
+    drain_save_attachment_queue(...)        // start Blossom downloads queued by Ctrl+S popups
+    drain_send_order_attachment_queue(...)  // start encrypt/upload/send jobs (Phase B; UI picker in Phase C)
+    drain_order_result_queue(...)           // apply OperationResult (e.g. "Saved to …", "Attachment sent: …")
     expire_attachment_toast(&mut app);
     terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;
 }
 ```
 
-**Why drain before draw:** My Trades **Enter** on the save-attachment popup may enqueue the download asynchronously (DB lookup for decryption key). Without draining `save_attachment_rx` / `order_result_rx` on each frame, the success popup could appear only after an unrelated keypress. The **150 ms** `refresh_interval` tick plus this drain keeps attachment save feedback timely.
+**Why drain before draw:** My Trades **Enter** on the save-attachment popup may enqueue the download asynchronously (DB lookup for decryption key). Outbound sends enqueue on `send_order_attachment_rx` the same way (`FromPath` or `RetryPrepared`). Without draining `save_attachment_rx`, `send_order_attachment_rx`, and `order_result_rx` on each frame, success/error popups (including upload-ok/send-failed) could appear only after an unrelated keypress. The **150 ms** `refresh_interval` tick plus this drain keeps attachment save and send feedback timely.

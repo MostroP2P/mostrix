@@ -1,16 +1,39 @@
-//! Blossom URL resolution, blob download, and ChaCha20-Poly1305 decryption.
+//! Blossom URL resolution, blob download/upload, and ChaCha20-Poly1305 encrypt/decrypt.
 //! Matches Mostro Mobile encrypted file messaging: blob layout [nonce:12][ciphertext][tag:16].
 //! Shared key for decryption: ECDH(admin_sk, sender_pubkey), same as mostro-cli with roles swapped.
 
 use anyhow::{anyhow, Result};
-use chacha20poly1305::aead::{Aead, KeyInit};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
 use chacha20poly1305::ChaCha20Poly1305;
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::{EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
 use reqwest::{header::CONTENT_LENGTH, Client};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ui::{ChatAttachment, OperationResult};
+
+/// NIP-24242 Blossom upload authorization event kind.
+const BLOSSOM_AUTH_KIND: Kind = Kind::Custom(24242);
+
+/// Default Blossom servers (Mostro Mobile `BlossomConfig.defaultServers`).
+pub const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
+    "https://blossom.primal.net",
+    "https://blossom.band",
+    "https://nostr.media",
+    "https://blossom.sector01.com",
+    "https://24242.io",
+    "https://otherstuff.shaving.kiwi",
+    "https://blossom.f7z.io",
+    "https://nosto.re",
+    "https://blossom.poster.place",
+];
+
+/// Upload timeout (seconds).
+const BLOSSOM_UPLOAD_TIMEOUT_SECS: u64 = 300;
 
 /// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
 /// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
@@ -128,6 +151,105 @@ pub fn decrypt_blob(key: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
     Ok(plaintext)
 }
 
+/// Encrypts plaintext with ChaCha20-Poly1305. Returns `[nonce:12][ciphertext][tag:16]`.
+pub fn encrypt_blob(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    if key.len() != 32 {
+        return Err(anyhow!("encrypt key must be 32 bytes, got {}", key.len()));
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("key init: {}", e))?;
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_ref())
+        .map_err(|e| anyhow!("encrypt failed: {}", e))?;
+    let mut blob = nonce.to_vec();
+    blob.extend_from_slice(&ciphertext);
+    Ok(blob)
+}
+
+/// SHA-256 hex digest of `data` (Blossom `x` tag).
+pub fn sha256_hex(data: &[u8]) -> String {
+    let hash = Sha256::digest(data);
+    hex::encode(hash)
+}
+
+fn normalize_blossom_server_base(server: &str) -> String {
+    server.trim().trim_end_matches('/').to_string()
+}
+
+/// Builds a signed NIP-24242 authorization event for Blossom upload.
+/// Must use the same identity that publishes the corresponding chat message (order trade key).
+pub(crate) fn blossom_upload_auth_header(blob_hash_hex: &str, keys: &Keys) -> Result<String> {
+    let now = Timestamp::now().as_secs();
+    let expiration = (now + 3600).to_string();
+    let tags = vec![
+        Tag::parse(["t", "upload"]).map_err(|e| anyhow!("auth tag t: {}", e))?,
+        Tag::parse(["x", blob_hash_hex]).map_err(|e| anyhow!("auth tag x: {}", e))?,
+        Tag::parse(["expiration", expiration.as_str()])
+            .map_err(|e| anyhow!("auth tag expiration: {}", e))?,
+    ];
+    let signed = EventBuilder::new(BLOSSOM_AUTH_KIND, "")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map_err(|e| anyhow!("sign Blossom auth event: {}", e))?;
+    let json = signed.as_json();
+    Ok(format!("Nostr {}", BASE64.encode(json.as_bytes())))
+}
+
+/// Uploads an encrypted blob to one Blossom server. Returns HTTPS URL `{server}/{hash}`.
+pub async fn upload_blob(
+    http: &Client,
+    server_base: &str,
+    blob: &[u8],
+    auth_keys: &Keys,
+) -> Result<String> {
+    let base = normalize_blossom_server_base(server_base);
+    if base.is_empty() {
+        return Err(anyhow!("empty Blossom server URL"));
+    }
+    let hash_hex = sha256_hex(blob);
+    let auth = blossom_upload_auth_header(&hash_hex, auth_keys)?;
+    let url = format!("{base}/upload");
+    let res = http
+        .put(&url)
+        .header("Authorization", auth)
+        .header("Content-Type", "application/octet-stream")
+        .header("User-Agent", "Mostrix/0.2")
+        .timeout(Duration::from_secs(BLOSSOM_UPLOAD_TIMEOUT_SECS))
+        .body(blob.to_vec())
+        .send()
+        .await
+        .map_err(|e| anyhow!("Blossom upload failed: {}", e))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(anyhow!("Blossom upload returned {status}: {body}"));
+    }
+    Ok(format!("{base}/{hash_hex}"))
+}
+
+/// Tries each server in order until one accepts the upload.
+pub async fn upload_blob_with_retry(
+    http: &Client,
+    servers: &[String],
+    blob: &[u8],
+    auth_keys: &Keys,
+) -> Result<String> {
+    if servers.is_empty() {
+        return Err(anyhow!("no Blossom servers configured"));
+    }
+    let mut last_err = anyhow!("no upload attempt");
+    for server in servers {
+        match upload_blob(http, server, blob, auth_keys).await {
+            Ok(url) => return Ok(url),
+            Err(e) => {
+                log::warn!("Blossom upload failed for {}: {}", server, e);
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
+}
+
 /// Sanitizes a filename to avoid path traversal: only [a-zA-Z0-9_.-] allowed.
 fn sanitize_filename(name: &str) -> String {
     let s: String = name
@@ -220,5 +342,35 @@ mod tests {
     #[test]
     fn blossom_url_to_https_rejects_other() {
         assert!(blossom_url_to_https("http://evil.com/x").is_err());
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let key = [7u8; 32];
+        let plain = b"hello encrypted attachment";
+        let blob = encrypt_blob(&key, plain).unwrap();
+        let out = decrypt_blob(&key, &blob).unwrap();
+        assert_eq!(out, plain);
+    }
+
+    #[test]
+    fn sha256_hex_known_empty() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn upload_auth_event_uses_signer_pubkey() {
+        use nostr_sdk::prelude::Event;
+
+        let keys = Keys::generate();
+        let header = blossom_upload_auth_header("deadbeef", &keys).expect("auth header");
+        let b64 = header.strip_prefix("Nostr ").expect("Nostr prefix");
+        let json = BASE64.decode(b64).expect("base64");
+        let json_str = std::str::from_utf8(&json).expect("utf8");
+        let event = Event::from_json(json_str).expect("event json");
+        assert_eq!(event.pubkey, keys.public_key());
     }
 }

@@ -22,16 +22,17 @@ use crate::ui::key_handler::{
 use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
-    install_background_panic_hook, listen_for_order_messages,
+    any_relay_reachable, blossom_servers_from_settings, catch_unwind_request_fatal_restart,
+    connect_client_safely, handle_message_notification, handle_operation_result,
+    hydrate_startup_active_order_dm_state, install_background_panic_hook,
+    listen_for_order_messages,
     order_utils::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         spawn_admin_chat_fetch, spawn_user_order_chat_fetch, start_fetch_scheduler,
         validate_range_amount, FetchSchedulerResult,
     },
     set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    StartupDmHydration,
+    spawn_send_order_chat_attachment, StartupDmHydration,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -108,6 +109,28 @@ fn drain_save_attachment_queue(
 ) {
     while let Ok((dispute_id, attachment)) = save_attachment_rx.try_recv() {
         spawn_save_attachment(dispute_id, attachment, order_result_tx.clone());
+    }
+}
+
+/// Drains pending send-attachment jobs (encrypt → Blossom → order chat DM).
+fn drain_send_order_attachment_queue(
+    send_attachment_rx: &mut UnboundedReceiver<crate::util::SendOrderAttachmentJob>,
+    client: &Client,
+    pool: &SqlitePool,
+    settings: &Settings,
+    mostro_info: &Option<crate::util::MostroInstanceInfo>,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    let servers = blossom_servers_from_settings(settings);
+    while let Ok(job) = send_attachment_rx.try_recv() {
+        spawn_send_order_chat_attachment(
+            job,
+            client.clone(),
+            pool.clone(),
+            servers.clone(),
+            mostro_info.clone(),
+            order_result_tx.clone(),
+        );
     }
 }
 
@@ -252,6 +275,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut user_order_chat_updates_rx,
         save_attachment_tx,
         mut save_attachment_rx,
+        send_order_attachment_tx: _send_order_attachment_tx,
+        mut send_order_attachment_rx,
         mostro_info_tx,
         mut mostro_info_rx,
         mut dm_subscription_tx,
@@ -765,7 +790,17 @@ async fn main() -> Result<(), anyhow::Error> {
         }
 
         // Process async completions before draw so popups appear without extra keypresses.
+        let current_settings =
+            crate::settings::load_settings_from_disk().unwrap_or_else(|_| settings.clone());
         drain_save_attachment_queue(&mut save_attachment_rx, &order_result_tx);
+        drain_send_order_attachment_queue(
+            &mut send_order_attachment_rx,
+            &client,
+            &pool,
+            &current_settings,
+            &app.mostro_info,
+            &order_result_tx,
+        );
         drain_order_result_queue(&mut order_result_rx, &pool, &mut app).await;
 
         // Expire transient UI timers/toasts before rendering.

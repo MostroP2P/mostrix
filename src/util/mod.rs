@@ -3,17 +3,20 @@ pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;
 pub mod fatal;
+pub mod file_validation;
 pub mod filters;
 pub mod ln_address;
 pub mod mostro_info;
 pub mod network;
 pub mod order_utils;
+pub mod send_attachment;
 pub mod types;
 
 // Re-export commonly used items
+pub use crate::ui::helpers::PreparedOrderChatAttachment;
 pub use blossom::{
-    blossom_url_to_https, decrypt_blob, fetch_blob, save_attachment_to_disk, spawn_save_attachment,
-    BLOSSOM_MAX_BLOB_SIZE,
+    blossom_url_to_https, decrypt_blob, encrypt_blob, fetch_blob, save_attachment_to_disk,
+    spawn_save_attachment, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE, DEFAULT_BLOSSOM_SERVERS,
 };
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;
@@ -27,6 +30,7 @@ pub use fatal::{
     catch_unwind_request_fatal_restart, fatal_requested, install_background_panic_hook,
     request_fatal_restart, set_fatal_error_tx,
 };
+pub use file_validation::{validate_attachment_file, AttachmentFileClass, ValidatedAttachment};
 pub use filters::{
     create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
     MOSTRO_LIST_FETCH_EVENT_LIMIT,
@@ -38,4 +42,8 @@ pub use mostro_info::{
 };
 pub use network::{any_relay_reachable, connect_client_safely};
 pub use order_utils::{fetch_events_list, get_disputes, get_orders, send_new_order, take_order};
+pub use send_attachment::{
+    blossom_servers_from_settings, send_prepared_order_chat_attachment,
+    spawn_send_order_chat_attachment, SendOrderAttachmentJob,
+};
 pub use types::{get_cant_do_description, Event, ListKind};

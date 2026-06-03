@@ -15,3 +15,5 @@ nsec_privkey = 'nsec1_privkey_format'
 user_mode = "user"
 # Lightning address when you buy (receive via LNURL-pay); leave empty if unused.
 ln_address = ""
+# Blossom media servers for encrypted chat attachments (tried in order on upload).
+# blossom_servers = ["https://blossom.primal.net", "https://blossom.band"]

@@ -22,6 +22,9 @@ pub struct Settings {
     /// Lightning address for receiving sats when acting as buyer (`user@domain.com`). Empty string = unset.
     #[serde(default)]
     pub ln_address: String,
+    /// Blossom servers for encrypted chat attachment uploads (tried in order). Empty = built-in defaults.
+    #[serde(default)]
+    pub blossom_servers: Vec<String>,
 }
 
 fn default_user_mode() -> String {
@@ -46,6 +49,7 @@ impl Default for Settings {
             currencies_filter: Vec::new(),
             user_mode: "user".to_string(),
             ln_address: String::new(),
+            blossom_servers: Vec::new(),
         }
     }
 }

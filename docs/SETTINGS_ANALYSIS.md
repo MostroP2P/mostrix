@@ -21,6 +21,12 @@ This document provides a comprehensive analysis of the Settings tab features imp
 - **Restart requirement**: After saving the mnemonic, Mostrix must be restarted so the app can use the rotated keys everywhere.
 - **First-launch behavior**: If Mostrix had to bootstrap a brand-new `settings.toml`, the backup popup is shown immediately as an overlay on the initial Orders/Disputes tab (no forced navigation to Settings).
 
+### Blossom servers (`blossom_servers`, optional)
+
+- **Field**: `Settings.blossom_servers` (`Vec<String>`, default empty). Not exposed in the Settings tab UI; edit `settings.toml` directly (see commented example in repo `settings.toml`).
+- **Behavior**: When empty, My Trades attachment **upload** uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs`. When non-empty, `upload_blob_with_retry` tries each HTTPS base in order until one accepts the PUT. Upload authorization (NIP-24242) is signed with the order **trade key** (same identity as the chat GiftWrap), not an ephemeral key.
+- **Scope**: Used by Phase B outbound send (`src/util/send_attachment.rs`); receive/save (Ctrl+S) uses the `blossom_url` embedded in each message, not this list.
+
 ### Instance PoW (not a settings field)
 
 Proof-of-work for **published Nostr events** is **not** configured in the Settings tab or in `settings.toml`. It comes from the Mostro instance status event (kind 38385, tag `pow`) and is applied in code paths described in **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)**. Older `settings.toml` files may still list `pow`; that key is ignored when loading `Settings`.

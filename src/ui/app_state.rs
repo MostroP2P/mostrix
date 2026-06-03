@@ -204,6 +204,9 @@ pub struct AppState {
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
     /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
     pub attachment_toast: Option<(String, Instant)>,
+    /// Upload succeeded but chat DM failed; retry via `SendOrderAttachmentJob::RetryPrepared`.
+    pub pending_order_attachment_sends:
+        HashMap<String, crate::ui::helpers::PreparedOrderChatAttachment>,
     /// Observer mode: shared key as 64-char hex string (32 bytes).
     pub observer_shared_key_input: String,
     /// Observer mode: chat messages fetched from relays for the pasted shared key.
@@ -286,6 +289,7 @@ impl AppState {
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
+            pending_order_attachment_sends: HashMap::new(),
             observer_shared_key_input: String::new(),
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
