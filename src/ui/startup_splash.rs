@@ -3,14 +3,14 @@ use std::time::Instant;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::ui::helpers::render_centered_lines;
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub const SPLASH_TICK_MS: u64 = 150;
 pub const SPLASH_DOT_CYCLE_MS: u64 = 400;
-pub const SPLASH_MIN_DISPLAY_MS: u64 = 800;
+pub const SPLASH_MIN_DISPLAY_MS: u64 = 3000;
 
 /// One animated dot (diamond), including a leading space separator.
 pub const LOADING_DOT_UNIT: &str = " <>";
@@ -96,6 +96,13 @@ fn splash_fits_wordmark(terminal_width: u16) -> bool {
     terminal_width >= logo_line_width() as u16
 }
 
+fn fill_splash_background(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    f.render_widget(
+        Block::default().style(Style::default().bg(BACKGROUND_COLOR)),
+        area,
+    );
+}
+
 fn style_loading_line(line: &str) -> Vec<Span<'static>> {
     line.chars()
         .map(|c| {
@@ -108,14 +115,10 @@ fn style_loading_line(line: &str) -> Vec<Span<'static>> {
                     c.to_string(),
                     Style::default()
                         .fg(PRIMARY_COLOR)
-                        .bg(BACKGROUND_COLOR)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(
-                    c.to_string(),
-                    Style::default().fg(Color::White).bg(BACKGROUND_COLOR),
-                )
+                Span::styled(c.to_string(), Style::default().fg(Color::White))
             }
         })
         .collect()
@@ -123,7 +126,7 @@ fn style_loading_line(line: &str) -> Vec<Span<'static>> {
 
 fn render_compact_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str) {
     let area = f.area();
-    f.render_widget(Clear, area);
+    fill_splash_background(f, area);
 
     let text = format!(
         "mostro is loading{}{}",
@@ -137,7 +140,7 @@ fn render_compact_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str) {
 
     let paragraph = Paragraph::new(text)
         .alignment(Alignment::Center)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White));
+        .style(Style::default().fg(Color::White));
 
     let [block] = Layout::vertical([Constraint::Min(1)])
         .flex(Flex::Center)
@@ -148,7 +151,7 @@ fn render_compact_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str) {
 /// Full-screen startup splash with animated dots and optional phase subtitle.
 pub fn render_startup_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str) {
     let area = f.area();
-    f.render_widget(Clear, area);
+    fill_splash_background(f, area);
 
     if !splash_fits_wordmark(area.width) {
         render_compact_splash(f, dot_count, phase);
@@ -180,14 +183,9 @@ pub fn render_startup_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str)
     render_centered_lines(f, chunks[0], &art_lines, style_loading_line);
 
     if !phase.is_empty() && chunks.len() > 2 {
-        let phase_line = Line::from(Span::styled(
-            phase,
-            Style::default().fg(Color::Gray).bg(BACKGROUND_COLOR),
-        ));
+        let phase_line = Line::from(Span::styled(phase, Style::default().fg(Color::Gray)));
         f.render_widget(
-            Paragraph::new(phase_line)
-                .alignment(Alignment::Center)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
+            Paragraph::new(phase_line).alignment(Alignment::Center),
             chunks[2],
         );
     }
