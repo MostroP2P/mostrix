@@ -139,7 +139,7 @@ fn render_compact_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str) {
         .alignment(Alignment::Center)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White));
 
-    let [block] = Layout::vertical([Constraint::Percentage(100)])
+    let [block] = Layout::vertical([Constraint::Min(1)])
         .flex(Flex::Center)
         .areas(area);
     f.render_widget(paragraph, block);
