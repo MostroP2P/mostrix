@@ -5,7 +5,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 
 use crate::ui::{
-    helpers, MessageViewState, RatingOrderState, ThreeState, ViewingMessageButtonSelection,
+    helpers::{self, render_centered_lines},
+    MessageViewState, RatingOrderState, ThreeState, ViewingMessageButtonSelection,
     BACKGROUND_COLOR, PRIMARY_COLOR,
 };
 
@@ -36,28 +37,46 @@ fn get_mostro_logo() -> Vec<&'static str> {
     ]
 }
 
+fn style_exit_logo_line(line: &str) -> Vec<Span<'static>> {
+    if line.contains('█') {
+        line.chars()
+            .map(|c| {
+                if c == '█' {
+                    Span::styled(
+                        c.to_string(),
+                        Style::default()
+                            .fg(PRIMARY_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw(c.to_string())
+                }
+            })
+            .collect()
+    } else if line.contains('╔') || line.contains('║') || line.contains('╚') {
+        line.chars()
+            .map(|c| {
+                if ['╔', '║', '╚', '═', '╗', '╝'].contains(&c) {
+                    Span::styled(
+                        c.to_string(),
+                        Style::default()
+                            .fg(PRIMARY_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw(c.to_string())
+                }
+            })
+            .collect()
+    } else {
+        vec![Span::raw(line.to_string())]
+    }
+}
+
 /// Renders the Exit tab content with ASCII art logo
 pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
     let logo_lines = get_mostro_logo();
 
-    // Create a layout to center the logo vertically
-    let inner_area = Block::default()
-        .title("Exit")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR))
-        .inner(area);
-
-    let logo_height = logo_lines.len() as u16;
-    let available_height = inner_area.height;
-
-    // Calculate vertical centering
-    let start_y = if logo_height < available_height {
-        inner_area.y + (available_height.saturating_sub(logo_height)) / 2
-    } else {
-        inner_area.y
-    };
-
-    // Render the block
     f.render_widget(
         Block::default()
             .title("Exit")
@@ -66,65 +85,14 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
         area,
     );
 
-    // Render ASCII art logo line by line
-    for (idx, line) in logo_lines.iter().enumerate() {
-        let y = start_y + idx as u16;
-        if y < inner_area.y + inner_area.height {
-            // Center the line horizontally
-            let line_width = line.chars().count() as u16;
-            let start_x = if line_width < inner_area.width {
-                inner_area.x + (inner_area.width.saturating_sub(line_width)) / 2
-            } else {
-                inner_area.x
-            };
+    let inner_area = Block::default()
+        .title("Exit")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR))
+        .inner(area);
 
-            let centered_rect = Rect {
-                x: start_x,
-                y,
-                width: line_width.min(inner_area.width),
-                height: 1,
-            };
-
-            // Style different parts of the logo
-            let spans: Vec<Span> = if line.contains('█') {
-                // Style the ASCII art logo (block characters) with primary color
-                line.chars()
-                    .map(|c| {
-                        if c == '█' {
-                            Span::styled(
-                                c.to_string(),
-                                Style::default()
-                                    .fg(PRIMARY_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            Span::raw(c.to_string())
-                        }
-                    })
-                    .collect()
-            } else if line.contains('╔') || line.contains('║') || line.contains('╚') {
-                // Style the box with primary color
-                line.chars()
-                    .map(|c| {
-                        if ['╔', '║', '╚', '═', '╗', '╝'].contains(&c) {
-                            Span::styled(
-                                c.to_string(),
-                                Style::default()
-                                    .fg(PRIMARY_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            Span::raw(c.to_string())
-                        }
-                    })
-                    .collect()
-            } else {
-                vec![Span::raw(*line)]
-            };
-
-            f.render_widget(Paragraph::new(Line::from(spans)), centered_rect);
-        }
-    }
+    let line_refs: Vec<&str> = logo_lines.to_vec();
+    render_centered_lines(f, inner_area, &line_refs, style_exit_logo_line);
 }
 
 pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {

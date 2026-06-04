@@ -2,6 +2,7 @@ pub mod db;
 pub mod models;
 pub mod settings;
 pub mod shared;
+pub mod startup;
 pub mod ui;
 pub mod util;
 
@@ -10,36 +11,27 @@ use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    expire_attachment_toast, hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup, refresh_my_trades_maker_book_cache,
+    expire_attachment_toast, load_admin_disputes_at_startup, refresh_my_trades_maker_book_cache,
     sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
-    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
-    spawn_refresh_mostro_info_task, AppChannels, RuntimeReconnectContext,
+    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect, AppChannels,
+    RuntimeReconnectContext,
 };
-use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    any_relay_reachable, blossom_servers_from_settings, catch_unwind_request_fatal_restart,
-    connect_client_safely, handle_message_notification, handle_operation_result,
-    hydrate_startup_active_order_dm_state, install_background_panic_hook,
-    listen_for_order_messages,
-    order_utils::{
-        run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
-        spawn_admin_chat_fetch, spawn_user_order_chat_fetch, start_fetch_scheduler,
-        validate_range_amount, FetchSchedulerResult,
-    },
+    blossom_servers_from_settings, handle_message_notification, handle_operation_result,
+    install_background_panic_hook,
+    order_utils::{spawn_admin_chat_fetch, spawn_user_order_chat_fetch, validate_range_amount},
     set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    spawn_send_order_chat_attachment, StartupDmHydration,
+    spawn_send_order_chat_attachment,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
 
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::task::JoinHandle;
 
 use chrono::Local;
 use crossterm::execute;
@@ -58,7 +50,6 @@ use ratatui::Terminal;
 use std::io::stdout;
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
-use zeroize::Zeroizing;
 
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
@@ -275,6 +266,7 @@ async fn main() -> Result<(), anyhow::Error> {
         mut user_order_chat_updates_rx,
         save_attachment_tx,
         mut save_attachment_rx,
+
         send_order_attachment_tx: _send_order_attachment_tx,
         mut send_order_attachment_rx,
         mostro_info_tx,
@@ -299,13 +291,6 @@ async fn main() -> Result<(), anyhow::Error> {
     })?;
     set_order_result_tx(order_result_tx.clone()).map_err(|msg| anyhow::anyhow!(msg))?;
 
-    // Configure Nostr client.
-    let my_keys = settings
-        .nsec_privkey
-        .parse::<Keys>()
-        .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
-    let mut client = Client::new(my_keys);
-
     let configured_relays: Vec<String> = settings
         .relays
         .iter()
@@ -314,150 +299,39 @@ async fn main() -> Result<(), anyhow::Error> {
         .map(|relay| relay.to_owned())
         .collect();
 
-    // Add relays.
-    for relay in &configured_relays {
-        client.add_relay(relay).await?;
-    }
-    let relays_reachable = any_relay_reachable(&configured_relays).await;
-    if !relays_reachable {
-        log::warn!("No configured relays reachable; nostr connect may fail");
-    }
-    if let Err(e) = connect_client_safely(&client).await {
-        log::warn!("Failed to connect Nostr client at startup: {e}");
-    }
+    let user_role = UserRole::from_str(&settings.user_mode)?;
 
-    let mut mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
-        .map_err(|e| anyhow::anyhow!("Invalid Mostro pubkey: {}", e))?;
-    let current_mostro_pubkey = Arc::new(std::sync::Mutex::new(mostro_pubkey));
-
-    // Start background tasks to fetch orders and disputes
-    let FetchSchedulerResult {
+    let startup::StartupBootstrap {
+        mut client,
+        mut mostro_pubkey,
+        current_mostro_pubkey,
         orders,
         disputes,
         mut order_task,
         mut dispute_task,
-    } = start_fetch_scheduler(
-        client.clone(),
-        Arc::clone(&current_mostro_pubkey),
-        settings,
-        pool.clone(),
-    );
+        mut app,
+        mut message_listener_handle,
+        ..
+    } = startup::run_startup_with_splash(
+        &mut terminal,
+        startup::PostTerminalStartupInput {
+            pool: &pool,
+            settings,
+            did_generate_new_settings_file: init.did_generate_new_settings_file,
+            user_role,
+            configured_relays,
+            dm_subscription_rx,
+            mostro_info_tx: mostro_info_tx.clone(),
+            network_status_tx,
+            message_notification_tx: message_notification_tx.clone(),
+        },
+    )
+    .await?;
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
     let mut admin_chat_interval = interval(Duration::from_secs(2));
-    let user_role = &settings.user_mode;
-    let mut app = AppState::new(UserRole::from_str(user_role)?);
-    // On first launch, ensure the new user can immediately back up the 12 words.
-    // Do NOT force switching into Settings tab; show the overlay on the normal initial tab.
-    if init.did_generate_new_settings_file {
-        match User::get(&pool).await {
-            Ok(user) => {
-                app.backup_requires_restart = false;
-                app.mode = UiMode::BackupNewKeys(Zeroizing::new(user.mnemonic));
-            }
-            Err(e) => {
-                log::error!(
-                    "First-run backup flow: failed to load generated user mnemonic: {}",
-                    e
-                );
-                app.mode = UiMode::operation_result(OperationResult::Error(
-                    "First-run setup completed, but mnemonic backup could not be loaded from the database. Please use Settings -> Generate New Keys and back up the new 12 words immediately.".to_string(),
-                ));
-            }
-        }
-    }
-    // Seed currencies filter cache from settings so UI-side filtering does not
-    // need to hit the filesystem on every render.
-    app.currencies_filter = settings.currencies_filter.clone();
-    hydrate_app_admin_keys_from_privkey(&mut app, &settings.admin_privkey);
-
-    if !relays_reachable {
-        app.offline_overlay_message = Some(
-            "No internet / relays unreachable. Mostrix is retrying connection automatically."
-                .to_string(),
-        );
-    }
-
-    // Background offline monitor: emit status transitions every 5 seconds.
-    spawn_network_status_monitor(configured_relays.clone(), network_status_tx.clone());
-
-    // Initial Mostro instance info (same path as manual refresh; no startup toast).
-    // Only attempt this when at least one relay is reachable, otherwise some
-    // nostr client paths may panic on machines without network.
-    if relays_reachable {
-        spawn_refresh_mostro_info_task(
-            client.clone(),
-            mostro_pubkey,
-            mostro_info_tx.clone(),
-            false,
-        );
-    }
-
-    // Load admin disputes at startup (only when role is admin)
-    load_admin_disputes_at_startup(&pool, &mut app).await;
-    if relays_reachable {
-        if let Err(e) = run_relay_order_db_reconcile_once(&client, &pool, mostro_pubkey).await {
-            log::warn!("Startup relay order DB reconcile failed: {}", e);
-        }
-        let startup_targeted_cursor = std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        if let Err(e) = run_targeted_relay_order_db_reconcile_tick(
-            &client,
-            &pool,
-            mostro_pubkey,
-            &startup_targeted_cursor,
-        )
-        .await
-        {
-            log::warn!("Startup targeted relay order DB reconcile failed: {}", e);
-        }
-    }
-    load_user_order_chats_at_startup(&client, &pool, &mut app).await;
-
-    // Spawn background task to listen for messages on active orders
-    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(&pool).await {
-        Ok(h) => h,
-        Err(e) => {
-            log::warn!(
-                "Failed to hydrate startup active order DM state from DB: {}",
-                e
-            );
-            StartupDmHydration::empty()
-        }
-    };
-    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
-        *indices = startup_dm_hydration.active_order_trade_indices.clone();
-    } else {
-        log::warn!("Failed to seed startup active order map (poisoned lock)");
-    }
-    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
-
-    let client_for_messages = client.clone();
-    let pool_for_messages = pool.clone();
-    let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
-    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
-    let messages_clone = Arc::clone(&app.messages);
-    let message_notification_tx_clone = message_notification_tx.clone();
-    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
-    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
-    let mut message_listener_handle: JoinHandle<()> = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("trade DM listener", async move {
-            listen_for_order_messages(
-                client_for_messages,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                order_last_seen_dm_ts_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dropped_user_history_clone,
-                dm_subscription_rx,
-            )
-            .await;
-        })
-        .await;
-    });
 
     loop {
         tokio::select! {

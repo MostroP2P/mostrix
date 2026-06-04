@@ -5,7 +5,19 @@ This guide explains Mostrix’s boot sequence and configuration surfaces.
 ## Overview
 - Entry: `src/main.rs:98`
 - Initializes database, derives identity keys, initializes settings, then logger, terminal (raw mode), shared state, Nostr client, and background tasks.
+- Shows an animated **startup splash** (Mostro wordmark + loading dots) while post-terminal init runs; see [Startup splash](#startup-splash) below.
 - Enters the main event loop to handle UI updates and user input.
+
+## Startup splash
+
+After the terminal enters alternate screen mode, Mostrix draws a full-screen splash until background boot work finishes (`src/startup.rs`, `src/ui/startup_splash.rs`).
+
+- **Wordmark**: multi-line logo from the project art (same style as the desktop `logo.txt` export).
+- **Loading dots**: one reusable glyph (` <>`) repeated 1–4 times on the last logo row, cycled every ~400 ms while the splash tick runs (~150 ms redraw interval).
+- **Phase text**: short status under the art (`Starting…`, `Connecting to relays…`, `Loading market data…`, `Restoring chats…`, `Almost ready…`) updated as init steps complete.
+- **Minimum display**: splash stays visible for at least ~800 ms so fast boots do not flash the screen.
+- **Narrow terminals**: if the terminal is narrower than the padded logo width, a one-line `mostro is loading` + dots + phase is shown instead.
+- **CI / scripts**: set `MOSTRIX_NO_SPLASH=1` to skip the splash loop and run init directly.
 
 ## Initialization Sequence
 

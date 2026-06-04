@@ -1,3 +1,4 @@
+mod ascii_art;
 mod attachments;
 mod chat_render;
 mod chat_storage;
@@ -6,6 +7,8 @@ mod formatting;
 mod layout;
 mod order_chat_projection;
 mod startup;
+
+pub use ascii_art::render_centered_lines;
 
 pub(crate) use attachments::try_parse_attachment_message;
 pub use attachments::{
