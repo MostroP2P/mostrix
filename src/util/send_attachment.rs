@@ -83,6 +83,7 @@ fn build_outbound_payload(
             &validated.filename,
             &validated.mime_type,
             nonce,
+            (validated.image_width, validated.image_height),
             original_size,
             encrypted_size,
         ),

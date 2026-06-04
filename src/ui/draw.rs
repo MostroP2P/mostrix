@@ -216,6 +216,11 @@ pub fn ui_draw(
         save_attachment_popup::render_user_save_attachment_popup(f, app, order_id, *selected_idx);
     }
 
+    // User order chat send attachment picker (Ctrl+O on My Trades tab)
+    if matches!(app.mode, UiMode::UserSendAttachmentPicker(_)) {
+        crate::ui::send_attachment_picker::render_user_send_attachment_picker(f, app);
+    }
+
     // Shared settings popups
     if let UiMode::AddMostroPubkey(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(

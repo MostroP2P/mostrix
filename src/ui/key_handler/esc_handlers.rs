@@ -46,6 +46,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::UserMode(UserMode::Normal);
             true
         }
+        UiMode::UserSendAttachmentPicker(_) => {
+            crate::ui::send_attachment_picker::close_user_send_attachment_picker(app);
+            true
+        }
         UiMode::OperationResult(_) => {
             if app.fatal_exit_on_close {
                 return false;

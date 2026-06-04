@@ -41,6 +41,8 @@ pub enum UiMode {
     ObserverSaveAttachmentPopup(usize),
     /// User order chat save attachment popup: pinned order id + list index (Ctrl+S on My Trades tab).
     UserSaveAttachmentPopup(String, usize),
+    /// User order chat send attachment file picker: pinned order id (Ctrl+O on My Trades tab).
+    UserSendAttachmentPicker(String),
     AddMostroPubkey(KeyInputState),
     ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     AddRelay(KeyInputState),
@@ -116,6 +118,9 @@ impl Clone for UiMode {
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
             UiMode::UserSaveAttachmentPopup(order_id, idx) => {
                 UiMode::UserSaveAttachmentPopup(order_id.clone(), *idx)
+            }
+            UiMode::UserSendAttachmentPicker(order_id) => {
+                UiMode::UserSendAttachmentPicker(order_id.clone())
             }
             UiMode::AddMostroPubkey(state) => UiMode::AddMostroPubkey(state.clone()),
             UiMode::ConfirmMostroPubkey(key, selected) => {
@@ -207,6 +212,10 @@ pub struct AppState {
     /// Upload succeeded but chat DM failed; retry via `SendOrderAttachmentJob::RetryPrepared`.
     pub pending_order_attachment_sends:
         HashMap<String, crate::ui::helpers::PreparedOrderChatAttachment>,
+    /// Active `ratatui-explorer` instance while `UserSendAttachmentPicker` is open.
+    pub user_send_attachment_explorer: Option<ratatui_explorer::FileExplorer>,
+    /// Order id with an outbound attachment send in progress (blocks duplicate Ctrl+O).
+    pub sending_attachment_order_id: Option<String>,
     /// Observer mode: shared key as 64-char hex string (32 bytes).
     pub observer_shared_key_input: String,
     /// Observer mode: chat messages fetched from relays for the pasted shared key.
@@ -290,6 +299,8 @@ impl AppState {
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
             pending_order_attachment_sends: HashMap::new(),
+            user_send_attachment_explorer: None,
+            sending_attachment_order_id: None,
             observer_shared_key_input: String::new(),
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),

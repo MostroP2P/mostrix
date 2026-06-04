@@ -21,12 +21,15 @@ use crate::ui::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
         get_visible_attachment_messages, is_dispute_finalized,
     },
+    send_attachment_picker::{
+        close_user_send_attachment_picker, explorer_selection_is_sendable_file,
+        open_user_send_attachment_picker,
+    },
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     InvoiceNotificationActionSelection, LnAddressVerifyResult, MostroInfoFetchResult,
     OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
 };
-use crate::util::MostroInstanceInfo;
-use crate::util::OrderDmSubscriptionCmd;
+use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
@@ -397,6 +400,7 @@ pub fn handle_key_event(
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
     admin_chat_keys: Option<&nostr_sdk::Keys>,
     save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
+    send_order_attachment_tx: Option<&UnboundedSender<SendOrderAttachmentJob>>,
     dm_subscription_tx: &UnboundedSender<OrderDmSubscriptionCmd>,
 ) -> Option<bool> {
     // Returns Some(true) to continue, Some(false) to break, None to continue normally
@@ -589,6 +593,48 @@ pub fn handle_key_event(
         }
     }
 
+    // User send attachment file picker: explorer navigation + Enter to send, Esc to cancel
+    if let UiMode::UserSendAttachmentPicker(ref pinned_order_id) = app.mode {
+        match code {
+            KeyCode::Esc => {
+                close_user_send_attachment_picker(app);
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                let sendable = app
+                    .user_send_attachment_explorer
+                    .as_ref()
+                    .map(|ex| explorer_selection_is_sendable_file(ex.current()))
+                    .unwrap_or(false);
+                if sendable {
+                    if let (Some(explorer), Some(tx)) = (
+                        app.user_send_attachment_explorer.as_ref(),
+                        send_order_attachment_tx,
+                    ) {
+                        let path = explorer.current().path.clone();
+                        let order_id = pinned_order_id.clone();
+                        let _ = tx.send(SendOrderAttachmentJob::FromPath {
+                            order_id: order_id.clone(),
+                            path,
+                        });
+                        app.sending_attachment_order_id = Some(order_id);
+                    }
+                    close_user_send_attachment_picker(app);
+                }
+                return Some(true);
+            }
+            _ => {
+                if let Some(explorer) = app.user_send_attachment_explorer.as_mut() {
+                    let event = Event::Key(key_event);
+                    if let Err(e) = explorer.handle(&event) {
+                        log::warn!("send attachment picker: {}", e);
+                    }
+                }
+                return Some(true);
+            }
+        }
+    }
+
     // User order chat save attachment popup: Up/Down to select, Enter to save, Esc to cancel
     if let UiMode::UserSaveAttachmentPopup(ref pinned_order_id, selected_idx) = app.mode {
         let list_len = get_order_attachment_messages(app, pinned_order_id).len();
@@ -776,6 +822,47 @@ pub fn handle_key_event(
                         app.mode = UiMode::UserSaveAttachmentPopup(row.order_id.clone(), 0);
                         return Some(true);
                     }
+                }
+            }
+        }
+    }
+
+    // Ctrl+O / Ctrl+Shift+O: send attachment picker / retry without re-upload (My Trades)
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char('o') | KeyCode::Char('O'))
+    {
+        if let Tab::User(UserTab::MyTrades) = app.active_tab {
+            if app.mode.user_my_trades_interactive() {
+                if let Some(row) =
+                    active_order_chat_list_snapshot(app).get(app.selected_order_chat_idx)
+                {
+                    let order_id = row.order_id.clone();
+                    if key_event.modifiers.contains(KeyModifiers::SHIFT) {
+                        if app.sending_attachment_order_id.is_some() {
+                            return Some(true);
+                        }
+                        if let Some(prepared) =
+                            app.pending_order_attachment_sends.get(&order_id).cloned()
+                        {
+                            if let Some(tx) = send_order_attachment_tx {
+                                let _ = tx.send(SendOrderAttachmentJob::RetryPrepared(prepared));
+                                app.sending_attachment_order_id = Some(order_id);
+                            }
+                        }
+                        return Some(true);
+                    }
+                    if app.sending_attachment_order_id.is_some() {
+                        return Some(true);
+                    }
+                    match open_user_send_attachment_picker(app, order_id) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            app.mode = UiMode::operation_result(OperationResult::Error(format!(
+                                "Could not open file picker: {e}"
+                            )));
+                        }
+                    }
+                    return Some(true);
                 }
             }
         }

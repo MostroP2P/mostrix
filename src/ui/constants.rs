@@ -93,6 +93,9 @@ pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release
 pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
+pub const HELP_MY_TRADES_CTRL_O_SEND: &str = "Ctrl+O: Send attachment (file picker)";
+pub const HELP_MY_TRADES_CTRL_SHIFT_O_RETRY: &str =
+    "Ctrl+Shift+O: Retry chat send (blob already on Blossom)";
 
 // Confirmation messages for My Trades actions
 pub const HELP_MY_TRADES_CANCEL_MSG: &str =
@@ -138,6 +141,9 @@ pub const HELP_CNO_ENTER_CONFIRM: &str = "Enter: Confirm order (from form)";
 pub const SAVE_ATTACHMENT_POPUP_HINT: &str = "↑↓ Select, Enter Save, Esc Cancel";
 
 pub const FOOTER_CTRL_S_SAVE_FILE: &str = " | Ctrl+S: Save file";
+pub const FOOTER_CTRL_O_SEND_FILE: &str = " | Ctrl+O: Send file";
+pub const FOOTER_CTRL_SHIFT_O_RETRY: &str = " | Ctrl+Shift+O: Retry send";
+pub const FOOTER_SENDING_ATTACHMENT: &str = " | Sending attachment…";
 pub const FOOTER_UP_DOWN_SELECT: &str = "↑↓: Select";
 pub const FOOTER_UP_DOWN_SELECT_DISPUTE: &str = "↑↓: Select Dispute";
 pub const FOOTER_TAB_PARTY: &str = "Tab: Party";
