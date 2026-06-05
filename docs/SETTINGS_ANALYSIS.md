@@ -25,7 +25,7 @@ This document provides a comprehensive analysis of the Settings tab features imp
 
 - **Field**: `Settings.blossom_servers` (`Vec<String>`, default empty). Not exposed in the Settings tab UI; edit `settings.toml` directly (see commented example in repo `settings.toml`).
 - **Behavior**: When empty, My Trades attachment **upload** uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs`. When non-empty, `upload_blob_with_retry` tries each HTTPS base in order until one accepts the PUT. Upload authorization (NIP-24242) is signed with the order **trade key** (same identity as the chat GiftWrap), not an ephemeral key.
-- **Scope**: Used by Phase B outbound send (`src/util/send_attachment.rs`); receive/save (Ctrl+S) uses the `blossom_url` embedded in each message, not this list.
+- **Scope**: Used by My Trades outbound send (**Ctrl+O**, `src/util/send_attachment.rs`); receive/save (Ctrl+S) uses the `blossom_url` embedded in each message, not this list.
 
 ### Instance PoW (not a settings field)
 

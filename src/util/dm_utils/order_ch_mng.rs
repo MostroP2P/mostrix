@@ -147,6 +147,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     } = result
     {
         app.pending_order_attachment_sends.remove(&order_id);
+        if app.sending_attachment_order_id.as_deref() == Some(order_id.as_str()) {
+            app.sending_attachment_order_id = None;
+        }
         crate::ui::helpers::save_order_chat_message(&order_id, &chat_message);
         app.order_chats
             .entry(order_id.clone())
@@ -154,15 +157,24 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             .push(chat_message);
         result = OperationResult::Info(info_message);
     }
+    if let OperationResult::OrderChatAttachmentError { order_id, error } = result {
+        if app.sending_attachment_order_id.as_deref() == Some(&order_id) {
+            app.sending_attachment_order_id = None;
+        }
+        result = OperationResult::Error(error);
+    }
     if let OperationResult::OrderChatAttachmentSendFailed { prepared, error } = result {
         let order_id = prepared.order_id.clone();
         let url = prepared.blossom_url.clone();
         let filename = prepared.filename.clone();
         app.pending_order_attachment_sends
             .insert(order_id.clone(), prepared);
+        if app.sending_attachment_order_id.as_deref() == Some(order_id.as_str()) {
+            app.sending_attachment_order_id = None;
+        }
         result = OperationResult::Error(format!(
             "Uploaded {filename} to Blossom ({url}) but chat send failed: {error}. \
-             A retry can re-send without re-uploading (Phase C UI)."
+             Press Ctrl+Shift+O to retry send without re-uploading."
         ));
     }
 

@@ -7,6 +7,11 @@ use nostr_sdk::serde_json::{from_str as json_from_str, to_string as json_to_stri
 
 use crate::ui::{AppState, ChatAttachment, ChatAttachmentType};
 
+/// Hex-encodes a 12-byte ChaCha nonce (Mostro Mobile wire format).
+pub(crate) fn attachment_nonce_to_hex(nonce: &[u8]) -> String {
+    nonce.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Toast expiry duration for attachment notification.
 const ATTACHMENT_TOAST_DURATION: Duration = Duration::from_secs(8);
 
@@ -165,6 +170,7 @@ pub fn build_image_encrypted_json(
     filename: &str,
     mime_type: &str,
     nonce: &[u8],
+    dimensions: (u32, u32),
     original_size: usize,
     encrypted_size: usize,
 ) -> Result<OutboundAttachmentPayload> {
@@ -177,10 +183,15 @@ pub fn build_image_encrypted_json(
     let mut obj = serde_json::Map::new();
     obj.insert("type".into(), Value::String("image_encrypted".into()));
     obj.insert("blossom_url".into(), Value::String(blossom_url.to_string()));
-    obj.insert("nonce".into(), Value::String(BASE64.encode(nonce)));
+    obj.insert(
+        "nonce".into(),
+        Value::String(attachment_nonce_to_hex(nonce)),
+    );
     obj.insert("filename".into(), Value::String(filename.to_string()));
     obj.insert("mime_type".into(), Value::String(mime_type.to_string()));
     obj.insert("original_size".into(), Value::Number(original_size.into()));
+    obj.insert("width".into(), Value::Number(dimensions.0.into()));
+    obj.insert("height".into(), Value::Number(dimensions.1.into()));
     obj.insert(
         "encrypted_size".into(),
         Value::Number(encrypted_size.into()),
@@ -214,7 +225,10 @@ pub fn build_file_encrypted_json(
     let mut obj = serde_json::Map::new();
     obj.insert("type".into(), Value::String("file_encrypted".into()));
     obj.insert("blossom_url".into(), Value::String(blossom_url.to_string()));
-    obj.insert("nonce".into(), Value::String(BASE64.encode(nonce)));
+    obj.insert(
+        "nonce".into(),
+        Value::String(attachment_nonce_to_hex(nonce)),
+    );
     obj.insert("filename".into(), Value::String(filename.to_string()));
     obj.insert("mime_type".into(), Value::String(mime_type.to_string()));
     obj.insert("file_type".into(), Value::String(file_type.to_string()));
@@ -305,18 +319,24 @@ mod tests {
     }
 
     #[test]
-    fn build_image_encrypted_json_roundtrip() {
+    fn build_image_encrypted_json_matches_mobile_schema() {
         let nonce = [7u8; 12];
         let out = build_image_encrypted_json(
             "https://blossom.example/abc",
             "pic.png",
             "image/png",
             &nonce,
+            (640, 480),
             100,
             120,
         )
         .expect("build");
         assert!(out.json_body.contains("image_encrypted"));
+        assert!(out.json_body.contains("\"width\":640"));
+        assert!(out.json_body.contains("\"height\":480"));
+        assert!(out
+            .json_body
+            .contains("\"nonce\":\"070707070707070707070707\""));
         assert!(!out.json_body.contains("\"key\""));
         let parsed = try_parse_attachment_message(&out.json_body).expect("parse");
         assert_eq!(parsed.0.filename, "pic.png");

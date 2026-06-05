@@ -267,7 +267,7 @@ async fn main() -> Result<(), anyhow::Error> {
         save_attachment_tx,
         mut save_attachment_rx,
 
-        send_order_attachment_tx: _send_order_attachment_tx,
+        send_order_attachment_tx,
         mut send_order_attachment_rx,
         mostro_info_tx,
         mut mostro_info_rx,
@@ -550,6 +550,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &validate_range_amount,
                         admin_chat_keys,
                         Some(&save_attachment_tx),
+                        Some(&send_order_attachment_tx),
                         &dm_subscription_tx,
                     ) {
                         Some(true) => {

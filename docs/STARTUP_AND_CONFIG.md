@@ -17,6 +17,7 @@ After the terminal enters alternate screen mode, Mostrix draws a full-screen spl
 - **Phase text**: short status under the art (`Starting…`, `Connecting to relays…`, `Loading market data…`, `Restoring chats…`, `Almost ready…`) updated as init steps complete.
 - **Minimum display**: splash stays visible for at least ~800 ms so fast boots do not flash the screen.
 - **Narrow terminals**: if the terminal is narrower than the padded logo width, a one-line `mostro is loading` + dots + phase is shown instead.
+- **Background**: full-screen fill via `fill_splash_background` (solid `BACKGROUND_COLOR` block, same pattern as the Exit tab) so ASCII art and status text do not show mismatched per-span backgrounds.
 - **CI / scripts**: set `MOSTRIX_NO_SPLASH=1` to skip the splash loop and run init directly.
 
 ## Initialization Sequence
@@ -127,7 +128,7 @@ pub struct Settings {
   - When non-empty (e.g. `["USD"]`, `["USD", "EUR"]`), only orders whose fiat code is in this list are displayed.
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
 - **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). The spawned task reports on **`ln_address_result_tx`** (`LnAddressVerifyResult`), not on `order_result_tx`, so settings verification does not share the order/dispute result queue. **Clear** removes the value without a network call.
-- **`blossom_servers`**: Optional list of HTTPS Blossom bases for **My Trades attachment upload** (Phase B). When empty, Mostrix uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs` (same defaults as Mostro Mobile). Example in repo `settings.toml`: commented `# blossom_servers = ["https://blossom.primal.net", …]`. Resolved at send time via `blossom_servers_from_settings` in `src/util/send_attachment.rs` (main loop reloads settings from disk when draining the send queue).
+- **`blossom_servers`**: Optional list of HTTPS Blossom bases for **My Trades attachment upload** (**Ctrl+O** send). When empty, Mostrix uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs` (same defaults as Mostro Mobile). Example in repo `settings.toml`: commented `# blossom_servers = ["https://blossom.primal.net", …]`. Resolved at send time via `blossom_servers_from_settings` in `src/util/send_attachment.rs` (main loop reloads settings from disk when draining the send queue).
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 
@@ -230,7 +231,7 @@ loop {
     }
     // Before every frame (not only on keypress):
     drain_save_attachment_queue(...)        // start Blossom downloads queued by Ctrl+S popups
-    drain_send_order_attachment_queue(...)  // start encrypt/upload/send jobs (Phase B; UI picker in Phase C)
+    drain_send_order_attachment_queue(...)  // Ctrl+O / Ctrl+Shift+O jobs: encrypt → Blossom → DM
     drain_order_result_queue(...)           // apply OperationResult (e.g. "Saved to …", "Attachment sent: …")
     expire_attachment_toast(&mut app);
     terminal.draw(|f| ui_draw(f, &app, &orders, Some(&status_line)))?;

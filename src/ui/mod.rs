@@ -28,6 +28,7 @@ pub mod order_form;
 pub mod order_take;
 pub(crate) mod orders;
 pub mod save_attachment_popup;
+pub mod send_attachment_picker;
 pub mod startup_splash;
 pub mod state;
 pub mod status;

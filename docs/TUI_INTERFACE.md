@@ -123,6 +123,7 @@ pub enum UiMode {
     SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     UserSaveAttachmentPopup(String, usize),  // My Trades: pinned order_id + list index (Ctrl+S; order_id pinned so sidebar changes do not retarget save)
+    UserSendAttachmentPicker(String),        // My Trades: pinned order_id + ratatui-explorer (Ctrl+O; Enter on file enqueues send job)
 
     // User-specific modes
     UserMode(UserMode),
@@ -156,8 +157,9 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 | `OpenInvoicePopup` | Opens Add Invoice or waiting popup from synchronous execute (bond payout reply); does **not** show the operation-result modal |
 | `InvoiceSubmitted` | Normalized to `Info` toast after optional buyer LN-address preference |
 | `TradeClosed` / `OrderHistoryDeleted` | Side effects on Messages list, then `Info` toast |
-| `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save; clears `pending_order_attachment_sends`; then normalized to `Info` (`Attachment sent: …`) |
-| `OrderChatAttachmentSendFailed` | Stores `PreparedOrderChatAttachment` in `AppState.pending_order_attachment_sends`; normalized to `Error` (Blossom URL + retry hint) |
+| `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save; clears `pending_order_attachment_sends` and `sending_attachment_order_id` when `order_id` matches; then normalized to `Info` (`Attachment sent: …`) |
+| `OrderChatAttachmentError` | Early send failure (validate / encrypt / upload before DM); clears `sending_attachment_order_id` when `order_id` matches; normalized to `Error` popup. Generic `OperationResult::Error` from other tasks does **not** clear the in-flight send guard. |
+| `OrderChatAttachmentSendFailed` | Stores `PreparedOrderChatAttachment` in `AppState.pending_order_attachment_sends`; clears `sending_attachment_order_id` when `order_id` matches; normalized to `Error` (Blossom URL + **Ctrl+Shift+O** retry hint) |
 
 **`OperationResult::Info` / `Error` text**: `render_operation_result` splits on newlines, wraps at word boundaries (avoids mid-word breaks on long UUIDs), and sizes the popup from line count. Admin dispute **finalization success** uses a structured multi-line body from `BondSlashChoice::finalize_success_message` (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
@@ -171,7 +173,7 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll and Ctrl+S for attachments.
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -183,6 +185,15 @@ if let UiMode::OperationResult(result) = &app.mode {
 - **Saveable list**: only attachments with a non-empty Blossom URL appear in the popup (`attachment_is_saveable` / `get_order_attachment_messages` in `src/ui/helpers/chat_visibility.rs`).
 - **My Trades decrypt**: when the sender did not embed a key in the attachment JSON, Mostrix derives the shared ChaCha20 key from `order_chat_shared_key_hex` or ECDH (`order_chat_decryption_key_bytes` in `src/util/chat_utils.rs`) before writing the file.
 - **Source**: `src/ui/save_attachment_popup.rs` (dispute, observer, and user order popups), `src/ui/key_handler/mod.rs` (open and popup key handling), `src/main.rs` (queue drain), `src/ui/constants.rs` (`SAVE_ATTACHMENT_POPUP_HINT`, `FOOTER_CTRL_S_SAVE_FILE`).
+
+**Send attachment picker (Ctrl+O on My Trades)**:
+
+- **Open**: On **My Trades** with a selected active order, press **Ctrl+O** while `user_my_trades_interactive()` is true. Opens `UiMode::UserSendAttachmentPicker(order_id)` with a `ratatui-explorer` modal (`build_send_attachment_explorer` in `src/ui/send_attachment_picker.rs`). Starts in `dirs::document_dir()` or `$HOME`. Does nothing while `sending_attachment_order_id` is set (send already in flight). Build failures show `OperationResult::Error` ("Could not open file picker: …").
+- **Filter**: Only directories and files whose extension passes `attachment_extension_allowed` (`jpg`/`jpeg`/`png`/`pdf`/`mp4`/`mov`/`avi`/`doc`/`docx` in `src/util/file_validation.rs`) appear in the list.
+- **In picker**: **h/j/k/l** (and other explorer keys routed via `FileExplorer::handle`) navigate; **Enter** on a regular file (not `..` or a directory) enqueues `SendOrderAttachmentJob::FromPath { order_id, path }` on `send_order_attachment_tx`, sets `sending_attachment_order_id`, and closes the picker; **Esc** cancels. Footer hint: `SEND_ATTACHMENT_PICKER_HINT` ("Enter: Send file | Esc: Cancel | h/j/k/l: Navigate | …").
+- **Retry**: **Ctrl+Shift+O** on the same selected order enqueues `SendOrderAttachmentJob::RetryPrepared` when `AppState.pending_order_attachment_sends` holds that order (upload succeeded but shared-key DM failed). Same in-flight guard as Ctrl+O.
+- **Async pipeline + popup**: `spawn_send_order_chat_attachment` in `src/util/send_attachment.rs` validates (including PNG/JPEG dimensions for images), encrypts, uploads to Blossom, builds mobile-compatible wire JSON, and sends the DM. Results arrive on `order_result_tx` as `OrderChatAttachmentSent`, `OrderChatAttachmentError` (early failure), or `OrderChatAttachmentSendFailed` (upload ok / DM fail); `handle_operation_result` clears `sending_attachment_order_id` only for those attachment-specific variants (scoped by `order_id`). The main loop drains `send_order_attachment_rx` and `order_result_rx` before every draw (see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)).
+- **Source**: `src/ui/send_attachment_picker.rs`, `src/ui/key_handler/mod.rs` (Ctrl+O / Ctrl+Shift+O and picker keys), `src/util/send_attachment.rs`, `src/ui/constants.rs` (`FOOTER_CTRL_O_SEND_FILE`, `FOOTER_CTRL_SHIFT_O_RETRY`, `FOOTER_SENDING_ATTACHMENT`, `HELP_MY_TRADES_CTRL_O_SEND`, `HELP_MY_TRADES_CTRL_SHIFT_O_RETRY`).
 
 Backup New Keys popup (first launch + key rotation):
 
@@ -280,8 +291,8 @@ A stateful form for creating new orders. It supports both fixed amounts and fiat
 **Source**: `src/ui/app_state.rs` — `UiMode::default_for_role`, `UiMode::user_my_trades_interactive`
 
 - On **`AppState::new`** and **`switch_role`**, user mode starts in **`UiMode::UserMode(UserMode::Normal)`** (not bare `UiMode::Normal` alone).
-- **Chat input**, **Ctrl+S**, **PgUp/PgDn/End** scroll, and related shortcuts are active only when `app.mode.user_my_trades_interactive()` is true: `UiMode::Normal` **or** `UiMode::UserMode(UserMode::Normal)`.
-- Popups (save attachment, operation result, viewing message, etc.) set other `UiMode` variants; shortcuts resume when the popup closes back to normal user mode.
+- **Chat input**, **Ctrl+S**, **Ctrl+O**, **Ctrl+Shift+O**, **PgUp/PgDn/End** scroll, and related shortcuts are active only when `app.mode.user_my_trades_interactive()` is true: `UiMode::Normal` **or** `UiMode::UserMode(UserMode::Normal)`.
+- Popups (save attachment, send attachment picker, operation result, viewing message, etc.) set other `UiMode` variants; My Trades shortcuts resume when the popup closes back to normal user mode.
 
 ### My Trades (Order In Progress) updates
 
@@ -294,7 +305,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Chat rendering**: user/peer messages are wrapped to fit pane width (including splitting overlong tokens by **Unicode character** count so lines do not overflow); peer messages are right-aligned for better sender separation.
 - **Chat scrolling**: message history uses `tui_scrollview::ScrollView` with full content height (not viewport height) and an always-visible vertical scrollbar — same pattern as Disputes in Progress and Observer. **PgUp/PgDn** scroll the chat; **End** jumps to the latest messages. Auto-scroll-to-bottom runs when new messages arrive, when switching orders, or after sending (`order_chat_scroll_tracker`, `scroll_order_chat_messages` / `scroll_order_chat_after_send` in `src/ui/key_handler/chat_helpers.rs`).
 - **Attachments (receive + transcript)**: encrypted file/image messages show as yellow lines with 🖼/📎 icons; the block title adds a file count; a yellow toast appears on new **peer** relay merges. Transcripts under `~/.mostrix/orders_chat/` persist attachment metadata as **JSON** so **Ctrl+S** works after restart (legacy placeholder lines hydrate from relay). **Ctrl+S** opens the save popup (see above).
-- **Attachments (send — backend only)**: Phase B in `src/util/send_attachment.rs`: validate → encrypt (shared key) → Blossom upload (NIP-24242 auth signed with **order trade key**) → shared-key DM. Channel: `send_order_attachment_tx` / `send_order_attachment_rx` with `SendOrderAttachmentJob::FromPath` or `RetryPrepared` (DM-only retry after upload). **`AppState.pending_order_attachment_sends`** holds prepared payloads when upload succeeds but chat send fails. **Ctrl+O / file picker (Phase C)** not wired yet.
+- **Attachments (send)**: **Ctrl+O** opens `UserSendAttachmentPicker` (`ratatui-explorer` in `src/ui/send_attachment_picker.rs`); **Enter** on a file enqueues `SendOrderAttachmentJob::FromPath` on `send_order_attachment_tx`. Backend in `src/util/send_attachment.rs`: validate → encrypt (shared key) → Blossom upload (NIP-24242 auth signed with **order trade key**) → shared-key DM. **Ctrl+Shift+O** enqueues `RetryPrepared` when `AppState.pending_order_attachment_sends` has the selected order (upload ok / DM failed). `sending_attachment_order_id` blocks duplicate sends while in flight; cleared only by attachment-specific `OperationResult` variants in `order_ch_mng.rs`, not by unrelated errors on `order_result_tx`.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Footer shortcuts (width-aware)**:
   - **Shift+I** toggles chat input.
@@ -304,6 +315,8 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
+  - **Ctrl+O** send attachment (file picker); **Ctrl+Shift+O** retry DM when a prepared send is pending.
+  - **Sending attachment…** (`FOOTER_SENDING_ATTACHMENT`) while `sending_attachment_order_id` matches the selected order.
   - **Shift+H** opens the shortcuts popup for the current tab.
 - **Projection vs static**: the DM-based list row (`OrderChatListItem` in `src/ui/helpers/order_chat_projection.rs`) holds **live** fields only: `status`, first-seen **economic** snapshot from `Payload::Order` (amount, fiat, payment, premium), `trade_index` (from any message in the order), and buyer/seller **trade pubkeys** plus **reputation** from `Payload::Peer`. It no longer carries kind, `created_at`, or initiator metadata (those are on `order_chat_static` above).
 - **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row. **Trade ID** in the header still falls back to projection `trade_index` if a static entry is not yet in the map (e.g. race before the result handler runs).

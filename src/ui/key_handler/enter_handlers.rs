@@ -466,6 +466,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = UiMode::UserMode(UserMode::Normal);
             true
         }
+        UiMode::UserSendAttachmentPicker(_) => {
+            // Enter handled in key_handler/mod.rs while picker is open
+            true
+        }
         UiMode::OperationResult(_) => {
             if app.fatal_exit_on_close {
                 return false;

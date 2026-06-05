@@ -9,11 +9,12 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use uuid::Uuid;
 
 use crate::ui::constants::{
-    FOOTER_CTRL_S_SAVE_FILE, FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND,
-    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, FOOTER_MYTRADES_SELECT_ORDER,
-    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-    FOOTER_MYTRADES_SHIFT_I_DISABLE, FOOTER_MYTRADES_SHIFT_I_ENABLE,
-    FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE, HELP_KEY,
+    FOOTER_CTRL_O_SEND_FILE, FOOTER_CTRL_SHIFT_O_RETRY, FOOTER_CTRL_S_SAVE_FILE,
+    FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+    FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL,
+    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_I_DISABLE,
+    FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
+    FOOTER_SENDING_ATTACHMENT, HELP_KEY,
 };
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_user_rating,
@@ -371,11 +372,20 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         footer_height.saturating_add(if app.attachment_toast.is_some() { 1 } else { 0 });
 
     let file_count = count_order_attachments(app, &selected.order_id);
-    let ctrl_s_hint = if file_count > 0 {
-        FOOTER_CTRL_S_SAVE_FILE
-    } else {
-        ""
-    };
+    let mut attach_hints = FOOTER_CTRL_O_SEND_FILE.to_string();
+    if file_count > 0 {
+        attach_hints.push_str(FOOTER_CTRL_S_SAVE_FILE);
+    }
+    if app
+        .pending_order_attachment_sends
+        .contains_key(&selected.order_id)
+    {
+        attach_hints.push_str(FOOTER_CTRL_SHIFT_O_RETRY);
+    }
+    if app.sending_attachment_order_id.as_deref() == Some(selected.order_id.as_str()) {
+        attach_hints.push_str(FOOTER_SENDING_ATTACHMENT);
+    }
+    let attach_hints = attach_hints.as_str();
 
     let main_chunks = Layout::new(
         Direction::Vertical,
@@ -502,7 +512,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let hint_lines = base_footer_lines;
 
     let footer_body: Text<'static> = if footer_width < 50 {
-        Text::raw(format!("{HELP_KEY}{ctrl_s_hint}"))
+        Text::raw(format!("{HELP_KEY}{attach_hints}"))
     } else if hint_lines >= 3 {
         if app.order_chat_input_enabled {
             Text::from(vec![
@@ -524,7 +534,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
-                    ctrl_s_hint,
+                    attach_hints,
                 )),
             ])
         } else {
@@ -544,7 +554,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
-                    ctrl_s_hint,
+                    attach_hints,
                 )),
             ])
         }
@@ -566,7 +576,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
-                    ctrl_s_hint,
+                    attach_hints,
                 )),
             ])
         } else {
@@ -585,7 +595,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
-                    ctrl_s_hint,
+                    attach_hints,
                 )),
             ])
         }
@@ -608,7 +618,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 FOOTER_MYTRADES_SHIFT_C_CANCEL
             )
         };
-        Text::raw(format!("{base}{ctrl_s_hint}"))
+        Text::raw(format!("{base}{attach_hints}"))
     };
 
     if has_toast {

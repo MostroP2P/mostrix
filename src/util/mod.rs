@@ -30,7 +30,10 @@ pub use fatal::{
     catch_unwind_request_fatal_restart, fatal_requested, install_background_panic_hook,
     request_fatal_restart, set_fatal_error_tx,
 };
-pub use file_validation::{validate_attachment_file, AttachmentFileClass, ValidatedAttachment};
+pub use file_validation::{
+    attachment_extension_allowed, validate_attachment_file, AttachmentFileClass,
+    ValidatedAttachment, ATTACHMENT_ALLOWED_EXTENSIONS,
+};
 pub use filters::{
     create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
     MOSTRO_LIST_FETCH_EVENT_LIMIT,
