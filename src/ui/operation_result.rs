@@ -60,7 +60,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
-        | OperationResult::OrderChatAttachmentSendFailed { .. } => 8,
+        | OperationResult::OrderChatAttachmentSendFailed { .. }
+        | OperationResult::OrderChatAttachmentError { .. } => 8,
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -257,6 +258,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         OperationResult::MyTradesMakerBookChanged
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
-        | OperationResult::OrderChatAttachmentSendFailed { .. } => {}
+        | OperationResult::OrderChatAttachmentSendFailed { .. }
+        | OperationResult::OrderChatAttachmentError { .. } => {}
     }
 }

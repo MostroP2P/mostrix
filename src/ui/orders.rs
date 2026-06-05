@@ -175,6 +175,11 @@ pub enum OperationResult {
         chat_message: crate::ui::UserOrderChatMessage,
         info_message: String,
     },
+    // User order chat attachment error (show error popup).
+    OrderChatAttachmentError {
+        order_id: String,
+        error: String,
+    },
     /// Blossom upload succeeded but order-chat DM failed; prepared payload kept for retry.
     OrderChatAttachmentSendFailed {
         prepared: crate::ui::helpers::PreparedOrderChatAttachment,

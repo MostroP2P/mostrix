@@ -157,8 +157,11 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             .push(chat_message);
         result = OperationResult::Info(info_message);
     }
-    if matches!(&result, OperationResult::Error(_)) {
-        app.sending_attachment_order_id = None;
+    if let OperationResult::OrderChatAttachmentError { order_id, error } = result {
+        if app.sending_attachment_order_id.as_deref() == Some(&order_id) {
+            app.sending_attachment_order_id = None;
+        }
+        result = OperationResult::Error(error);
     }
     if let OperationResult::OrderChatAttachmentSendFailed { prepared, error } = result {
         let order_id = prepared.order_id.clone();
