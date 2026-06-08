@@ -12,11 +12,11 @@ This guide explains Mostrix’s boot sequence and configuration surfaces.
 
 After the terminal enters alternate screen mode, Mostrix draws a full-screen splash until background boot work finishes (`src/startup.rs`, `src/ui/startup_splash.rs`).
 
-- **Wordmark**: multi-line logo from the project art (same style as the desktop `logo.txt` export).
-- **Loading dots**: reusable glyph `<>` repeated 1–4 times on the last logo row, each prefixed by a space, cycled every ~400 ms while the splash tick runs (~150 ms redraw interval).
+- **Wordmark**: multi-line ASCII art from `static/startup-logo.txt`, embedded at compile time via `include_str!` in `src/ui/startup_splash.rs` (trim trailing whitespace; drop leading/trailing blank lines).
+- **Loading dots**: reusable glyph `<>` repeated 1–4 times on the last non-empty logo row, each prefixed by a space, cycled every ~400 ms while the splash tick runs (~150 ms redraw interval).
 - **Phase text**: short status under the art (`Starting…`, `Connecting to relays…`, `Loading market data…`, `Restoring chats…`, `Almost ready…`) updated as init steps complete.
-- **Minimum display**: splash stays visible for at least ~800 ms so fast boots do not flash the screen.
-- **Narrow terminals**: if the terminal is narrower than the padded logo width, a one-line `mostro is loading` + dots + phase is shown instead.
+- **Minimum display**: splash stays visible for at least ~3 s (`SPLASH_MIN_DISPLAY_MS`) so fast boots do not flash the screen.
+- **Small terminals**: if the terminal is narrower than the padded logo width or shorter than the art height plus phase reserve, a one-line `mostro is loading` + dots + phase is shown instead.
 - **Background**: full-screen fill via `fill_splash_background` (solid `BACKGROUND_COLOR` block, same pattern as the Exit tab) so ASCII art and status text do not show mismatched per-span backgrounds.
 - **CI / scripts**: set `MOSTRIX_NO_SPLASH=1` to skip the splash loop and run init directly.
 

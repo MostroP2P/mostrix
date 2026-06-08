@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use ratatui::layout::{Alignment, Constraint, Flex, Layout};
@@ -15,24 +16,40 @@ pub const SPLASH_MIN_DISPLAY_MS: u64 = 3000;
 /// One animated dot (diamond), including a leading space separator.
 pub const LOADING_DOT_UNIT: &str = " <>";
 
-/// Multi-line Mostro wordmark (from project logo); dots animate on the last row.
-pub const MOSTRO_LOADING_LINES: &[&str] = &[
-    "                        __         .__         .__         .__                    .___.__",
-    "  _____   ____  _______╱  │________│__│__  ___ │__│ ______ │  │   _________     __│ _╱│__│ ____    ____",
-    " ╱     ╲ ╱  _ ╲╱  ___╱╲   __╲_  __ ╲  ╲  ╲╱  ╱ │  │╱  ___╱ │  │  ╱  _ ╲__  ╲   ╱ __ │ │  │╱    ╲  ╱ ___╲",
-    "│  Y Y  (  <_> )___ ╲  │  │  │  │ ╲╱  │>    <  │  │╲___ ╲  │  │_(  <_> ) __ ╲_╱ ╱_╱ │ │  │   │  ╲╱ ╱_╱  >",
-    "│__│_│  ╱╲____╱____  > │__│  │__│  │__╱__╱╲_ ╲ │__╱____  > │____╱╲____(____  ╱╲____ │ │__│___│  ╱╲___  ╱",
-    "      ╲╱           ╲╱                       ╲╱         ╲╱                  ╲╱      ╲╱         ╲╱╱_____╱",
-];
+/// Startup wordmark loaded from [`static/startup-logo.txt`](../../static/startup-logo.txt).
+const STARTUP_LOGO_RAW: &str = include_str!("../../static/startup-logo.txt");
+
+struct StartupLogoArt {
+    lines: Vec<String>,
+    dots_line_index: usize,
+}
+
+static STARTUP_LOGO: OnceLock<StartupLogoArt> = OnceLock::new();
+
+fn parse_startup_logo(raw: &str) -> StartupLogoArt {
+    let mut lines: Vec<String> = raw.lines().map(str::trim_end).map(str::to_string).collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    while lines.first().is_some_and(String::is_empty) {
+        lines.remove(0);
+    }
+    let dots_line_index = lines.iter().rposition(|l| !l.is_empty()).unwrap_or(0);
+    StartupLogoArt {
+        lines,
+        dots_line_index,
+    }
+}
+
+fn startup_logo() -> &'static StartupLogoArt {
+    STARTUP_LOGO.get_or_init(|| parse_startup_logo(STARTUP_LOGO_RAW))
+}
 
 /// Width reserved on the last line for up to four dots.
 const MAX_DOT_SUFFIX_CHARS: usize = LOADING_DOT_UNIT.len() * 4;
 
-/// Last line index in [`MOSTRO_LOADING_LINES`] that receives the animated dots.
-const LOADING_DOTS_LINE_INDEX: usize = 5;
-
-fn max_raw_art_width() -> usize {
-    MOSTRO_LOADING_LINES
+fn max_raw_art_width(lines: &[String]) -> usize {
+    lines
         .iter()
         .map(|line| line.chars().count())
         .max()
@@ -41,10 +58,9 @@ fn max_raw_art_width() -> usize {
 
 /// Padded width of every splash frame line (constant across dot counts 1–4).
 pub fn logo_line_width() -> usize {
-    let raw_max = max_raw_art_width();
-    let last_raw = MOSTRO_LOADING_LINES[LOADING_DOTS_LINE_INDEX]
-        .chars()
-        .count();
+    let logo = startup_logo();
+    let raw_max = max_raw_art_width(&logo.lines);
+    let last_raw = logo.lines[logo.dots_line_index].chars().count();
     raw_max.max(last_raw + MAX_DOT_SUFFIX_CHARS)
 }
 
@@ -74,15 +90,16 @@ pub fn dot_count_from_elapsed(started: &Instant) -> u8 {
 
 /// Returns wordmark lines with dots appended on the last row (fixed total width).
 pub fn splash_lines_with_dots(dot_count: u8) -> Vec<String> {
+    let logo = startup_logo();
     let width = logo_line_width();
     let suffix = dot_suffix(dot_count);
     let suffix_len = suffix.chars().count();
 
-    MOSTRO_LOADING_LINES
+    logo.lines
         .iter()
         .enumerate()
         .map(|(idx, line)| {
-            if idx == LOADING_DOTS_LINE_INDEX {
+            if idx == logo.dots_line_index {
                 let base = pad_line_to_width(line, width.saturating_sub(suffix_len));
                 format!("{base}{suffix}")
             } else {
@@ -92,8 +109,11 @@ pub fn splash_lines_with_dots(dot_count: u8) -> Vec<String> {
         .collect()
 }
 
-fn splash_fits_wordmark(terminal_width: u16) -> bool {
+fn splash_fits_wordmark(terminal_width: u16, terminal_height: u16) -> bool {
+    let logo = startup_logo();
+    let phase_reserve: u16 = 2;
     terminal_width >= logo_line_width() as u16
+        && terminal_height >= logo.lines.len() as u16 + phase_reserve
 }
 
 fn fill_splash_background(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
@@ -103,14 +123,33 @@ fn fill_splash_background(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
     );
 }
 
+fn is_logo_highlight_char(c: char) -> bool {
+    matches!(
+        c,
+        '*' | '+'
+            | '#'
+            | ':'
+            | '.'
+            | '-'
+            | '='
+            | '/'
+            | '\\'
+            | '_'
+            | '<'
+            | '>'
+            | '|'
+            | '│'
+            | '╱'
+            | '╲'
+            | '▀'
+            | '▄'
+    )
+}
+
 fn style_loading_line(line: &str) -> Vec<Span<'static>> {
     line.chars()
         .map(|c| {
-            let highlight = matches!(
-                c,
-                '/' | '\\' | '_' | '<' | '>' | '|' | '=' | '│' | '╱' | '╲' | '▀' | '▄'
-            );
-            if highlight {
+            if is_logo_highlight_char(c) {
                 Span::styled(
                     c.to_string(),
                     Style::default()
@@ -153,7 +192,7 @@ pub fn render_startup_splash(f: &mut ratatui::Frame, dot_count: u8, phase: &str)
     let area = f.area();
     fill_splash_background(f, area);
 
-    if !splash_fits_wordmark(area.width) {
+    if !splash_fits_wordmark(area.width, area.height) {
         render_compact_splash(f, dot_count, phase);
         return;
     }
@@ -196,6 +235,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn startup_logo_parses_from_static_file() {
+        let logo = startup_logo();
+        assert!(!logo.lines.is_empty());
+        assert!(logo.lines.len() >= 10);
+        assert!(logo.dots_line_index < logo.lines.len());
+        assert!(!logo.lines[logo.dots_line_index].is_empty());
+    }
+
+    #[test]
     fn logo_lines_share_max_width() {
         let w = logo_line_width();
         for line in splash_lines_with_dots(4) {
@@ -220,10 +268,15 @@ mod tests {
 
     #[test]
     fn splash_last_line_width_stable_across_dot_counts() {
+        let logo = startup_logo();
         let w = logo_line_width();
         for dots in 1..=4u8 {
             let lines = splash_lines_with_dots(dots);
-            assert_eq!(lines[LOADING_DOTS_LINE_INDEX].chars().count(), w);
+            assert_eq!(
+                lines[logo.dots_line_index].chars().count(),
+                w,
+                "dot count {dots}"
+            );
         }
     }
 }
