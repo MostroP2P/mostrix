@@ -366,6 +366,7 @@ fn is_pre_active_status(status: Status) -> bool {
         status,
         Status::Pending
             | Status::WaitingTakerBond
+            | Status::WaitingMakerBond
             | Status::WaitingPayment
             | Status::WaitingBuyerInvoice
             | Status::SettledHoldInvoice
@@ -1915,6 +1916,13 @@ mod tests {
     #[test]
     fn pre_active_maker_listing_predicate() {
         let row = sample_order_row(true, "waiting-taker-bond");
+        assert!(is_pre_active_maker_listing(&row));
+        assert!(!is_pre_active_taker_take(&row));
+    }
+
+    #[test]
+    fn pre_active_maker_waiting_maker_bond_predicate() {
+        let row = sample_order_row(true, "waiting-maker-bond");
         assert!(is_pre_active_maker_listing(&row));
         assert!(!is_pre_active_taker_take(&row));
     }

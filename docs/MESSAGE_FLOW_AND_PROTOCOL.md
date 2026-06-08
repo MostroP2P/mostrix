@@ -45,13 +45,23 @@ sequenceDiagram
     Client->>NostrRelays: Publish NIP-59 Gift Wrap
     NostrRelays->>Mostro: Forward Gift Wrap
     Mostro->>Mostro: Process NewOrder
-    Mostro->>NostrRelays: Publish response (Gift Wrap)
+    alt Bonds disabled or range order (Phase 5)
+        Mostro->>NostrRelays: Action::NewOrder (pending)
+    else Maker bond required (Phase 5+)
+        Mostro->>NostrRelays: PayBondInvoice + PaymentRequest (waiting-maker-bond)
+    end
     NostrRelays-->>Client: Receive response (timeout: 15s)
     Client->>TradeKey: Decrypt Gift Wrap
     Client->>Client: Validate request_id
-    Client->>DB: Save order + trade_keys + index
-    Client-->>TUI: Order created
-    TUI-->>User: Success notification
+    Client->>DB: Save order + trade_keys + index + TrackOrder
+    alt Action::NewOrder
+        Client-->>TUI: OperationResult::Success
+        TUI-->>User: Order Created Successfully
+    else Action::PayBondInvoice
+        Client-->>TUI: PaymentRequestRequired (bond popup)
+        TUI-->>User: Anti-abuse Bond Invoice (Acknowledge / Cancel)
+        Note over Mostro,NostrRelays: After wallet payment, deferred NewOrder publishes to book
+    end
 ```
 
 ### 1. User Input → Form Validation
@@ -136,47 +146,21 @@ Waiter subscription detail:
   avoids same-second timestamp edge cases that can miss immediate Mostro responses.
 
 ### 6. Parsing and Handling Response
-**Source**: `src/util/order_utils/send_new_order.rs:145`
-```145:176:src/util/order_utils/send_new_order.rs
-    // Parse DM events
-    let messages = parse_dm_events(recv_event, &trade_keys, None).await;
-
-    if let Some((response_message, _, _)) = messages.first() {
-        let inner_message = handle_mostro_response(response_message, request_id)?;
-
-        match inner_message.request_id {
-            Some(id) => {
-                if request_id == id {
-                    // Request ID matches, process the response
-                    match inner_message.action {
-                        Action::NewOrder => {
-                            if let Some(Payload::Order(order)) = &inner_message.payload {
-                                log::info!(
-                                    "✅ Order created successfully! Order ID: {:?}",
-                                    order.id
-                                );
-
-                                // Save order to database
-                                if let Err(e) = save_order(
-                                    order.clone(),
-                                    &trade_keys,
-                                    request_id,
-                                    next_idx,
-                                    pool,
-                                )
-                                .await
-                                {
-                                    log::error!("Failed to save order to database: {}", e);
-                                }
-
-                                Ok(create_order_result_success(order, next_idx))
-```
+**Source**: [`src/util/order_utils/send_new_order.rs`](../src/util/order_utils/send_new_order.rs)
 
 The response is:
-1. **Decrypted** using the trade key
-2. **Validated** by matching the `request_id`
-3. **Processed** based on the action type
-4. **Saved to the database** with the associated trade keys and index
+1. **Decrypted** using the trade key (`parse_dm_events`)
+2. **Validated** by `handle_mostro_response` (including `CantDo` and `request_id` match)
+3. **Processed** by action:
+
+| First reply | Payload | Mostrix result | UI |
+|-------------|---------|----------------|-----|
+| `Action::NewOrder` | `Payload::Order` | `OperationResult::Success` | "Order Created Successfully" modal |
+| `Action::PayBondInvoice` | `PaymentRequest` (order often `waiting-maker-bond`) | `PaymentRequestRequired` | Bond popup via `order_ch_mng.rs` (no success modal) |
+
+Both paths call `save_order(..., is_maker: true)`, send `TrackOrder` on `dm_subscription_tx`, and set `order_chat_static`. The bond path delegates persistence + popup wiring to shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) (also used by `take_order` for taker bonds).
+
+**Post-bond publication**: after the maker pays in their wallet, Mostro sends a follow-up `Action::NewOrder` on the trade DM subscription (listener path). Generic hydration updates SQLite `waiting-maker-bond` → `pending`; the order then appears on the public book.
 
 ## Taking Orders Flow
 
@@ -486,13 +470,13 @@ Otherwise:
 - Action mapping:
   - `AddInvoice` and `WaitingBuyerInvoice` -> AddInvoice popup mode.
   - `PayInvoice` and `WaitingSellerToPay` -> PayInvoice popup mode.
-  - **`PayBondInvoice`** (Mostro Phase 1.5+) -> dedicated **anti-abuse bond** popup mode (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Same `Payload::PaymentRequest` shape as `PayInvoice`, but distinguished visually (shield emoji title, "Bond invoice to pay (… sats)" amount label, and a yellow "Locked, not spent — refunded on normal completion" disclaimer). The popup is gated on `order_status` ∈ {`WaitingTakerBond`, `None`} (`invoice_popup_allowed_for_order_status` in `src/ui/orders.rs`) and is **additive**: daemons not running Phase 1.5 keep using `PayInvoice` for hold invoices, so no-bond flows are unchanged.
+  - **`PayBondInvoice`** (Mostro Phase 1.5+ taker / Phase 5+ maker) -> dedicated **anti-abuse bond** popup mode (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Same `Payload::PaymentRequest` shape as `PayInvoice`, but distinguished visually (shield emoji title, maker/taker amount label, and a yellow "Locked, not spent — refunded on normal completion" disclaimer). The popup is gated on `order_status` ∈ {`WaitingTakerBond`, `WaitingMakerBond`, `None`} and role (`invoice_popup_allowed_for_order_status` + `local_user_must_act_on_invoice_popup` in `src/ui/orders.rs`). **`send_new_order`** and **`take_order`** both return `PaymentRequestRequired` when Mostro's first reply is `PayBondInvoice`.
 - Popup selection:
   - Left/Right toggles between **Primary** and **Cancel Order**.
   - Enter confirms the selected action.
   - For **`PayBondInvoice`** the **Primary** button is labelled **Acknowledge** (closes the popup) since the actual payment happens in the user's wallet; cancel still sends `Action::Cancel`.
 - Cancel path:
-  - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow. This is valid during `WaitingTakerBond` per the Mostro Phase 1.5+ spec.
+  - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow. Valid during `WaitingTakerBond` (taker) and `WaitingMakerBond` (maker abandoning an unpublished listing).
 - Paste/copy details:
   - AddInvoice supports bracketed paste plus key/mouse fallbacks where terminals do not emit `Event::Paste`.
   - PayInvoice and PayBondInvoice keep copy (`C`) + scroll behavior while supporting cancel selection.
@@ -524,14 +508,16 @@ The Messages detail panel shows a **six-step** timeline for trades with known **
 
 Resolution dispatches to **`buy_listing_flow_step`** or **`sell_listing_flow_step`**, combining **`OrderMessage::order_status`**, **`is_mine`** (maker/taker), and **`action`**, via **`listing_step_from_status(order_kind, status)`** (kind-specific status mapping) and kind-specific **`_flow_step_from_action`**. **`Action::Rate`** / **`RateReceived`** are handled before status so **`rate`** DMs without a full order payload still highlight the final step.
 
-- **`Status::Pending`** / **`Status::WaitingTakerBond`** → **`StepPendingOrder`** (discriminant **0**): stepper shows **no** green/current column (all gray) until payment/bond phases start.
+- **`Status::Pending`** / **`Status::WaitingTakerBond`** / **`Status::WaitingMakerBond`** → **`StepPendingOrder`** (discriminant **0**): stepper shows **no** green/current column (all gray) until payment/bond phases start.
 - **`Status::Success`** → final column (**`StepRate`**, discriminant **6**); avoids snapping back to an older step when reboot replay delivers a pre-success DM after the trade completed.
 
 Step **wording** (strings per column) lives in **`src/ui/constants.rs`** (`StepLabel`, buy/sell step arrays); **`listing_timeline_labels`** selects the array by kind and role.
 
 **Sidebar / info popups**: `message_action_compact_label_for_message` maps status to short labels (**Pending order**, **Trade Completed**, …) so list text stays accurate after hydration.
 
-**Success-before-DM placeholder**: `try_placeholder_order_message_from_success` builds one synthetic **`OrderMessage`** when `OperationResult::Success` lands before any DM row (My Trades sidebar); placeholder **`action`** is status-driven and never uses synthetic **`take-buy`** / **`take-sell`** (those break Messages **Enter**). Applied in `order_ch_mng.rs` via `insert_placeholder_order_message_if_needed`.
+**Success-before-DM placeholder**: `try_placeholder_order_message_from_success` builds one synthetic **`OrderMessage`** when `OperationResult::Success` lands before any DM row (My Trades sidebar); placeholder **`action`** is status-driven (maker + `WaitingMakerBond` → `PayBondInvoice`; maker + published → `NewOrder`) and never uses synthetic **`take-buy`** / **`take-sell`** (those break Messages **Enter**). Maker bond uses **`PaymentRequestRequired`** (not `Success`), so the bond popup opens immediately; `order_chat_static` is still written on that path.
+
+**Restart recovery**: `sync_user_order_history_messages_from_db` (`startup.rs`) synthesizes maker rows in `waiting-maker-bond` as `PayBondInvoice` with `auto_popup_shown: false` so Messages **Enter** can reopen the bond popup after reboot.
 
 See **[buy order flow.md](buy%20order%20flow.md)** and **[sell order flow.md](sell%20order%20flow.md)** for product context and **[TUI_INTERFACE.md](TUI_INTERFACE.md)** for **`UiMode`** overlays.
 
@@ -564,9 +550,13 @@ If the response's `request_id` doesn't match the sent request, the operation is 
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
 
-### `CantDo` reasons (`mostro-core` 0.11.3+)
+### `CantDo` reasons (`mostro-core` 0.12.1+)
 
-User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_description`](../src/util/types.rs). Notable for admin work: **`InvalidPayload`** — wrong payload shape or impossible values (e.g. `bond_resolution` slashing a side with no bond). Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)); they surface via waiters / `OperationResult` popups.
+User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_description`](../src/util/types.rs). Notable cases:
+- **`InvalidPayload`** — wrong payload shape or impossible values (e.g. `bond_resolution` slashing a side with no bond).
+- **Cashu escrow** (0.12.x): `InvalidCashuToken`, `CashuMintUnavailable`, `InvalidMintUrl`, `CashuEscrowNotLocked`, `CashuSignatureMissing`.
+
+Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)); they surface via waiters / `OperationResult` popups.
 
 ## Admin Chat Fetch (Single-Flight, Shared-Key Based)
 
@@ -603,7 +593,7 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 
 **Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
-- **Client types**: `mostro-core` 0.11.3 — `BondResolution`, `Payload::BondResolution`.
+- **Client types**: `mostro-core` 0.12.1 — `BondResolution`, `Payload::BondResolution`, `Status::WaitingMakerBond`.
 - **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
 - **Post-slash payout**: `Action::AddBondInvoice` with `Payload::BondPayoutRequest` (order amount = counterparty share, `slashed_at` anchor for claim deadline). Mostrix:
@@ -617,7 +607,8 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 | Mostro reply | Mostrix result | UI |
 |--------------|----------------|-----|
 | `WaitingBuyerInvoice`, `AddInvoice`, `WaitingSellerToPay`, … | `Some(OpenInvoicePopup { … })` | Next popup via [`apply_open_invoice_popup_from_execute`](../src/util/dm_utils/notifications_ch_mng.rs): **Add Invoice** if [`local_user_must_act_on_invoice_popup`](../src/ui/orders.rs), else waiting-phase popup |
-| `PayBondInvoice` / `PayInvoice` + `PaymentRequest` | `Some(PaymentRequestRequired { … })` | Bond or hold invoice popup (same as take-order) |
+| `PayBondInvoice` + `PaymentRequest` (create or take) | `Some(PaymentRequestRequired { … })` | Bond popup (`send_new_order` maker bond or `take_order` taker bond) |
+| `PayInvoice` + `PaymentRequest` | `Some(PaymentRequestRequired { … })` | Hold invoice popup (take-order) |
 | `CantDo` | `Err` | Operation Failed |
 | Timeout / empty DM | `Ok(None)` | Success toast only (“Bond payout invoice sent successfully”) |
 

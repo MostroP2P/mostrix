@@ -254,6 +254,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),
             body: None,
+            maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond),
         };
 
         let invoice_state = InvoiceInputState {

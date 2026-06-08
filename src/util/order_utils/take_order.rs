@@ -4,12 +4,11 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 
 use crate::models::User;
-use crate::ui::OperationResult;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
-    build_order_chat_static_header, create_order_result_success, handle_mostro_response,
+    create_order_result_success, handle_mostro_response, payment_request_operation_result,
 };
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -200,99 +199,21 @@ pub async fn take_order(
                             ))
                         }
                         Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
-                            // Disambiguate the trade hold invoice (`PayInvoice`) from the
-                            // anti-abuse bond invoice (`PayBondInvoice`). Both arrive with the
-                            // same payload shape; only the action discriminator differs.
-                            // Anything else falling into this arm is treated as a legacy
-                            // `PayInvoice` for backwards compatibility with pre-0.11 daemons.
-                            let popup_action = match inner_message.action {
-                                Action::PayBondInvoice => Action::PayBondInvoice,
-                                _ => Action::PayInvoice,
-                            };
-                            // For buy orders, we receive PaymentRequest with invoice for seller to pay
-                            // Use the order from payload if available, otherwise use the original order
-                            let mut order_to_save = if let Some(order_to_save) = opt_order {
-                                order_to_save.clone()
-                            } else {
-                                return Err(anyhow::anyhow!(
-                                    "Order details are missing from payload"
-                                ));
-                            };
-                            if order_to_save.id.is_none() {
-                                log::warn!(
-                                    "[take_order] Mostro PaymentRequest payload order missing id; falling back to requested order_id={}",
-                                    order_id
-                                );
-                                order_to_save.id = Some(order_id);
-                            }
-                            let effective_order_id = order_to_save.id.unwrap_or(order_id);
-                            log::info!(
-                                "[take_order] Action::{:?} response mapped to effective_order_id={}, trade_index={}",
-                                popup_action,
-                                effective_order_id,
-                                next_idx
-                            );
-
-                            // Save order to database
-                            if let Err(e) = save_order(
-                                order_to_save.clone(),
-                                &trade_keys,
+                            payment_request_operation_result(
+                                inner_message.action.clone(),
+                                opt_order.clone(),
+                                invoice_string.clone(),
+                                *opt_amount,
+                                Some(order_id),
                                 request_id,
                                 next_idx,
                                 pool,
-                                false,
-                            )
-                            .await
-                            {
-                                log::error!("Failed to save order to database: {}", e);
-                            }
-                            if let Some(tx) = dm_subscription_tx {
-                                // Same post-persistence `TrackOrder` as the `Payload::Order` branch
-                                // above: confirm `effective_order_id` after `save_order(order_to_save, ...)`.
-                                log::info!(
-                                    "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
-                                    effective_order_id,
-                                    next_idx
-                                );
-                                let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-                                    order_id: effective_order_id,
-                                    trade_index: next_idx,
-                                });
-                            }
-
-                            log::info!(
-                                "Received {:?} for order {} with invoice",
-                                popup_action,
-                                order_id
-                            );
-
-                            // Return PaymentRequestRequired to trigger invoice popup
-                            let static_header = build_order_chat_static_header(
-                                &order_to_save,
-                                next_idx,
                                 &trade_keys,
                                 false,
+                                dm_subscription_tx,
+                                "take_order",
                             )
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "failed to build static header for order id {:?}",
-                                    order_to_save.id
-                                )
-                            })?;
-                            // Prefer the explicit `Option<Amount>` override from the
-                            // `PaymentRequest` payload — that's where mostrod puts the
-                            // bond satoshis for `PayBondInvoice` per mostro-core 0.11.0.
-                            // Fall back to the embedded order's `amount` for legacy
-                            // `PayInvoice` flows where the override is omitted.
-                            let sat_amount = opt_amount.or(Some(order_to_save.amount));
-                            Ok(OperationResult::PaymentRequestRequired {
-                                order: order_to_save.clone(),
-                                invoice: invoice_string.clone(),
-                                sat_amount,
-                                trade_index: next_idx,
-                                static_header,
-                                action: popup_action,
-                            })
+                            .await
                         }
                         _ => {
                             log::warn!(

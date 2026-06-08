@@ -21,6 +21,7 @@ Same as buy listings: **`order.status`**, message **`action`**, **`is_mine`** (m
 
 High-level phases (aligned with UI labels in **`SELL_ORDER_FLOW_STEPS_MAKER`** in `src/ui/constants.rs`):
 
+0. **Pay anti-abuse bond (maker)** — *Mostro Phase 5+ only, when maker bonding is enabled*: same as buy maker — `pay-bond-invoice` with `Status::WaitingMakerBond` before the sell listing appears on the book; Mostrix opens the bond popup via **`send_new_order`** → `PaymentRequestRequired`. Range orders skip until Phase 6.
 1. **Wait for buyer** — early coordination / hold path per daemon.
 2. **Pay hold invoice** — seller satisfies Lightning hold-invoice requirements.
 3. **Chat with buyer** — active coordination.
@@ -44,7 +45,7 @@ Phases (labels from `SELL_ORDER_FLOW_STEPS_TAKER`):
 
 ## Implementation notes (non-normative)
 
-- **Timeline step resolution** (`src/ui/orders.rs`): **`message_trade_timeline_step`** dispatches on **`order_kind`**. For **`Kind::Sell`**, **`sell_listing_flow_step`** returns **`FlowStep::SellFlowStep(StepLabelsSell)`** with the same pipeline as buy: early **`Action::Rate`** / **`RateReceived`**, then **`listing_step_from_status(Kind::Sell, status)`**, then **`sell_listing_flow_step_from_action`** (maker = seller, taker = buyer). **`Status::Success`** maps to **`StepRate`** (column 6) via status so completed trades stay on the final column after reboot replay. **`Status::Pending`** and **`Status::WaitingTakerBond`** map to **`StepPendingOrder`** (discriminant **0**): the stepper highlights **no** column until bond/payment phases begin (avoids lighting step 1 while the order is still pending or the bond popup is open).
+- **Timeline step resolution** (`src/ui/orders.rs`): **`message_trade_timeline_step`** dispatches on **`order_kind`**. For **`Kind::Sell`**, **`sell_listing_flow_step`** returns **`FlowStep::SellFlowStep(StepLabelsSell)`** with the same pipeline as buy: early **`Action::Rate`** / **`RateReceived`**, then **`listing_step_from_status(Kind::Sell, status)`**, then **`sell_listing_flow_step_from_action`** (maker = seller, taker = buyer). **`Status::Success`** maps to **`StepRate`** (column 6) via status so completed trades stay on the final column after reboot replay. **`Status::Pending`**, **`WaitingTakerBond`**, and **`WaitingMakerBond`** map to **`StepPendingOrder`** (discriminant **0**): the stepper highlights **no** column until bond/payment phases begin (avoids lighting step 1 while the order is still pending or the bond popup is open).
 - **Labels**: **`listing_timeline_labels`** chooses **`SELL_ORDER_FLOW_STEPS_MAKER`** / **`SELL_ORDER_FLOW_STEPS_TAKER`** from **`src/ui/constants.rs`** when **`order_kind == Sell`**; column **indices** come from **`StepLabelsSell`** (see `orders.rs`).
 - **Tests**: `timeline_step_tests` in `src/ui/orders.rs` cover representative sell maker/taker and status cases.
 

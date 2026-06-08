@@ -28,6 +28,7 @@ Status strings match `mostro_core` (examples): `pending`, `waiting-payment`, `wa
 
 High-level phases (who acts):
 
+0. **Pay anti-abuse bond (maker)** — *Mostro Phase 5+ only, when `anti_abuse_bond.apply_to` includes maker*: for non-range orders on a bond-enabled daemon, the first reply to `new-order` is `pay-bond-invoice` with `Status::WaitingMakerBond`. The order is **not** published to the book until the bond locks. Mostrix opens the **🛡️ Anti-abuse Bond Invoice** popup (`render_pay_bond_invoice`) with maker copy ("Pay bond to publish your order"). After payment, Mostro sends `Action::NewOrder` and the listing becomes `pending` on the book. Range orders skip this phase until Phase 6. When bonds are **disabled** or `apply_to` is taker-only, creation returns `NewOrder` immediately as before.
 1. **Waiting-payment (seller)** — counterparty (seller) satisfies the hold-invoice / payment side as required by the daemon.
 2. **Add-invoice (buyer)** — buyer (typically the maker on a buy listing) submits their Lightning invoice via `add-invoice`.
 3. **Send fiat (buyer)** — buyer marks fiat sent (`fiat-sent`) when appropriate.
@@ -55,7 +56,7 @@ High-level phases:
 4. **Release (seller)** — seller releases.
 5. **Rate counterpart**.
 
-Same status vocabulary applies; **order** of states must match [ORDER.md](https://github.com/MostroP2P/protocol/blob/main/ORDER.md) for your mostrod version. `waiting-taker-bond` is the new Phase 1.5+ state and maps to NIP-69 `pending` for external visibility.
+Same status vocabulary applies; **order** of states must match [ORDER.md](https://github.com/MostroP2P/protocol/blob/main/ORDER.md) for your mostrod version. Bond-related statuses: `waiting-taker-bond` (Phase 1.5+, taker) and `waiting-maker-bond` (Phase 5+, maker pre-publish). The latter is **not** on the public book until the bond locks; `waiting-taker-bond` maps to NIP-69 `pending` for external visibility.
 
 ## Cancellation (first draft)
 
@@ -78,7 +79,7 @@ Same status vocabulary applies; **order** of states must match [ORDER.md](https:
 
 - **AddInvoice** (paste **BOLT11** or **Lightning address**): open only when the **buyer** must submit an invoice and status/action indicates that step for the **local** user. For addresses, Mostrix checks the LNURL endpoint before publishing the DM. An optional saved buyer address lives in **`settings.toml`** (`ln_address`) and is editable from **User → Settings** only. If **`ln_address`** is set, **`AddInvoice`** may open **`ConfirmSavedLnAddressForInvoice`** first — **YES** auto-sends **`AddInvoice`** with that address (**`submit_add_invoice`**); **NO** opens manual invoice entry; see **`present_add_invoice_popup`** / **`apply_saved_ln_address_invoice_choice`** in `src/util/dm_utils/notifications_ch_mng.rs`.
 - **PayInvoice** (pay hold invoice): open only when the **seller** must pay and that matches the **local** user in the current phase.
-- **PayBondInvoice** (Mostro Phase 1.5+ anti-abuse bond, **optional in mostrod**): open only when the **taker** must lock a bond and `order.status` is `WaitingTakerBond` (or `None` for pre-status DMs). Distinct popup — shield title, "Locked, not spent — refunded on normal completion" disclaimer — and **Primary = Acknowledge** (no DM follow-up; bond is paid in the wallet). Cancel from this popup still sends `Action::Cancel` per Mostro Phase 1.5+ spec.
+- **PayBondInvoice** (Mostro Phase 1.5+ taker bond / Phase 5+ maker bond, **optional in mostrod**): open when the local user must lock a bond — **taker** with `order.status` `WaitingTakerBond`, **maker** with `WaitingMakerBond` (or `None` for pre-status DMs on the create-order sync path). Distinct popup — shield title, maker/taker amount label, "Locked, not spent — refunded on normal completion" disclaimer — and **Primary = Acknowledge** (no DM follow-up; bond is paid in the wallet). Cancel from this popup still sends `Action::Cancel` per Mostro bond spec.
 - If Enter is pressed but the phase does **not** match, **do not** open the invoice modal; show a short informational message or no-op.
 
 ### Confirmation actions
@@ -95,9 +96,9 @@ For actions that require explicit confirmation (e.g. **`HoldInvoicePaymentAccept
 In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by **`Action`** (and by **`order_id`** where required):
 
 - **`AddInvoice` / `PayInvoice`** → invoice / payment notification popup (`NewMessageNotification`) after any saved-address branch; **`AddInvoice`** may run **`ConfirmSavedLnAddressForInvoice`** first when **`ln_address`** is configured (`present_add_invoice_popup`), and **YES** there skips the popup and submits via **`submit_add_invoice`** (`message_handlers.rs`).
-- **`PayBondInvoice`** (Phase 1.5+) → dedicated anti-abuse bond popup (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Wired through the same `NewMessageNotification` UI mode but with distinct chrome and **Acknowledge** as the primary action. The take-order sync path (`src/util/order_utils/take_order.rs`) also forwards this directly when Mostro's first reply is `PayBondInvoice`, carrying the action through `OperationResult::PaymentRequestRequired { action, … }`.
+- **`PayBondInvoice`** (Phase 1.5+ taker / Phase 5+ maker) → dedicated anti-abuse bond popup (`render_pay_bond_invoice` in `src/ui/message_notification.rs`). Wired through the same `NewMessageNotification` UI mode but with distinct chrome and **Acknowledge** as the primary action. Sync paths: **`take_order`** (taker bond) and **`send_new_order`** (maker bond) forward `PayBondInvoice` through `OperationResult::PaymentRequestRequired { action, … }`.
 - **`WaitingBuyerInvoice` / `WaitingSellerToPay`** also map to the same invoice/payment popup modes on Enter.
-- Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup (also valid during `WaitingTakerBond`).
+- Invoice/payment popup action model now includes **primary action + `Cancel Order`** (Left/Right select, Enter confirm), so pre-active cancel is directly available from the popup (valid during `WaitingTakerBond` and `WaitingMakerBond`).
 - **`HoldInvoicePaymentAccepted` / `FiatSentOk`** → confirmation popup (`ViewingMessage` with yes/no where applicable).
 - **`Rate`** → **rating popup** (`UiMode::RatingOrder`): choose **1–5** stars, **Enter** submits **`RateUser`** + **`RatingUser`** via **`execute_rate_user`** in `src/util/order_utils/execute_send_msg.rs` (Mostro resolves the counterparty; only **`order_id`** + rating are sent).
 - **Else** → informational `OperationResult::Info` (no send).
@@ -106,7 +107,7 @@ In **`src/ui/key_handler/enter_handlers.rs`**, Messages **Enter** is routed by *
 
 ## Implementation notes (non-normative)
 
-- **Trade timeline step** (`message_trade_timeline_step` in `src/ui/orders.rs`): returns **`FlowStep`** — either **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**. Inner enums use **`repr(u8)`** discriminants: **`StepPendingOrder = 0`** (no highlighted column — all steps gray) for **`Status::Pending`** / **`WaitingTakerBond`**; phases **1…6** for active trade steps. **Sell** swaps the first two payment columns vs buy (`StepLabelsSell`: `StepBuyerInvoice` = 1, `StepSellerPayment` = 2; see `src/ui/orders.rs`).
+- **Trade timeline step** (`message_trade_timeline_step` in `src/ui/orders.rs`): returns **`FlowStep`** — either **`BuyFlowStep(StepLabelsBuy)`** or **`SellFlowStep(StepLabelsSell)`**. Inner enums use **`repr(u8)`** discriminants: **`StepPendingOrder = 0`** (no highlighted column — all steps gray) for **`Status::Pending`** / **`WaitingTakerBond`** / **`WaitingMakerBond`**; phases **1…6** for active trade steps. **Sell** swaps the first two payment columns vs buy (`StepLabelsSell`: `StepBuyerInvoice` = 1, `StepSellerPayment` = 2; see `src/ui/orders.rs`).
 - **Pipeline:** **`buy_listing_flow_step`** / **`sell_listing_flow_step`** → early **`Action::FiatSentOk`** → **`listing_step_from_status(order_kind, status)`** when **`order_status`** is set → **`buy_listing_flow_step_from_action`** / **`sell_listing_flow_step_from_action`**. **`Status::Success`** maps to **`StepRate`** (column **6**) via **`listing_step_from_status`**, keeping completed trades on the final column after reboot replay. **`Action::Rate`** / **`RateReceived`** are resolved in the action fallbacks (only when status is missing or unmapped); both paths highlight **`StepRate`** (6), so a **`rate`** DM without hydrated status and a row with **`Status::Success`** present the same final step.
 - **Text labels** (top/bottom lines per column): **`src/ui/constants.rs`** — **`BUY_ORDER_FLOW_STEPS_*`**, **`SELL_ORDER_FLOW_STEPS_*`**, **`GENERIC_ORDER_FLOW_STEPS_TAKER`**; **`listing_timeline_labels`** in `orders.rs` picks the array by **`order_kind`** and **`is_mine`**. Rendering: **`src/ui/tabs/message_flow_tab.rs`**.
 - **Follow-up:** stricter **Enter** / popups (status + role + **`kind`**); see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md#messages-tab-trade-timeline-stepper-buy-and-sell-listings). Sell detail: [sell order flow.md](sell%20order%20flow.md).

@@ -223,7 +223,8 @@ cargo clippy --all-targets --all-features  # Lint code
 
 ## Dependencies
 
-- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the same minor line as the Mostro daemon you test against (currently **0.11.3**). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix.
+- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the same minor line as the Mostro daemon you test against (currently **0.12.1** — ships `Status::WaitingMakerBond` and Cashu-related `CantDoReason` variants). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix.
+- **Bond invoice replies**: shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) for `take_order` and `send_new_order` — returns `PaymentRequestRequired`, not `Success`.
 - **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) — TUI labels via `label()` (emoji + text); state on `ReviewingDisputeForFinalization.bond`; pass through `execute_finalize_dispute(dispute_id, bond, …)` and `bond.to_optional_payload()` on the wire (`None` → `null`); see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 
 ## Summary Checklist

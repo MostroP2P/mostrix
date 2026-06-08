@@ -47,7 +47,10 @@ pub struct OrderSuccess {
 fn placeholder_action_for_order_success(os: &OrderSuccess) -> Option<Action> {
     let header = os.static_header.as_ref()?;
     if header.is_mine {
-        return Some(Action::NewOrder);
+        return match os.status {
+            Some(Status::WaitingMakerBond) => Some(Action::PayBondInvoice),
+            _ => Some(Action::NewOrder),
+        };
     }
     match os.status {
         Some(Status::WaitingTakerBond) => Some(Action::PayBondInvoice),
@@ -352,6 +355,8 @@ pub struct MessageNotification {
     pub invoice: Option<String>,
     /// Long explanatory text for waiting-phase popups.
     pub body: Option<String>,
+    /// Maker bond (Phase 5): pay before the order is published to the book.
+    pub maker_bond_publish: bool,
 }
 
 /// Whether an invoice modal is appropriate for the current trade phase.
@@ -368,13 +373,14 @@ pub fn invoice_popup_allowed_for_order_status(
             order_status,
             Some(mostro_core::order::Status::WaitingPayment)
         ),
-        // The anti-abuse bond is outstanding precisely while the order sits in
-        // `WaitingTakerBond`. `None` covers fresh DMs that arrive before the local
-        // row hydrates. A daemon with bonds disabled never emits this action, so
-        // this arm stays dead in that configuration.
+        // Anti-abuse bond: taker bond (`WaitingTakerBond`) or maker bond (`WaitingMakerBond`).
+        // `None` covers fresh DMs that arrive before the local row hydrates.
         Action::PayBondInvoice => matches!(
             order_status,
-            Some(mostro_core::order::Status::WaitingTakerBond) | None
+            Some(
+                mostro_core::order::Status::WaitingTakerBond
+                    | mostro_core::order::Status::WaitingMakerBond
+            ) | None
         ),
         Action::AddInvoice => matches!(
             order_status,
@@ -403,15 +409,18 @@ pub fn local_user_must_act_on_invoice_popup(msg: &OrderMessage, popup_action: &A
     let is_maker = msg.is_mine.unwrap_or(false);
     match (msg.order_kind, popup_action) {
         (Some(mostro_core::order::Kind::Buy), Action::AddInvoice) => is_maker,
-        (Some(mostro_core::order::Kind::Buy), Action::PayInvoice | Action::PayBondInvoice) => {
-            !is_maker
-        }
+        (Some(mostro_core::order::Kind::Buy), Action::PayInvoice) => !is_maker,
         (Some(mostro_core::order::Kind::Sell), Action::AddInvoice) => !is_maker,
-        (Some(mostro_core::order::Kind::Sell), Action::PayInvoice | Action::PayBondInvoice) => {
-            is_maker
-        }
+        (Some(mostro_core::order::Kind::Sell), Action::PayInvoice) => is_maker,
+        (_, Action::PayBondInvoice) => match msg.order_status {
+            Some(mostro_core::order::Status::WaitingMakerBond) => is_maker,
+            Some(mostro_core::order::Status::WaitingTakerBond) => !is_maker,
+            // Create-order sync path: maker is always the actor before status hydrates.
+            None => is_maker,
+            _ => false,
+        },
         (_, Action::AddBondInvoice) => true,
-        (None, Action::PayInvoice | Action::PayBondInvoice) => msg
+        (None, Action::PayInvoice) => msg
             .buyer_invoice
             .as_ref()
             .map(|s| !s.is_empty())
@@ -447,8 +456,11 @@ pub fn waiting_phase_description(msg: &OrderMessage) -> &'static str {
             true,
             Action::WaitingBuyerInvoice | Action::AddInvoice,
         ) => "Waiting for the buyer to add their Lightning invoice.",
-        (_, true, Action::PayBondInvoice) => {
+        (_, true, Action::PayBondInvoice) if msg.order_status == Some(Status::WaitingTakerBond) => {
             "Waiting for the taker to pay the anti-abuse bond."
+        }
+        (_, true, Action::PayBondInvoice) => {
+            "Pay the anti-abuse bond to publish your order to the book."
         }
         _ => "Waiting for the counterparty. No action is required from you right now.",
     }
@@ -460,7 +472,10 @@ pub fn waiting_phase_short_label(msg: &OrderMessage) -> &'static str {
     let is_maker = msg.is_mine.unwrap_or(false);
     let action = msg.message.get_inner_message_kind().action.clone();
     match (msg.order_kind, is_maker, action) {
-        (_, true, Action::PayBondInvoice) => "Waiting for Taker Bond",
+        (_, true, Action::PayBondInvoice) if msg.order_status == Some(Status::WaitingTakerBond) => {
+            "Waiting for Taker Bond"
+        }
+        (_, true, Action::PayBondInvoice) => "Maker Bond Required",
         (
             Some(mostro_core::order::Kind::Buy),
             true,
@@ -654,6 +669,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         sat_amount: msg.sat_amount,
         invoice: msg.buyer_invoice.clone(),
         body,
+        maker_bond_publish: msg.order_status == Some(Status::WaitingMakerBond),
     }
 }
 
@@ -835,11 +851,10 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
     match kind {
         mostro_core::order::Kind::Buy => match status {
             // Initial stat of order - no green steps visulized, orders is still pending.
-            Status::Pending | Status::WaitingTakerBond => {
+            Status::Pending | Status::WaitingTakerBond | Status::WaitingMakerBond => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder))
             }
-            // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
-            // started; treat like `Pending` for the timeline.
+            // `WaitingTakerBond` / `WaitingMakerBond`: pre-active bond phases; treat like `Pending`.
             Status::WaitingPayment => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)),
             Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice))
@@ -863,11 +878,10 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
         },
         mostro_core::order::Kind::Sell => match status {
             // Initial stat of order - no green steps visulized, orders is still pending.
-            Status::Pending | Status::WaitingTakerBond => {
+            Status::Pending | Status::WaitingTakerBond | Status::WaitingMakerBond => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder))
             }
-            // `WaitingTakerBond` (Mostro Phase 1.5+): order matched but trade flow has not
-            // started; treat like `Pending` for the timeline.
+            // `WaitingTakerBond` / `WaitingMakerBond`: pre-active bond phases; treat like `Pending`.
             Status::WaitingPayment => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment))
             }
@@ -1276,6 +1290,57 @@ mod timeline_step_tests {
             FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder)
         );
     }
+
+    #[test]
+    fn buy_maker_pay_bond_waiting_maker_bond_maps_to_pending_order_step() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(mostro_core::order::Status::WaitingMakerBond),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder)
+        );
+    }
+}
+
+#[cfg(test)]
+mod placeholder_action_tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_action_maker_waiting_maker_bond() {
+        let keys = nostr_sdk::Keys::generate();
+        let order_id = uuid::Uuid::new_v4();
+        let os = OrderSuccess {
+            order_id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Buy),
+            amount: 1000,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            min_amount: None,
+            max_amount: None,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            status: Some(Status::WaitingMakerBond),
+            trade_index: Some(2),
+            static_header: Some(OrderChatStaticHeader {
+                order_id,
+                kind: Some(mostro_core::order::Kind::Buy),
+                created_at: Some(1),
+                trade_index: 2,
+                initiator_trade_pubkey: keys.public_key().to_string(),
+                is_mine: true,
+            }),
+        };
+        let msg = try_placeholder_order_message_from_success(&os).expect("placeholder");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::PayBondInvoice
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1286,6 +1351,7 @@ mod invoice_popup_role_tests {
         action: Action,
         order_kind: Option<mostro_core::order::Kind>,
         is_mine: Option<bool>,
+        order_status: Option<Status>,
     ) -> OrderMessage {
         let keys = nostr_sdk::Keys::generate();
         OrderMessage {
@@ -1298,7 +1364,7 @@ mod invoice_popup_role_tests {
             buyer_invoice: None,
             order_kind,
             is_mine,
-            order_status: None,
+            order_status,
             read: false,
             auto_popup_shown: false,
         }
@@ -1310,6 +1376,7 @@ mod invoice_popup_role_tests {
             Action::WaitingSellerToPay,
             Some(mostro_core::order::Kind::Buy),
             Some(true),
+            None,
         );
         assert!(!local_user_must_act_on_invoice_popup(
             &m,
@@ -1323,6 +1390,7 @@ mod invoice_popup_role_tests {
             Action::PayInvoice,
             Some(mostro_core::order::Kind::Buy),
             Some(false),
+            None,
         );
         assert!(local_user_must_act_on_invoice_popup(
             &m,
@@ -1336,6 +1404,7 @@ mod invoice_popup_role_tests {
             Action::PayInvoice,
             Some(mostro_core::order::Kind::Sell),
             Some(true),
+            None,
         );
         assert!(local_user_must_act_on_invoice_popup(
             &m,
@@ -1349,6 +1418,7 @@ mod invoice_popup_role_tests {
             Action::WaitingSellerToPay,
             Some(mostro_core::order::Kind::Sell),
             Some(false),
+            None,
         );
         assert!(!local_user_must_act_on_invoice_popup(
             &m,
@@ -1362,6 +1432,7 @@ mod invoice_popup_role_tests {
             Action::AddInvoice,
             Some(mostro_core::order::Kind::Buy),
             Some(true),
+            None,
         );
         assert!(local_user_must_act_on_invoice_popup(
             &m,
@@ -1375,6 +1446,7 @@ mod invoice_popup_role_tests {
             Action::AddInvoice,
             Some(mostro_core::order::Kind::Sell),
             Some(false),
+            None,
         );
         assert!(local_user_must_act_on_invoice_popup(
             &m,
@@ -1383,15 +1455,66 @@ mod invoice_popup_role_tests {
     }
 
     #[test]
-    fn buy_maker_does_not_pay_bond() {
+    fn buy_maker_does_not_pay_taker_bond() {
         let m = sample_order_message(
             Action::PayBondInvoice,
             Some(mostro_core::order::Kind::Buy),
             Some(true),
+            Some(Status::WaitingTakerBond),
         );
         assert!(!local_user_must_act_on_invoice_popup(
             &m,
             &Action::PayBondInvoice
+        ));
+    }
+
+    #[test]
+    fn buy_maker_pays_bond_waiting_maker_bond() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::WaitingMakerBond),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    #[test]
+    fn sell_maker_pays_bond_waiting_maker_bond() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::WaitingMakerBond),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    #[test]
+    fn sell_taker_pays_bond_waiting_taker_bond() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::WaitingTakerBond),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    #[test]
+    fn invoice_popup_allowed_waiting_maker_bond() {
+        assert!(invoice_popup_allowed_for_order_status(
+            &Action::PayBondInvoice,
+            Some(Status::WaitingMakerBond),
         ));
     }
 
@@ -1402,6 +1525,7 @@ mod invoice_popup_role_tests {
         let m = sample_order_message(
             Action::PayInvoice,
             Some(mostro_core::order::Kind::Buy),
+            None,
             None,
         );
         assert!(local_user_must_act_on_invoice_popup(
@@ -1416,6 +1540,7 @@ mod invoice_popup_role_tests {
         let m = sample_order_message(
             Action::AddInvoice,
             Some(mostro_core::order::Kind::Buy),
+            None,
             None,
         );
         assert!(!local_user_must_act_on_invoice_popup(
