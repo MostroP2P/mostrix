@@ -8,7 +8,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 
 | Layer | Status | Notes |
 |-------|--------|--------|
-| **`mostro-core` 0.11.3** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload` |
+| **`mostro-core` 0.12.1** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`; `CantDo` before DB update |
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |

@@ -10,7 +10,9 @@ use crate::ui::FormState;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::helper::{create_order_result_success, handle_mostro_response};
+use crate::util::order_utils::helper::{
+    create_order_result_success, handle_mostro_response, payment_request_operation_result,
+};
 use crate::util::OrderDmSubscriptionCmd;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -200,6 +202,40 @@ pub async fn send_new_order(
                                 );
                                 Err(anyhow::anyhow!(
                                     "Mostro replied with NewOrder but no order payload was provided"
+                                ))
+                            }
+                        }
+                        Action::PayBondInvoice => {
+                            if let Some(Payload::PaymentRequest(
+                                opt_order,
+                                invoice_string,
+                                opt_amount,
+                            )) = &inner_message.payload
+                            {
+                                payment_request_operation_result(
+                                    inner_message.action.clone(),
+                                    opt_order.clone(),
+                                    invoice_string.clone(),
+                                    *opt_amount,
+                                    None,
+                                    request_id,
+                                    next_idx,
+                                    pool,
+                                    &trade_keys,
+                                    true,
+                                    dm_subscription_tx,
+                                    "send_new_order",
+                                )
+                                .await
+                            } else {
+                                log::error!(
+                                    "Mostro replied with PayBondInvoice but payload is missing/invalid. request_id={:?} trade_index={} payload={:?}",
+                                    inner_message.request_id,
+                                    next_idx,
+                                    inner_message.payload
+                                );
+                                Err(anyhow::anyhow!(
+                                    "Mostro replied with PayBondInvoice but no PaymentRequest payload was provided"
                                 ))
                             }
                         }

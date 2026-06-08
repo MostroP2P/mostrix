@@ -70,5 +70,18 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
             "Too many requests - please wait and try again".to_string()
         }
         CantDoReason::NotAuthorized => "Not authorized to perform this action".to_string(),
+        CantDoReason::InvalidCashuToken => {
+            "Invalid Cashu token — check the escrow token and try again".to_string()
+        }
+        CantDoReason::CashuMintUnavailable => {
+            "Cashu mint is unavailable — try again later".to_string()
+        }
+        CantDoReason::InvalidMintUrl => "Invalid Cashu mint URL".to_string(),
+        CantDoReason::CashuEscrowNotLocked => {
+            "Cashu escrow is not locked — complete escrow setup first".to_string()
+        }
+        CantDoReason::CashuSignatureMissing => {
+            "Cashu signature missing from the request".to_string()
+        }
     }
 }

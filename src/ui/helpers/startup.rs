@@ -185,10 +185,17 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    let action = match kind {
-        Some(OrderKind::Buy) => Action::TakeBuy,
-        Some(OrderKind::Sell) => Action::TakeSell,
-        None => Action::WaitingSellerToPay,
+    let action = if order.is_mine {
+        match status {
+            Some(Status::WaitingMakerBond) => Action::PayBondInvoice,
+            _ => Action::NewOrder,
+        }
+    } else {
+        match kind {
+            Some(OrderKind::Buy) => Action::TakeBuy,
+            Some(OrderKind::Sell) => Action::TakeSell,
+            None => Action::WaitingSellerToPay,
+        }
     };
 
     let payload_order = SmallOrder {
@@ -232,7 +239,10 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         is_mine: Some(order.is_mine),
         order_status: status,
         read: true,
-        auto_popup_shown: !matches!(status, Some(Status::WaitingBuyerInvoice)),
+        auto_popup_shown: !matches!(
+            status,
+            Some(Status::WaitingBuyerInvoice | Status::WaitingMakerBond | Status::WaitingTakerBond)
+        ),
     };
     Some(history_message)
 }

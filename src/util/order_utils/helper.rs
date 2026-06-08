@@ -7,9 +7,13 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::ui::state::{OperationResult, OrderChatStaticHeader, OrderSuccess, TakeOrderState};
+use crate::util::db_utils::save_order;
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
+use crate::util::OrderDmSubscriptionCmd;
+use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Parse order from nostr tags
 pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
@@ -101,7 +105,7 @@ fn status_phase_rank_for_actor(
     kind: Option<mostro_core::order::Kind>,
 ) -> Option<u8> {
     match status {
-        Status::Pending | Status::WaitingTakerBond => Some(0),
+        Status::Pending | Status::WaitingTakerBond | Status::WaitingMakerBond => Some(0),
         // Stage ordering follows listing kind progression (same for maker/taker):
         // Buy listing:  waiting-payment -> waiting-buyer-invoice
         // Sell listing: waiting-buyer-invoice -> waiting-payment
@@ -527,6 +531,99 @@ pub(super) fn build_order_chat_static_header(
         trade_index,
         initiator_trade_pubkey: trade_keys.public_key().to_string(),
         is_mine,
+    })
+}
+
+/// Persist order + track subscription, then build `PaymentRequestRequired` for invoice popups.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn payment_request_operation_result(
+    inner_action: Action,
+    opt_order: Option<SmallOrder>,
+    invoice_string: String,
+    opt_amount: Option<i64>,
+    fallback_order_id: Option<Uuid>,
+    request_id: u64,
+    next_idx: i64,
+    pool: &SqlitePool,
+    trade_keys: &Keys,
+    is_mine: bool,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
+    log_prefix: &str,
+) -> Result<OperationResult> {
+    let popup_action = match inner_action {
+        Action::PayBondInvoice => Action::PayBondInvoice,
+        _ => Action::PayInvoice,
+    };
+
+    let mut order_to_save =
+        opt_order.ok_or_else(|| anyhow::anyhow!("Order details are missing from payload"))?;
+
+    if order_to_save.id.is_none() {
+        if let Some(fallback) = fallback_order_id {
+            log::warn!(
+                "[{log_prefix}] Mostro PaymentRequest payload order missing id; falling back to order_id={fallback}"
+            );
+            order_to_save.id = Some(fallback);
+        } else {
+            return Err(anyhow::anyhow!(
+                "Order details are missing id in PaymentRequest payload"
+            ));
+        }
+    }
+
+    let effective_order_id = order_to_save
+        .id
+        .or(fallback_order_id)
+        .ok_or_else(|| anyhow::anyhow!("Order id missing after PaymentRequest normalization"))?;
+
+    log::info!(
+        "[{log_prefix}] Action::{popup_action:?} response mapped to effective_order_id={effective_order_id}, trade_index={next_idx}"
+    );
+
+    if let Err(e) = save_order(
+        order_to_save.clone(),
+        trade_keys,
+        request_id,
+        next_idx,
+        pool,
+        is_mine,
+    )
+    .await
+    {
+        log::error!("Failed to save order to database: {e}");
+    }
+
+    if let Some(tx) = dm_subscription_tx {
+        log::info!(
+            "[{log_prefix}] Sending DM subscription command for order_id={effective_order_id}, trade_index={next_idx}"
+        );
+        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
+            order_id: effective_order_id,
+            trade_index: next_idx,
+        });
+    }
+
+    log::info!("Received {popup_action:?} for order {effective_order_id} with invoice");
+
+    let static_header =
+        build_order_chat_static_header(&order_to_save, next_idx, trade_keys, is_mine).ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "failed to build static header for order id {:?}",
+                    order_to_save.id
+                )
+            },
+        )?;
+
+    let sat_amount = opt_amount.or(Some(order_to_save.amount));
+
+    Ok(OperationResult::PaymentRequestRequired {
+        order: order_to_save,
+        invoice: invoice_string,
+        sat_amount,
+        trade_index: next_idx,
+        static_header,
+        action: popup_action,
     })
 }
 

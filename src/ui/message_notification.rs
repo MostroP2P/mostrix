@@ -508,7 +508,13 @@ fn render_pay_bond_invoice(
         chunks[3],
     );
 
-    let amount_text = if let Some(amount) = notification.sat_amount {
+    let amount_text = if notification.maker_bond_publish {
+        if let Some(amount) = notification.sat_amount {
+            format!("Pay bond to publish your order ({} sats):", amount)
+        } else {
+            "Pay bond to publish your order:".to_string()
+        }
+    } else if let Some(amount) = notification.sat_amount {
         format!("Bond invoice to pay ({} sats):", amount)
     } else {
         "Bond invoice to pay:".to_string()
