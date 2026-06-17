@@ -12,6 +12,10 @@ Terminal client for p2p using Mostro protocol.
 
 0. You need Rust version 1.90 or higher to compile.
 
+## Deepwiki:
+
+https://deepwiki.com/MostroP2P/mostrix
+
 ## Install dependencies:
 
 To compile on Ubuntu/Pop!\_OS, please install [cargo](https://www.rust-lang.org/tools/install), then run the following commands:
