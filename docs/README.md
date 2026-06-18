@@ -44,8 +44,8 @@ Mostrix is gaining **dual-transport** support for Mostro **protocol DMs** (not P
 
 | Status | What |
 |--------|------|
-| **Done** | `mostro-core` **0.13.0**; parse `protocol_version` from kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); [`ensure_order_dm_subscription`](../src/util/dm_utils/dm_helpers.rs) + listener/replay/waiter **subscribe** paths take `mostro_pubkey` + `transport` |
-| **Pending** | `wrap_message_with` / `unwrap_incoming` in `send_dm` and inbound parse; event gate `transport.event_kind()` (still hardcoded GiftWrap); await instance info before spawning DM listener; restart listener when `transport` changes |
+| **Done** | `mostro-core` **0.13.0**; parse `protocol_version` from kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); [`ensure_order_dm_subscription`](../src/util/dm_utils/dm_helpers.rs) + listener/replay/waiter **subscribe** paths; **await instance info before DM listener** in [`startup.rs`](../src/startup.rs) |
+| **Pending** | `wrap_message_with` / `unwrap_incoming` in `send_dm` and inbound parse; event gate `transport.event_kind()` (still hardcoded GiftWrap); restart listener when `transport` changes after manual refresh |
 
 **Note:** **Subscriptions** already use the v2 filter shape when `transport == Nip44Direct`, but **send** still uses GiftWrap and the **notification handler** still drops non–kind-1059 events until steps 5–6 (see **Pending** above).
 

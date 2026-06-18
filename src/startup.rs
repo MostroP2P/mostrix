@@ -21,7 +21,6 @@ use crate::ui::helpers::{
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
     load_user_order_chats_at_startup,
 };
-use crate::ui::key_handler::spawn_refresh_mostro_info_task;
 use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::startup_splash::{
     dot_count_from_elapsed, render_startup_splash, SPLASH_MIN_DISPLAY_MS, SPLASH_TICK_MS,
@@ -29,7 +28,7 @@ use crate::ui::startup_splash::{
 use crate::ui::{AppState, OperationResult, UiMode, UserRole};
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    hydrate_startup_active_order_dm_state, listen_for_order_messages,
+    fetch_mostro_instance_info, hydrate_startup_active_order_dm_state, listen_for_order_messages,
     order_utils::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         start_fetch_scheduler, FetchSchedulerResult,
@@ -143,15 +142,6 @@ pub async fn run_post_terminal_startup(
         input.network_status_tx.clone(),
     );
 
-    if relays_reachable {
-        spawn_refresh_mostro_info_task(
-            client.clone(),
-            mostro_pubkey,
-            input.mostro_info_tx.clone(),
-            false,
-        );
-    }
-
     set_startup_phase(phase_tx, "Restoring chats…");
     load_admin_disputes_at_startup(input.pool, &mut app).await;
     if relays_reachable {
@@ -191,6 +181,28 @@ pub async fn run_post_terminal_startup(
     }
     app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
 
+    let transport_for_listener = if relays_reachable {
+        set_startup_phase(phase_tx, "Fetching Mostro instance info…");
+        match fetch_mostro_instance_info(&client, mostro_pubkey).await {
+            Ok(info) => {
+                app.set_mostro_info(info);
+                app.transport
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to fetch Mostro instance info at startup: {e}; defaulting to GiftWrap transport"
+                );
+                app.set_mostro_info(None);
+                Transport::default()
+            }
+        }
+    } else {
+        log::info!(
+            "Relays unreachable; skipping instance info fetch, defaulting to GiftWrap transport"
+        );
+        Transport::default()
+    };
+
     let client_for_messages = client.clone();
     let pool_for_messages = input.pool.clone();
     let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
@@ -201,7 +213,6 @@ pub async fn run_post_terminal_startup(
     let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
     let dm_subscription_rx = input.dm_subscription_rx;
     let mostro_pubkey_for_listener = mostro_pubkey;
-    let transport_for_listener = Transport::default();
 
     let message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
