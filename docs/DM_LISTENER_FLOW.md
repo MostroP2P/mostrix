@@ -5,6 +5,8 @@ This document explains the runtime flow inside `listen_for_order_messages` (in `
 - how the in-memory **message list** (`Vec<OrderMessage>`) is created/updated
 - how “preferences”/routing concepts work: **TrackOrder**, **Waiter**, **Database**, **Action**, **Status**, notifications, and terminal cleanup
 
+> **Protocol v2 (in progress):** Today the listener is **GiftWrap-only** (kind 1059, `filter_giftwrap_to_recipient`). [`AppState.transport`](../src/ui/app_state.rs) is already derived from instance `protocol_version`, but subscribe/decrypt paths will become transport-aware (`filter_protocol_dm_from_mostro`, `unwrap_incoming`, v2 filter `.author(mostro).pubkey(trade_key).kind(14)`). See [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress) and [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md).
+
 ## Big picture
 
 Mostrix has a **single background task** that:

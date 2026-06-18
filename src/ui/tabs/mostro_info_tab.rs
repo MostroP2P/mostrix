@@ -4,7 +4,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::util::{format_instance_info_age, MostroInstanceInfo};
+use crate::util::{
+    format_instance_info_age, transport_from_instance, MostroInstanceInfo, Transport,
+};
 
 pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let block = Block::default()
@@ -84,6 +86,16 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
         &mut lines,
         "Github commit hash",
         info.mostro_commit_hash.as_deref().unwrap_or("unknown"),
+    );
+    let protocol_version = match info.protocol_version {
+        Some(v) => v.to_string(),
+        None => "unknown".to_string(),
+    };
+    push_kv(&mut lines, "Protocol version", &protocol_version);
+    push_kv(
+        &mut lines,
+        "Wire transport",
+        transport_display_label(transport_from_instance(Some(info))),
     );
     push_opt_i64(&mut lines, "Max order amount (sats)", info.max_order_amount);
     push_opt_i64(&mut lines, "Min order amount (sats)", info.min_order_amount);
@@ -168,6 +180,13 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     )));
 
     lines
+}
+
+fn transport_display_label(transport: Transport) -> &'static str {
+    match transport {
+        Transport::GiftWrap => "GiftWrap (NIP-59)",
+        Transport::Nip44Direct => "NIP-44 direct",
+    }
 }
 
 fn section_title(title: &str) -> Line<'static> {

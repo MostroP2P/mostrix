@@ -38,6 +38,8 @@ The **documentation index** is **[docs/README.md](docs/README.md)** — architec
 
 **Quick links:** [Startup & config](docs/STARTUP_AND_CONFIG.md) · [DM listener / Messages sync](docs/DM_LISTENER_FLOW.md) · [Database](docs/DATABASE.md) · [Message flow & protocol](docs/MESSAGE_FLOW_AND_PROTOCOL.md) · [Key management](docs/KEY_MANAGEMENT.md) · [Coding standards](docs/CODING_STANDARDS.md)
 
+Mostrix reads the connected Mostro instance **`protocol_version`** tag (kind 38385) and shows the resolved wire transport on the **Mostro Info** tab; full dual-transport support (GiftWrap vs NIP-44 direct for protocol DMs) is rolling out — see [docs/README.md — Protocol v2](docs/README.md#protocol-v2-nip-44--in-progress).
+
 ### Settings (`settings.toml`)
 
 Mostrix is configured via a TOML file called `settings.toml`.

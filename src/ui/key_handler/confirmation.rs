@@ -126,7 +126,7 @@ pub fn handle_confirm_key(
                 Ok(pk) => pk,
                 Err(e) => {
                     log::error!("Invalid pubkey after confirmation: {}", e);
-                    app.mostro_info = None;
+                    app.set_mostro_info(None);
                     return true;
                 }
             };

@@ -4,17 +4,24 @@ This document describes how Mostrix applies **NIP-13 proof-of-work** to events i
 
 ## Source of difficulty
 
-- The Mostro **instance status** event (kind **38385**) includes an optional `pow` tag (unsigned integer). Mostrix parses this into [`MostroInstanceInfo.pow`](../src/util/mostro_info.rs) (`Option<u32>`).
+- The Mostro **instance status** event (kind **38385**) includes optional tags:
+  - **`pow`** — unsigned integer; parsed into [`MostroInstanceInfo.pow`](../src/util/mostro_info.rs) (`Option<u32>`).
+  - **`protocol_version`** — `"1"` or `"2"`; parsed into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs). Drives [`transport_from_instance`](../src/util/mostro_info.rs) → [`AppState.transport`](../src/ui/app_state.rs) (display + future send/listener selection). Missing tag → legacy GiftWrap.
 - There is **no** `pow` field in [`Settings`](../src/settings.rs) or in the generated `settings.toml` template. Legacy configs may still contain `pow = …`; serde typically ignores unknown keys when deserializing.
 - **Effective bits** for signing: [`nostr_pow_from_instance`](../src/util/mostro_info.rs) maps `Option<&MostroInstanceInfo>` → `u8` by taking `info.pow`, clamping to `u8::MAX`, and using **0** when info is missing or `pow` is `None`.
 
 ## Cached instance info at runtime
 
 - [`AppState.mostro_info`](../src/ui/app_state.rs) holds the latest fetched `MostroInstanceInfo`.
+- [`AppState.transport`](../src/ui/app_state.rs) mirrors the resolved [`Transport`](../src/util/mod.rs) (`GiftWrap` vs `Nip44Direct`). Set together with info via [`set_mostro_info`](../src/ui/app_state.rs).
 - [`EnterKeyContext`](../src/ui/key_handler/mod.rs) includes `mostro_info: Option<MostroInstanceInfo>` so Enter/spawn paths can pass the same snapshot into async work without re-fetching relays per message.
 - [`send_dm`](../src/util/dm_utils/mod.rs) takes `mostro_instance: Option<&MostroInstanceInfo>` and computes `pow = nostr_pow_from_instance(mostro_instance)` once per send.
 
-If instance info has not been loaded yet (e.g. slow startup), PoW may be **0** until a successful fetch or manual refresh (Mostro Info tab / background refresh tasks). Users may see rejects from strict instances until 38385 is cached.
+If instance info has not been loaded yet (e.g. slow startup), PoW may be **0** and transport defaults to **GiftWrap** until a successful fetch or manual refresh (Mostro Info tab / background refresh tasks). Users may see rejects from strict instances until 38385 is cached.
+
+## Protocol v2 (NIP-44 direct) — PoW note
+
+On v2 nodes, PoW applies to the **signed kind-14** event (same `WrapOptions.pow` path in `mostro_core::transport::wrap_message_with`). Mostrix has not switched `send_dm` to that helper yet; see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) and the protocol v2 plan in [docs/README.md](README.md#protocol-v2-nip-44--in-progress). First-contact actions may need higher PoW than instance `pow` (`pow_first_contact` on the daemon — not advertised in 38385 today).
 
 ## Gift Wrap (NIP-59 / kind 1059)
 

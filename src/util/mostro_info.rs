@@ -1,6 +1,7 @@
 use crate::settings::load_settings_from_disk;
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use anyhow::{anyhow, Result};
+use mostro_core::prelude::Transport;
 use nostr_sdk::prelude::*;
 use std::str::FromStr;
 
@@ -44,6 +45,8 @@ pub struct MostroInstanceInfo {
     pub max_orders_per_response: Option<u32>,
     pub fee: Option<f64>,
     pub pow: Option<u32>,
+    /// Wire transport version from kind-38385 tag `protocol_version` (`"1"` / `"2"`).
+    pub protocol_version: Option<u8>,
     /// Anti-abuse bond feature flag from kind-38385 tag `bond_enabled` (`"true"` / `"false"`).
     pub bond_enabled: Option<bool>,
     pub hold_invoice_expiration_window: Option<u64>,
@@ -80,6 +83,10 @@ impl MostroInstanceInfo {
         value.parse::<u32>().ok()
     }
 
+    fn parse_u8(value: &str) -> Option<u8> {
+        value.parse::<u8>().ok()
+    }
+
     fn parse_f64(value: &str) -> Option<f64> {
         value.parse::<f64>().ok()
     }
@@ -109,6 +116,16 @@ pub fn nostr_pow_from_instance(instance: Option<&MostroInstanceInfo>) -> u8 {
 /// until the daemon explicitly advertises `"true"`.
 pub fn instance_bonds_enabled(instance: Option<&MostroInstanceInfo>) -> bool {
     instance.and_then(|i| i.bond_enabled) == Some(true)
+}
+
+/// Resolve the Mostro protocol wire transport from cached instance info.
+///
+/// Missing or unknown `protocol_version` defaults to legacy v1 GiftWrap.
+pub fn transport_from_instance(info: Option<&MostroInstanceInfo>) -> Transport {
+    match info.and_then(|i| i.protocol_version) {
+        Some(2) => Transport::Nip44Direct,
+        _ => Transport::GiftWrap,
+    }
 }
 
 fn parse_bond_enabled(value: &str) -> Option<bool> {
@@ -165,6 +182,9 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
             }
             "pow" => {
                 info.pow = MostroInstanceInfo::parse_u32(value);
+            }
+            "protocol_version" => {
+                info.protocol_version = MostroInstanceInfo::parse_u8(value);
             }
             "bond_enabled" => {
                 info.bond_enabled = parse_bond_enabled(value);
@@ -252,6 +272,7 @@ pub async fn fetch_mostro_instance_info_from_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mostro_core::prelude::Transport;
     use nostr_sdk::prelude::{Tag, Tags};
 
     #[test]
@@ -392,6 +413,54 @@ mod tests {
                 ..Default::default()
             })),
             u8::MAX
+        );
+    }
+
+    #[test]
+    fn parse_protocol_version_from_tags() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["protocol_version", "2"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.protocol_version, Some(2));
+
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["protocol_version", "1"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.protocol_version, Some(1));
+
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["protocol_version", "bad"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert!(result.protocol_version.is_none());
+    }
+
+    #[test]
+    fn transport_from_instance_resolves_protocol_version() {
+        assert_eq!(transport_from_instance(None), Transport::GiftWrap);
+        assert_eq!(
+            transport_from_instance(Some(&MostroInstanceInfo::default())),
+            Transport::GiftWrap
+        );
+        assert_eq!(
+            transport_from_instance(Some(&MostroInstanceInfo {
+                protocol_version: Some(1),
+                ..Default::default()
+            })),
+            Transport::GiftWrap
+        );
+        assert_eq!(
+            transport_from_instance(Some(&MostroInstanceInfo {
+                protocol_version: Some(2),
+                ..Default::default()
+            })),
+            Transport::Nip44Direct
+        );
+        assert_eq!(
+            transport_from_instance(Some(&MostroInstanceInfo {
+                protocol_version: Some(99),
+                ..Default::default()
+            })),
+            Transport::GiftWrap
         );
     }
 

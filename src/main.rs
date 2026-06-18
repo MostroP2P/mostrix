@@ -474,16 +474,16 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(res) = mostro_info_result {
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
-                            app.mostro_info = *info;
+                            app.set_mostro_info(*info);
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );
                         }
                         MostroInfoFetchResult::Applied { info } => {
-                            app.mostro_info = *info;
+                            app.set_mostro_info(*info);
                         }
                         MostroInfoFetchResult::Err(e) => {
-                            app.mostro_info = None;
+                            app.set_mostro_info(None);
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Error(e),
                             );
