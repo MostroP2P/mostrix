@@ -15,16 +15,25 @@ Mostrix uses Nostr transports for two distinct purposes:
 | **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **v1 GiftWrap** (kind 1059) today; **v2 NIP-44 direct** (kind 14) planned | Auto-selected from instance `protocol_version` tag — see **Protocol v2** below |
 | **P2P order chat** (My Trades) and **admin dispute chat** | NIP-59 GiftWrap via `mostro_core::chat` | Unchanged by protocol v2; shared ECDH keys |
 
-### Protocol v2 discovery (implemented)
+### Protocol v2 discovery and subscriptions (partial)
 
 Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
 
 - Tag **`protocol_version`**: `"1"` → GiftWrap, `"2"` → NIP-44 direct messages.
 - Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs).
-- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync whenever instance info updates ([`set_mostro_info`](../src/ui/app_state.rs) — used from `main.rs`, reconnect, and pubkey-change paths).
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync whenever instance info updates ([`set_mostro_info`](../src/ui/app_state.rs)).
 - The **Mostro Info** tab displays protocol version and resolved wire transport.
 
-**Wire cutover (not yet merged):** `send_dm` still calls `wrap_message` (GiftWrap only); `listen_for_order_messages` still subscribes and gates on kind 1059. Steps 3–7 in [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md) will switch to `mostro_core::transport::{wrap_message_with, unwrap_incoming}` and v2 subscription filters (`.author(mostro_pubkey).pubkey(trade_key).kind(14)` for inbound Mostro replies).
+**Relay filters (implemented):** [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) in [`src/util/filters.rs`](../src/util/filters.rs):
+
+| Transport | Inbound filter (Mostro → client) |
+|-----------|----------------------------------|
+| v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
+| v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
+
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` in [`listen_for_order_messages`](../src/util/dm_utils/mod.rs). The listener is spawned with `mostro_pubkey` + `transport` from settings / [`AppState.transport`](../src/ui/app_state.rs) (startup defaults to GiftWrap until instance info is awaited in step 7).
+
+**Still pending:** `send_dm` → `wrap_message_with`; inbound `unwrap_incoming`; notification loop still gates `event.kind == GiftWrap` only. See steps 4–6 in [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md).
 
 ### Legacy overview (v1 on the wire today)
 
@@ -283,21 +292,23 @@ sequenceDiagram
 ```
 
 ### Message Listener Task
-**Source**: `src/util/dm_utils/mod.rs:216`
-```216:223:src/util/dm_utils/mod.rs
+**Source**: [`src/util/dm_utils/mod.rs`](../src/util/dm_utils/mod.rs)
+
+```rust
 pub async fn listen_for_order_messages(
     client: Client,
-    pool: sqlx::sqlite::SqlitePool,
-    active_order_trade_indices: Arc<Mutex<HashMap<uuid::Uuid, i64>>>,
-    messages: Arc<Mutex<Vec<crate::ui::OrderMessage>>>,
-    message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
-    pending_notifications: Arc<Mutex<usize>>,
-) {
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: SqlitePool,
+    active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
+    order_last_seen_dm_ts: HashMap<Uuid, i64>,
+    // ... messages, notification tx, dm_subscription_rx
+)
 ```
 
 This task:
-1. Maintains a command-driven subscription router (`TrackOrder` + `RegisterWaiter`)
-2. Consumes `client.notifications()` and handles GiftWrap events as they arrive
+1. Maintains a command-driven subscription router (`TrackOrder` + `RegisterWaiter`) using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) for subscribe/replay/waiter filters
+2. Consumes `client.notifications()` and handles protocol DM events as they arrive (**event kind gate still GiftWrap-only** until step 6)
 3. Routes events by known `subscription_id` to `(order_id, trade_index)`
 4. Falls back to decrypting against active tracked trade keys when `subscription_id` is unknown
 5. Parses/decrypts with `parse_dm_events`, updates order state, and emits UI notifications

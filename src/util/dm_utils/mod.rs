@@ -30,7 +30,7 @@ use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
-use crate::util::filters::filter_giftwrap_to_recipient;
+use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
@@ -1123,9 +1123,11 @@ const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 100;
 /// only newer envelopes (e.g. `waiting-seller-to-pay`) are returned.
 const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 3 * 24 * 60 * 60;
 
-/// Snapshot of `listen_for_order_messages` locals passed into startup GiftWrap replay.
+/// Snapshot of `listen_for_order_messages` locals passed into startup protocol DM replay.
 struct DmListenerStartupReplay<'a> {
     client: &'a Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
     pool: &'a sqlx::sqlite::SqlitePool,
     user: &'a User,
     messages: &'a Arc<Mutex<Vec<OrderMessage>>>,
@@ -1147,6 +1149,8 @@ async fn fetch_and_replay_startup_trade_dms(
 ) {
     let DmListenerStartupReplay {
         client,
+        mostro_pubkey,
+        transport,
         pool,
         user,
         messages,
@@ -1194,7 +1198,7 @@ async fn fetch_and_replay_startup_trade_dms(
             .unwrap_or(lookback_start);
         let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
 
-        let filter = filter_giftwrap_to_recipient(pubkey)
+        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
             .since(Timestamp::from(since_ts))
             .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
 
@@ -1413,6 +1417,8 @@ async fn resolve_order_for_event(
 #[allow(clippy::too_many_arguments)]
 pub async fn listen_for_order_messages(
     client: Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
     pool: sqlx::sqlite::SqlitePool,
     active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
     order_last_seen_dm_ts: HashMap<Uuid, i64>,
@@ -1468,16 +1474,18 @@ pub async fn listen_for_order_messages(
         };
         let pubkey = trade_keys.public_key();
         let startup_mode = match order_last_seen_dm_ts.get(&order_id).copied() {
-            Some(ts) => dm_helpers::GiftWrapSubscriptionMode::StartupSince(ts),
-            None => dm_helpers::GiftWrapSubscriptionMode::StartupCatchUp,
+            Some(ts) => dm_helpers::DmSubscriptionMode::StartupSince(ts),
+            None => dm_helpers::DmSubscriptionMode::StartupCatchUp,
         };
-        let _ = dm_helpers::ensure_order_giftwrap_subscription(
+        let _ = dm_helpers::ensure_order_dm_subscription(
             &client,
+            transport,
+            mostro_pubkey,
             &mut subscribed_pubkeys,
             &mut subscription_to_order,
             &mut pubkey_to_subscription,
             pubkey,
-            dm_helpers::GiftWrapOrderSubscription {
+            dm_helpers::DmOrderSubscription {
                 order_id,
                 trade_index,
                 error_label: "Failed startup subscribe for trade pubkey",
@@ -1491,6 +1499,8 @@ pub async fn listen_for_order_messages(
     fetch_and_replay_startup_trade_dms(
         DmListenerStartupReplay {
             client: &client,
+            mostro_pubkey,
+            transport,
             pool: &pool,
             user: &user,
             messages: &messages,
@@ -1572,18 +1582,20 @@ pub async fn listen_for_order_messages(
                         };
 
                         let pubkey = trade_keys.public_key();
-                        if !dm_helpers::ensure_order_giftwrap_subscription(
+                        if !dm_helpers::ensure_order_dm_subscription(
                             &client,
+                            transport,
+                            mostro_pubkey,
                             &mut subscribed_pubkeys,
                             &mut subscription_to_order,
                             &mut pubkey_to_subscription,
                             pubkey,
-                            dm_helpers::GiftWrapOrderSubscription {
+                            dm_helpers::DmOrderSubscription {
                                 order_id,
                                 trade_index,
                                 error_label: "Failed to subscribe for trade pubkey",
-                                info_label: Some("[dm_listener] Subscribed GiftWrap:"),
-                                mode: dm_helpers::GiftWrapSubscriptionMode::LiveOnly,
+                                info_label: Some("[dm_listener] Subscribed protocol DM:"),
+                                mode: dm_helpers::DmSubscriptionMode::LiveOnly,
                             },
                         )
                         .await
@@ -1608,7 +1620,9 @@ pub async fn listen_for_order_messages(
                         let before = pending_waiters.len();
                         let waiter_pubkey = trade_keys.public_key();
                         if subscribed_pubkeys.insert(waiter_pubkey) {
-                            let filter = filter_giftwrap_to_recipient(waiter_pubkey).limit(0);
+                            let filter =
+                                filter_protocol_dm_from_mostro(transport, mostro_pubkey, waiter_pubkey)
+                                    .limit(0);
                             match client.subscribe(filter, None).await {
                                 Ok(output) => {
                                     // Remember the subscription id so a later TrackOrder can

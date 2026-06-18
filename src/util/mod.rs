@@ -36,7 +36,7 @@ pub use file_validation::{
 };
 pub use filters::{
     create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
-    MOSTRO_LIST_FETCH_EVENT_LIMIT,
+    filter_protocol_dm_from_mostro, MOSTRO_LIST_FETCH_EVENT_LIMIT,
 };
 pub use mostro_core::prelude::{unwrap_incoming, wrap_message_with, Transport};
 pub use mostro_info::{

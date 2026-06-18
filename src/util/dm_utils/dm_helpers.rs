@@ -1,13 +1,14 @@
 // Helper functions for direct message operations
+use mostro_core::prelude::Transport;
 use nostr_sdk::prelude::*;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
-use crate::util::filters::filter_giftwrap_to_recipient;
+use crate::util::filters::filter_protocol_dm_from_mostro;
 
-/// Subscription behavior for GiftWrap filters.
-pub(crate) enum GiftWrapSubscriptionMode {
+/// Subscription behavior for protocol DM filters (GiftWrap or NIP-44 direct).
+pub(crate) enum DmSubscriptionMode {
     /// Startup catch-up: request the latest retained event for this pubkey.
     StartupCatchUp,
     /// Startup catch-up from the persisted cursor timestamp.
@@ -17,48 +18,52 @@ pub(crate) enum GiftWrapSubscriptionMode {
 }
 
 /// Metadata/config used when binding a subscription id to an order.
-pub(crate) struct GiftWrapOrderSubscription {
+pub(crate) struct DmOrderSubscription {
     pub(crate) order_id: Uuid,
     pub(crate) trade_index: i64,
     pub(crate) error_label: &'static str,
     pub(crate) info_label: Option<&'static str>,
-    pub(crate) mode: GiftWrapSubscriptionMode,
+    pub(crate) mode: DmSubscriptionMode,
 }
 
-/// Subscribe GiftWrap for a trade pubkey and remember the returned subscription id.
+/// Subscribe for protocol DMs on the trade pubkey and remember the returned subscription id.
 /// Returns `true` when subscription is active (already subscribed or newly subscribed).
-pub(crate) async fn ensure_order_giftwrap_subscription(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ensure_order_dm_subscription(
     client: &Client,
+    transport: Transport,
+    mostro_pubkey: PublicKey,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
-    pubkey: PublicKey,
-    options: GiftWrapOrderSubscription,
+    trade_pubkey: PublicKey,
+    options: DmOrderSubscription,
 ) -> bool {
-    if !subscribed_pubkeys.insert(pubkey) {
+    if !subscribed_pubkeys.insert(trade_pubkey) {
         // Already subscribed: keep the tracked mapping fresh (e.g. post-take-order TrackOrder
         // rebinding from optimistic order_id -> effective_order_id).
-        if let Some(sub_id) = pubkey_to_subscription.get(&pubkey).cloned() {
+        if let Some(sub_id) = pubkey_to_subscription.get(&trade_pubkey).cloned() {
             subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
             return true;
         }
         log::warn!(
             "[dm_listener] pubkey {} marked subscribed but missing subscription id; resubscribing to restore mapping",
-            pubkey
+            trade_pubkey
         );
     }
+    let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
     let filter = match options.mode {
-        GiftWrapSubscriptionMode::StartupCatchUp => filter_giftwrap_to_recipient(pubkey).limit(1),
-        GiftWrapSubscriptionMode::StartupSince(ts) => {
+        DmSubscriptionMode::StartupCatchUp => base.limit(1),
+        DmSubscriptionMode::StartupSince(ts) => {
             let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_secs());
             let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
-            filter_giftwrap_to_recipient(pubkey).since(Timestamp::from(since_ts))
+            base.since(Timestamp::from(since_ts))
         }
         // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
         // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
         // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
         // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
-        GiftWrapSubscriptionMode::LiveOnly => filter_giftwrap_to_recipient(pubkey).limit(0),
+        DmSubscriptionMode::LiveOnly => base.limit(0),
     };
 
     match client.subscribe(filter, None).await {
@@ -73,7 +78,7 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
                     options.trade_index
                 );
             }
-            pubkey_to_subscription.insert(pubkey, sub_id.clone());
+            pubkey_to_subscription.insert(trade_pubkey, sub_id.clone());
             subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
             true
         }
@@ -81,12 +86,12 @@ pub(crate) async fn ensure_order_giftwrap_subscription(
             log::warn!(
                 "{} {} (index {}): {}",
                 options.error_label,
-                pubkey,
+                trade_pubkey,
                 options.trade_index,
                 e
             );
-            subscribed_pubkeys.remove(&pubkey);
-            pubkey_to_subscription.remove(&pubkey);
+            subscribed_pubkeys.remove(&trade_pubkey);
+            pubkey_to_subscription.remove(&trade_pubkey);
             false
         }
     }

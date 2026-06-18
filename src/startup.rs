@@ -200,11 +200,15 @@ pub async fn run_post_terminal_startup(
     let pending_notifications_clone = Arc::clone(&app.pending_notifications);
     let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
     let dm_subscription_rx = input.dm_subscription_rx;
+    let mostro_pubkey_for_listener = mostro_pubkey;
+    let transport_for_listener = Transport::default();
 
     let message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
                 client_for_messages,
+                mostro_pubkey_for_listener,
+                transport_for_listener,
                 pool_for_messages,
                 active_order_trade_indices_clone,
                 order_last_seen_dm_ts_clone,

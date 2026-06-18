@@ -256,10 +256,14 @@ pub async fn apply_pending_key_reload(
                     if let Err(msg) = &router_reg {
                         log::error!("[dm_listener] {}", msg);
                     }
+                    let dm_mostro_pubkey = new_mostro_pubkey;
+                    let dm_transport = app.transport;
                     *message_listener_handle = tokio::spawn(async move {
                         catch_unwind_request_fatal_restart("trade DM listener", async move {
                             listen_for_order_messages(
                                 client_for_messages,
+                                dm_mostro_pubkey,
+                                dm_transport,
                                 pool_for_messages,
                                 active_order_trade_indices_clone,
                                 order_last_seen_dm_ts_clone,
@@ -414,10 +418,14 @@ pub async fn apply_pending_fetch_scheduler_reload(
     if let Err(msg) = &router_reg {
         log::error!("[dm_listener] {msg}");
     }
+    let dm_mostro_pubkey = new_mostro_pubkey;
+    let dm_transport = app.transport;
     *message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
                 client_for_messages,
+                dm_mostro_pubkey,
+                dm_transport,
                 pool_for_messages,
                 active_order_trade_indices_clone,
                 order_last_seen_dm_ts_clone,
@@ -588,10 +596,14 @@ pub async fn reload_runtime_session_after_reconnect(
     if let Err(msg) = &router_reg {
         log::error!("[dm_listener] {}", msg);
     }
+    let dm_mostro_pubkey = new_mostro_pubkey;
+    let dm_transport = ctx.app.transport;
     *ctx.message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
                 client_for_messages,
+                dm_mostro_pubkey,
+                dm_transport,
                 pool_for_messages,
                 active_order_trade_indices_clone,
                 order_last_seen_dm_ts_clone,
