@@ -1219,8 +1219,8 @@ async fn fetch_and_replay_startup_trade_dms(
             mostro_pubkey,
             pubkey,
         )
-            .since(Timestamp::from(since_ts))
-            .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
+        .since(Timestamp::from(since_ts))
+        .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
 
         let events = match client.fetch_events(filter, FETCH_EVENTS_TIMEOUT).await {
             Ok(e) => e,

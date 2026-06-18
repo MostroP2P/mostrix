@@ -442,13 +442,8 @@ pub async fn apply_pending_fetch_scheduler_reload(
         log::error!("[dm_listener] {msg}");
     }
     let dm_mostro_pubkey = new_mostro_pubkey;
-    let dm_transport = dm_transport_for_mostro(
-        client,
-        new_mostro_pubkey,
-        app,
-        "Fetch scheduler reload",
-    )
-    .await;
+    let dm_transport =
+        dm_transport_for_mostro(client, new_mostro_pubkey, app, "Fetch scheduler reload").await;
     *message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
