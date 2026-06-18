@@ -33,7 +33,7 @@ Mostro daemons advertise wire format on the **instance status** event (kind **38
 
 Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` in [`listen_for_order_messages`](../src/util/dm_utils/mod.rs). The listener is spawned with `mostro_pubkey` + `transport` from settings / [`AppState.transport`](../src/ui/app_state.rs) (startup defaults to GiftWrap until instance info is awaited in step 7).
 
-**Still pending:** `send_dm` → `wrap_message_with`; inbound `unwrap_incoming`; notification loop still gates `event.kind == GiftWrap` only. See steps 4–6 in [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md).
+**Still pending:** `send_dm` → `wrap_message_with`; inbound `unwrap_incoming`; notification loop still gates `event.kind == GiftWrap` only. Remaining work is listed under **Pending** in [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress).
 
 ### Legacy overview (v1 on the wire today)
 
