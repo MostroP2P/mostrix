@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use uuid::Uuid;
 
-use mostro_core::prelude::Action;
+use mostro_core::prelude::{Action, Transport};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::models::AdminDispute;
@@ -20,7 +20,7 @@ use crate::ui::orders::{
     MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
-use crate::util::MostroInstanceInfo;
+use crate::util::{transport_from_instance, MostroInstanceInfo};
 use nostr_sdk::Keys;
 
 #[derive(Debug)]
@@ -236,6 +236,8 @@ pub struct AppState {
     pub currencies_filter: Vec<String>,
     /// Cached Mostro instance info (kind 38385 event), if available.
     pub mostro_info: Option<MostroInstanceInfo>,
+    /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
+    pub transport: Transport,
     /// Non-blocking overlay shown when relays are unreachable.
     pub offline_overlay_message: Option<String>,
     /// True only when BackupNewKeys was opened after runtime key rotation.
@@ -311,6 +313,7 @@ impl AppState {
             pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
             mostro_info: None,
+            transport: Transport::default(),
             offline_overlay_message: None,
             backup_requires_restart: false,
             pending_key_reload: false,
@@ -318,6 +321,12 @@ impl AppState {
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,
         }
+    }
+
+    /// Replace cached instance info and keep [`Self::transport`] in sync.
+    pub fn set_mostro_info(&mut self, info: Option<MostroInstanceInfo>) {
+        self.transport = transport_from_instance(info.as_ref());
+        self.mostro_info = info;
     }
 
     /// Securely wipe all observer inputs and fetched content.

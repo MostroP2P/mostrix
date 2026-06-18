@@ -132,6 +132,16 @@ pub struct Settings {
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 
+### Mostro instance info (kind 38385)
+
+Background and manual refresh (Mostro Info tab → Enter) fetch the daemon status event and update UI state:
+
+- **`AppState.mostro_info`**: parsed tags (`pow`, `bond_enabled`, `protocol_version`, LND metadata, …) — see [`mostro_info_from_tags`](../src/util/mostro_info.rs).
+- **`AppState.transport`**: resolved wire transport for **protocol DMs** via [`transport_from_instance`](../src/util/mostro_info.rs). Updated only through [`AppState.set_mostro_info`](../src/ui/app_state.rs) (main loop `MostroInfoFetchResult`, reconnect, invalid-pubkey clear).
+- **Startup today**: instance info may still load *after* the DM listener spawns (`spawn_refresh_mostro_info_task` is async). Protocol v2 work will **await** instance info before starting the listener so `transport` is known at subscribe time (see [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress)).
+
+Displayed on the **Mostro Info** tab: protocol version (`1` / `2` / unknown) and wire transport label (GiftWrap vs NIP-44 direct).
+
 ## Nostr & Background Tasks
 
 ### Nostr Client Connection

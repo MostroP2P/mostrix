@@ -8,10 +8,28 @@ See also **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for the background `list
 
 ## Communication Protocols
 
-Mostrix uses two Nostr protocols for secure communication:
+Mostrix uses Nostr transports for two distinct purposes:
+
+| Traffic | Transport | Notes |
+|---------|-----------|--------|
+| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **v1 GiftWrap** (kind 1059) today; **v2 NIP-44 direct** (kind 14) planned | Auto-selected from instance `protocol_version` tag — see **Protocol v2** below |
+| **P2P order chat** (My Trades) and **admin dispute chat** | NIP-59 GiftWrap via `mostro_core::chat` | Unchanged by protocol v2; shared ECDH keys |
+
+### Protocol v2 discovery (implemented)
+
+Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
+
+- Tag **`protocol_version`**: `"1"` → GiftWrap, `"2"` → NIP-44 direct messages.
+- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs).
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync whenever instance info updates ([`set_mostro_info`](../src/ui/app_state.rs) — used from `main.rs`, reconnect, and pubkey-change paths).
+- The **Mostro Info** tab displays protocol version and resolved wire transport.
+
+**Wire cutover (not yet merged):** `send_dm` still calls `wrap_message` (GiftWrap only); `listen_for_order_messages` still subscribes and gates on kind 1059. Steps 3–7 in [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md) will switch to `mostro_core::transport::{wrap_message_with, unwrap_incoming}` and v2 subscription filters (`.author(mostro_pubkey).pubkey(trade_key).kind(14)` for inbound Mostro replies).
+
+### Legacy overview (v1 on the wire today)
 
 1. **NIP-59 (Gift Wrap)**: Primary method for communicating with the Mostro daemon. Provides encryption and authentication.
-2. **NIP-44 (Encrypted Direct Messages)**: Alternative method for peer-to-peer communication (used in some scenarios).
+2. **NIP-44 (Encrypted Direct Messages)**: Used for **protocol v2** direct trade DMs (signed kind-14 + encrypted 3-tuple); not used for Mostro protocol traffic until v2 cutover. Peer chat remains GiftWrap-only.
 
 ### Proof-of-work (NIP-13)
 
@@ -550,7 +568,7 @@ If the response's `request_id` doesn't match the sent request, the operation is 
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
 
-### `CantDo` reasons (`mostro-core` 0.12.1+)
+### `CantDo` reasons (`mostro-core` 0.13.0+)
 
 User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_description`](../src/util/types.rs). Notable cases:
 - **`InvalidPayload`** — wrong payload shape or impossible values (e.g. `bond_resolution` slashing a side with no bond).
@@ -593,7 +611,7 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 
 **Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
-- **Client types**: `mostro-core` 0.12.1 — `BondResolution`, `Payload::BondResolution`, `Status::WaitingMakerBond`.
+- **Client types**: `mostro-core` 0.13.0 — `BondResolution`, `Payload::BondResolution`, `Status::WaitingMakerBond`, `Transport` / transport helpers.
 - **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
 - **Post-slash payout**: `Action::AddBondInvoice` with `Payload::BondPayoutRequest` (order amount = counterparty share, `slashed_at` anchor for claim deadline). Mostrix:

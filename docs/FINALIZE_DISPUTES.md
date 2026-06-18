@@ -8,7 +8,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 
 | Layer | Status | Notes |
 |-------|--------|--------|
-| **`mostro-core` 0.12.1** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond` |
+| **`mostro-core` 0.13.0** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond`, `Transport` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`; `CantDo` before DB update |
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
@@ -81,7 +81,7 @@ After a slash, the non-slashed party may receive `Action::AddBondInvoice` (`Payl
 
 ### Instance `bond_enabled` (kind 38385)
 
-Mostro always emits a `bond_enabled` tag (`"true"` / `"false"`). Mostrix reads it via [`instance_bonds_enabled()`](../src/util/mostro_info.rs): only `"true"` shows the Bond button and confirm bond recap. Fetch instance info from the **Mostro Info** tab (Enter) so gating reflects the connected daemon.
+Mostro always emits a `bond_enabled` tag (`"true"` / `"false"`). Mostrix reads it via [`instance_bonds_enabled()`](../src/util/mostro_info.rs): only `"true"` shows the Bond button and confirm bond recap. The same instance event may include **`protocol_version`** (`"1"` / `"2"`) for wire transport discovery — see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md). Fetch instance info from the **Mostro Info** tab (Enter) so gating reflects the connected daemon.
 
 ## UI Components
 

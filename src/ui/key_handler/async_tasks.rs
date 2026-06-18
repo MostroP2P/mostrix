@@ -617,7 +617,7 @@ pub async fn reload_runtime_session_after_reconnect(
     };
     match fetch_mostro_instance_info(ctx.client, mostro_pubkey).await {
         Ok(Some(info)) => {
-            ctx.app.mostro_info = Some(info);
+            ctx.app.set_mostro_info(Some(info));
         }
         Ok(None) => {
             // Keep prior info if any; not an error.

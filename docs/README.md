@@ -6,8 +6,8 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 - **Startup & Configuration**: [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — Boot sequence, settings (`blossom_servers`), background tasks, DM router wiring, reconnect; main loop **drains save/send-attachment and operation-result channels before draw** (150 ms refresh)
 - **DM listener & router**: [DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md) — `listen_for_order_messages`, TrackOrder vs waiter, startup `fetch_events` replay, in-memory `OrderMessage` list; **`Action::CantDo`** ignored in `handle_trade_dm_for_order` (errors use waiter / `OperationResult`, not Messages upserts)
-- **Message Flow & Protocol**: [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — How Mostrix talks to Mostro over Nostr (orders, GiftWrap, restarts, cooperative cancel / `TradeClosed`); **maker bond** (`send_new_order` → `PayBondInvoice` / `PaymentRequestRequired`, deferred `NewOrder` after payment); **My Trades user order chat** relay sync, own-message echo skip, attachment receive/save, **outbound send** (Ctrl+O picker, trade-key Blossom auth, mobile-compatible wire JSON, upload-then-send retry / **Ctrl+Shift+O**, `pending_order_attachment_sends`), **JSON transcript persistence** (Ctrl+S after restart)
-- **PoW & outbound events**: [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) — Instance `pow` (kind 38385), `nostr_pow_from_instance`, Gift Wrap outer mining (`gift_wrap_from_seal_with_pow`)
+- **Message Flow & Protocol**: [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — How Mostrix talks to Mostro over Nostr (orders, GiftWrap, restarts, cooperative cancel / `TradeClosed`); **protocol v2 discovery** (`protocol_version` on kind 38385 → `AppState.transport`; wire cutover in progress — see [Protocol v2 (NIP-44)](#protocol-v2-nip-44-in-progress)); **maker bond** (`send_new_order` → `PayBondInvoice` / `PaymentRequestRequired`, deferred `NewOrder` after payment); **My Trades user order chat** relay sync, own-message echo skip, attachment receive/save, **outbound send** (Ctrl+O picker, trade-key Blossom auth, mobile-compatible wire JSON, upload-then-send retry / **Ctrl+Shift+O**, `pending_order_attachment_sends`), **JSON transcript persistence** (Ctrl+S after restart)
+- **PoW & outbound events**: [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) — Instance `pow` (kind 38385), `nostr_pow_from_instance`, Gift Wrap outer mining (`gift_wrap_from_seal_with_pow`); v2 will apply PoW on signed kind-14 (see protocol v2 section in MESSAGE_FLOW)
 - **Database**: [DATABASE.md](DATABASE.md) — SQLite schema, `orders` / `users` / `admin_disputes`, migrations; **relay → SQLite reconcile** for terminal order statuses (`relay_order_db_reconcile.rs`)
 - **Key Management**: [KEY_MANAGEMENT.md](KEY_MANAGEMENT.md) — Deterministic derivation (NIP-06 path), identity vs trade keys
 
@@ -37,4 +37,15 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 ## Implementation plans (AI / contributors)
 
 - Tracked Markdown plans for larger features live under **[`.cursor/plans/`](../.cursor/plans/README.md)** (git-tracked; see root `.gitignore` exceptions). Use them to capture design decisions and link to `src/` paths for codegen and reviews. Example: [admin dispute bond slash](../.cursor/plans/admin_dispute_bond_slash.plan.md). **My Trades attachments**: receive/save, JSON transcripts, outbound send (encrypt → Blossom → DM) — see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md).
+
+## Protocol v2 (NIP-44) — in progress
+
+Mostrix is gaining **dual-transport** support for Mostro **protocol DMs** (not P2P order chat or admin dispute chat — those stay on GiftWrap).
+
+| Status | What |
+|--------|------|
+| **Done** | `mostro-core` **0.13.0**; parse `protocol_version` (`"1"` / `"2"`) from kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs) via [`set_mostro_info`](../src/ui/app_state.rs); Mostro Info tab shows protocol version + wire transport |
+| **Pending** | `wrap_message_with` / `unwrap_incoming` in `send_dm` and DM listener; transport-aware relay filters (v2: `.author(mostro).pubkey(trade_key).kind(14)`); await instance info before spawning DM listener |
+
+Design reference: [`.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md`](../.cursor/plans/protocol_v2_nip-44_ca93af46.plan.md). Until cutover, **all trade DMs still use GiftWrap on the wire** even when the instance advertises `protocol_version: "2"`.
 

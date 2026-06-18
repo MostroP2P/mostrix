@@ -38,10 +38,11 @@ pub use filters::{
     create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
     MOSTRO_LIST_FETCH_EVENT_LIMIT,
 };
+pub use mostro_core::prelude::{unwrap_incoming, wrap_message_with, Transport};
 pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,
-    instance_bonds_enabled, mostro_info_from_tags, nostr_pow_from_instance, MostroInstanceInfo,
-    MOSTRO_INSTANCE_INFO_KIND,
+    instance_bonds_enabled, mostro_info_from_tags, nostr_pow_from_instance,
+    transport_from_instance, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
 };
 pub use network::{any_relay_reachable, connect_client_safely};
 pub use order_utils::{fetch_events_list, get_disputes, get_orders, send_new_order, take_order};
