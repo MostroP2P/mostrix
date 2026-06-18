@@ -51,7 +51,11 @@ pub(crate) async fn ensure_order_dm_subscription(
             trade_pubkey
         );
     }
-    let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
+    let base = filter_protocol_dm_from_mostro(
+        super::dm_listener_subscribe_transport(transport),
+        mostro_pubkey,
+        trade_pubkey,
+    );
     let filter = match options.mode {
         DmSubscriptionMode::StartupCatchUp => base.limit(1),
         DmSubscriptionMode::StartupSince(ts) => {

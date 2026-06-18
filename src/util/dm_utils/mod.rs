@@ -19,7 +19,7 @@ use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
@@ -40,6 +40,22 @@ use crate::util::order_utils::{
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_PENDING_WAITERS: usize = 32;
+
+static DM_V2_SUBSCRIBE_CLAMP_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Subscribe/fetch transport until inbound kind-14 routing uses [`unwrap_incoming`].
+fn dm_listener_subscribe_transport(transport: Transport) -> Transport {
+    if transport == Transport::Nip44Direct {
+        if !DM_V2_SUBSCRIBE_CLAMP_LOGGED.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "Mostro advertises protocol v2 (NIP-44); DM listener subscribe/fetch still uses GiftWrap until inbound unwrap_incoming is wired"
+            );
+        }
+        Transport::GiftWrap
+    } else {
+        transport
+    }
+}
 
 #[derive(Debug)]
 pub enum DmRouterCmd {
@@ -1198,7 +1214,11 @@ async fn fetch_and_replay_startup_trade_dms(
             .unwrap_or(lookback_start);
         let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
 
-        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
+        let filter = filter_protocol_dm_from_mostro(
+            dm_listener_subscribe_transport(transport),
+            mostro_pubkey,
+            pubkey,
+        )
             .since(Timestamp::from(since_ts))
             .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
 
@@ -1620,9 +1640,12 @@ pub async fn listen_for_order_messages(
                         let before = pending_waiters.len();
                         let waiter_pubkey = trade_keys.public_key();
                         if subscribed_pubkeys.insert(waiter_pubkey) {
-                            let filter =
-                                filter_protocol_dm_from_mostro(transport, mostro_pubkey, waiter_pubkey)
-                                    .limit(0);
+                            let filter = filter_protocol_dm_from_mostro(
+                                dm_listener_subscribe_transport(transport),
+                                mostro_pubkey,
+                                waiter_pubkey,
+                            )
+                            .limit(0);
                             match client.subscribe(filter, None).await {
                                 Ok(output) => {
                                     // Remember the subscription id so a later TrackOrder can

@@ -17,7 +17,7 @@ use crate::util::{
     hydrate_startup_active_order_dm_state, set_dm_router_cmd_tx, OrderDmSubscriptionCmd,
     StartupDmHydration,
 };
-use mostro_core::prelude::{Dispute, SmallOrder};
+use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -143,6 +143,28 @@ fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
     }
 }
 
+/// Fetch instance info for `mostro_pubkey`, refresh [`AppState`] transport, and return it for the DM listener.
+async fn dm_transport_for_mostro(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    app: &mut AppState,
+    log_context: &str,
+) -> Transport {
+    match fetch_mostro_instance_info(client, mostro_pubkey).await {
+        Ok(info) => {
+            app.set_mostro_info(info);
+            app.transport
+        }
+        Err(e) => {
+            log::warn!(
+                "{log_context}: failed to fetch Mostro instance info: {e}; defaulting to GiftWrap transport"
+            );
+            app.set_mostro_info(None);
+            Transport::default()
+        }
+    }
+}
+
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
 /// (`pending_key_reload`). Updates `app` and shared runtime state on success; sets an error
 /// [`OperationResult`] on failure.
@@ -257,7 +279,8 @@ pub async fn apply_pending_key_reload(
                         log::error!("[dm_listener] {}", msg);
                     }
                     let dm_mostro_pubkey = new_mostro_pubkey;
-                    let dm_transport = app.transport;
+                    let dm_transport =
+                        dm_transport_for_mostro(client, new_mostro_pubkey, app, "Key reload").await;
                     *message_listener_handle = tokio::spawn(async move {
                         catch_unwind_request_fatal_restart("trade DM listener", async move {
                             listen_for_order_messages(
@@ -419,7 +442,13 @@ pub async fn apply_pending_fetch_scheduler_reload(
         log::error!("[dm_listener] {msg}");
     }
     let dm_mostro_pubkey = new_mostro_pubkey;
-    let dm_transport = app.transport;
+    let dm_transport = dm_transport_for_mostro(
+        client,
+        new_mostro_pubkey,
+        app,
+        "Fetch scheduler reload",
+    )
+    .await;
     *message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
@@ -597,7 +626,8 @@ pub async fn reload_runtime_session_after_reconnect(
         log::error!("[dm_listener] {}", msg);
     }
     let dm_mostro_pubkey = new_mostro_pubkey;
-    let dm_transport = ctx.app.transport;
+    let dm_transport =
+        dm_transport_for_mostro(ctx.client, new_mostro_pubkey, ctx.app, "Reconnect").await;
     *ctx.message_listener_handle = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("trade DM listener", async move {
             listen_for_order_messages(
@@ -617,27 +647,6 @@ pub async fn reload_runtime_session_after_reconnect(
         })
         .await;
     });
-
-    let mostro_pubkey = match ctx.current_mostro_pubkey.lock() {
-        Ok(pk) => *pk,
-        Err(e) => {
-            request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
-            ));
-            return Err("Internal error. Please restart Mostrix.".to_string());
-        }
-    };
-    match fetch_mostro_instance_info(ctx.client, mostro_pubkey).await {
-        Ok(Some(info)) => {
-            ctx.app.set_mostro_info(Some(info));
-        }
-        Ok(None) => {
-            // Keep prior info if any; not an error.
-        }
-        Err(e) => {
-            log::warn!("Reconnect: failed to refresh Mostro instance info: {}", e);
-        }
-    }
 
     match router_reg {
         Ok(()) => Ok(()),
