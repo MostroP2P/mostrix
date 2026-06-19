@@ -302,7 +302,6 @@ async fn execute_payment_request_reply(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 
@@ -364,7 +363,6 @@ async fn execute_bond_payment_request_reply(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 

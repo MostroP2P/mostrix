@@ -70,7 +70,6 @@ pub async fn execute_admin_add_solver(
         &mostro_pubkey,
         add_solver_message,
         None,
-        false,
         mostro_instance,
     );
 

@@ -201,7 +201,6 @@ fn trade_message_is_terminal(message: &Message) -> bool {
 }
 
 /// Send a direct message to a receiver
-#[allow(clippy::too_many_arguments)]
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
@@ -209,7 +208,6 @@ pub async fn send_dm(
     receiver_pubkey: &PublicKey,
     payload: String,
     expiration: Option<Timestamp>,
-    _to_user: bool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     let pow = nostr_pow_from_instance(mostro_instance);

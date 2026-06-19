@@ -68,7 +68,6 @@ pub async fn execute_take_dispute(
         &mostro_pubkey,
         take_dispute_message,
         None,
-        false,
         mostro_instance,
     );
 
