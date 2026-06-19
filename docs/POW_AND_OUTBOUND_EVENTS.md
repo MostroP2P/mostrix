@@ -17,7 +17,7 @@ This document describes how Mostrix applies **NIP-13 proof-of-work** to events i
 - [`EnterKeyContext`](../src/ui/key_handler/mod.rs) includes `mostro_info: Option<MostroInstanceInfo>` so Enter/spawn paths can pass the same snapshot into async work without re-fetching relays per message.
 - [`send_dm`](../src/util/dm_utils/mod.rs) takes `mostro_instance: Option<&MostroInstanceInfo>` and computes `pow = nostr_pow_from_instance(mostro_instance)` once per send.
 
-If instance info has not been loaded yet (e.g. slow startup), PoW may be **0** and transport defaults to **GiftWrap** until a successful fetch or manual refresh (Mostro Info tab / background refresh tasks). Users may see rejects from strict instances until 38385 is cached.
+At startup, when relays are reachable, instance info is fetched **before** the DM listener spawns, so `AppState.mostro_info` and `AppState.transport` are usually set before the user can trade. If relays are unreachable or the fetch fails, PoW may be **0** and transport defaults to **GiftWrap** until a manual refresh (Mostro Info tab → Enter) or reconnect.
 
 ## Protocol v2 (NIP-44 direct) — PoW note
 

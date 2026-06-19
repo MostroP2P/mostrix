@@ -11,6 +11,24 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
     Filter::new().pubkey(pubkey).kind(nostr_sdk::Kind::GiftWrap)
 }
 
+/// Protocol DM filter for inbound Mostro → client traffic on the active wire transport.
+///
+/// v1: GiftWrap addressed to the trade key (`p` tag).
+/// v2: signed kind-14 from Mostro with trade key in `#p`.
+pub fn filter_protocol_dm_from_mostro(
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    trade_pubkey: PublicKey,
+) -> Filter {
+    match transport {
+        Transport::GiftWrap => filter_giftwrap_to_recipient(trade_pubkey),
+        Transport::Nip44Direct => Filter::new()
+            .author(mostro_pubkey)
+            .pubkey(trade_pubkey)
+            .kind(nostr_sdk::Kind::PrivateDirectMessage),
+    }
+}
+
 /// Relay fetch cap for Mostro-published [`Kind::Custom`] order/dispute list snapshots.
 pub const MOSTRO_LIST_FETCH_EVENT_LIMIT: usize = 500;
 
@@ -35,5 +53,32 @@ pub fn create_filter(
         ListKind::Orders => create_mostro_list_fetch_filter(NOSTR_ORDER_EVENT_KIND, pubkey),
         ListKind::Disputes => create_mostro_list_fetch_filter(NOSTR_DISPUTE_EVENT_KIND, pubkey),
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mostro_core::prelude::Transport;
+    use nostr_sdk::prelude::Keys;
+
+    #[test]
+    fn filter_protocol_dm_v1_matches_giftwrap_to_recipient() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let v1 = filter_protocol_dm_from_mostro(Transport::GiftWrap, mostro, trade);
+        let legacy = filter_giftwrap_to_recipient(trade);
+        assert_eq!(v1.as_json(), legacy.as_json());
+    }
+
+    #[test]
+    fn filter_protocol_dm_v2_uses_mostro_author_trade_p_tag_and_kind_14() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let filter = filter_protocol_dm_from_mostro(Transport::Nip44Direct, mostro, trade);
+        let json = filter.as_json();
+        assert!(json.contains(&format!(r#""authors":["{}"]"#, mostro)));
+        assert!(json.contains(&format!("\"#p\":[\"{}\"]", trade)));
+        assert!(json.contains(r#""kinds":[14]"#));
     }
 }

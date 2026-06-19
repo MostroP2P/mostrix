@@ -137,8 +137,8 @@ Proof-of-work for published events is taken from the Mostro instance status even
 Background and manual refresh (Mostro Info tab → Enter) fetch the daemon status event and update UI state:
 
 - **`AppState.mostro_info`**: parsed tags (`pow`, `bond_enabled`, `protocol_version`, LND metadata, …) — see [`mostro_info_from_tags`](../src/util/mostro_info.rs).
-- **`AppState.transport`**: resolved wire transport for **protocol DMs** via [`transport_from_instance`](../src/util/mostro_info.rs). Updated only through [`AppState.set_mostro_info`](../src/ui/app_state.rs) (main loop `MostroInfoFetchResult`, reconnect, invalid-pubkey clear).
-- **Startup today**: instance info may still load *after* the DM listener spawns (`spawn_refresh_mostro_info_task` is async). Protocol v2 work will **await** instance info before starting the listener so `transport` is known at subscribe time (see [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress)).
+- **`AppState.transport`**: resolved wire transport for **protocol DMs** via [`transport_from_instance`](../src/util/mostro_info.rs). Updated through [`AppState.set_mostro_info`](../src/ui/app_state.rs) (startup await, main loop `MostroInfoFetchResult`, reconnect, invalid-pubkey clear).
+- **Startup**: when relays are reachable, [`run_post_terminal_startup`](../src/startup.rs) **awaits** [`fetch_mostro_instance_info`](../src/util/mostro_info.rs) before spawning the DM listener so the first subscription uses the correct transport (v1 GiftWrap or v2 kind 14). On fetch failure or offline boot, transport defaults to GiftWrap.
 
 Displayed on the **Mostro Info** tab: protocol version (`1` / `2` / unknown) and wire transport label (GiftWrap vs NIP-44 direct).
 
@@ -186,13 +186,14 @@ Several background tasks are spawned to keep the UI and data in sync:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
    - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
    - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.
-   - `listen_for_order_messages(..., order_last_seen_dm_ts, ..., dm_subscription_rx)` runs as the single router loop consuming:
+   - `listen_for_order_messages(client, mostro_pubkey, transport, pool, …, order_last_seen_dm_ts, …, dm_subscription_rx)` runs as the single router loop consuming:
      - `TrackOrder` commands for long-lived trade subscriptions.
      - `RegisterWaiter` commands for one-shot request/response waits.
-   - After bootstrapping per-order GiftWrap subscriptions, the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
+   - After bootstrapping per-order protocol-DM subscriptions (`ensure_order_dm_subscription`), the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
+   - **Startup transport:** `startup.rs` awaits instance info when relays are reachable, then spawns the listener with `app.transport` from [`set_mostro_info`](../src/ui/app_state.rs); reload/reconnect paths use the same `app.transport`.
    - This unifies in-flight response handling and background trade notifications on top of one notification stream.
 
-See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for GiftWrap filter modes (`StartupCatchUp`, `StartupSince`, `LiveOnly`), waiter vs `TrackOrder` ordering, and replay details.
+See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for `DmSubscriptionMode` (`StartupCatchUp`, `StartupSince`, `LiveOnly`), [`filter_protocol_dm_from_mostro`](../src/util/filters.rs), waiter vs `TrackOrder` ordering, and replay details.
 
 ### Admin Chat Restore at Startup
 
