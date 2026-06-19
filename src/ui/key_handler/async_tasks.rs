@@ -165,6 +165,68 @@ async fn dm_transport_for_mostro(
     }
 }
 
+/// Abort and respawn the trade DM listener (e.g. after `protocol_version` / transport changes).
+#[allow(clippy::too_many_arguments)]
+pub async fn respawn_trade_dm_listener(
+    app: &mut AppState,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    pool: &SqlitePool,
+    message_listener_handle: &mut JoinHandle<()>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    dm_subscription_tx: &mut UnboundedSender<OrderDmSubscriptionCmd>,
+    log_context: &str,
+) -> Result<(), String> {
+    message_listener_handle.abort();
+    client.unsubscribe_all().await;
+
+    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("{log_context}: failed to hydrate startup active order DM state: {e}");
+            StartupDmHydration::empty()
+        }
+    };
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+    }
+    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
+
+    let client_for_messages = client.clone();
+    let pool_for_messages = pool.clone();
+    let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
+    let messages_clone = Arc::clone(&app.messages);
+    let message_notification_tx_clone = message_notification_tx.clone();
+    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
+    let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    *dm_subscription_tx = new_dm_tx;
+    set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| msg.to_string())?;
+
+    let dm_transport = app.transport;
+    *message_listener_handle = tokio::spawn(async move {
+        catch_unwind_request_fatal_restart("trade DM listener", async move {
+            listen_for_order_messages(
+                client_for_messages,
+                mostro_pubkey,
+                dm_transport,
+                pool_for_messages,
+                active_order_trade_indices_clone,
+                order_last_seen_dm_ts_clone,
+                messages_clone,
+                message_notification_tx_clone,
+                pending_notifications_clone,
+                dropped_user_history_clone,
+                new_dm_rx,
+            )
+            .await;
+        })
+        .await;
+    });
+    Ok(())
+}
+
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
 /// (`pending_key_reload`). Updates `app` and shared runtime state on success; sets an error
 /// [`OperationResult`] on failure.

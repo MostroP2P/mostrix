@@ -19,7 +19,7 @@ use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
@@ -52,22 +52,6 @@ fn default_dm_expiration() -> Timestamp {
             .as_secs()
             .saturating_add(DEFAULT_DM_EXPIRATION_DAYS * 24 * 60 * 60),
     )
-}
-
-static DM_V2_SUBSCRIBE_CLAMP_LOGGED: AtomicBool = AtomicBool::new(false);
-
-/// Subscribe/fetch transport until inbound kind-14 routing uses [`unwrap_incoming`].
-fn dm_listener_subscribe_transport(transport: Transport) -> Transport {
-    if transport == Transport::Nip44Direct {
-        if !DM_V2_SUBSCRIBE_CLAMP_LOGGED.swap(true, Ordering::Relaxed) {
-            log::warn!(
-                "Mostro advertises protocol v2 (NIP-44); DM listener subscribe/fetch still uses GiftWrap until inbound unwrap_incoming is wired"
-            );
-        }
-        Transport::GiftWrap
-    } else {
-        transport
-    }
 }
 
 #[derive(Debug)]
@@ -1192,13 +1176,9 @@ async fn fetch_and_replay_startup_trade_dms(
             .unwrap_or(lookback_start);
         let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
 
-        let filter = filter_protocol_dm_from_mostro(
-            dm_listener_subscribe_transport(transport),
-            mostro_pubkey,
-            pubkey,
-        )
-        .since(Timestamp::from(since_ts))
-        .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
+        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
+            .since(Timestamp::from(since_ts))
+            .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
 
         let events = match client.fetch_events(filter, FETCH_EVENTS_TIMEOUT).await {
             Ok(e) => e,
@@ -1266,7 +1246,7 @@ async fn fetch_and_replay_startup_trade_dms(
         };
 
         log::info!(
-            "Startup DM replay: order_id={} trade_index={} fetched {} GiftWrap event(s); hydrating newest rumor ts={}",
+            "Startup DM replay: order_id={} trade_index={} fetched {} protocol DM event(s); hydrating newest rumor ts={}",
             order_id,
             trade_index,
             fetched_n,
@@ -1395,15 +1375,15 @@ async fn resolve_order_for_event(
     None
 }
 
-/// Background DM router for GiftWrap events.
+/// Background DM router for Mostro protocol DM events (GiftWrap or signed kind 14).
 ///
 /// Responsibilities:
 /// - maintain relay subscriptions for tracked orders (`TrackOrder`) and temporary
 ///   request/response waiters (`RegisterWaiter` / `wait_for_dm`)
-/// - route each incoming GiftWrap through two complementary paths:
+/// - route each incoming protocol DM through two complementary paths:
 ///   1) waiter path: satisfy in-flight `wait_for_dm` calls
 ///   2) tracked-order path: parse and dispatch updates to the order/UI pipeline
-/// - reuse decryptability checks across both paths for the same incoming GiftWrap
+/// - reuse decryptability checks across both paths for the same incoming event
 ///   and trade pubkey (`HashMap<PublicKey, bool>` scoped to one notification; the
 ///   unknown-subscription fallback reuses the `UnwrappedMessage` from `resolve_order_for_event`
 ///   so it does not unwrap twice there)
@@ -1619,7 +1599,7 @@ pub async fn listen_for_order_messages(
                         let waiter_pubkey = trade_keys.public_key();
                         if subscribed_pubkeys.insert(waiter_pubkey) {
                             let filter = filter_protocol_dm_from_mostro(
-                                dm_listener_subscribe_transport(transport),
+                                transport,
                                 mostro_pubkey,
                                 waiter_pubkey,
                             )
@@ -1673,15 +1653,16 @@ pub async fn listen_for_order_messages(
                 } = notification
                 {
                     let event = *event;
-                    if event.kind != nostr_sdk::Kind::GiftWrap {
+                    let expected_kind = transport.event_kind();
+                    if event.kind != expected_kind {
                         continue;
                     }
-                    // One GiftWrap event can be consumed by:
+                    // One protocol DM event can be consumed by:
                     // 1) request/response waiters (`wait_for_dm`) and
                     // 2) tracked order subscriptions (UI/order state pipeline).
-                    // Shared cache for this single incoming GiftWrap: decryptability is keyed only
+                    // Shared cache for this single incoming event: decryptability is keyed only
                     // by trade pubkey; `event.id` is fixed for the whole handler block.
-                    // This avoids duplicate `unwrap_message` calls between waiter and tracked paths.
+                    // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
                     let mut rumor_cache: HashMap<PublicKey, bool> = HashMap::new();
 
                     if !pending_waiters.is_empty() {
@@ -1689,7 +1670,7 @@ pub async fn listen_for_order_messages(
                             Vec::with_capacity(pending_waiters.len());
                         // Try to satisfy in-flight `wait_for_dm` calls first.
                         // Non-matching waiters are re-queued and will be checked again on the
-                        // next GiftWrap event.
+                        // next protocol DM event.
                         for waiter in pending_waiters.drain(..) {
                             // Drop promptly when wait_for_dm timed out (receiver gone); no decrypt.
                             if waiter.response_tx.is_closed() {
@@ -1700,7 +1681,7 @@ pub async fn listen_for_order_messages(
                                 *boolean
                             } else {
                                 let ok = matches!(
-                                    unwrap_message(&event, &waiter.trade_keys).await,
+                                    unwrap_incoming(&event, &waiter.trade_keys).await,
                                     Ok(Some(_))
                                 );
                                 rumor_cache.insert(key, ok);
@@ -1720,7 +1701,7 @@ pub async fn listen_for_order_messages(
 
                     if let Some((order_id, trade_index)) = subscription_to_order.get(&subscription_id).copied() {
                         log::info!(
-                            "[dm_listener] Routed GiftWrap by subscription_id={} to order_id={}, trade_index={}",
+                            "[dm_listener] Routed protocol DM by subscription_id={} to order_id={}, trade_index={}",
                             subscription_id,
                             order_id,
                             trade_index
@@ -1746,7 +1727,7 @@ pub async fn listen_for_order_messages(
                             *boolean
                         } else {
                             let ok = matches!(
-                                unwrap_message(&event, &trade_keys).await,
+                                unwrap_incoming(&event, &trade_keys).await,
                                 Ok(Some(_))
                             );
                             rumor_cache.insert(key, ok);
@@ -1801,7 +1782,7 @@ pub async fn listen_for_order_messages(
                             continue;
                         }
                         log::info!(
-                            "[dm_listener] Routed GiftWrap by active-order key for unknown subscription_id={} to order_id={}, trade_index={}",
+                            "[dm_listener] Routed protocol DM by active-order key for unknown subscription_id={} to order_id={}, trade_index={}",
                             subscription_id,
                             order_id,
                             trade_index

@@ -16,8 +16,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
-    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect, AppChannels,
-    RuntimeReconnectContext,
+    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
@@ -474,7 +474,31 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(res) = mostro_info_result {
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
+                            let old_transport = app.transport;
                             app.set_mostro_info(*info);
+                            if old_transport != app.transport {
+                                log::warn!(
+                                    "Mostro protocol transport changed {:?} -> {:?}; restarting DM listener",
+                                    old_transport,
+                                    app.transport
+                                );
+                                if let Err(e) = respawn_trade_dm_listener(
+                                    &mut app,
+                                    &client,
+                                    mostro_pubkey,
+                                    &pool,
+                                    &mut message_listener_handle,
+                                    &message_notification_tx,
+                                    &mut dm_subscription_tx,
+                                    "Mostro info refresh",
+                                )
+                                .await
+                                {
+                                    log::error!(
+                                        "Failed to restart DM listener after transport change: {e}"
+                                    );
+                                }
+                            }
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );
