@@ -24,7 +24,8 @@ pub use dm_utils::{
     handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
     listen_for_order_messages, parse_dm_events, seed_admin_chat_last_seen, send_dm,
     set_dm_router_cmd_tx, set_order_result_tx, try_notify_my_trades_maker_book_changed,
-    wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration, FETCH_EVENTS_TIMEOUT,
+    unsubscribe_dm_listener_subscriptions, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
+    FETCH_EVENTS_TIMEOUT,
 };
 pub use fatal::{
     catch_unwind_request_fatal_restart, fatal_requested, install_background_panic_hook,

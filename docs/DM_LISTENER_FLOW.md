@@ -5,7 +5,7 @@ This document explains the runtime flow inside `listen_for_order_messages` (in `
 - how the in-memory **message list** (`Vec<OrderMessage>`) is created/updated
 - how “preferences”/routing concepts work: **TrackOrder**, **Waiter**, **Database**, **Action**, **Status**, notifications, and terminal cleanup
 
-> **Protocol v2 (in progress):** Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (v2 clamped to GiftWrap until step 6). Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses `wrap_message_with`; parse/replay uses [`unwrap_incoming`](../src/util/mod.rs). See [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
+> **Protocol v2:** Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) per resolved transport. Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses `wrap_message_with`; inbound parse and listener decrypt use [`unwrap_incoming`](../src/util/mod.rs). Event gate: `event.kind == transport.event_kind()`. See [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
 
 ## Big picture
 
@@ -29,7 +29,7 @@ Mostrix has a **single background task** that:
   Lets TrackOrder “rebind” a pubkey that was subscribed earlier by a waiter without subscribing twice.
 
 - **`pending_waiters: Vec<PendingDmWaiter>`**  
-  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming GiftWrap can be decrypted for that operation.
+  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation.
 
 - **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*  
   Tracks which orders are currently “active” and which `trade_index` (hence which trade key) belongs to each `order_id`.
@@ -53,7 +53,7 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 `listen_for_order_messages(client, mostro_pubkey, transport, …)` clones the active-order map and, for each `(order_id, trade_index)`:
 
 1. derives `trade_keys` from the persisted `User` seed + trade index
-2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro` → `dm_listener_subscribe_transport`) with a mode from `DmSubscriptionMode`:
+2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro(transport, …)`) with a mode from `DmSubscriptionMode`:
    - **`StartupCatchUp`** (no `last_seen_dm_ts` yet): latest retained event (`limit(1)`) — tight catch-up
    - **`StartupSince(ts)`** (cursor present): `since(ts)` for incremental subscription
    - **`LiveOnly`** (used after `TrackOrder` during live flows, e.g. take-order): **`.limit(0)`** live stream — **not** `.since(now)`, so Same-second Mostro replies are not dropped when `take_order` sends an early `TrackOrder` before `wait_for_dm` (the pubkey is already subscribed once; a second waiter subscription is skipped)
@@ -64,7 +64,7 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 Relay subscriptions alone often **do not** deliver enough stored history into the notification stream to refill the UI. Immediately after the bootstrap `subscribe` loop, the listener runs **`fetch_and_replay_startup_trade_dms`**:
 
 - Takes a **`DmListenerStartupReplay`** snapshot (`client`, `mostro_pubkey`, `transport`, `pool`, `user`, messages, notification maps, subscription maps).
-- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using `dm_listener_subscribe_transport(transport)` + [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
+- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
 - Within that fetched window, decrypts each event with [`unwrap_incoming`](../src/util/mod.rs) and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
 - Dispatches **`dispatch_giftwrap_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
 
@@ -95,7 +95,7 @@ Use case: “I’m about to send a request DM; wait for the first decryptable re
 What happens:
 
 - Waiters are bounded (`MAX_PENDING_WAITERS`), and periodically garbage-collected (drops closed oneshots).
-- If this trade pubkey is not yet subscribed, the listener subscribes with `dm_listener_subscribe_transport(transport)` + `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
+- If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(transport, …).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
 - The waiter is pushed into `pending_waiters`.
@@ -104,7 +104,7 @@ What happens:
 
 ## Incoming protocol DM event routing (the heart of the flow)
 
-When a relay event arrives (`RelayPoolNotification::Event`) and `event.kind == GiftWrap` *(v2: will use `transport.event_kind()` — step 6)*:
+When a relay event arrives (`RelayPoolNotification::Event`) and `event.kind == transport.event_kind()`:
 
 ### Step A — satisfy pending waiters first
 
@@ -145,7 +145,7 @@ For the tracked order (or fallback-resolved order), the listener:
 `parse_dm_events` returns a sorted list:
 
 - **dedup**: drops duplicate Nostr event IDs
-- **decrypt**: unwraps GiftWrap (NIP-59) and parses JSON into `mostro_core::Message`
+- **decrypt**: [`unwrap_incoming`](../src/util/mod.rs) (GiftWrap or kind 14) and parses JSON into `mostro_core::Message`
 - **sort**: ascending by rumor created-at timestamp (oldest → newest)
 
 ### 2) Dispatch each parsed trade DM into the UI/DB pipeline
@@ -281,7 +281,7 @@ flowchart TD
   CMD -->|TrackOrder| TO[Update active_order_trade_indices; ensure subscription; bind subscription_id -> order]
   CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; push PendingDmWaiter]
 
-  D -->|relay event| E[GiftWrap event arrives]
+  D -->|relay event| E[protocol DM event arrives]
   E --> WA[Try match pending waiters (decrypt check)]
   WA --> RB{subscription_id mapped?}
   RB -->|yes| FAST[Derive trade_keys; parse_dm_events; dispatch batch]

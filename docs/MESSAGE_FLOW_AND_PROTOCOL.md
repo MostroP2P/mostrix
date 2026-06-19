@@ -12,7 +12,7 @@ Mostrix uses Nostr transports for two distinct purposes:
 
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
-| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385; **inbound** still GiftWrap-only until steps 5–6 |
+| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385 (inbound + outbound) |
 | **P2P order chat** (My Trades) and **admin dispute chat** | NIP-59 GiftWrap via `mostro_core::chat` | Unchanged by protocol v2; shared ECDH keys |
 
 ### Protocol v2 discovery, outbound send, and subscriptions (partial)
@@ -35,14 +35,12 @@ Mostro daemons advertise wire format on the **instance status** event (kind **38
 | v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
 | v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
 
-Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter`. Filters pass through [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (**v2 clamped to GiftWrap** until step 6).
-
-**Still pending:** event gate, listener waiter decrypt → `unwrap_incoming`, remove clamp — [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` via [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with the resolved `transport`.
 
 ### Legacy overview
 
 1. **NIP-59 Gift Wrap (1059)**: Protocol v1 wire format and all P2P chat.
-2. **NIP-44 direct (signed kind 14)**: Protocol v2 for Mostro DMs — **outbound live** via `send_dm`; **parse/replay** via `unwrap_incoming`; live listener subscribe/gate still step 6.
+2. **NIP-44 direct (signed kind 14)**: Protocol v2 for Mostro DMs — inbound and outbound via dual transport helpers.
 
 ### Proof-of-work (NIP-13)
 
@@ -171,10 +169,10 @@ The `wait_for_dm` function now uses the shared DM router:
 1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
-4. The background DM listener decrypt-checks incoming protocol DM events against pending waiters (**GiftWrap only today**; v2 inbound pending) and delivers the first match to `wait_for_dm`
+4. The background DM listener decrypt-checks incoming protocol DM events (GiftWrap or kind 14 per transport) against pending waiters and delivers the first match to `wait_for_dm`
 
 Waiter subscription detail:
-- `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only), passed through `dm_listener_subscribe_transport` (v2 clamped to GiftWrap until step 6)
+- `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only)
 
 ### 6. Parsing and Handling Response
 **Source**: [`src/util/order_utils/send_new_order.rs`](../src/util/order_utils/send_new_order.rs)
@@ -283,11 +281,11 @@ sequenceDiagram
     participant UI
 
     Cmd->>Router: TrackOrder(order_id, trade_index)
-    Router->>Relays: subscribe protocol DM filter (trade key; v2 clamp → GiftWrap until step 6)
+    Router->>Relays: subscribe protocol DM filter (transport-aware)
     Cmd->>Router: RegisterWaiter(trade_keys, response_tx)
     Router->>Relays: (if needed) subscribe waiter pubkey
     Relays-->>Router: RelayPoolNotification::Event(protocol DM)
-    Router->>Router: Gate: GiftWrap only today; try waiter decrypt match
+    Router->>Router: Gate: event.kind == transport.event_kind(); try waiter decrypt match
     alt waiter matched
         Router-->>Cmd: oneshot response_tx.send(event)
     end
@@ -312,7 +310,7 @@ pub async fn listen_for_order_messages(
 
 This task:
 1. Maintains a command-driven subscription router (`TrackOrder` + `RegisterWaiter`) using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) for subscribe/replay/waiter filters
-2. Consumes `client.notifications()` and handles protocol DM events as they arrive (**event kind gate still GiftWrap-only** until step 6)
+2. Consumes `client.notifications()` and handles protocol DM events matching `transport.event_kind()`
 3. Routes events by known `subscription_id` to `(order_id, trade_index)`
 4. Falls back to decrypting against active tracked trade keys when `subscription_id` is unknown
 5. Parses/decrypts with `parse_dm_events`, updates order state, and emits UI notifications
