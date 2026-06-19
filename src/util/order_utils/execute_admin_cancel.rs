@@ -67,7 +67,6 @@ pub async fn execute_admin_cancel(
         &mostro_pubkey,
         cancel_message,
         None,
-        false,
         mostro_instance,
     );
 

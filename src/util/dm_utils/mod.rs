@@ -31,7 +31,9 @@ use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
-use crate::util::mostro_info::{nostr_pow_from_instance, MostroInstanceInfo};
+use crate::util::mostro_info::{
+    nostr_pow_from_instance, transport_from_instance, MostroInstanceInfo,
+};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
     should_strictly_advance_status,
@@ -40,6 +42,17 @@ use crate::util::order_utils::{
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_PENDING_WAITERS: usize = 32;
+
+/// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
+const DEFAULT_DM_EXPIRATION_DAYS: u64 = 30;
+
+fn default_dm_expiration() -> Timestamp {
+    Timestamp::from(
+        Timestamp::now()
+            .as_secs()
+            .saturating_add(DEFAULT_DM_EXPIRATION_DAYS * 24 * 60 * 60),
+    )
+}
 
 static DM_V2_SUBSCRIBE_CLAMP_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -188,7 +201,6 @@ fn trade_message_is_terminal(message: &Message) -> bool {
 }
 
 /// Send a direct message to a receiver
-#[allow(clippy::too_many_arguments)]
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
@@ -196,14 +208,19 @@ pub async fn send_dm(
     receiver_pubkey: &PublicKey,
     payload: String,
     expiration: Option<Timestamp>,
-    _to_user: bool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     let pow = nostr_pow_from_instance(mostro_instance);
     let message = Message::from_json(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
     let identity_keys = identity_keys.unwrap_or(trade_keys);
-    let event = wrap_message(
+    let transport = transport_from_instance(mostro_instance);
+    let expiration = match (transport, expiration) {
+        (Transport::Nip44Direct, None) => Some(default_dm_expiration()),
+        (_, exp) => exp,
+    };
+    let event = wrap_message_with(
+        transport,
         &message,
         identity_keys,
         trade_keys,
@@ -214,7 +231,8 @@ pub async fn send_dm(
             signed: true,
         },
     )
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?;
 
     client.send_event(&event).await?;
     Ok(())
@@ -1857,12 +1875,13 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
+        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
         is_pre_active_taker_take, new_order_would_regress_messages_row,
         small_order_pending_from_new_order_payload, trade_message_is_terminal,
     };
     use crate::models::Order;
     use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
+    use nostr_sdk::Timestamp;
 
     #[test]
     fn action_only_canceled_is_terminal() {
@@ -1986,5 +2005,14 @@ mod tests {
             &Action::PayInvoice,
             &Action::NewOrder,
         ));
+    }
+
+    #[test]
+    fn default_dm_expiration_is_thirty_days_ahead() {
+        let now = Timestamp::now().as_secs();
+        let exp = default_dm_expiration().as_secs();
+        let thirty_days: u64 = 30 * 24 * 60 * 60;
+        assert!(exp >= now + thirty_days.saturating_sub(2));
+        assert!(exp <= now + thirty_days + 2);
     }
 }

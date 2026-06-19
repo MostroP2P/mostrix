@@ -67,7 +67,6 @@ pub async fn execute_admin_settle(
         &mostro_pubkey,
         settle_message,
         None,
-        false,
         mostro_instance,
     );
 

@@ -93,7 +93,6 @@ pub async fn execute_send_msg(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 
@@ -191,7 +190,6 @@ pub async fn execute_rate_user(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 

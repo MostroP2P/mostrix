@@ -127,7 +127,6 @@ pub async fn take_order(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 

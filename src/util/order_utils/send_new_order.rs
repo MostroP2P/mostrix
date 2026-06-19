@@ -140,7 +140,6 @@ pub async fn send_new_order(
         &mostro_pubkey,
         message_json,
         None,
-        false,
         mostro_instance,
     );
 
