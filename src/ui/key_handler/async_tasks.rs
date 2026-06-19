@@ -178,6 +178,9 @@ pub async fn respawn_trade_dm_listener(
     log_context: &str,
 ) -> Result<(), String> {
     message_listener_handle.abort();
+    // Await the old task before draining subs so it cannot register new ids after take().
+    let old_listener = std::mem::replace(message_listener_handle, tokio::spawn(async {}));
+    let _ = old_listener.await;
     // DM listener subs only — `Client` is shared with order/dispute fetch schedulers.
     unsubscribe_dm_listener_subscriptions(client).await;
 
