@@ -282,16 +282,12 @@ where
     Ok(events)
 }
 
-/// Parse DM events to extract Messages
+/// Parse DM events to extract Messages (v1 GiftWrap and v2 kind 14 via [`unwrap_incoming`]).
 pub async fn parse_dm_events(
     events: Events,
     pubkey: &Keys,
     since: Option<&i64>,
 ) -> Vec<(Message, i64, PublicKey)> {
-    use base64::engine::general_purpose;
-    use base64::Engine;
-    use nip44::v2::{decrypt_to_bytes, ConversationKey};
-
     let mut id_set = HashSet::<EventId>::new();
     let mut direct_messages: Vec<(Message, i64, PublicKey)> = Vec::new();
 
@@ -301,49 +297,13 @@ pub async fn parse_dm_events(
             continue;
         }
 
-        let (created_at, message, sender) = match dm.kind {
-            nostr_sdk::Kind::GiftWrap => match unwrap_message(dm, pubkey).await {
-                Ok(None) => continue,
-                Err(e) => {
-                    log::warn!("Could not unwrap gift wrap (event {}): {}", dm.id, e);
-                    continue;
-                }
-                Ok(Some(u)) => (u.created_at, u.message, u.sender),
-            },
-            nostr_sdk::Kind::PrivateDirectMessage => {
-                let ck = if let Ok(ck) = ConversationKey::derive(pubkey.secret_key(), &dm.pubkey) {
-                    ck
-                } else {
-                    continue;
-                };
-                let b64decoded_content =
-                    match general_purpose::STANDARD.decode(dm.content.as_bytes()) {
-                        Ok(b64decoded_content) => b64decoded_content,
-                        Err(_) => {
-                            continue;
-                        }
-                    };
-                let unencrypted_content = match decrypt_to_bytes(&ck, &b64decoded_content) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        continue;
-                    }
-                };
-                let message_str = match String::from_utf8(unencrypted_content) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        continue;
-                    }
-                };
-                let message = match Message::from_json(&message_str) {
-                    Ok(m) => m,
-                    Err(_) => {
-                        continue;
-                    }
-                };
-                (dm.created_at, message, dm.pubkey)
+        let (created_at, message, sender) = match unwrap_incoming(dm, pubkey).await {
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!("Could not unwrap protocol DM (event {}): {}", dm.id, e);
+                continue;
             }
-            _ => continue,
+            Ok(Some(u)) => (u.created_at, u.message, u.sender),
         };
 
         // Check if the message is older than the since time if it is, skip it
@@ -363,9 +323,9 @@ pub async fn parse_dm_events(
     direct_messages
 }
 
-/// Parse one GiftWrap [`Event`] with the trade key (`since: None`). Shared by relay notifications and startup replay.
+/// Parse one protocol DM [`Event`] with the trade key (`since: None`). Shared by relay notifications and startup replay.
 ///
-/// When `pre_unwrapped` is set (e.g. after a successful `unwrap_message`), skips a second unwrap.
+/// When `pre_unwrapped` is set (e.g. after a successful [`unwrap_incoming`]), skips a second unwrap.
 async fn parse_dm_events_single(
     event: &Event,
     trade_keys: &Keys,
@@ -1264,12 +1224,12 @@ async fn fetch_and_replay_startup_trade_dms(
 
         let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
         for event in &event_list {
-            let unwrapped = match unwrap_message(event, &trade_keys).await {
+            let unwrapped = match unwrap_incoming(event, &trade_keys).await {
                 Ok(Some(u)) => u,
                 Ok(None) => continue,
                 Err(e) => {
                     log::warn!(
-                        "Startup DM replay: unwrap_message failed (event {}): {}",
+                        "Startup DM replay: unwrap_incoming failed (event {}): {}",
                         event.id,
                         e
                     );
@@ -1413,7 +1373,7 @@ async fn resolve_order_for_event(
             Ok(k) => k,
             Err(_) => continue,
         };
-        match unwrap_message(event, &trade_keys).await {
+        match unwrap_incoming(event, &trade_keys).await {
             Ok(Some(unwrapped)) => {
                 let duration_ms = started.elapsed().as_millis() as u64;
                 GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
