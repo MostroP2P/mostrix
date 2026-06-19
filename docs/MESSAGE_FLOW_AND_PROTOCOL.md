@@ -35,14 +35,14 @@ Mostro daemons advertise wire format on the **instance status** event (kind **38
 | v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
 | v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
 
-Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter`. Filters pass through [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (**v2 clamped to GiftWrap** until inbound steps 5–6).
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter`. Filters pass through [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (**v2 clamped to GiftWrap** until step 6).
 
-**Still pending:** `unwrap_incoming`, event gate, remove clamp — [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
+**Still pending:** event gate, listener waiter decrypt → `unwrap_incoming`, remove clamp — [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
 
 ### Legacy overview
 
 1. **NIP-59 Gift Wrap (1059)**: Protocol v1 wire format and all P2P chat.
-2. **NIP-44 direct (signed kind 14)**: Protocol v2 for Mostro DMs — **outbound live** via `send_dm`; inbound in progress.
+2. **NIP-44 direct (signed kind 14)**: Protocol v2 for Mostro DMs — **outbound live** via `send_dm`; **parse/replay** via `unwrap_incoming`; live listener subscribe/gate still step 6.
 
 ### Proof-of-work (NIP-13)
 

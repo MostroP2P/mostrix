@@ -44,8 +44,8 @@ Mostrix is gaining **dual-transport** support for Mostro **protocol DMs** (not P
 
 | Status | What |
 |--------|------|
-| **Done** | `mostro-core` **0.13.0**; `protocol_version` on kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); **await instance info** before listener (startup + [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) on reload/reconnect); **`send_dm` → `wrap_message_with`** + v2 NIP-40 expiration (30 days) |
-| **Pending** | `unwrap_incoming` in inbound parse; event gate `transport.event_kind()`; remove [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) clamp; restart listener on manual Mostro Info refresh when transport flips |
+| **Done** | `mostro-core` **0.13.0**; `protocol_version` on kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); **await instance info** before listener (startup + [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) on reload/reconnect); **`send_dm` → `wrap_message_with`** + v2 NIP-40 expiration (30 days); **`parse_dm_events` / startup replay / fallback → `unwrap_incoming`** |
+| **Pending** | Event gate `transport.event_kind()`; listener waiter decrypt → `unwrap_incoming`; remove [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) clamp; restart listener on manual Mostro Info refresh when transport flips |
 
-**Asymmetric v2 today:** outbound uses `wrap_message_with` per `protocol_version`; inbound subscribe/fetch are **clamped to GiftWrap** until steps 5–6. v2-only nodes can send but not receive protocol DMs yet.
+**Asymmetric v2 today:** outbound and **parse** paths support both transports; inbound subscribe/fetch are **clamped to GiftWrap** and the live listener still gates on kind **1059** until step 6. v2-only nodes can send but will not receive protocol DMs until step 6.
 
