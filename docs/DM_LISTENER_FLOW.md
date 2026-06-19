@@ -5,7 +5,7 @@ This document explains the runtime flow inside `listen_for_order_messages` (in `
 - how the in-memory **message list** (`Vec<OrderMessage>`) is created/updated
 - how “preferences”/routing concepts work: **TrackOrder**, **Waiter**, **Database**, **Action**, **Status**, notifications, and terminal cleanup
 
-> **Protocol v2 (in progress):** **Subscribe/replay/waiter filters** use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `mostro_pubkey` + [`Transport`](../src/util/mod.rs) passed into `listen_for_order_messages`. v2 shape: `.author(mostro).pubkey(trade_key).kind(14)`. The **notification handler** still accepts only `kind == GiftWrap` and decrypts via `unwrap_message` — steps 5–6 add `unwrap_incoming` and `transport.event_kind()`. See [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress).
+> **Protocol v2 (in progress):** Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (v2 clamped to GiftWrap until inbound step 5–6). Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses `wrap_message_with`. See [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
 
 ## Big picture
 
@@ -13,7 +13,7 @@ Mostrix has a **single background task** that:
 
 - maintains relay subscriptions for **active orders** (long-lived)
 - supports temporary **request/response waits** (short-lived) used by operations like “create order”, “take order”, “send msg”
-- consumes incoming relay GiftWrap events and routes each event into:
+- consumes incoming relay protocol DM events and routes each event into:
   - (A) the **waiter path**: satisfy in-flight `wait_for_dm` calls
   - (B) the **tracked-order path**: update the UI/order-state pipeline
 
@@ -53,7 +53,7 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 `listen_for_order_messages(client, mostro_pubkey, transport, …)` clones the active-order map and, for each `(order_id, trade_index)`:
 
 1. derives `trade_keys` from the persisted `User` seed + trade index
-2. subscribes via `dm_helpers::ensure_order_dm_subscription` with a mode from `DmSubscriptionMode`:
+2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro` → `dm_listener_subscribe_transport`) with a mode from `DmSubscriptionMode`:
    - **`StartupCatchUp`** (no `last_seen_dm_ts` yet): latest retained event (`limit(1)`) — tight catch-up
    - **`StartupSince(ts)`** (cursor present): `since(ts)` for incremental subscription
    - **`LiveOnly`** (used after `TrackOrder` during live flows, e.g. take-order): **`.limit(0)`** live stream — **not** `.since(now)`, so Same-second Mostro replies are not dropped when `take_order` sends an early `TrackOrder` before `wait_for_dm` (the pubkey is already subscribed once; a second waiter subscription is skipped)
@@ -64,8 +64,8 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 Relay subscriptions alone often **do not** deliver enough stored history into the notification stream to refill the UI. Immediately after the bootstrap `subscribe` loop, the listener runs **`fetch_and_replay_startup_trade_dms`**:
 
 - Takes a **`DmListenerStartupReplay`** snapshot (`client`, `mostro_pubkey`, `transport`, `pool`, `user`, messages, notification maps, subscription maps).
-- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
-- Within that fetched window, decrypts each GiftWrap and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
+- For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using `dm_listener_subscribe_transport(transport)` + [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
+- Within that fetched window, decrypts each event with `unwrap_message` (GiftWrap only today) and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
 - Dispatches **`dispatch_giftwrap_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
 
 **Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
@@ -95,7 +95,7 @@ Use case: “I’m about to send a request DM; wait for the first decryptable re
 What happens:
 
 - Waiters are bounded (`MAX_PENDING_WAITERS`), and periodically garbage-collected (drops closed oneshots).
-- If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
+- If this trade pubkey is not yet subscribed, the listener subscribes with `dm_listener_subscribe_transport(transport)` + `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
 - The waiter is pushed into `pending_waiters`.

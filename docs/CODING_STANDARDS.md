@@ -53,7 +53,7 @@ fn foo(msg: &crate::ui::DisputeChatMessage) { /* ... */ }
 - **Use traits**: When multiple types share behavior, consider using traits.
 - **Centralize configuration**: Use the `Settings` struct instead of hardcoding values.
 
-**Example**: The `send_dm` function in `src/util/dm_utils/mod.rs` is reused across multiple order operations instead of duplicating the NIP-59 wrapping logic.
+- [`send_dm`](../src/util/dm_utils/mod.rs) in `src/util/dm_utils/mod.rs` is reused across order operations; it wraps via `mostro-core` [`wrap_message_with`](../src/util/mod.rs) (v1 GiftWrap or v2 signed kind 14 per instance info).
 
 ### 3. Simplicity
 

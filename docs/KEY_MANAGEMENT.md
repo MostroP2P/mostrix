@@ -61,9 +61,9 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 
 - **Validation**: When saving a new dispute, if buyer and seller pubkeys differ but the two derived shared keys are identical, the client logs an error (`Shared keys for dispute … are identical for different buyer/seller pubkeys; chat may be broken`). This guards against bad relay data or parsing issues. A unit test in `src/util/chat_utils.rs` asserts that different counterparty pubkeys yield different shared keys.
 
-## NIP-59 Gift Wrap Structure
+## NIP-59 Gift Wrap Structure (protocol v1)
 
-Mostrix implements NIP-59 to communicate with the Mostro daemon. The key usage within this structure depends on the selected privacy mode.
+Mostrix implements NIP-59 for **protocol v1** and all P2P chat. **Protocol v2** Mostro DMs use signed kind 14 via [`wrap_message_with`](../src/util/mod.rs) — identity proof moves inside the NIP-44 ciphertext (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
 
 ### 1. Normal Mode (Reputation Enabled)
 In this mode, Mostro can link the trade to your identity key for reputation purposes, but other Nostr users cannot.

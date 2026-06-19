@@ -190,7 +190,8 @@ Several background tasks are spawned to keep the UI and data in sync:
      - `TrackOrder` commands for long-lived trade subscriptions.
      - `RegisterWaiter` commands for one-shot request/response waits.
    - After bootstrapping per-order protocol-DM subscriptions (`ensure_order_dm_subscription`), the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
-   - **Startup transport:** `startup.rs` awaits instance info when relays are reachable, then spawns the listener with `app.transport` from [`set_mostro_info`](../src/ui/app_state.rs); reload/reconnect paths use the same `app.transport`.
+   - **Startup transport:** `startup.rs` awaits instance info when relays are reachable, then spawns the listener with resolved `app.transport`.
+   - **Reload / reconnect transport:** [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) re-fetches instance info and updates `app.transport` **before** respawning the listener (key reload, fetch-scheduler reload, network reconnect).
    - This unifies in-flight response handling and background trade notifications on top of one notification stream.
 
 See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for `DmSubscriptionMode` (`StartupCatchUp`, `StartupSince`, `LiveOnly`), [`filter_protocol_dm_from_mostro`](../src/util/filters.rs), waiter vs `TrackOrder` ordering, and replay details.

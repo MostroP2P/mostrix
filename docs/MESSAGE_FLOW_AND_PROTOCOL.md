@@ -12,10 +12,10 @@ Mostrix uses Nostr transports for two distinct purposes:
 
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
-| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **v1 GiftWrap** (kind 1059) today; **v2 NIP-44 direct** (kind 14) planned | Auto-selected from instance `protocol_version` tag — see **Protocol v2** below |
+| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385; **inbound** still GiftWrap-only until steps 5–6 |
 | **P2P order chat** (My Trades) and **admin dispute chat** | NIP-59 GiftWrap via `mostro_core::chat` | Unchanged by protocol v2; shared ECDH keys |
 
-### Protocol v2 discovery and subscriptions (partial)
+### Protocol v2 discovery, outbound send, and subscriptions (partial)
 
 Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
 
@@ -24,25 +24,29 @@ Mostro daemons advertise wire format on the **instance status** event (kind **38
 - [`AppState.transport`](../src/ui/app_state.rs) is kept in sync whenever instance info updates ([`set_mostro_info`](../src/ui/app_state.rs)).
 - The **Mostro Info** tab displays protocol version and resolved wire transport.
 
-**Relay filters (implemented):** [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) in [`src/util/filters.rs`](../src/util/filters.rs):
+**Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses `transport_from_instance` + [`wrap_message_with`](../src/util/mod.rs); v2 adds default NIP-40 expiration (30 days) when `expiration` is `None`.
+
+**Transport before listener:** startup awaits instance info; reload/reconnect uses [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
+
+**Relay filters (implemented):**
 
 | Transport | Inbound filter (Mostro → client) |
 |-----------|----------------------------------|
 | v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
 | v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
 
-Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` in [`listen_for_order_messages`](../src/util/dm_utils/mod.rs). The listener is spawned with `mostro_pubkey` + `transport` from [`AppState.transport`](../src/ui/app_state.rs) after startup awaits instance info (or GiftWrap default when offline / fetch fails).
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter`. Filters pass through [`dm_listener_subscribe_transport`](../src/util/dm_utils/mod.rs) (**v2 clamped to GiftWrap** until inbound steps 5–6).
 
-**Still pending:** `send_dm` → `wrap_message_with`; inbound `unwrap_incoming`; notification loop still gates `event.kind == GiftWrap` only. Remaining work is listed under **Pending** in [docs/README.md — Protocol v2](README.md#protocol-v2-nip-44--in-progress).
+**Still pending:** `unwrap_incoming`, event gate, remove clamp — [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
 
-### Legacy overview (v1 on the wire today)
+### Legacy overview
 
-1. **NIP-59 (Gift Wrap)**: Primary method for communicating with the Mostro daemon. Provides encryption and authentication.
-2. **NIP-44 (Encrypted Direct Messages)**: Used for **protocol v2** direct trade DMs (signed kind-14 + encrypted 3-tuple); not used for Mostro protocol traffic until v2 cutover. Peer chat remains GiftWrap-only.
+1. **NIP-59 Gift Wrap (1059)**: Protocol v1 wire format and all P2P chat.
+2. **NIP-44 direct (signed kind 14)**: Protocol v2 for Mostro DMs — **outbound live** via `send_dm`; inbound in progress.
 
 ### Proof-of-work (NIP-13)
 
-Required difficulty comes from the Mostro **instance status** event (kind **38385**, tag `pow`), not from `settings.toml`. Mostrix derives mining bits with `nostr_pow_from_instance`, threads cached `AppState.mostro_info` into `send_dm` and related publishers, and applies PoW to the **published** event—including the **outer** Gift Wrap (kind 1059), via a local helper that extends the rust-nostr `gift_wrap` path. See **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)** for implementation details and file pointers.
+Required difficulty comes from kind **38385** tag `pow`. Mostrix uses `nostr_pow_from_instance` and `WrapOptions.pow` on the published event (GiftWrap outer on v1, signed kind-14 on v2). See **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)**.
 
 ## Order Creation Flow
 
@@ -146,13 +150,15 @@ A `Message` is constructed with:
         message_json,
         None,
         false,
+        mostro_instance,
     );
 ```
 
 The message is sent via `send_dm`, which:
-- Uses the **Identity Key** to sign the Seal (for reputation tracking)
-- Uses the **Trade Key** to sign the Rumor (demonstrating ownership)
-- Wraps everything in a NIP-59 Gift Wrap event
+- Resolves wire transport from cached instance info ([`transport_from_instance`](../src/util/mostro_info.rs))
+- Wraps with [`wrap_message_with`](../src/util/mod.rs): v1 NIP-59 Gift Wrap or v2 signed kind 14 (identity proof in ciphertext)
+- Uses the **Identity Key** for reputation binding and the **Trade Key** to sign the published event and inner message tuple
+- On v2, adds a default NIP-40 expiration (30 days) when the caller passes `None`
 
 ### 5. Waiting for Response
 **Source**: `src/util/order_utils/send_new_order.rs:141`
@@ -166,11 +172,10 @@ The `wait_for_dm` function now uses the shared DM router:
 1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
-4. The background DM listener decrypt-checks incoming GiftWrap events against pending waiters and delivers the first match to `wait_for_dm`
+4. The background DM listener decrypt-checks incoming protocol DM events against pending waiters (**GiftWrap only today**; v2 inbound pending) and delivers the first match to `wait_for_dm`
 
 Waiter subscription detail:
-- `RegisterWaiter` uses a live-only GiftWrap filter with `.limit(0)` (not `since(now)`), which
-  avoids same-second timestamp edge cases that can miss immediate Mostro responses.
+- `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only), passed through `dm_listener_subscribe_transport` (v2 clamped to GiftWrap until step 6)
 
 ### 6. Parsing and Handling Response
 **Source**: [`src/util/order_utils/send_new_order.rs`](../src/util/order_utils/send_new_order.rs)
@@ -279,11 +284,11 @@ sequenceDiagram
     participant UI
 
     Cmd->>Router: TrackOrder(order_id, trade_index)
-    Router->>Relays: subscribe GiftWrap(pubkey(trade_index))
+    Router->>Relays: subscribe protocol DM filter (trade key; v2 clamp → GiftWrap until step 6)
     Cmd->>Router: RegisterWaiter(trade_keys, response_tx)
-    Router->>Relays: (if needed) subscribe GiftWrap(waiter pubkey)
-    Relays-->>Router: RelayPoolNotification::Event(GiftWrap)
-    Router->>Router: Try waiter decrypt match
+    Router->>Relays: (if needed) subscribe waiter pubkey
+    Relays-->>Router: RelayPoolNotification::Event(protocol DM)
+    Router->>Router: Gate: GiftWrap only today; try waiter decrypt match
     alt waiter matched
         Router-->>Cmd: oneshot response_tx.send(event)
     end
