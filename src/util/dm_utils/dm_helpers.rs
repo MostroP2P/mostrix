@@ -79,7 +79,8 @@ pub(crate) async fn ensure_order_dm_subscription(
                 );
             }
             pubkey_to_subscription.insert(trade_pubkey, sub_id.clone());
-            subscription_to_order.insert(sub_id, (options.order_id, options.trade_index));
+            subscription_to_order.insert(sub_id.clone(), (options.order_id, options.trade_index));
+            super::register_dm_listener_subscription(sub_id);
             true
         }
         Err(e) => {

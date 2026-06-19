@@ -70,6 +70,34 @@ pub type OrderDmSubscriptionCmd = DmRouterCmd;
 
 static DM_ROUTER_CMD_TX: Mutex<Option<mpsc::UnboundedSender<DmRouterCmd>>> = Mutex::new(None);
 
+/// Relay subscription ids owned by the trade DM listener (not order/dispute schedulers).
+static DM_LISTENER_SUBSCRIPTION_IDS: Mutex<Vec<SubscriptionId>> = Mutex::new(Vec::new());
+
+pub(crate) fn register_dm_listener_subscription(id: SubscriptionId) {
+    if let Ok(mut guard) = DM_LISTENER_SUBSCRIPTION_IDS.lock() {
+        if !guard.iter().any(|existing| existing == &id) {
+            guard.push(id);
+        }
+    }
+}
+
+pub(crate) fn unregister_dm_listener_subscription(id: &SubscriptionId) {
+    if let Ok(mut guard) = DM_LISTENER_SUBSCRIPTION_IDS.lock() {
+        guard.retain(|existing| existing != id);
+    }
+}
+
+/// Unsubscribe only DM-listener relay subscriptions; leaves order/dispute scheduler subs intact.
+pub async fn unsubscribe_dm_listener_subscriptions(client: &Client) {
+    let ids: Vec<SubscriptionId> = DM_LISTENER_SUBSCRIPTION_IDS
+        .lock()
+        .map(|mut guard| std::mem::take(&mut *guard))
+        .unwrap_or_default();
+    for id in ids {
+        client.unsubscribe(&id).await;
+    }
+}
+
 /// Cumulative count of GiftWrap routes that ran the linear active-order decrypt fallback
 /// (`resolve_order_for_event`). Useful for monitoring how often the O(n) path runs.
 static GIFTWRAP_FALLBACK_DECRYPT_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -1065,6 +1093,7 @@ async fn dispatch_giftwrap_batch(
                         subscribed_pubkeys.remove(&keys.public_key());
                     }
                     subscription_to_order.remove(subscription_id);
+                    unregister_dm_listener_subscription(subscription_id);
                     client.unsubscribe(subscription_id).await;
                     break;
                 }
@@ -1609,6 +1638,7 @@ pub async fn listen_for_order_messages(
                                     // Remember the subscription id so a later TrackOrder can
                                     // rebind this pubkey to a concrete order_id without requiring
                                     // a second relay subscription.
+                                    register_dm_listener_subscription(output.val.clone());
                                     pubkey_to_subscription.insert(waiter_pubkey, output.val);
                                 }
                                 Err(e) => {

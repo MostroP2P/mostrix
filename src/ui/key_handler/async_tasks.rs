@@ -14,8 +14,8 @@ use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    hydrate_startup_active_order_dm_state, set_dm_router_cmd_tx, OrderDmSubscriptionCmd,
-    StartupDmHydration,
+    hydrate_startup_active_order_dm_state, set_dm_router_cmd_tx,
+    unsubscribe_dm_listener_subscriptions, OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
@@ -178,7 +178,8 @@ pub async fn respawn_trade_dm_listener(
     log_context: &str,
 ) -> Result<(), String> {
     message_listener_handle.abort();
-    client.unsubscribe_all().await;
+    // DM listener subs only — `Client` is shared with order/dispute fetch schedulers.
+    unsubscribe_dm_listener_subscriptions(client).await;
 
     let startup_dm_hydration = match hydrate_startup_active_order_dm_state(pool).await {
         Ok(h) => h,
