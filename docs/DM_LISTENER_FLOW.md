@@ -5,7 +5,44 @@ This document explains the runtime flow inside `listen_for_order_messages` (in `
 - how the in-memory **message list** (`Vec<OrderMessage>`) is created/updated
 - how “preferences”/routing concepts work: **TrackOrder**, **Waiter**, **Database**, **Action**, **Status**, notifications, and terminal cleanup
 
-> **Protocol v2:** Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) per resolved transport. Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses `wrap_message_with`; inbound parse and listener decrypt use [`unwrap_incoming`](../src/util/mod.rs). Event gate: `event.kind == transport.event_kind()`. See [Protocol v2](README.md#protocol-v2-nip-44-in-progress).
+> **Protocol v2:** Mostrix **auto-selects** wire transport from kind **38385** `protocol_version` (`"1"` → GiftWrap, `"2"` → NIP-44 kind 14). Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) per resolved [`Transport`](../src/util/mod.rs). Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs); inbound parse, waiter match, and listener decrypt use [`unwrap_incoming`](../src/util/mod.rs). Event gate: `event.kind == transport.event_kind()`. On transport change after instance-info refresh, [`respawn_trade_dm_listener`](../src/ui/key_handler/async_tasks.rs) restarts this task. See [Protocol v2](README.md#protocol-v2-nip-44--protocol-dms-complete).
+
+## Dual transport (v1 GiftWrap vs v2 NIP-44)
+
+Protocol DMs (orders, take, pay, release — **not** P2P order chat or admin dispute chat) share one listener but use different relay filters and event kinds:
+
+| | **v1** (`protocol_version: "1"` or missing) | **v2** (`protocol_version: "2"`) |
+|---|---|---|
+| **Subscribe filter** | `.pubkey(trade_key).kind(1059)` | `.author(mostro).pubkey(trade_key).kind(14)` |
+| **Inbound event kind** | GiftWrap (1059) | PrivateDirectMessage (14) |
+| **Outbound** | GiftWrap via `wrap_message_with` | Signed kind 14 + identity proof |
+| **Decrypt** | `unwrap_incoming` (both) | `unwrap_incoming` (both) |
+| **PoW** | Instance `pow` on GiftWrap outer | Instance `pow` on signed kind 14; v2 first-contact actions (`NewOrder`, `TakeBuy`, `TakeSell`) use `max(pow, pow_first_contact)` — see [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) |
+
+Transport is resolved in [`transport_from_instance`](../src/util/mostro_info.rs) and cached on [`AppState.transport`](../src/ui/app_state.rs). Startup **awaits** instance info before spawning the listener; reconnect and Mostro Info refresh reload transport via [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
+
+```mermaid
+flowchart LR
+  subgraph discover [Instance info kind 38385]
+    IV[protocol_version tag]
+    IV --> T{version}
+    T -->|1 or missing| GW[Transport::GiftWrap]
+    T -->|2| N44[Transport::Nip44Direct]
+  end
+
+  subgraph subscribe [Per trade key subscription]
+    GW --> F1["filter: p=trade, kind 1059"]
+    N44 --> F2["filter: author=mostro, p=trade, kind 14"]
+  end
+
+  subgraph inbound [Relay event]
+    F1 --> E1[GiftWrap event]
+    F2 --> E2[kind-14 event]
+    E1 --> U[unwrap_incoming]
+    E2 --> U
+    U --> R[parse_dm_events → handle_trade_dm_for_order]
+  end
+```
 
 ## Big picture
 
@@ -110,7 +147,7 @@ When a relay event arrives (`RelayPoolNotification::Event`) and `event.kind == t
 
 For each waiter:
 
-- test whether `nip59::extract_rumor(&waiter.trade_keys, &event)` succeeds
+- test whether [`unwrap_incoming`](../src/util/mod.rs) succeeds for `waiter.trade_keys` and the event
 - if it does, send the raw `event` into the waiter oneshot (`response_tx.send(event.clone())`)
 - otherwise, keep the waiter pending for the next event
 
@@ -304,4 +341,14 @@ flowchart TD
 - **Per-order message construction & dedup**: `handle_trade_dm_for_order`
 - **Terminal detection**: `trade_message_is_terminal`
 - **Fallback routing**: `resolve_order_for_event`
+
+## Manual verification (protocol v2)
+
+Use this checklist when validating dual-transport behavior against live nodes:
+
+1. **v1 node** (`protocol_version: "1"`) — create order, take, pay invoice, release; flows unchanged (GiftWrap filters).
+2. **v2 node** (`protocol_version: "2"`) — same flows over kind-14 subscribe + `unwrap_incoming`.
+3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the active transport filter.
+4. **P2P order chat** — still GiftWrap (`chat_utils.rs`); unaffected by protocol v2 cutover.
+5. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
 
