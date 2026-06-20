@@ -72,6 +72,17 @@ mod tests {
     }
 
     #[test]
+    fn filter_protocol_dm_v1_does_not_filter_by_mostro_author() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let filter = filter_protocol_dm_from_mostro(Transport::GiftWrap, mostro, trade);
+        let json = filter.as_json();
+        assert!(json.contains(r#""kinds":[1059]"#));
+        assert!(json.contains(&format!("\"#p\":[\"{}\"]", trade)));
+        assert!(!json.contains(&format!(r#""authors":["{}"]"#, mostro)));
+    }
+
+    #[test]
     fn filter_protocol_dm_v2_uses_mostro_author_trade_p_tag_and_kind_14() {
         let trade = Keys::generate().public_key();
         let mostro = Keys::generate().public_key();

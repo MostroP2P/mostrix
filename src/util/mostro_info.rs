@@ -506,6 +506,15 @@ mod tests {
     }
 
     #[test]
+    fn is_v2_first_contact_protocol_action_matches_new_order_and_takes() {
+        assert!(is_v2_first_contact_protocol_action(&Action::NewOrder));
+        assert!(is_v2_first_contact_protocol_action(&Action::TakeBuy));
+        assert!(is_v2_first_contact_protocol_action(&Action::TakeSell));
+        assert!(!is_v2_first_contact_protocol_action(&Action::AddInvoice));
+        assert!(!is_v2_first_contact_protocol_action(&Action::PayInvoice));
+    }
+
+    #[test]
     fn parse_pow_first_contact_from_tags() {
         let mut tags = Tags::new();
         tags.push(Tag::parse(["pow", "8"]).unwrap());
