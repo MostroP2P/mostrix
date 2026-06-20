@@ -1,7 +1,7 @@
 use crate::settings::load_settings_from_disk;
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use anyhow::{anyhow, Result};
-use mostro_core::prelude::Transport;
+use mostro_core::prelude::{Action, Transport};
 use nostr_sdk::prelude::*;
 use std::str::FromStr;
 
@@ -45,6 +45,9 @@ pub struct MostroInstanceInfo {
     pub max_orders_per_response: Option<u32>,
     pub fee: Option<f64>,
     pub pow: Option<u32>,
+    /// First-contact PoW toll on v2 (kind 38385 tag `pow_first_contact`). When absent, daemon
+    /// defaults to [`Self::pow`]; Mostrix mirrors that in [`effective_pow_first_contact_from_instance`].
+    pub pow_first_contact: Option<u32>,
     /// Wire transport version from kind-38385 tag `protocol_version` (`"1"` / `"2"`).
     pub protocol_version: Option<u8>,
     /// Anti-abuse bond feature flag from kind-38385 tag `bond_enabled` (`"true"` / `"false"`).
@@ -101,13 +104,48 @@ impl MostroInstanceInfo {
     }
 }
 
+fn clamp_pow_bits(bits: Option<u32>) -> u8 {
+    bits.map(|n| (n.min(u8::MAX as u32)) as u8).unwrap_or(0)
+}
+
 /// NIP-13 difficulty bits for outbound events from cached Mostro instance info (kind 38385 tag `pow`).
 /// Returns `0` when info is missing or the tag is absent. Values above `u8::MAX` clamp to 255.
 pub fn nostr_pow_from_instance(instance: Option<&MostroInstanceInfo>) -> u8 {
-    instance
-        .and_then(|i| i.pow)
-        .map(|n| (n.min(u8::MAX as u32)) as u8)
-        .unwrap_or(0)
+    clamp_pow_bits(instance.and_then(|i| i.pow))
+}
+
+/// Effective first-contact PoW bits (mirrors Mostro daemon `effective_pow_first_contact`).
+///
+/// Uses tag `pow_first_contact` when present; otherwise falls back to base `pow`.
+pub fn effective_pow_first_contact_from_instance(instance: Option<&MostroInstanceInfo>) -> u8 {
+    match instance {
+        Some(i) => clamp_pow_bits(i.pow_first_contact.or(i.pow)),
+        None => 0,
+    }
+}
+
+/// Protocol actions that introduce a new trade key to Mostro (v2 spam gate first-contact lane).
+pub fn is_v2_first_contact_protocol_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::NewOrder | Action::TakeBuy | Action::TakeSell
+    )
+}
+
+/// NIP-13 bits for a protocol DM toward Mostro.
+///
+/// v1 GiftWrap: always base instance `pow` (daemon spam gate is v2-only).
+/// v2 NIP-44: first-contact actions use `max(pow, pow_first_contact)` so new order/take
+/// clears the daemon's stiffer toll when operators set `pow_first_contact` above `pow`.
+pub fn nostr_pow_for_protocol_dm(instance: Option<&MostroInstanceInfo>, action: &Action) -> u8 {
+    let base = nostr_pow_from_instance(instance);
+    if transport_from_instance(instance) == Transport::Nip44Direct
+        && is_v2_first_contact_protocol_action(action)
+    {
+        base.max(effective_pow_first_contact_from_instance(instance))
+    } else {
+        base
+    }
 }
 
 /// Whether the connected Mostro instance has anti-abuse bonds enabled (kind 38385 `bond_enabled`).
@@ -182,6 +220,9 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
             }
             "pow" => {
                 info.pow = MostroInstanceInfo::parse_u32(value);
+            }
+            "pow_first_contact" => {
+                info.pow_first_contact = MostroInstanceInfo::parse_u32(value);
             }
             "protocol_version" => {
                 info.protocol_version = MostroInstanceInfo::parse_u8(value);
@@ -462,6 +503,66 @@ mod tests {
             })),
             Transport::GiftWrap
         );
+    }
+
+    #[test]
+    fn parse_pow_first_contact_from_tags() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["pow", "8"]).unwrap());
+        tags.push(Tag::parse(["pow_first_contact", "16"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.pow, Some(8));
+        assert_eq!(result.pow_first_contact, Some(16));
+    }
+
+    #[test]
+    fn effective_pow_first_contact_falls_back_to_base_pow() {
+        assert_eq!(effective_pow_first_contact_from_instance(None), 0);
+        assert_eq!(
+            effective_pow_first_contact_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(8),
+                ..Default::default()
+            })),
+            8
+        );
+        assert_eq!(
+            effective_pow_first_contact_from_instance(Some(&MostroInstanceInfo {
+                pow: Some(8),
+                pow_first_contact: Some(16),
+                ..Default::default()
+            })),
+            16
+        );
+    }
+
+    #[test]
+    fn nostr_pow_for_protocol_dm_v2_first_contact_uses_max_toll() {
+        let info = MostroInstanceInfo {
+            pow: Some(8),
+            pow_first_contact: Some(16),
+            protocol_version: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::NewOrder),
+            16
+        );
+        assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::TakeBuy), 16);
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::AddInvoice),
+            8
+        );
+    }
+
+    #[test]
+    fn nostr_pow_for_protocol_dm_v1_ignores_first_contact_toll() {
+        let info = MostroInstanceInfo {
+            pow: Some(8),
+            pow_first_contact: Some(16),
+            protocol_version: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::NewOrder), 8);
     }
 
     // Fetch tests would require a mock or test double for nostr_sdk::Client

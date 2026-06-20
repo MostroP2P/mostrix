@@ -123,6 +123,13 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     );
     push_opt_f64(&mut lines, "Fee (fraction)", info.fee);
     push_opt_u32(&mut lines, "Required PoW", info.pow);
+    if info.pow_first_contact.is_some() {
+        push_opt_u32(
+            &mut lines,
+            "Required PoW (first contact, v2)",
+            info.pow_first_contact,
+        );
+    }
     push_kv(
         &mut lines,
         "Anti-abuse bonds",

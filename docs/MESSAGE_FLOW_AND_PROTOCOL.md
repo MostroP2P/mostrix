@@ -44,7 +44,7 @@ Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_st
 
 ### Proof-of-work (NIP-13)
 
-Required difficulty comes from kind **38385** tag `pow`. Mostrix uses `nostr_pow_from_instance` and `WrapOptions.pow` on the published event (GiftWrap outer on v1, signed kind-14 on v2). See **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)**.
+Required difficulty comes from kind **38385** tags `pow` and optional `pow_first_contact`. Mostrix uses [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs) in [`send_dm`](../src/util/dm_utils/mod.rs) (v2 first-contact actions: `max(pow, pow_first_contact)`). See **[POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md)**.
 
 ## Order Creation Flow
 

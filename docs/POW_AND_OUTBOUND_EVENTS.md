@@ -8,14 +8,15 @@ This document describes how Mostrix applies **NIP-13 proof-of-work** to events i
   - **`pow`** — unsigned integer; parsed into [`MostroInstanceInfo.pow`](../src/util/mostro_info.rs) (`Option<u32>`).
   - **`protocol_version`** — `"1"` or `"2"`; drives [`transport_from_instance`](../src/util/mostro_info.rs) → [`AppState.transport`](../src/ui/app_state.rs). Missing tag → legacy GiftWrap.
 - There is **no** `pow` field in [`Settings`](../src/settings.rs) or in the generated `settings.toml` template.
-- **Effective bits** for signing: [`nostr_pow_from_instance`](../src/util/mostro_info.rs) maps `Option<&MostroInstanceInfo>` → `u8` by taking `info.pow`, clamping to `u8::MAX`, and using **0** when info is missing or `pow` is `None`.
+- Optional **`pow_first_contact`** on kind **38385** (when the daemon publishes it): parsed into [`MostroInstanceInfo.pow_first_contact`](../src/util/mostro_info.rs). When absent, effective first-contact toll = base `pow`.
+- **Effective bits** for signing: [`nostr_pow_from_instance`](../src/util/mostro_info.rs) maps base `pow`; [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs) selects per-action bits for [`send_dm`](../src/util/dm_utils/mod.rs).
 
 ## Cached instance info at runtime
 
 - [`AppState.mostro_info`](../src/ui/app_state.rs) holds the latest fetched `MostroInstanceInfo`.
 - [`AppState.transport`](../src/ui/app_state.rs) mirrors resolved [`Transport`](../src/util/mod.rs). Updated via [`set_mostro_info`](../src/ui/app_state.rs).
 - [`EnterKeyContext`](../src/ui/key_handler/mod.rs) threads `mostro_info` into async work without re-fetching per message.
-- [`send_dm`](../src/util/dm_utils/mod.rs) takes `mostro_instance: Option<&MostroInstanceInfo>` and computes `pow = nostr_pow_from_instance(mostro_instance)` once per send.
+- [`send_dm`](../src/util/dm_utils/mod.rs) takes `mostro_instance: Option<&MostroInstanceInfo>` and computes `pow = nostr_pow_for_protocol_dm(mostro_instance, action)` once per send.
 
 At startup (and on reload/reconnect via [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs)), instance info is fetched **before** the DM listener spawns when relays are reachable.
 
@@ -27,7 +28,7 @@ At startup (and on reload/reconnect via [`dm_transport_for_mostro`](../src/ui/ke
 - **v2 (`Nip44Direct`)**: PoW on the **signed kind-14** event (`WrapOptions.pow`).
 - **NIP-40 expiration**: default **now + 30 days** on v2 when the caller passes `expiration: None` (`default_dm_expiration`).
 
-First-contact actions on strict v2 nodes may need higher PoW than instance `pow` (`pow_first_contact` on the daemon — not advertised in 38385 today).
+First-contact actions on strict v2 nodes may need higher PoW than instance `pow` (`pow_first_contact` on the daemon). Mostrix applies `max(pow, pow_first_contact)` on v2 for `NewOrder`, `TakeBuy`, and `TakeSell` via [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs). When the kind-38385 `pow_first_contact` tag is absent, the effective toll defaults to base `pow` (same as the daemon).
 
 ## Chat vs protocol PoW
 

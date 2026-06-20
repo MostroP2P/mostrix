@@ -32,7 +32,7 @@ use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{
-    nostr_pow_from_instance, transport_from_instance, MostroInstanceInfo,
+    nostr_pow_for_protocol_dm, transport_from_instance, MostroInstanceInfo,
 };
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
@@ -222,9 +222,9 @@ pub async fn send_dm(
     expiration: Option<Timestamp>,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    let pow = nostr_pow_from_instance(mostro_instance);
     let message = Message::from_json(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
+    let pow = nostr_pow_for_protocol_dm(mostro_instance, &message.get_inner_message_kind().action);
     let identity_keys = identity_keys.unwrap_or(trade_keys);
     let transport = transport_from_instance(mostro_instance);
     let expiration = match (transport, expiration) {
