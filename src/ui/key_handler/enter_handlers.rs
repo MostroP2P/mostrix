@@ -394,11 +394,27 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             if selected_button {
                 // YES selected - send the order (similar to handle_confirm_key)
                 let form_clone = form.clone();
+                app.order_form_draft = None; // order submitted, drop the draft
                 app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
                 spawn_send_new_order_task(ctx, form_clone);
             } else {
                 // NO selected - go back to form
                 app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
+            }
+            true
+        }
+        UiMode::UserMode(UserMode::ConfirmLeaveOrder {
+            form,
+            to_prev,
+            selected_button,
+        }) => {
+            if selected_button {
+                // Keep editing - return to the form untouched.
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+            } else {
+                // Leave - keep the draft and switch to the adjacent tab.
+                app.order_form_draft = Some(form);
+                super::navigation::leave_creating_order_to_adjacent_tab(app, to_prev);
             }
             true
         }

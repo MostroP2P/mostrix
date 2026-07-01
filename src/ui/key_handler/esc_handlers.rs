@@ -10,7 +10,14 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
     };
     match &mut app.mode {
         UiMode::UserMode(UserMode::CreatingOrder(_)) => {
+            // Esc explicitly discards the form: drop any saved draft.
+            app.order_form_draft = None;
             app.mode = default_mode.clone();
+            true
+        }
+        UiMode::UserMode(UserMode::ConfirmLeaveOrder { form, .. }) => {
+            // Esc keeps editing (safe default).
+            app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
             true
         }
         UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) => {
