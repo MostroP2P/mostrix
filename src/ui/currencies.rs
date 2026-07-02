@@ -259,14 +259,18 @@ pub fn resolve_options(accepted: &[String]) -> Vec<CurrencyOption> {
             .collect();
     }
 
+    let mut seen = std::collections::HashSet::new();
     accepted
         .iter()
-        .map(|code| {
+        .filter_map(|code| {
             let upper = code.trim().to_ascii_uppercase();
-            CurrencyOption {
+            if upper.is_empty() || !seen.insert(upper.clone()) {
+                return None;
+            }
+            Some(CurrencyOption {
                 name: name_for(&upper).to_string(),
                 code: upper,
-            }
+            })
         })
         .collect()
 }
@@ -304,6 +308,19 @@ mod tests {
         assert_eq!(opts[0].name, "Euro");
         assert_eq!(opts[1].code, "XYZ");
         assert!(opts[1].name.is_empty());
+    }
+
+    #[test]
+    fn resolve_dedupes_and_skips_blank_accepted_codes() {
+        let opts = resolve_options(&[
+            "USD".to_string(),
+            "usd".to_string(),
+            "  ".to_string(),
+            "EUR".to_string(),
+        ]);
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].code, "USD");
+        assert_eq!(opts[1].code, "EUR");
     }
 
     #[test]

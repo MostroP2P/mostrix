@@ -344,7 +344,7 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 
 #### Key files for codegen
 
-```
+```text
 src/ui/order_form.rs          # render_order_form, validation, preview
 src/ui/currencies.rs          # ISO list + resolve/filter helpers
 src/ui/orders.rs              # FormState, FormField, CurrencyPicker, is_dirty

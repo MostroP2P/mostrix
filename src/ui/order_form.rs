@@ -349,7 +349,9 @@ fn build_rows(form: &FormState) -> Vec<Row> {
         }
     };
 
-    let amount_val = if form.amount.trim() == "0" || form.amount.trim().is_empty() {
+    let amount_val = if form.focused == FormField::AmountSats {
+        Line::from(form.amount.clone())
+    } else if form.amount.trim() == "0" || form.amount.trim().is_empty() {
         Line::from(Span::styled(
             "market",
             Style::default()
@@ -429,7 +431,11 @@ fn build_rows(form: &FormState) -> Vec<Row> {
     rows.push(Row {
         field: FormField::Premium,
         label: "Premium",
-        value: premium_line(&form.premium),
+        value: if form.focused == FormField::Premium {
+            Line::from(form.premium.clone())
+        } else {
+            premium_line(&form.premium)
+        },
         prefix_len: 0,
         text_len: form.premium.len(),
         editable: true,
@@ -445,7 +451,11 @@ fn build_rows(form: &FormState) -> Vec<Row> {
     rows.push(Row {
         field: FormField::ExpirationDays,
         label: "Expiry",
-        value: expiry_line(&form.expiration_days),
+        value: if form.focused == FormField::ExpirationDays {
+            Line::from(form.expiration_days.clone())
+        } else {
+            expiry_line(&form.expiration_days)
+        },
         prefix_len: 0,
         text_len: form.expiration_days.len(),
         editable: true,
@@ -648,8 +658,8 @@ fn render_currency_dropdown(
     let x = anchor.x + VALUE_OFFSET as u16;
     let max_width = (bounds.x + bounds.width).saturating_sub(x);
     let width = 40u16.clamp(24, max_width.max(24)).min(max_width);
-    let max_rows = filtered.len().min(8) as u16;
-    let height = max_rows + 3; // border (2) + hint (1)
+    let content_rows = filtered.len().clamp(1, 8) as u16;
+    let height = content_rows + 3; // border (2) + hint (1)
     let mut y = anchor.y + 1;
     if y + height > bounds.y + bounds.height {
         y = anchor.y.saturating_sub(height);
