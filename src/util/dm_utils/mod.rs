@@ -156,6 +156,40 @@ fn is_terminal_order_status(status: Status) -> bool {
     )
 }
 
+/// P2P chat untrack set: aligned with [`crate::models::TERMINAL_DM_STATUSES`] (omits `success`).
+fn order_status_untracks_chat(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin
+            | Status::Expired
+            | Status::CooperativelyCanceled
+    )
+}
+
+/// Whether a trade DM should drop the shared-key order chat subscription.
+///
+/// [`trade_message_is_terminal`] still includes [`Status::Success`] so the trade DM listener can
+/// tear down its per-trade-key subscription; chat stays tracked through the post-success window.
+fn trade_message_should_untrack_order_chat(message: &Message) -> bool {
+    let kind = message.get_inner_message_kind();
+    if matches!(
+        &kind.action,
+        Action::AdminCanceled | Action::Canceled | Action::CooperativeCancelAccepted
+    ) {
+        return true;
+    }
+    kind.payload
+        .as_ref()
+        .and_then(|payload| match payload {
+            Payload::Order(order) => order.status,
+            _ => None,
+        })
+        .is_some_and(order_status_untracks_chat)
+}
+
 /// Loads active-order rows for DM bootstrap; status filter is [`crate::models::TERMINAL_DM_STATUSES`].
 pub async fn hydrate_startup_active_order_dm_state(
     pool: &sqlx::sqlite::SqlitePool,
@@ -1037,6 +1071,7 @@ async fn dispatch_giftwrap_batch(
 
     for (message, timestamp, sender) in parsed_messages {
         let has_terminal_status = trade_message_is_terminal(&message);
+        let should_untrack_chat = trade_message_should_untrack_order_chat(&message);
         log::info!(
             "order id: {} has_terminal_status: {:?}",
             order_id,
@@ -1075,9 +1110,11 @@ async fn dispatch_giftwrap_batch(
             );
         }
 
-        if has_terminal_status {
-            // Order reached a terminal status: stop its P2P order chat subscription.
+        if should_untrack_chat {
             untrack_order_chat(order_id.to_string());
+        }
+
+        if has_terminal_status {
             match terminal_policy {
                 GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
                     log::info!(
@@ -1859,6 +1896,7 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
         is_pre_active_taker_take, new_order_would_regress_messages_row,
         small_order_pending_from_new_order_payload, trade_message_is_terminal,
+        trade_message_should_untrack_order_chat,
     };
     use crate::models::Order;
     use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
@@ -1868,6 +1906,38 @@ mod tests {
     fn action_only_canceled_is_terminal() {
         let message = Message::new_order(None, None, None, Action::Canceled, None);
         assert!(trade_message_is_terminal(&message));
+        assert!(trade_message_should_untrack_order_chat(&message));
+    }
+
+    #[test]
+    fn success_order_payload_is_terminal_for_dm_but_keeps_chat_tracked() {
+        let message = Message::new_order(
+            None,
+            None,
+            None,
+            Action::Released,
+            Some(Payload::Order(SmallOrder {
+                status: Some(Status::Success),
+                ..Default::default()
+            })),
+        );
+        assert!(trade_message_is_terminal(&message));
+        assert!(!trade_message_should_untrack_order_chat(&message));
+    }
+
+    #[test]
+    fn canceled_order_payload_untracks_chat() {
+        let message = Message::new_order(
+            None,
+            None,
+            None,
+            Action::Canceled,
+            Some(Payload::Order(SmallOrder {
+                status: Some(Status::Canceled),
+                ..Default::default()
+            })),
+        );
+        assert!(trade_message_should_untrack_order_chat(&message));
     }
 
     #[test]
