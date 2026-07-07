@@ -139,6 +139,12 @@ pub fn untrack_dispute_chat(dispute_id: String, party: ChatParty) {
     });
 }
 
+/// Stop live shared-key chat subscriptions for both buyer and seller parties.
+pub fn untrack_dispute_chat_parties(dispute_id: &str) {
+    untrack_dispute_chat(dispute_id.to_string(), ChatParty::Buyer);
+    untrack_dispute_chat(dispute_id.to_string(), ChatParty::Seller);
+}
+
 /// Track a user P2P order chat once its shared key is resolvable (DM router hook).
 ///
 /// Loads the order, resolves the shared key (persisted `order_chat_shared_key_hex`, else ECDH
