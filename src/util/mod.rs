@@ -1,4 +1,5 @@
 pub mod blossom;
+pub mod chat_listener;
 pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;
@@ -17,6 +18,10 @@ pub use crate::ui::helpers::PreparedOrderChatAttachment;
 pub use blossom::{
     blossom_url_to_https, decrypt_blob, encrypt_blob, fetch_blob, save_attachment_to_disk,
     spawn_save_attachment, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE, DEFAULT_BLOSSOM_SERVERS,
+};
+pub use chat_listener::{
+    listen_for_chat_messages, set_chat_router_cmd_tx, track_dispute_chat, track_order_chat,
+    untrack_dispute_chat, untrack_order_chat, ChatKeyId, ChatRouterCmd,
 };
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;

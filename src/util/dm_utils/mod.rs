@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
+use crate::util::chat_listener::{maybe_track_order_chat, untrack_order_chat};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{
@@ -413,6 +414,8 @@ async fn drop_pre_active_taker_take(
         );
     }
     remove_order_from_messages(messages, order_id);
+    // Row deleted: stop the P2P order chat subscription for this order.
+    untrack_order_chat(order_id.to_string());
 }
 
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
@@ -526,6 +529,8 @@ async fn revert_maker_to_pending_on_book_republish(
     }
 
     remove_order_from_messages(messages, order_id);
+    // Back on the book as a pending maker listing (no counterparty): stop order chat subscription.
+    untrack_order_chat(order_id.to_string());
     try_notify_my_trades_maker_book_changed();
 
     log::info!(
@@ -713,6 +718,9 @@ async fn handle_trade_dm_for_order(
         trade_keys,
     )
     .await;
+
+    // Keep the P2P order chat subscription live once the shared key is resolvable (idempotent).
+    maybe_track_order_chat(pool, order_id, trade_keys).await;
 
     // Extract invoice and sat_amount from payload based on action type.
     // For `PayBondInvoice` mostrod populates the bond satoshis in the third
@@ -1068,6 +1076,8 @@ async fn dispatch_giftwrap_batch(
         }
 
         if has_terminal_status {
+            // Order reached a terminal status: stop its P2P order chat subscription.
+            untrack_order_chat(order_id.to_string());
             match terminal_policy {
                 GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
                     log::info!(

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use mostro_core::prelude::{Action, Kind as OrderKind, Message, Payload, SmallOrder, Status};
+use mostro_core::prelude::{
+    Action, DisputeStatus, Kind as OrderKind, Message, Payload, SmallOrder, Status,
+};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -13,7 +15,11 @@ use crate::ui::{
     OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatSender, UserOrderChatMessage,
     UserRole,
 };
-use crate::util::{chat_utils::fetch_user_order_chat_updates, seed_admin_chat_last_seen};
+use crate::util::{
+    chat_listener::{track_dispute_chat, track_order_chat},
+    chat_utils::{derive_shared_key_hex, fetch_user_order_chat_updates},
+    seed_admin_chat_last_seen,
+};
 
 use super::attachments::{
     build_attachment_toast, legacy_placeholder_matches_filename, try_parse_attachment_message,
@@ -115,6 +121,74 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
         }
         Err(e) => {
             log::warn!("Failed to load admin disputes: {}", e);
+        }
+    }
+}
+
+/// Emit initial chat-router track commands for the active set (option B).
+///
+/// - **User**: every [`Order::get_startup_active_orders`] row (active states + `success`;
+///   excludes [`crate::models::TERMINAL_DM_STATUSES`]) with a resolvable shared key —
+///   persisted `order_chat_shared_key_hex`, else ECDH from `trade_keys` + `counterparty_pubkey`.
+/// - **Admin**: each InProgress dispute's buyer/seller shared key.
+///
+/// Commands are buffered on the router's channel until the task starts consuming them, so this
+/// is safe to call before the chat router task is spawned. History for each key is hydrated by
+/// the router on `TrackChatKey` using the passed `since` (last-seen) cursor.
+pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
+    match app.user_role {
+        UserRole::User => {
+            let Ok(rows) = Order::get_startup_active_orders(pool).await else {
+                return;
+            };
+            for row in rows {
+                let Ok(order) = Order::get_by_id(pool, &row.id).await else {
+                    continue;
+                };
+                let Some(trade_keys_hex) = order.trade_keys.as_deref().filter(|v| !v.is_empty())
+                else {
+                    continue;
+                };
+                let Ok(trade_keys) = Keys::parse(trade_keys_hex) else {
+                    continue;
+                };
+                let shared_hex = order.order_chat_shared_key_hex.clone().or_else(|| {
+                    derive_shared_key_hex(Some(&trade_keys), order.counterparty_pubkey.as_deref())
+                });
+                let Some(shared_hex) = shared_hex else {
+                    continue;
+                };
+                let since = app
+                    .order_chat_last_seen
+                    .get(&row.id)
+                    .and_then(|s| s.last_seen_timestamp);
+                track_order_chat(row.id.clone(), shared_hex, trade_keys.public_key(), since);
+            }
+        }
+        UserRole::Admin => {
+            for dispute in &app.admin_disputes_in_progress {
+                let is_in_progress = dispute
+                    .status
+                    .as_deref()
+                    .and_then(|s| DisputeStatus::from_str(s).ok())
+                    == Some(DisputeStatus::InProgress);
+                if !is_in_progress {
+                    continue;
+                }
+                for (party, hex) in [
+                    (ChatParty::Buyer, dispute.buyer_shared_key_hex.as_deref()),
+                    (ChatParty::Seller, dispute.seller_shared_key_hex.as_deref()),
+                ] {
+                    let Some(hex) = hex else {
+                        continue;
+                    };
+                    let since = app
+                        .admin_chat_last_seen
+                        .get(&(dispute.dispute_id.clone(), party))
+                        .and_then(|s| s.last_seen_timestamp);
+                    track_dispute_chat(dispute.dispute_id.clone(), party, hex.to_string(), since);
+                }
+            }
         }
     }
 }

@@ -428,7 +428,7 @@ The key handler processes input in this order:
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The main loop calls `spawn_admin_chat_fetch` every **2 seconds** on the shared `admin_chat_interval` timer when in Admin mode (User mode uses the same timer for `spawn_user_order_chat_fetch`). Each spawn runs `fetch_admin_chat_updates` in a one-off task. A single-flight guard (`CHAT_MESSAGES_SEMAPHORE`) ensures only one shared-key chat fetch runs at a time; overlapping interval ticks skip spawning until the current fetch completes.
+  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over one batched `kind: 1059` subscription; disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
     - Fetches `GiftWrap` events addressed to each shared key's public key (7-day rolling window).
