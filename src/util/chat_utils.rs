@@ -8,10 +8,7 @@ use mostro_core::prelude::SmallOrder;
 use nostr_sdk::prelude::*;
 
 use crate::models::{AdminDispute, Order};
-use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage,
-    OrderChatLastSeen, OrderChatUpdate,
-};
+use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::mostro_info::MostroInstanceInfo;
 
@@ -363,59 +360,6 @@ pub async fn send_user_order_chat_message_via_shared_key(
         mostro_instance,
     )
     .await
-}
-
-/// Poll order chats using persisted `order_chat_shared_key_hex` when set, otherwise ECDH from
-/// local trade key + `counterparty_pubkey`.
-pub async fn fetch_user_order_chat_updates(
-    client: &Client,
-    pool: &sqlx::SqlitePool,
-    order_chat_last_seen: &HashMap<String, OrderChatLastSeen>,
-) -> Result<Vec<OrderChatUpdate>, anyhow::Error> {
-    let rows = Order::get_startup_active_orders(pool).await?;
-    let mut updates: Vec<OrderChatUpdate> = Vec::new();
-
-    for row in rows {
-        let order = match Order::get_by_id(pool, &row.id).await {
-            Ok(o) => o,
-            Err(_) => continue,
-        };
-        let trade_keys_hex = match order.trade_keys.as_deref() {
-            Some(v) if !v.is_empty() => v,
-            _ => continue,
-        };
-        let trade_keys = match SecretKey::from_str(trade_keys_hex).ok().map(Keys::new) {
-            Some(k) => k,
-            None => continue,
-        };
-        let shared_keys = order
-            .order_chat_shared_key_hex
-            .as_deref()
-            .and_then(keys_from_shared_hex)
-            .or_else(|| {
-                let counterparty = order.counterparty_pubkey.as_deref()?;
-                let cp_pubkey = PublicKey::parse(counterparty).ok()?;
-                derive_shared_keys(Some(&trade_keys), Some(&cp_pubkey))
-            });
-        let Some(shared_keys) = shared_keys else {
-            continue;
-        };
-        let last_seen = order_chat_last_seen
-            .get(&row.id)
-            .and_then(|s| s.last_seen_timestamp)
-            .unwrap_or(0);
-        let mut messages = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
-        messages.retain(|(_, ts, _)| *ts >= last_seen);
-        if !messages.is_empty() {
-            updates.push(OrderChatUpdate {
-                order_id: row.id,
-                local_trade_pubkey: trade_keys.public_key(),
-                messages,
-            });
-        }
-    }
-
-    Ok(updates)
 }
 
 #[cfg(test)]

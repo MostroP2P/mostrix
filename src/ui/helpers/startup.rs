@@ -4,7 +4,7 @@ use std::str::FromStr;
 use mostro_core::prelude::{
     Action, DisputeStatus, Kind as OrderKind, Message, Payload, SmallOrder, Status,
 };
-use nostr_sdk::prelude::{Client, Keys, PublicKey};
+use nostr_sdk::prelude::{Keys, PublicKey};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -17,7 +17,7 @@ use crate::ui::{
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat},
-    chat_utils::{derive_shared_key_hex, fetch_user_order_chat_updates},
+    chat_utils::derive_shared_key_hex,
     seed_admin_chat_last_seen,
 };
 
@@ -193,12 +193,11 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
     }
 }
 
-/// Load user order chat at startup.
-pub async fn load_user_order_chats_at_startup(
-    client: &Client,
-    pool: &SqlitePool,
-    app: &mut AppState,
-) {
+/// Load user order chat at startup from on-disk transcripts.
+///
+/// Relay history is **not** polled here — [`track_startup_chats`] seeds the shared-key chat
+/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch).
+pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::User {
         return;
     }
@@ -221,10 +220,6 @@ pub async fn load_user_order_chats_at_startup(
         }
     }
 
-    let updates = fetch_user_order_chat_updates(client, pool, &app.order_chat_last_seen)
-        .await
-        .unwrap_or_default();
-    apply_user_order_chat_updates(app, updates);
     refresh_my_trades_maker_book_cache(pool, app).await;
 }
 

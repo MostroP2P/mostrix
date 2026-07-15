@@ -320,7 +320,7 @@ This task:
 In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcript cache for user-to-user order chat:
 
 - **Path**: `~/.mostrix/orders_chat/<order_id>.txt`
-- **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats`, seeds `order_chat_last_seen`, then runs an initial `fetch_user_order_chat_updates` relay backfill.
+- **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats` and seeds `order_chat_last_seen` from on-disk transcripts. Relay backfill is done once by the chat router on `TrackChatKey` after `track_startup_chats` (not a separate poll).
 - **Live relay sync (User role)**: the **shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`) maintains one batched `kind: 1059` subscription over all active order shared pubkeys and routes incoming gift wraps by `p` tag. `track_startup_chats` seeds the active-order set at startup; the DM router tracks/untracks orders when the shared key becomes resolvable or the order hits a chat-terminal status ([`TERMINAL_DM_STATUSES`](../src/models.rs) — **`success` keeps chat live**). Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
 - **Incremental merge**: `apply_user_order_chat_updates` in `src/ui/helpers/startup.rs`:
   - **Skip own relay echoes**: each `OrderChatUpdate` carries `local_trade_pubkey`; messages whose decrypted `sender_pubkey` matches are ignored (same rule as admin chat and Mostro Mobile — avoids showing your send on both **You** and **Peer** after the optimistic local append on Enter).

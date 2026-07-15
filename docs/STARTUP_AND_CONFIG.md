@@ -213,7 +213,7 @@ For **User** role, Mostrix restores peer-to-peer order chat alongside trade DMs:
 
 - Cached transcripts live under `~/.mostrix/orders_chat/<order_id>.txt` and are loaded into `AppState.order_chats` by `load_user_order_chats_at_startup`.
 - **Attachment rows in transcripts** are stored as **JSON** (`image_encrypted` / `file_encrypted` via `serialize_attachment_for_transcript`) so **Ctrl+S** and file counts work immediately after restart; legacy `[Image: … - Ctrl+S to save]` lines are hydrated in memory when relay returns the same attachment at the same timestamp.
-- An immediate relay fetch (`fetch_user_order_chat_updates`) merges any newer gift-wrap messages; live updates then arrive via the **shared-key chat subscription router** (`listen_for_chat_messages`), which `track_startup_chats` seeds with the active-order set — no timed polling.
+- Disk restore via `load_user_order_chats_at_startup` seeds `AppState.order_chats` and `order_chat_last_seen`. Relay history is hydrated once by the **shared-key chat subscription router** when `track_startup_chats` emits `TrackChatKey` — no separate startup poll and no timed polling.
 - `apply_user_order_chat_updates` skips relay echoes of the local trade pubkey; peer dedup is scoped to existing **Peer** rows so optimistic **You** sends are not mirrored as **Peer** and do not suppress unrelated peer text at the same timestamp. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
 
 ## Main Event Loop

@@ -172,7 +172,7 @@ pub async fn run_post_terminal_startup(
             log::warn!("Startup targeted relay order DB reconcile failed: {}", e);
         }
     }
-    load_user_order_chats_at_startup(&client, input.pool, &mut app).await;
+    load_user_order_chats_at_startup(input.pool, &mut app).await;
     // Emit initial chat-router track commands for the active set (option B). Buffered on the
     // router's channel until the chat listener task (spawned below) starts consuming them.
     track_startup_chats(input.pool, &app).await;
