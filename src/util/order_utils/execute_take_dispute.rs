@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
+use crate::ui::helpers::dispute_chat_since_from_file;
 use crate::ui::ChatParty;
 use crate::util::chat_listener::track_dispute_chat;
 use crate::util::chat_utils::derive_shared_key_hex;
@@ -142,12 +143,23 @@ pub async fn execute_take_dispute(
                 );
 
                 // Start live shared-key chat subscriptions for both parties of this dispute.
-                for (party, cp_pubkey) in [
-                    (ChatParty::Buyer, dispute_info.buyer_pubkey.as_deref()),
-                    (ChatParty::Seller, dispute_info.seller_pubkey.as_deref()),
+                // Prefer on-disk transcript cursors when present (e.g. retake / restart edge cases).
+                let (buyer_since, seller_since) =
+                    dispute_chat_since_from_file(&dispute_id.to_string());
+                for (party, cp_pubkey, since) in [
+                    (
+                        ChatParty::Buyer,
+                        dispute_info.buyer_pubkey.as_deref(),
+                        buyer_since,
+                    ),
+                    (
+                        ChatParty::Seller,
+                        dispute_info.seller_pubkey.as_deref(),
+                        seller_since,
+                    ),
                 ] {
                     if let Some(hex) = derive_shared_key_hex(Some(admin_keys), cp_pubkey) {
-                        track_dispute_chat(dispute_id.to_string(), party, hex, None);
+                        track_dispute_chat(dispute_id.to_string(), party, hex, since);
                     }
                 }
 

@@ -315,6 +315,27 @@ pub fn load_order_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMess
     load_order_chat_from_file_by_kind(ChatStorageKind::Orders, order_id)
 }
 
+/// Max message timestamp from the on-disk order chat transcript (cursor for relay hydrate).
+pub fn order_chat_since_from_file(order_id: &str) -> Option<i64> {
+    load_order_chat_from_file(order_id).and_then(|msgs| msgs.iter().map(|m| m.timestamp).max())
+}
+
+/// Per-party max timestamps from the on-disk dispute transcript (cursor for relay hydrate).
+///
+/// Returns `(buyer_since, seller_since)`; a side with no messages yields `None`.
+pub fn dispute_chat_since_from_file(dispute_id: &str) -> (Option<i64>, Option<i64>) {
+    match load_chat_from_file(dispute_id) {
+        Some(msgs) => {
+            let (buyer_max, seller_max) = max_party_timestamps(&msgs);
+            (
+                (buyer_max > 0).then_some(buyer_max),
+                (seller_max > 0).then_some(seller_max),
+            )
+        }
+        None => (None, None),
+    }
+}
+
 /// Saves a dispute chat message to a text file in `~/.mostrix/disputes_chat/<dispute_id>.txt`.
 pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
     save_chat_message_by_kind(ChatStorageKind::Disputes, dispute_id, message);

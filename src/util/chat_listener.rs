@@ -22,6 +22,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use uuid::Uuid;
 
 use crate::models::Order;
+use crate::ui::helpers::order_chat_since_from_file;
 use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate};
 use crate::util::chat_utils::{
     derive_shared_key_hex, fetch_gift_wraps_for_shared_key, keys_from_shared_hex,
@@ -148,9 +149,9 @@ pub fn untrack_dispute_chat_parties(dispute_id: &str) {
 /// Track a user P2P order chat once its shared key is resolvable (DM router hook).
 ///
 /// Loads the order, resolves the shared key (persisted `order_chat_shared_key_hex`, else ECDH
-/// from `trade_keys` + `counterparty_pubkey`), and emits a track command. Idempotent at the
-/// router level: re-tracking an already-tracked key is a cheap no-op, so this is safe to call
-/// on every trade DM.
+/// from `trade_keys` + `counterparty_pubkey`), and emits a track command. Hydrate cutoff comes
+/// from the on-disk transcript max timestamp when present (same cursor idea as startup).
+/// Idempotent at the router level: re-tracking an already-tracked key is a cheap no-op.
 pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, trade_keys: &Keys) {
     let order = match Order::get_by_id(pool, &order_id.to_string()).await {
         Ok(o) => o,
@@ -161,7 +162,8 @@ pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, tra
         .clone()
         .or_else(|| derive_shared_key_hex(Some(trade_keys), order.counterparty_pubkey.as_deref()));
     if let Some(hex) = shared_hex {
-        track_order_chat(order_id.to_string(), hex, trade_keys.public_key(), None);
+        let since = order_chat_since_from_file(&order_id.to_string());
+        track_order_chat(order_id.to_string(), hex, trade_keys.public_key(), since);
     }
 }
 
