@@ -209,6 +209,9 @@ fn emit_messages(
 /// `kind: 1059` gift wraps addressed to all tracked shared pubkeys. Uses
 /// `.limit(0)` (live-only, same as the DM listener's `LiveOnly` mode); startup
 /// history is hydrated separately per key on [`ChatRouterCmd::TrackChatKey`].
+///
+/// Subscribe failures are retried with backoff so a transient relay error does not
+/// leave live chat permanently dead until the next track/untrack.
 async fn resubscribe(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
@@ -222,16 +225,90 @@ async fn resubscribe(
     }
     let pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
     let filter = Filter::new().kind(Kind::GiftWrap).pubkeys(pubkeys).limit(0);
-    match client.subscribe(filter, None).await {
-        Ok(output) => {
-            log::debug!(
-                "[chat_live] subscribed to {} shared-key chat(s) subscription_id={}",
-                targets.len(),
-                output.val
-            );
-            *current_sub = Some(output.val);
+
+    const MAX_ATTEMPTS: u32 = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.subscribe(filter.clone(), None).await {
+            Ok(output) => {
+                log::debug!(
+                    "[chat_live] subscribed to {} shared-key chat(s) subscription_id={}",
+                    targets.len(),
+                    output.val
+                );
+                *current_sub = Some(output.val);
+                return;
+            }
+            Err(e) => {
+                if attempt == MAX_ATTEMPTS {
+                    log::error!(
+                        "[chat_live] failed to subscribe shared-key chats after {MAX_ATTEMPTS} attempts: {e}"
+                    );
+                } else {
+                    let delay_ms = 250u64 * (1 << (attempt - 1)); // 250ms, 500ms
+                    log::warn!(
+                        "[chat_live] subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
         }
-        Err(e) => log::warn!("[chat_live] failed to subscribe shared-key chats: {e}"),
+    }
+}
+
+/// Apply one track/untrack command. Returns `true` when the live subscription pubkey set changed.
+async fn apply_chat_router_cmd(
+    cmd: ChatRouterCmd,
+    client: &Client,
+    targets: &mut HashMap<PublicKey, ChatTarget>,
+    admin_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+) -> bool {
+    match cmd {
+        ChatRouterCmd::TrackChatKey {
+            key_id,
+            shared_key_hex,
+            local_trade_pubkey,
+            since,
+        } => {
+            let Some(shared_keys) = keys_from_shared_hex(&shared_key_hex) else {
+                log::warn!("[chat_live] invalid shared key hex for {key_id:?}; not tracking");
+                return false;
+            };
+            let target_pubkey = shared_keys.public_key();
+            // Idempotent: skip redundant history fetch + resubscribe if already tracked.
+            if targets
+                .get(&target_pubkey)
+                .is_some_and(|t| t.key_id == key_id)
+            {
+                return false;
+            }
+            let target = ChatTarget {
+                key_id: key_id.clone(),
+                shared_keys: shared_keys.clone(),
+                local_trade_pubkey,
+            };
+
+            // One-shot history hydration (relay subscriptions alone don't replay history).
+            match fetch_gift_wraps_for_shared_key(client, &shared_keys).await {
+                Ok(messages) => {
+                    let cutoff = since.unwrap_or(0);
+                    let history: Vec<(String, i64, PublicKey)> = messages
+                        .into_iter()
+                        .filter(|(_, ts, _)| *ts >= cutoff)
+                        .collect();
+                    emit_messages(&target, history, admin_tx, user_tx);
+                }
+                Err(e) => log::warn!("[chat_live] history fetch failed for {key_id:?}: {e}"),
+            }
+
+            targets.insert(target_pubkey, target);
+            true
+        }
+        ChatRouterCmd::UntrackChatKey { key_id } => {
+            let before = targets.len();
+            targets.retain(|_, t| t.key_id != key_id);
+            targets.len() != before
+        }
     }
 }
 
@@ -240,6 +317,10 @@ async fn resubscribe(
 /// Spawned once at startup and respawned on client reload/reconnect (mirrors
 /// `listen_for_order_messages`). Consumes [`ChatRouterCmd`] for track/untrack and
 /// routes live `kind: 1059` gift wraps by `p` tag to the owning chat.
+///
+/// Multiple buffered track/untrack commands are drained and applied before a single
+/// [`resubscribe`], so startup bursts (e.g. [`crate::ui::helpers::track_startup_chats`])
+/// do not thrash unsubscribe/subscribe on every key.
 pub async fn listen_for_chat_messages(
     client: Client,
     admin_chat_updates_tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
@@ -261,46 +342,28 @@ pub async fn listen_for_chat_messages(
                     }
                     break;
                 };
-                match cmd {
-                    ChatRouterCmd::TrackChatKey { key_id, shared_key_hex, local_trade_pubkey, since } => {
-                        let Some(shared_keys) = keys_from_shared_hex(&shared_key_hex) else {
-                            log::warn!("[chat_live] invalid shared key hex for {key_id:?}; not tracking");
-                            continue;
-                        };
-                        let target_pubkey = shared_keys.public_key();
-                        // Idempotent: skip redundant history fetch + resubscribe if already tracked.
-                        if targets.get(&target_pubkey).is_some_and(|t| t.key_id == key_id) {
-                            continue;
-                        }
-                        let target = ChatTarget {
-                            key_id: key_id.clone(),
-                            shared_keys: shared_keys.clone(),
-                            local_trade_pubkey,
-                        };
-
-                        // One-shot history hydration (relay subscriptions alone don't replay history).
-                        match fetch_gift_wraps_for_shared_key(&client, &shared_keys).await {
-                            Ok(messages) => {
-                                let cutoff = since.unwrap_or(0);
-                                let history: Vec<(String, i64, PublicKey)> = messages
-                                    .into_iter()
-                                    .filter(|(_, ts, _)| *ts >= cutoff)
-                                    .collect();
-                                emit_messages(&target, history, &admin_chat_updates_tx, &user_order_chat_updates_tx);
-                            }
-                            Err(e) => log::warn!("[chat_live] history fetch failed for {key_id:?}: {e}"),
-                        }
-
-                        targets.insert(target_pubkey, target);
-                        resubscribe(&client, &targets, &mut current_sub).await;
-                    }
-                    ChatRouterCmd::UntrackChatKey { key_id } => {
-                        let before = targets.len();
-                        targets.retain(|_, t| t.key_id != key_id);
-                        if targets.len() != before {
-                            resubscribe(&client, &targets, &mut current_sub).await;
-                        }
-                    }
+                let mut needs_resubscribe = apply_chat_router_cmd(
+                    cmd,
+                    &client,
+                    &mut targets,
+                    &admin_chat_updates_tx,
+                    &user_order_chat_updates_tx,
+                )
+                .await;
+                // Drain a burst of pending cmds (startup track set, finalize untracks, etc.)
+                // then rebuild the live filter once.
+                while let Ok(more) = cmd_rx.try_recv() {
+                    needs_resubscribe |= apply_chat_router_cmd(
+                        more,
+                        &client,
+                        &mut targets,
+                        &admin_chat_updates_tx,
+                        &user_order_chat_updates_tx,
+                    )
+                    .await;
+                }
+                if needs_resubscribe {
+                    resubscribe(&client, &targets, &mut current_sub).await;
                 }
             }
             notification = notifications.recv() => {
