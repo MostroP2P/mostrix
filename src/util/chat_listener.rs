@@ -205,22 +205,27 @@ fn emit_messages(
 
 /// Rebuild the single batched live subscription from the current tracked set.
 ///
-/// Unsubscribes the previous subscription and, if any keys remain, subscribes to
-/// `kind: 1059` gift wraps addressed to all tracked shared pubkeys. Uses
-/// `.limit(0)` (live-only, same as the DM listener's `LiveOnly` mode); startup
-/// history is hydrated separately per key on [`ChatRouterCmd::TrackChatKey`].
+/// Subscribes to `kind: 1059` gift wraps addressed to all tracked shared pubkeys
+/// and, **only once the replacement subscription is live**, unsubscribes the
+/// previous one (make-before-break). Uses `.limit(0)` (live-only, same as the DM
+/// listener's `LiveOnly` mode); startup history is hydrated separately per key.
 ///
-/// Subscribe failures are retried with backoff so a transient relay error does not
-/// leave live chat permanently dead until the next track/untrack.
+/// Make-before-break guarantees a transient subscribe failure can never leave
+/// shared-key chat offline: on failure the existing subscription (if any) stays
+/// alive and the next command or reconnect retries the rebuild. Subscribe is also
+/// retried with backoff to smooth over transient relay errors. The brief window
+/// where both subscriptions are live only yields duplicate events, which are
+/// deduped downstream by the last-seen cursors.
 async fn resubscribe(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
     current_sub: &mut Option<SubscriptionId>,
 ) {
-    if let Some(id) = current_sub.take() {
-        client.unsubscribe(&id).await;
-    }
+    // No keys remain: tear down the live subscription and return.
     if targets.is_empty() {
+        if let Some(id) = current_sub.take() {
+            client.unsubscribe(&id).await;
+        }
         return;
     }
     let pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
@@ -235,13 +240,17 @@ async fn resubscribe(
                     targets.len(),
                     output.val
                 );
-                *current_sub = Some(output.val);
+                // Replacement is live; only now drop the previous subscription so a
+                // failed subscribe never leaves shared-key chat disconnected.
+                if let Some(old_id) = current_sub.replace(output.val) {
+                    client.unsubscribe(&old_id).await;
+                }
                 return;
             }
             Err(e) => {
                 if attempt == MAX_ATTEMPTS {
                     log::error!(
-                        "[chat_live] failed to subscribe shared-key chats after {MAX_ATTEMPTS} attempts: {e}"
+                        "[chat_live] failed to subscribe shared-key chats after {MAX_ATTEMPTS} attempts: {e}; keeping previous subscription alive"
                     );
                 } else {
                     let delay_ms = 250u64 * (1 << (attempt - 1)); // 250ms, 500ms
@@ -255,14 +264,33 @@ async fn resubscribe(
     }
 }
 
-/// Apply one track/untrack command. Returns `true` when the live subscription pubkey set changed.
-async fn apply_chat_router_cmd(
+/// A newly tracked key whose history must be hydrated **after** the live
+/// subscription is (re)built, so messages published during the backfill are
+/// captured live instead of falling into a miss window (subscribe-then-hydrate).
+struct PendingHydration {
+    target_pubkey: PublicKey,
+    shared_keys: Keys,
+    since: Option<i64>,
+}
+
+/// Outcome of applying one [`ChatRouterCmd`] to the tracked set.
+struct CmdOutcome {
+    /// The live pubkey set changed, so the batched subscription must be rebuilt.
+    needs_resubscribe: bool,
+    /// A newly tracked key awaiting post-subscribe history hydration.
+    hydrate: Option<PendingHydration>,
+}
+
+/// Apply one track/untrack command to the tracked set.
+///
+/// This only mutates `targets`; history hydration is deferred to the caller and
+/// runs **after** [`resubscribe`] so the live filter already covers the new key
+/// (see [`PendingHydration`]). Returns whether the live subscription must be
+/// rebuilt and, for a new track, the hydration job to run afterwards.
+fn apply_chat_router_cmd(
     cmd: ChatRouterCmd,
-    client: &Client,
     targets: &mut HashMap<PublicKey, ChatTarget>,
-    admin_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    user_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
-) -> bool {
+) -> CmdOutcome {
     match cmd {
         ChatRouterCmd::TrackChatKey {
             key_id,
@@ -272,7 +300,10 @@ async fn apply_chat_router_cmd(
         } => {
             let Some(shared_keys) = keys_from_shared_hex(&shared_key_hex) else {
                 log::warn!("[chat_live] invalid shared key hex for {key_id:?}; not tracking");
-                return false;
+                return CmdOutcome {
+                    needs_resubscribe: false,
+                    hydrate: None,
+                };
             };
             let target_pubkey = shared_keys.public_key();
             // Idempotent: skip redundant history fetch + resubscribe if already tracked.
@@ -280,35 +311,67 @@ async fn apply_chat_router_cmd(
                 .get(&target_pubkey)
                 .is_some_and(|t| t.key_id == key_id)
             {
-                return false;
+                return CmdOutcome {
+                    needs_resubscribe: false,
+                    hydrate: None,
+                };
             }
-            let target = ChatTarget {
-                key_id: key_id.clone(),
-                shared_keys: shared_keys.clone(),
-                local_trade_pubkey,
-            };
-
-            // One-shot history hydration (relay subscriptions alone don't replay history).
-            match fetch_gift_wraps_for_shared_key(client, &shared_keys).await {
-                Ok(messages) => {
-                    let cutoff = since.unwrap_or(0);
-                    let history: Vec<(String, i64, PublicKey)> = messages
-                        .into_iter()
-                        .filter(|(_, ts, _)| *ts >= cutoff)
-                        .collect();
-                    emit_messages(&target, history, admin_tx, user_tx);
-                }
-                Err(e) => log::warn!("[chat_live] history fetch failed for {key_id:?}: {e}"),
+            targets.insert(
+                target_pubkey,
+                ChatTarget {
+                    key_id,
+                    shared_keys: shared_keys.clone(),
+                    local_trade_pubkey,
+                },
+            );
+            CmdOutcome {
+                needs_resubscribe: true,
+                hydrate: Some(PendingHydration {
+                    target_pubkey,
+                    shared_keys,
+                    since,
+                }),
             }
-
-            targets.insert(target_pubkey, target);
-            true
         }
         ChatRouterCmd::UntrackChatKey { key_id } => {
             let before = targets.len();
             targets.retain(|_, t| t.key_id != key_id);
-            targets.len() != before
+            CmdOutcome {
+                needs_resubscribe: targets.len() != before,
+                hydrate: None,
+            }
         }
+    }
+}
+
+/// Backfill one newly tracked chat's history **after** the live subscription is
+/// active (relay subscriptions alone don't replay history). Because the live
+/// filter already covers this key, any message published during the fetch is also
+/// delivered live and deduped by the last-seen cursor. No-op if the key was
+/// untracked within the same command burst.
+async fn hydrate_history(
+    client: &Client,
+    targets: &HashMap<PublicKey, ChatTarget>,
+    pending: &PendingHydration,
+    admin_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+) {
+    let Some(target) = targets.get(&pending.target_pubkey) else {
+        return;
+    };
+    match fetch_gift_wraps_for_shared_key(client, &pending.shared_keys).await {
+        Ok(messages) => {
+            let cutoff = pending.since.unwrap_or(0);
+            let history: Vec<(String, i64, PublicKey)> = messages
+                .into_iter()
+                .filter(|(_, ts, _)| *ts >= cutoff)
+                .collect();
+            emit_messages(target, history, admin_tx, user_tx);
+        }
+        Err(e) => log::warn!(
+            "[chat_live] history fetch failed for {:?}: {e}",
+            target.key_id
+        ),
     }
 }
 
@@ -342,28 +405,33 @@ pub async fn listen_for_chat_messages(
                     }
                     break;
                 };
-                let mut needs_resubscribe = apply_chat_router_cmd(
-                    cmd,
-                    &client,
-                    &mut targets,
-                    &admin_chat_updates_tx,
-                    &user_order_chat_updates_tx,
-                )
-                .await;
+                let CmdOutcome {
+                    mut needs_resubscribe,
+                    hydrate,
+                } = apply_chat_router_cmd(cmd, &mut targets);
+                let mut pending_hydration: Vec<PendingHydration> = hydrate.into_iter().collect();
                 // Drain a burst of pending cmds (startup track set, finalize untracks, etc.)
-                // then rebuild the live filter once.
+                // then rebuild the live filter once, and only then backfill history.
                 while let Ok(more) = cmd_rx.try_recv() {
-                    needs_resubscribe |= apply_chat_router_cmd(
-                        more,
+                    let outcome = apply_chat_router_cmd(more, &mut targets);
+                    needs_resubscribe |= outcome.needs_resubscribe;
+                    pending_hydration.extend(outcome.hydrate);
+                }
+                if needs_resubscribe {
+                    resubscribe(&client, &targets, &mut current_sub).await;
+                }
+                // Subscribe-first, then backfill: the live filter now covers the newly
+                // tracked keys, so messages published during hydration are captured
+                // live instead of being dropped in a miss window.
+                for pending in &pending_hydration {
+                    hydrate_history(
                         &client,
-                        &mut targets,
+                        &targets,
+                        pending,
                         &admin_chat_updates_tx,
                         &user_order_chat_updates_tx,
                     )
                     .await;
-                }
-                if needs_resubscribe {
-                    resubscribe(&client, &targets, &mut current_sub).await;
                 }
             }
             notification = notifications.recv() => {
@@ -408,6 +476,7 @@ pub async fn listen_for_chat_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mostro_core::chat::SharedKey;
 
     /// `ChatKeyId` equality backs both the untrack retention filter (`t.key_id != key_id`)
     /// and the track idempotency check, so it must distinguish order vs dispute and party.
@@ -433,5 +502,103 @@ mod tests {
             ChatKeyId::Order("d".to_string()),
             ChatKeyId::Dispute("d".to_string(), ChatParty::Buyer)
         );
+    }
+
+    /// Produce a valid shared-key hex (ECDH secret) that round-trips through
+    /// [`keys_from_shared_hex`], matching how production shared keys are stored.
+    fn sample_shared_hex() -> String {
+        let a = Keys::generate();
+        let b = Keys::generate();
+        SharedKey::derive(a.secret_key(), &b.public_key())
+            .expect("derive shared key")
+            .to_hex()
+    }
+
+    /// Tracking a new key must defer history hydration (return a `PendingHydration`)
+    /// and request a resubscribe, so the live filter is rebuilt *before* the backfill
+    /// runs — closing the miss window flagged in review.
+    #[test]
+    fn track_new_key_defers_hydration_and_requests_resubscribe() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let expected_pubkey = keys_from_shared_hex(&shared_hex).unwrap().public_key();
+
+        let outcome = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: shared_hex,
+                local_trade_pubkey: None,
+                since: Some(42),
+            },
+            &mut targets,
+        );
+
+        assert!(outcome.needs_resubscribe);
+        let hydrate = outcome.hydrate.expect("track must schedule hydration");
+        assert_eq!(hydrate.target_pubkey, expected_pubkey);
+        assert_eq!(hydrate.since, Some(42));
+        assert!(targets.contains_key(&expected_pubkey));
+    }
+
+    /// Re-tracking an already-tracked key is a no-op: no resubscribe, no re-hydration.
+    #[test]
+    fn retrack_existing_key_is_noop() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let track = || ChatRouterCmd::TrackChatKey {
+            key_id: ChatKeyId::Order("order-1".to_string()),
+            shared_key_hex: shared_hex.clone(),
+            local_trade_pubkey: None,
+            since: None,
+        };
+
+        let _ = apply_chat_router_cmd(track(), &mut targets);
+        let outcome = apply_chat_router_cmd(track(), &mut targets);
+
+        assert!(!outcome.needs_resubscribe);
+        assert!(outcome.hydrate.is_none());
+        assert_eq!(targets.len(), 1);
+    }
+
+    /// Untracking removes the key and requests a resubscribe, but never hydrates.
+    #[test]
+    fn untrack_removes_key_without_hydration() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let _ = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: shared_hex,
+                local_trade_pubkey: None,
+                since: None,
+            },
+            &mut targets,
+        );
+
+        let outcome = apply_chat_router_cmd(
+            ChatRouterCmd::UntrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+            },
+            &mut targets,
+        );
+
+        assert!(outcome.needs_resubscribe);
+        assert!(outcome.hydrate.is_none());
+        assert!(targets.is_empty());
+    }
+
+    /// Untracking a key that isn't tracked changes nothing (no resubscribe).
+    #[test]
+    fn untrack_absent_key_is_noop() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let outcome = apply_chat_router_cmd(
+            ChatRouterCmd::UntrackChatKey {
+                key_id: ChatKeyId::Order("missing".to_string()),
+            },
+            &mut targets,
+        );
+
+        assert!(!outcome.needs_resubscribe);
+        assert!(outcome.hydrate.is_none());
     }
 }
