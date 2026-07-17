@@ -247,6 +247,64 @@ fn trade_message_is_terminal(message: &Message) -> bool {
     message_has_terminal_order_status(message)
 }
 
+/// NIP-44 protocol wrap that keeps a self `#p` tag when author == receiver.
+///
+/// nostr-sdk [`EventBuilder`] strips `p` tags matching the author unless
+/// [`EventBuilder::allow_self_tagging`] is set. Mostro subscribes on `#p`, so
+/// admin DMs that reuse the Mostro key would otherwise never be delivered.
+fn wrap_message_nip44_allow_self_p(
+    message: &Message,
+    identity_keys: &Keys,
+    trade_keys: &Keys,
+    receiver: PublicKey,
+    opts: WrapOptions,
+) -> Result<Event> {
+    let message_json = message
+        .as_json()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize message for nip44 wrap: {e:?}"))?;
+
+    let trade_sig = opts
+        .signed
+        .then(|| Message::sign(message_json.clone(), trade_keys).to_string());
+
+    let identity_proof = (identity_keys.public_key() != trade_keys.public_key()).then(|| {
+        let payload = format!(
+            "mostro-transport-v2-identity:{}:{}",
+            trade_keys.public_key().to_hex(),
+            message_json
+        );
+        (
+            identity_keys.public_key().to_hex(),
+            Message::sign(payload, identity_keys).to_string(),
+        )
+    });
+
+    let tuple: (&Message, Option<String>, Option<(String, String)>) =
+        (message, trade_sig, identity_proof);
+    let content = serde_json::to_string(&tuple)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize nip44 tuple: {e}"))?;
+
+    let encrypted = nip44::encrypt(
+        trade_keys.secret_key(),
+        &receiver,
+        content,
+        nip44::Version::default(),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to nip44-encrypt protocol message: {e}"))?;
+
+    let mut tags: Vec<Tag> = vec![Tag::public_key(receiver)];
+    if let Some(exp) = opts.expiration {
+        tags.push(Tag::expiration(exp));
+    }
+
+    EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, encrypted)
+        .tags(tags)
+        .allow_self_tagging()
+        .pow(opts.pow)
+        .sign_with_keys(trade_keys)
+        .map_err(|e| anyhow::anyhow!("Failed to sign nip44 protocol event: {e}"))
+}
+
 /// Send a direct message to a receiver
 pub async fn send_dm(
     client: &Client,
@@ -259,27 +317,42 @@ pub async fn send_dm(
 ) -> Result<()> {
     let message = Message::from_json(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
-    let pow = nostr_pow_for_protocol_dm(mostro_instance, &message.get_inner_message_kind().action);
+    let action = message.get_inner_message_kind().action.clone();
+    let pow = nostr_pow_for_protocol_dm(mostro_instance, &action);
     let identity_keys = identity_keys.unwrap_or(trade_keys);
     let transport = transport_from_instance(mostro_instance);
     let expiration = match (transport, expiration) {
         (Transport::Nip44Direct, None) => Some(default_dm_expiration()),
         (_, exp) => exp,
     };
-    let event = wrap_message_with(
-        transport,
-        &message,
-        identity_keys,
-        trade_keys,
-        *receiver_pubkey,
-        WrapOptions {
-            pow,
-            expiration,
-            signed: true,
-        },
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?;
+    let wrap_opts = WrapOptions {
+        pow,
+        expiration,
+        signed: true,
+    };
+    // Self-addressed v2 DMs must keep `#p` (Mostro filters on it). nostr-sdk strips
+    // self `p` tags unless allow_self_tagging is set — mostro-core's wrap does not.
+    let event =
+        if transport == Transport::Nip44Direct && trade_keys.public_key() == *receiver_pubkey {
+            wrap_message_nip44_allow_self_p(
+                &message,
+                identity_keys,
+                trade_keys,
+                *receiver_pubkey,
+                wrap_opts,
+            )?
+        } else {
+            wrap_message_with(
+                transport,
+                &message,
+                identity_keys,
+                trade_keys,
+                *receiver_pubkey,
+                wrap_opts,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?
+        };
 
     client.send_event(&event).await?;
     Ok(())

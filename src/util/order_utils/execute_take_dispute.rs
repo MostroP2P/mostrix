@@ -64,7 +64,7 @@ pub async fn execute_take_dispute(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM using admin keys (signed gift wrap)
+    // Send the DM using admin keys (identity + trade)
     let sent_message = send_dm(
         client,
         Some(admin_keys),
