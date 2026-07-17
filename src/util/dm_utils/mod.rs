@@ -2004,9 +2004,9 @@ pub async fn listen_for_order_messages(
 mod tests {
     use super::{
         default_dm_expiration, effective_is_mine_for_trade_dm_message, is_own_signed_v2_outbound,
-        is_pre_active_maker_listing, is_pre_active_taker_take, new_order_would_regress_messages_row,
-        small_order_pending_from_new_order_payload, trade_message_is_terminal,
-        trade_message_should_untrack_order_chat,
+        is_pre_active_maker_listing, is_pre_active_taker_take,
+        new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
+        trade_message_is_terminal, trade_message_should_untrack_order_chat,
     };
     use crate::models::Order;
     use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
