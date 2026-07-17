@@ -55,6 +55,27 @@ fn default_dm_expiration() -> Timestamp {
     )
 }
 
+/// Own outbound v2 protocol DMs are signed kind-14 events authored by the trade key.
+///
+/// When admin == Mostro, `wait_for_dm` registers a subscription that also matches that
+/// outbound event. Mostro daemon replies are unsigned (`signed: false`), so treating
+/// signed self-authored kind-14 as non-replies avoids consuming the request as the response.
+fn is_own_signed_v2_outbound(
+    event: &Event,
+    trade_keys: &Keys,
+    unwrapped: &UnwrappedMessage,
+) -> bool {
+    event.kind == nostr_sdk::Kind::PrivateDirectMessage
+        && event.pubkey == trade_keys.public_key()
+        && unwrapped.signature.is_some()
+}
+
+#[derive(Clone, Copy)]
+struct CachedDmUnwrap {
+    can_decrypt: bool,
+    skip_for_waiter: bool,
+}
+
 #[derive(Debug)]
 pub enum DmRouterCmd {
     TrackOrder {
@@ -1813,7 +1834,7 @@ pub async fn listen_for_order_messages(
                     // Shared cache for this single incoming event: decryptability is keyed only
                     // by trade pubkey; `event.id` is fixed for the whole handler block.
                     // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
-                    let mut rumor_cache: HashMap<PublicKey, bool> = HashMap::new();
+                    let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
 
                     if !pending_waiters.is_empty() {
                         let mut still_pending: Vec<PendingDmWaiter> =
@@ -1827,22 +1848,32 @@ pub async fn listen_for_order_messages(
                                 continue;
                             }
                             let key = waiter.trade_keys.public_key();
-                            let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
-                                *boolean
+                            let cached = if let Some(cached) = rumor_cache.get(&key) {
+                                *cached
                             } else {
-                                let ok = matches!(
-                                    unwrap_incoming(&event, &waiter.trade_keys).await,
-                                    Ok(Some(_))
-                                );
-                                rumor_cache.insert(key, ok);
-                                ok
+                                let cached = match unwrap_incoming(&event, &waiter.trade_keys).await
+                                {
+                                    Ok(Some(u)) => CachedDmUnwrap {
+                                        can_decrypt: true,
+                                        skip_for_waiter: is_own_signed_v2_outbound(
+                                            &event,
+                                            &waiter.trade_keys,
+                                            &u,
+                                        ),
+                                    },
+                                    _ => CachedDmUnwrap {
+                                        can_decrypt: false,
+                                        skip_for_waiter: false,
+                                    },
+                                };
+                                rumor_cache.insert(key, cached);
+                                cached
                             };
 
-                            if can_decrypt {
+                            if cached.can_decrypt && !cached.skip_for_waiter {
                                 let _ = waiter.response_tx.send(event.clone());
                             } else {
-                                // If the rumor cannot be extracted, the waiter is still pending
-                                // push it back to the pending waiters vector
+                                // Not for this waiter, or our own echoed outbound request.
                                 still_pending.push(waiter);
                             }
                         }
@@ -1873,14 +1904,20 @@ pub async fn listen_for_order_messages(
                         // Reuse per-event decryptability result if waiter path already checked
                         // this same trade pubkey.
                         let key = trade_keys.public_key();
-                        let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
-                            *boolean
+                        let can_decrypt = if let Some(cached) = rumor_cache.get(&key) {
+                            cached.can_decrypt
                         } else {
                             let ok = matches!(
                                 unwrap_incoming(&event, &trade_keys).await,
                                 Ok(Some(_))
                             );
-                            rumor_cache.insert(key, ok);
+                            rumor_cache.insert(
+                                key,
+                                CachedDmUnwrap {
+                                    can_decrypt: ok,
+                                    skip_for_waiter: false,
+                                },
+                            );
                             ok
                         };
 
@@ -1966,14 +2003,43 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
-        is_pre_active_taker_take, new_order_would_regress_messages_row,
+        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_own_signed_v2_outbound,
+        is_pre_active_maker_listing, is_pre_active_taker_take, new_order_would_regress_messages_row,
         small_order_pending_from_new_order_payload, trade_message_is_terminal,
         trade_message_should_untrack_order_chat,
     };
     use crate::models::Order;
-    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
-    use nostr_sdk::Timestamp;
+    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
+    use nostr_sdk::prelude::{EventBuilder, Keys, Tag, Timestamp};
+
+    #[test]
+    fn own_signed_v2_outbound_is_skipped_by_waiter_guard() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, "ciphertext")
+            .tags([Tag::public_key(keys.public_key())])
+            .allow_self_tagging()
+            .sign_with_keys(&keys)
+            .expect("sign kind-14");
+        let message = Message::new_dispute(None, None, None, Action::AdminTakeDispute, None);
+        let sig = Message::sign(message.as_json().expect("json"), &keys);
+        let signed = UnwrappedMessage {
+            message: message.clone(),
+            signature: Some(sig),
+            sender: keys.public_key(),
+            identity: keys.public_key(),
+            created_at: Timestamp::now(),
+        };
+        assert!(is_own_signed_v2_outbound(&event, &keys, &signed));
+
+        let unsigned = UnwrappedMessage {
+            message,
+            signature: None,
+            sender: keys.public_key(),
+            identity: keys.public_key(),
+            created_at: Timestamp::now(),
+        };
+        assert!(!is_own_signed_v2_outbound(&event, &keys, &unsigned));
+    }
 
     #[test]
     fn action_only_canceled_is_terminal() {

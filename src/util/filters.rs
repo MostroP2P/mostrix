@@ -18,8 +18,11 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
 ///
 /// When `mostro_pubkey == trade_pubkey` on v2 (admin using the Mostro nsec), nostr-sdk's
 /// [`EventBuilder`] strips self `#p` tags unless `allow_self_tagging` is set. Mostro replies
-/// therefore often have **no** `#p`. In that case subscribe by author+kind only so the
-/// waiter can still receive self-addressed replies.
+/// may therefore have **no** `#p`, so this path subscribes by author+kind only.
+///
+/// That broader filter can also match the client's own outbound request. `wait_for_dm`
+/// waiters ignore signed self-authored kind-14 events (`is_own_signed_v2_outbound`) so the
+/// request is not consumed as the daemon reply.
 pub fn filter_protocol_dm_from_mostro(
     transport: Transport,
     mostro_pubkey: PublicKey,
