@@ -6,6 +6,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
+use crate::ui::helpers::dispute_chat_since_from_file;
+use crate::ui::ChatParty;
+use crate::util::chat_listener::track_dispute_chat;
+use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
@@ -60,7 +64,7 @@ pub async fn execute_take_dispute(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM using admin keys (signed gift wrap)
+    // Send the DM using admin keys (identity + trade)
     let sent_message = send_dm(
         client,
         Some(admin_keys),
@@ -137,6 +141,28 @@ pub async fn execute_take_dispute(
                     "✅ Dispute {} taken successfully and saved to database with InProgress status!",
                     dispute_info.id
                 );
+
+                // Start live shared-key chat subscriptions for both parties of this dispute.
+                // Prefer on-disk transcript cursors when present (e.g. retake / restart edge cases).
+                let (buyer_since, seller_since) =
+                    dispute_chat_since_from_file(&dispute_id.to_string());
+                for (party, cp_pubkey, since) in [
+                    (
+                        ChatParty::Buyer,
+                        dispute_info.buyer_pubkey.as_deref(),
+                        buyer_since,
+                    ),
+                    (
+                        ChatParty::Seller,
+                        dispute_info.seller_pubkey.as_deref(),
+                        seller_since,
+                    ),
+                ] {
+                    if let Some(hex) = derive_shared_key_hex(Some(admin_keys), cp_pubkey) {
+                        track_dispute_chat(dispute_id.to_string(), party, hex, since);
+                    }
+                }
+
                 Ok(())
             } else {
                 Err(anyhow::anyhow!(

@@ -1,20 +1,12 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tokio::time::{interval_at, Duration, Instant};
 
-use crate::models::AdminDispute;
 use crate::settings::Settings;
-use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, ChatParty, OrderChatLastSeen, OrderChatUpdate,
-};
 use crate::util::catch_unwind_request_fatal_restart;
-use crate::util::chat_utils::{fetch_admin_chat_updates, fetch_user_order_chat_updates};
 use sqlx::SqlitePool;
 
 use super::get_disputes;
@@ -39,7 +31,6 @@ pub struct FetchSchedulerResult {
 }
 
 // Semaphore to prevent multiple chat messages from being processed at the same time
-pub static CHAT_MESSAGES_SEMAPHORE: AtomicBool = AtomicBool::new(false);
 const RECONCILIATION_INTERVAL_SECS: u64 = 30;
 
 fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrder) {
@@ -417,51 +408,4 @@ pub fn spawn_fetch_scheduler_loops(
     });
 
     (order_task, dispute_task)
-}
-
-/// Spawns a one-off background task to fetch admin chat updates and send the result on the given channel.
-pub fn spawn_admin_chat_fetch(
-    client: Client,
-    disputes: Vec<AdminDispute>,
-    admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
-    tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-) {
-    // If the semaphore is already true, return
-    if CHAT_MESSAGES_SEMAPHORE
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-    tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("admin chat fetch", async move {
-            let result = fetch_admin_chat_updates(&client, &disputes, &admin_chat_last_seen).await;
-            CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
-            let _ = tx.send(result);
-        })
-        .await;
-    });
-}
-
-/// Spawns a one-off background task to fetch user order chat updates.
-pub fn spawn_user_order_chat_fetch(
-    client: Client,
-    pool: sqlx::SqlitePool,
-    order_chat_last_seen: HashMap<String, OrderChatLastSeen>,
-    tx: UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
-) {
-    if CHAT_MESSAGES_SEMAPHORE
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-    tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("user order chat fetch", async move {
-            let result = fetch_user_order_chat_updates(&client, &pool, &order_chat_last_seen).await;
-            CHAT_MESSAGES_SEMAPHORE.store(false, Ordering::Relaxed);
-            let _ = tx.send(result);
-        })
-        .await;
-    });
 }

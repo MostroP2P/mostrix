@@ -169,18 +169,16 @@ Several background tasks are spawned to keep the UI and data in sync:
    - On `Offline`, startup overlay text indicates automatic retry.
    - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
      and reload runtime background tasks.
-5. **Shared chat relay poll** (`admin_chat_interval`, 2 seconds in `src/main.rs`):
-   - **Admin role**: triggers `spawn_admin_chat_fetch` → `fetch_admin_chat_updates` (see `src/util/order_utils/fetch_scheduler.rs`).
-     - For each in-progress dispute, rebuilds per-party shared `Keys` from `buyer_shared_key_hex` / `seller_shared_key_hex` stored in the `admin_disputes` table.
-     - Fetches NIP‑59 `GiftWrap` events addressed to each shared key's public key (ECDH-derived, same model as `mostro-chat`).
-     - Uses per‑party `last_seen_timestamp` values to request only new events.
-     - Delegates application of updates to `ui::helpers::apply_admin_chat_updates` (implemented in `src/ui/helpers/startup.rs`), which:
-       - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
-       - Persists updated buyer/seller chat cursors in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`).
-   - **User role**: triggers `spawn_user_order_chat_fetch` → `fetch_user_order_chat_updates` on the same timer (shared keys from `order_chat_shared_key_hex` or `trade_keys` + `counterparty_pubkey`; applied via `apply_user_order_chat_updates`).
-   - A **single-flight guard** (`CHAT_MESSAGES_SEMAPHORE`: `AtomicBool`) ensures only one shared-key chat fetch runs at a time; overlapping ticks skip spawning a new fetch until the current one completes.
+5. **Shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`):
+   - A **single long-lived task** (spawned in `src/startup.rs`, respawned on reconnect/key reload) maintains **one** relay subscription whose filter batches **all** active shared-key pubkeys (`kind: 1059`, `#p: [shared pubkeys]`) — the same model as Mostro Mobile's `SubscriptionManager`. No timed polling.
+   - **Track/untrack** via the global command channel (`ChatRouterCmd`, published by `set_chat_router_cmd_tx`). Helpers: `track_order_chat` / `untrack_order_chat` / `track_dispute_chat` / `untrack_dispute_chat`.
+   - On `TrackChatKey`, the router hydrates history once (`fetch_gift_wraps_for_shared_key`, filtered by the last-seen cursor). Buffered track/untrack commands are drained and applied before a **single** batched resubscribe (idempotent re-tracks are no-ops). Subscribe failures retry with short backoff.
+   - Live `kind: 1059` gift wraps are routed by the event's `p` tag to the owning shared key, decrypted with `unwrap_giftwrap_with_shared_key`, and emitted on the existing `admin_chat_updates` / `user_order_chat_updates` channels.
+   - **Application is unchanged**: `ui::helpers::apply_admin_chat_updates` / `apply_user_order_chat_updates` (in `src/ui/helpers/startup.rs`) still merge updates, persist cursors (`buyer_chat_last_seen` / `seller_chat_last_seen`, order transcripts), and dedupe.
+   - **Startup track set (option B)**: `track_startup_chats` emits tracks for `Order::get_startup_active_orders` rows (active + `success`) with a resolvable shared key (User), and each `InProgress` dispute's buyer/seller shared key (Admin).
+   - **Untrack** when an order reaches `TERMINAL_DM_STATUSES` or its row is removed/reverted (DM router hooks), or a dispute leaves `InProgress`. Chat is **not** untracked on `success`; on-disk transcripts preserve history for untracked terminal orders.
 
-**Source**: `src/main.rs` (background task setup), `src/util/order_utils/fetch_scheduler.rs` (admin chat scheduler), `src/ui/helpers/startup.rs` (`apply_admin_chat_updates`)
+**Source**: `src/util/chat_listener.rs` (router), `src/startup.rs` + `src/ui/helpers/startup.rs` (`track_startup_chats`), `src/util/dm_utils/mod.rs` (track/untrack hooks), `src/ui/helpers/startup.rs` (`apply_admin_chat_updates`)
 
 6. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
@@ -215,7 +213,7 @@ For **User** role, Mostrix restores peer-to-peer order chat alongside trade DMs:
 
 - Cached transcripts live under `~/.mostrix/orders_chat/<order_id>.txt` and are loaded into `AppState.order_chats` by `load_user_order_chats_at_startup`.
 - **Attachment rows in transcripts** are stored as **JSON** (`image_encrypted` / `file_encrypted` via `serialize_attachment_for_transcript`) so **Ctrl+S** and file counts work immediately after restart; legacy `[Image: … - Ctrl+S to save]` lines are hydrated in memory when relay returns the same attachment at the same timestamp.
-- An immediate relay fetch (`fetch_user_order_chat_updates`) merges any newer gift-wrap messages; subsequent polls run every **2 seconds** on the shared `admin_chat_interval` timer via `spawn_user_order_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs`.
+- Disk restore via `load_user_order_chats_at_startup` seeds `AppState.order_chats` and `order_chat_last_seen`. Relay history is hydrated once by the **shared-key chat subscription router** when `track_startup_chats` emits `TrackChatKey` — no separate startup poll and no timed polling.
 - `apply_user_order_chat_updates` skips relay echoes of the local trade pubkey; peer dedup is scoped to existing **Peer** rows so optimistic **You** sends are not mirrored as **Peer** and do not suppress unrelated peer text at the same timestamp. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
 
 ## Main Event Loop

@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
 use crate::ui::{MessageNotification, OrderMessage};
+use crate::util::chat_listener::{maybe_track_order_chat, untrack_order_chat};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{
@@ -52,6 +53,27 @@ fn default_dm_expiration() -> Timestamp {
             .as_secs()
             .saturating_add(DEFAULT_DM_EXPIRATION_DAYS * 24 * 60 * 60),
     )
+}
+
+/// Own outbound v2 protocol DMs are signed kind-14 events authored by the trade key.
+///
+/// When admin == Mostro, `wait_for_dm` registers a subscription that also matches that
+/// outbound event. Mostro daemon replies are unsigned (`signed: false`), so treating
+/// signed self-authored kind-14 as non-replies avoids consuming the request as the response.
+fn is_own_signed_v2_outbound(
+    event: &Event,
+    trade_keys: &Keys,
+    unwrapped: &UnwrappedMessage,
+) -> bool {
+    event.kind == nostr_sdk::Kind::PrivateDirectMessage
+        && event.pubkey == trade_keys.public_key()
+        && unwrapped.signature.is_some()
+}
+
+#[derive(Clone, Copy)]
+struct CachedDmUnwrap {
+    can_decrypt: bool,
+    skip_for_waiter: bool,
 }
 
 #[derive(Debug)]
@@ -155,6 +177,40 @@ fn is_terminal_order_status(status: Status) -> bool {
     )
 }
 
+/// P2P chat untrack set: aligned with [`crate::models::TERMINAL_DM_STATUSES`] (omits `success`).
+fn order_status_untracks_chat(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin
+            | Status::Expired
+            | Status::CooperativelyCanceled
+    )
+}
+
+/// Whether a trade DM should drop the shared-key order chat subscription.
+///
+/// [`trade_message_is_terminal`] still includes [`Status::Success`] so the trade DM listener can
+/// tear down its per-trade-key subscription; chat stays tracked through the post-success window.
+fn trade_message_should_untrack_order_chat(message: &Message) -> bool {
+    let kind = message.get_inner_message_kind();
+    if matches!(
+        &kind.action,
+        Action::AdminCanceled | Action::Canceled | Action::CooperativeCancelAccepted
+    ) {
+        return true;
+    }
+    kind.payload
+        .as_ref()
+        .and_then(|payload| match payload {
+            Payload::Order(order) => order.status,
+            _ => None,
+        })
+        .is_some_and(order_status_untracks_chat)
+}
+
 /// Loads active-order rows for DM bootstrap; status filter is [`crate::models::TERMINAL_DM_STATUSES`].
 pub async fn hydrate_startup_active_order_dm_state(
     pool: &sqlx::sqlite::SqlitePool,
@@ -212,6 +268,64 @@ fn trade_message_is_terminal(message: &Message) -> bool {
     message_has_terminal_order_status(message)
 }
 
+/// NIP-44 protocol wrap that keeps a self `#p` tag when author == receiver.
+///
+/// nostr-sdk [`EventBuilder`] strips `p` tags matching the author unless
+/// [`EventBuilder::allow_self_tagging`] is set. Mostro subscribes on `#p`, so
+/// admin DMs that reuse the Mostro key would otherwise never be delivered.
+fn wrap_message_nip44_allow_self_p(
+    message: &Message,
+    identity_keys: &Keys,
+    trade_keys: &Keys,
+    receiver: PublicKey,
+    opts: WrapOptions,
+) -> Result<Event> {
+    let message_json = message
+        .as_json()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize message for nip44 wrap: {e:?}"))?;
+
+    let trade_sig = opts
+        .signed
+        .then(|| Message::sign(message_json.clone(), trade_keys).to_string());
+
+    let identity_proof = (identity_keys.public_key() != trade_keys.public_key()).then(|| {
+        let payload = format!(
+            "mostro-transport-v2-identity:{}:{}",
+            trade_keys.public_key().to_hex(),
+            message_json
+        );
+        (
+            identity_keys.public_key().to_hex(),
+            Message::sign(payload, identity_keys).to_string(),
+        )
+    });
+
+    let tuple: (&Message, Option<String>, Option<(String, String)>) =
+        (message, trade_sig, identity_proof);
+    let content = serde_json::to_string(&tuple)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize nip44 tuple: {e}"))?;
+
+    let encrypted = nip44::encrypt(
+        trade_keys.secret_key(),
+        &receiver,
+        content,
+        nip44::Version::default(),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to nip44-encrypt protocol message: {e}"))?;
+
+    let mut tags: Vec<Tag> = vec![Tag::public_key(receiver)];
+    if let Some(exp) = opts.expiration {
+        tags.push(Tag::expiration(exp));
+    }
+
+    EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, encrypted)
+        .tags(tags)
+        .allow_self_tagging()
+        .pow(opts.pow)
+        .sign_with_keys(trade_keys)
+        .map_err(|e| anyhow::anyhow!("Failed to sign nip44 protocol event: {e}"))
+}
+
 /// Send a direct message to a receiver
 pub async fn send_dm(
     client: &Client,
@@ -224,27 +338,42 @@ pub async fn send_dm(
 ) -> Result<()> {
     let message = Message::from_json(&payload)
         .map_err(|e| anyhow::anyhow!("Failed to deserialize message: {e}"))?;
-    let pow = nostr_pow_for_protocol_dm(mostro_instance, &message.get_inner_message_kind().action);
+    let action = message.get_inner_message_kind().action.clone();
+    let pow = nostr_pow_for_protocol_dm(mostro_instance, &action);
     let identity_keys = identity_keys.unwrap_or(trade_keys);
     let transport = transport_from_instance(mostro_instance);
     let expiration = match (transport, expiration) {
         (Transport::Nip44Direct, None) => Some(default_dm_expiration()),
         (_, exp) => exp,
     };
-    let event = wrap_message_with(
-        transport,
-        &message,
-        identity_keys,
-        trade_keys,
-        *receiver_pubkey,
-        WrapOptions {
-            pow,
-            expiration,
-            signed: true,
-        },
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?;
+    let wrap_opts = WrapOptions {
+        pow,
+        expiration,
+        signed: true,
+    };
+    // Self-addressed v2 DMs must keep `#p` (Mostro filters on it). nostr-sdk strips
+    // self `p` tags unless allow_self_tagging is set — mostro-core's wrap does not.
+    let event =
+        if transport == Transport::Nip44Direct && trade_keys.public_key() == *receiver_pubkey {
+            wrap_message_nip44_allow_self_p(
+                &message,
+                identity_keys,
+                trade_keys,
+                *receiver_pubkey,
+                wrap_opts,
+            )?
+        } else {
+            wrap_message_with(
+                transport,
+                &message,
+                identity_keys,
+                trade_keys,
+                *receiver_pubkey,
+                wrap_opts,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?
+        };
 
     client.send_event(&event).await?;
     Ok(())
@@ -413,6 +542,8 @@ async fn drop_pre_active_taker_take(
         );
     }
     remove_order_from_messages(messages, order_id);
+    // Row deleted: stop the P2P order chat subscription for this order.
+    untrack_order_chat(order_id.to_string());
 }
 
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
@@ -526,6 +657,8 @@ async fn revert_maker_to_pending_on_book_republish(
     }
 
     remove_order_from_messages(messages, order_id);
+    // Back on the book as a pending maker listing (no counterparty): stop order chat subscription.
+    untrack_order_chat(order_id.to_string());
     try_notify_my_trades_maker_book_changed();
 
     log::info!(
@@ -713,6 +846,9 @@ async fn handle_trade_dm_for_order(
         trade_keys,
     )
     .await;
+
+    // Keep the P2P order chat subscription live once the shared key is resolvable (idempotent).
+    maybe_track_order_chat(pool, order_id, trade_keys).await;
 
     // Extract invoice and sat_amount from payload based on action type.
     // For `PayBondInvoice` mostrod populates the bond satoshis in the third
@@ -1029,6 +1165,7 @@ async fn dispatch_giftwrap_batch(
 
     for (message, timestamp, sender) in parsed_messages {
         let has_terminal_status = trade_message_is_terminal(&message);
+        let should_untrack_chat = trade_message_should_untrack_order_chat(&message);
         log::info!(
             "order id: {} has_terminal_status: {:?}",
             order_id,
@@ -1065,6 +1202,10 @@ async fn dispatch_giftwrap_batch(
                 order_id,
                 e
             );
+        }
+
+        if should_untrack_chat {
+            untrack_order_chat(order_id.to_string());
         }
 
         if has_terminal_status {
@@ -1693,7 +1834,7 @@ pub async fn listen_for_order_messages(
                     // Shared cache for this single incoming event: decryptability is keyed only
                     // by trade pubkey; `event.id` is fixed for the whole handler block.
                     // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
-                    let mut rumor_cache: HashMap<PublicKey, bool> = HashMap::new();
+                    let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
 
                     if !pending_waiters.is_empty() {
                         let mut still_pending: Vec<PendingDmWaiter> =
@@ -1707,22 +1848,32 @@ pub async fn listen_for_order_messages(
                                 continue;
                             }
                             let key = waiter.trade_keys.public_key();
-                            let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
-                                *boolean
+                            let cached = if let Some(cached) = rumor_cache.get(&key) {
+                                *cached
                             } else {
-                                let ok = matches!(
-                                    unwrap_incoming(&event, &waiter.trade_keys).await,
-                                    Ok(Some(_))
-                                );
-                                rumor_cache.insert(key, ok);
-                                ok
+                                let cached = match unwrap_incoming(&event, &waiter.trade_keys).await
+                                {
+                                    Ok(Some(u)) => CachedDmUnwrap {
+                                        can_decrypt: true,
+                                        skip_for_waiter: is_own_signed_v2_outbound(
+                                            &event,
+                                            &waiter.trade_keys,
+                                            &u,
+                                        ),
+                                    },
+                                    _ => CachedDmUnwrap {
+                                        can_decrypt: false,
+                                        skip_for_waiter: false,
+                                    },
+                                };
+                                rumor_cache.insert(key, cached);
+                                cached
                             };
 
-                            if can_decrypt {
+                            if cached.can_decrypt && !cached.skip_for_waiter {
                                 let _ = waiter.response_tx.send(event.clone());
                             } else {
-                                // If the rumor cannot be extracted, the waiter is still pending
-                                // push it back to the pending waiters vector
+                                // Not for this waiter, or our own echoed outbound request.
                                 still_pending.push(waiter);
                             }
                         }
@@ -1753,14 +1904,20 @@ pub async fn listen_for_order_messages(
                         // Reuse per-event decryptability result if waiter path already checked
                         // this same trade pubkey.
                         let key = trade_keys.public_key();
-                        let can_decrypt = if let Some(boolean) = rumor_cache.get(&key) {
-                            *boolean
+                        let can_decrypt = if let Some(cached) = rumor_cache.get(&key) {
+                            cached.can_decrypt
                         } else {
                             let ok = matches!(
                                 unwrap_incoming(&event, &trade_keys).await,
                                 Ok(Some(_))
                             );
-                            rumor_cache.insert(key, ok);
+                            rumor_cache.insert(
+                                key,
+                                CachedDmUnwrap {
+                                    can_decrypt: ok,
+                                    skip_for_waiter: false,
+                                },
+                            );
                             ok
                         };
 
@@ -1846,18 +2003,80 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_pre_active_maker_listing,
-        is_pre_active_taker_take, new_order_would_regress_messages_row,
-        small_order_pending_from_new_order_payload, trade_message_is_terminal,
+        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_own_signed_v2_outbound,
+        is_pre_active_maker_listing, is_pre_active_taker_take,
+        new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
+        trade_message_is_terminal, trade_message_should_untrack_order_chat,
     };
     use crate::models::Order;
-    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status};
-    use nostr_sdk::Timestamp;
+    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
+    use nostr_sdk::prelude::{EventBuilder, Keys, Tag, Timestamp};
+
+    #[test]
+    fn own_signed_v2_outbound_is_skipped_by_waiter_guard() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, "ciphertext")
+            .tags([Tag::public_key(keys.public_key())])
+            .allow_self_tagging()
+            .sign_with_keys(&keys)
+            .expect("sign kind-14");
+        let message = Message::new_dispute(None, None, None, Action::AdminTakeDispute, None);
+        let sig = Message::sign(message.as_json().expect("json"), &keys);
+        let signed = UnwrappedMessage {
+            message: message.clone(),
+            signature: Some(sig),
+            sender: keys.public_key(),
+            identity: keys.public_key(),
+            created_at: Timestamp::now(),
+        };
+        assert!(is_own_signed_v2_outbound(&event, &keys, &signed));
+
+        let unsigned = UnwrappedMessage {
+            message,
+            signature: None,
+            sender: keys.public_key(),
+            identity: keys.public_key(),
+            created_at: Timestamp::now(),
+        };
+        assert!(!is_own_signed_v2_outbound(&event, &keys, &unsigned));
+    }
 
     #[test]
     fn action_only_canceled_is_terminal() {
         let message = Message::new_order(None, None, None, Action::Canceled, None);
         assert!(trade_message_is_terminal(&message));
+        assert!(trade_message_should_untrack_order_chat(&message));
+    }
+
+    #[test]
+    fn success_order_payload_is_terminal_for_dm_but_keeps_chat_tracked() {
+        let message = Message::new_order(
+            None,
+            None,
+            None,
+            Action::Released,
+            Some(Payload::Order(SmallOrder {
+                status: Some(Status::Success),
+                ..Default::default()
+            })),
+        );
+        assert!(trade_message_is_terminal(&message));
+        assert!(!trade_message_should_untrack_order_chat(&message));
+    }
+
+    #[test]
+    fn canceled_order_payload_untracks_chat() {
+        let message = Message::new_order(
+            None,
+            None,
+            None,
+            Action::Canceled,
+            Some(Payload::Order(SmallOrder {
+                status: Some(Status::Canceled),
+                ..Default::default()
+            })),
+        );
+        assert!(trade_message_should_untrack_order_chat(&message));
     }
 
     #[test]

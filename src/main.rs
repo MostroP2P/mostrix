@@ -17,13 +17,12 @@ use crate::ui::helpers::{
 use crate::ui::key_handler::{
     apply_pending_runtime_reloads, create_app_channels, handle_key_event,
     handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
-    respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
+    respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     blossom_servers_from_settings, handle_message_notification, handle_operation_result,
-    install_background_panic_hook,
-    order_utils::{spawn_admin_chat_fetch, spawn_user_order_chat_fetch, validate_range_amount},
+    install_background_panic_hook, order_utils::validate_range_amount, set_chat_router_cmd_tx,
     set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
     spawn_send_order_chat_attachment,
 };
@@ -273,6 +272,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut mostro_info_rx,
         mut dm_subscription_tx,
         dm_subscription_rx,
+        mut chat_router_cmd_tx,
+        chat_router_cmd_rx,
         network_status_tx,
         mut network_status_rx,
         fatal_error_tx,
@@ -288,6 +289,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // Set dm subscription tx for the app channels
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| {
         anyhow::anyhow!("{msg}: DM router sender was not registered; restart the application.")
+    })?;
+    // Set chat router tx (shared-key order + dispute chat subscriptions).
+    set_chat_router_cmd_tx(chat_router_cmd_tx.clone()).map_err(|msg| {
+        anyhow::anyhow!("{msg}: chat router sender was not registered; restart the application.")
     })?;
     set_order_result_tx(order_result_tx.clone()).map_err(|msg| anyhow::anyhow!(msg))?;
 
@@ -311,6 +316,7 @@ async fn main() -> Result<(), anyhow::Error> {
         mut dispute_task,
         mut app,
         mut message_listener_handle,
+        mut chat_listener_handle,
         ..
     } = startup::run_startup_with_splash(
         &mut terminal,
@@ -321,9 +327,12 @@ async fn main() -> Result<(), anyhow::Error> {
             user_role,
             configured_relays,
             dm_subscription_rx,
+            chat_router_cmd_rx,
             mostro_info_tx: mostro_info_tx.clone(),
             network_status_tx,
             message_notification_tx: message_notification_tx.clone(),
+            admin_chat_updates_tx: admin_chat_updates_tx.clone(),
+            user_order_chat_updates_tx: user_order_chat_updates_tx.clone(),
         },
     )
     .await?;
@@ -331,7 +340,6 @@ async fn main() -> Result<(), anyhow::Error> {
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
-    let mut admin_chat_interval = interval(Duration::from_secs(2));
 
     loop {
         tokio::select! {
@@ -341,6 +349,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     order_task.abort();
                     dispute_task.abort();
                     message_listener_handle.abort();
+                    chat_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                 }
@@ -378,6 +387,22 @@ async fn main() -> Result<(), anyhow::Error> {
                             {
                                 Ok(()) => {
                                     app.offline_overlay_message = None;
+                                    // Reconnect ran `unsubscribe_all`; rebuild the chat subscription.
+                                    if let Err(e) = respawn_chat_listener(
+                                        &app,
+                                        &client,
+                                        &pool,
+                                        &mut chat_listener_handle,
+                                        &mut chat_router_cmd_tx,
+                                        &admin_chat_updates_tx,
+                                        &user_order_chat_updates_tx,
+                                    )
+                                    .await
+                                    {
+                                        log::error!(
+                                            "Failed to respawn chat listener after reconnect: {e}"
+                                        );
+                                    }
                                 }
                                 Err(e) => {
                                     app.offline_overlay_message = Some(format!(
@@ -578,7 +603,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         &dm_subscription_tx,
                     ) {
                         Some(true) => {
-                            if app.pending_key_reload || app.pending_fetch_scheduler_reload {
+                            let needs_chat_respawn =
+                                app.pending_key_reload || app.pending_fetch_scheduler_reload;
+                            if needs_chat_respawn {
                                 apply_pending_runtime_reloads(
                                     &mut app,
                                     &mut client,
@@ -595,6 +622,25 @@ async fn main() -> Result<(), anyhow::Error> {
                                     settings,
                                 )
                                 .await;
+                                // Reloads replace the client / run `unsubscribe_all`, dropping the
+                                // chat subscription; respawn once the reload actually completed.
+                                if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
+                                    if let Err(e) = respawn_chat_listener(
+                                        &app,
+                                        &client,
+                                        &pool,
+                                        &mut chat_listener_handle,
+                                        &mut chat_router_cmd_tx,
+                                        &admin_chat_updates_tx,
+                                        &user_order_chat_updates_tx,
+                                    )
+                                    .await
+                                    {
+                                        log::error!(
+                                            "Failed to respawn chat listener after reload: {e}"
+                                        );
+                                    }
+                                }
                             }
                             if app.pending_admin_disputes_reload {
                                 app.pending_admin_disputes_reload = false;
@@ -612,25 +658,6 @@ async fn main() -> Result<(), anyhow::Error> {
             _ = refresh_interval.tick() => {
                 // Refresh the UI even if there is no input.
             }
-            _ = admin_chat_interval.tick() => {
-                if app.user_role == UserRole::Admin {
-                    if app.admin_keys.is_some() {
-                        spawn_admin_chat_fetch(
-                            client.clone(),
-                            app.admin_disputes_in_progress.clone(),
-                            app.admin_chat_last_seen.clone(),
-                            admin_chat_updates_tx.clone(),
-                        );
-                    }
-                } else if app.user_role == UserRole::User {
-                    spawn_user_order_chat_fetch(
-                        client.clone(),
-                        pool.clone(),
-                        app.order_chat_last_seen.clone(),
-                        user_order_chat_updates_tx.clone(),
-                    );
-                }
-            }
         }
 
         // Ensure the selected index is valid when orders list changes.
@@ -644,6 +671,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     order_task.abort();
                     dispute_task.abort();
                     message_listener_handle.abort();
+                    chat_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     0
@@ -668,6 +696,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     order_task.abort();
                     dispute_task.abort();
                     message_listener_handle.abort();
+                    chat_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     continue;

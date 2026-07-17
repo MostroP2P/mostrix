@@ -19,7 +19,7 @@ use crate::models::User;
 use crate::settings::Settings;
 use crate::ui::helpers::{
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup,
+    load_user_order_chats_at_startup, track_startup_chats,
 };
 use crate::ui::network_status::spawn_network_status_monitor;
 use crate::ui::startup_splash::{
@@ -28,7 +28,8 @@ use crate::ui::startup_splash::{
 use crate::ui::{AppState, OperationResult, UiMode, UserRole};
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    fetch_mostro_instance_info, hydrate_startup_active_order_dm_state, listen_for_order_messages,
+    fetch_mostro_instance_info, hydrate_startup_active_order_dm_state, listen_for_chat_messages,
+    listen_for_order_messages,
     order_utils::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         start_fetch_scheduler, FetchSchedulerResult,
@@ -44,9 +45,17 @@ pub struct PostTerminalStartupInput<'a> {
     pub configured_relays: Vec<String>,
     pub dm_subscription_rx:
         tokio::sync::mpsc::UnboundedReceiver<crate::util::OrderDmSubscriptionCmd>,
+    /// Receiver for the shared-key chat subscription router (track/untrack commands).
+    pub chat_router_cmd_rx: tokio::sync::mpsc::UnboundedReceiver<crate::util::ChatRouterCmd>,
     pub mostro_info_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MostroInfoFetchResult>,
     pub network_status_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::NetworkStatus>,
     pub message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
+    /// Sender used by the chat router to publish decoded admin dispute chat updates.
+    pub admin_chat_updates_tx:
+        tokio::sync::mpsc::UnboundedSender<Result<Vec<crate::ui::AdminChatUpdate>, anyhow::Error>>,
+    /// Sender used by the chat router to publish decoded user order chat updates.
+    pub user_order_chat_updates_tx:
+        tokio::sync::mpsc::UnboundedSender<Result<Vec<crate::ui::OrderChatUpdate>, anyhow::Error>>,
 }
 
 pub struct StartupBootstrap {
@@ -59,6 +68,8 @@ pub struct StartupBootstrap {
     pub dispute_task: JoinHandle<()>,
     pub app: AppState,
     pub message_listener_handle: JoinHandle<()>,
+    /// Shared-key chat subscription router task (user order + admin dispute chat).
+    pub chat_listener_handle: JoinHandle<()>,
     pub relays_reachable: bool,
 }
 
@@ -161,7 +172,10 @@ pub async fn run_post_terminal_startup(
             log::warn!("Startup targeted relay order DB reconcile failed: {}", e);
         }
     }
-    load_user_order_chats_at_startup(&client, input.pool, &mut app).await;
+    load_user_order_chats_at_startup(input.pool, &mut app).await;
+    // Emit initial chat-router track commands for the active set (option B). Buffered on the
+    // router's channel until the chat listener task (spawned below) starts consuming them.
+    track_startup_chats(input.pool, &app).await;
 
     set_startup_phase(phase_tx, "Almost ready…");
     let startup_dm_hydration = match hydrate_startup_active_order_dm_state(input.pool).await {
@@ -234,6 +248,25 @@ pub async fn run_post_terminal_startup(
         .await;
     });
 
+    // Single shared-key chat subscription router (user order chat + admin dispute chat).
+    // Track/untrack commands arrive via the global sender registered in `main.rs`.
+    let client_for_chat = client.clone();
+    let admin_chat_updates_tx_for_chat = input.admin_chat_updates_tx.clone();
+    let user_order_chat_updates_tx_for_chat = input.user_order_chat_updates_tx.clone();
+    let chat_router_cmd_rx = input.chat_router_cmd_rx;
+    let chat_listener_handle = tokio::spawn(async move {
+        catch_unwind_request_fatal_restart("chat subscription router", async move {
+            listen_for_chat_messages(
+                client_for_chat,
+                admin_chat_updates_tx_for_chat,
+                user_order_chat_updates_tx_for_chat,
+                chat_router_cmd_rx,
+            )
+            .await;
+        })
+        .await;
+    });
+
     Ok(StartupBootstrap {
         client,
         mostro_pubkey,
@@ -244,6 +277,7 @@ pub async fn run_post_terminal_startup(
         dispute_task,
         app,
         message_listener_handle,
+        chat_listener_handle,
         relays_reachable,
     })
 }

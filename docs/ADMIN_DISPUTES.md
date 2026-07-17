@@ -681,7 +681,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The background listener uses these DB fields as cursors for `fetch_admin_chat_updates`, so only newer NIP‑59 events are fetched after restart. A single-flight guard ensures only one admin chat fetch runs at a time (see `src/util/order_utils/fetch_scheduler.rs`).
+    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key`), then receives newer NIP‑59 events live over one batched `kind: 1059` subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts

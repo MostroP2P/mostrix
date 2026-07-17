@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
+use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::mostro_info::MostroInstanceInfo;
 
 use super::{execute_admin_cancel, execute_admin_settle, BondSlashChoice};
@@ -121,6 +122,9 @@ pub async fn execute_finalize_dispute(
     } else {
         AdminDispute::set_status_seller_refunded(pool, &dispute.id).await?;
     }
+
+    // Dispute left InProgress: drop buyer/seller shared-key chat subscriptions.
+    untrack_dispute_chat_parties(&dispute_id_str);
 
     let action_name = if is_settle {
         "settled (buyer paid)"

@@ -15,6 +15,14 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
 ///
 /// v1: GiftWrap addressed to the trade key (`p` tag).
 /// v2: signed kind-14 from Mostro with trade key in `#p`.
+///
+/// When `mostro_pubkey == trade_pubkey` on v2 (admin using the Mostro nsec), nostr-sdk's
+/// [`EventBuilder`] strips self `#p` tags unless `allow_self_tagging` is set. Mostro replies
+/// may therefore have **no** `#p`, so this path subscribes by author+kind only.
+///
+/// That broader filter can also match the client's own outbound request. `wait_for_dm`
+/// waiters ignore signed self-authored kind-14 events (`is_own_signed_v2_outbound`) so the
+/// request is not consumed as the daemon reply.
 pub fn filter_protocol_dm_from_mostro(
     transport: Transport,
     mostro_pubkey: PublicKey,
@@ -22,6 +30,9 @@ pub fn filter_protocol_dm_from_mostro(
 ) -> Filter {
     match transport {
         Transport::GiftWrap => filter_giftwrap_to_recipient(trade_pubkey),
+        Transport::Nip44Direct if mostro_pubkey == trade_pubkey => Filter::new()
+            .author(mostro_pubkey)
+            .kind(nostr_sdk::Kind::PrivateDirectMessage),
         Transport::Nip44Direct => Filter::new()
             .author(mostro_pubkey)
             .pubkey(trade_pubkey)
@@ -91,5 +102,15 @@ mod tests {
         assert!(json.contains(&format!(r#""authors":["{}"]"#, mostro)));
         assert!(json.contains(&format!("\"#p\":[\"{}\"]", trade)));
         assert!(json.contains(r#""kinds":[14]"#));
+    }
+
+    #[test]
+    fn filter_protocol_dm_v2_self_admin_omits_p_tag() {
+        let mostro = Keys::generate().public_key();
+        let filter = filter_protocol_dm_from_mostro(Transport::Nip44Direct, mostro, mostro);
+        let json = filter.as_json();
+        assert!(json.contains(&format!(r#""authors":["{}"]"#, mostro)));
+        assert!(json.contains(r#""kinds":[14]"#));
+        assert!(!json.contains("\"#p\""));
     }
 }

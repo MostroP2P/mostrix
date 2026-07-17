@@ -1,7 +1,7 @@
 use crate::models::{Order, User};
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
-use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
+use crate::ui::helpers::{hydrate_app_admin_keys_from_privkey, track_startup_chats};
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::FormState;
 use crate::ui::{
@@ -14,8 +14,9 @@ use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    hydrate_startup_active_order_dm_state, set_dm_router_cmd_tx,
-    unsubscribe_dm_listener_subscriptions, OrderDmSubscriptionCmd, StartupDmHydration,
+    hydrate_startup_active_order_dm_state, listen_for_chat_messages, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
+    OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
@@ -717,6 +718,45 @@ pub async fn reload_runtime_session_after_reconnect(
     }
 }
 
+/// Abort and respawn the shared-key chat subscription router on a new/renewed client.
+///
+/// Needed after key reload (client replaced) or reconnect / fetch-scheduler reload
+/// (`client.unsubscribe_all()` drops the chat subscription). Rebuilds the router with a fresh
+/// command channel, re-registers the global sender, and re-emits the active track set
+/// ([`track_startup_chats`], option B) so every chat resubscribes on the new client/session.
+pub async fn respawn_chat_listener(
+    app: &AppState,
+    client: &Client,
+    pool: &SqlitePool,
+    chat_listener_handle: &mut JoinHandle<()>,
+    chat_router_cmd_tx: &mut UnboundedSender<ChatRouterCmd>,
+    admin_chat_updates_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_order_chat_updates_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+) -> Result<(), String> {
+    chat_listener_handle.abort();
+    // Await the old task so it releases its subscription/state before the new one starts.
+    let old = std::mem::replace(chat_listener_handle, tokio::spawn(async {}));
+    let _ = old.await;
+
+    let (new_tx, new_rx) = tokio::sync::mpsc::unbounded_channel::<ChatRouterCmd>();
+    *chat_router_cmd_tx = new_tx;
+    set_chat_router_cmd_tx(chat_router_cmd_tx.clone()).map_err(|msg| msg.to_string())?;
+
+    let client_for_chat = client.clone();
+    let admin_tx = admin_chat_updates_tx.clone();
+    let user_tx = user_order_chat_updates_tx.clone();
+    *chat_listener_handle = tokio::spawn(async move {
+        catch_unwind_request_fatal_restart("chat subscription router", async move {
+            listen_for_chat_messages(client_for_chat, admin_tx, user_tx, new_rx).await;
+        })
+        .await;
+    });
+
+    // Re-emit the active track set so all chats resubscribe on the new client/session.
+    track_startup_chats(pool, app).await;
+    Ok(())
+}
+
 pub struct AppChannels {
     pub order_result_tx: UnboundedSender<OperationResult>,
     pub order_result_rx: UnboundedReceiver<OperationResult>,
@@ -738,6 +778,8 @@ pub struct AppChannels {
     pub mostro_info_rx: UnboundedReceiver<MostroInfoFetchResult>,
     pub dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
     pub dm_subscription_rx: UnboundedReceiver<OrderDmSubscriptionCmd>,
+    pub chat_router_cmd_tx: UnboundedSender<crate::util::ChatRouterCmd>,
+    pub chat_router_cmd_rx: UnboundedReceiver<crate::util::ChatRouterCmd>,
     pub network_status_tx: UnboundedSender<NetworkStatus>,
     pub network_status_rx: UnboundedReceiver<NetworkStatus>,
     pub fatal_error_tx: UnboundedSender<String>,
@@ -767,6 +809,8 @@ pub fn create_app_channels() -> AppChannels {
         tokio::sync::mpsc::unbounded_channel::<MostroInfoFetchResult>();
     let (dm_subscription_tx, dm_subscription_rx) =
         tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    let (chat_router_cmd_tx, chat_router_cmd_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::util::ChatRouterCmd>();
     let (network_status_tx, network_status_rx) =
         tokio::sync::mpsc::unbounded_channel::<NetworkStatus>();
     let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -794,6 +838,8 @@ pub fn create_app_channels() -> AppChannels {
         mostro_info_rx,
         dm_subscription_tx,
         dm_subscription_rx,
+        chat_router_cmd_tx,
+        chat_router_cmd_rx,
         network_status_tx,
         network_status_rx,
         fatal_error_tx,

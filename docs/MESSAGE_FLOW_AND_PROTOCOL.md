@@ -320,8 +320,8 @@ This task:
 In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcript cache for user-to-user order chat:
 
 - **Path**: `~/.mostrix/orders_chat/<order_id>.txt`
-- **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats`, seeds `order_chat_last_seen`, then runs an initial `fetch_user_order_chat_updates` relay backfill.
-- **Periodic relay sync (User role)**: on the shared **`admin_chat_interval`** timer (every **2 seconds** in `src/main.rs`), the User-role branch calls `spawn_user_order_chat_fetch`, which polls active orders via `fetch_user_order_chat_updates`. Uses the same single-flight `CHAT_MESSAGES_SEMAPHORE` as admin chat so overlapping fetches are skipped. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
+- **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats` and seeds `order_chat_last_seen` from on-disk transcripts. Relay backfill is done once by the chat router on `TrackChatKey` after `track_startup_chats` (not a separate poll).
+- **Live relay sync (User role)**: the **shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`) maintains one batched `kind: 1059` subscription over all active order shared pubkeys and routes incoming gift wraps by `p` tag. `track_startup_chats` seeds the active-order set at startup; the DM router tracks/untracks orders when the shared key becomes resolvable or the order hits a chat-terminal status ([`TERMINAL_DM_STATUSES`](../src/models.rs) — **`success` keeps chat live**). Dynamic tracks pass a hydrate `since` from the on-disk transcript max timestamp when present. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
 - **Incremental merge**: `apply_user_order_chat_updates` in `src/ui/helpers/startup.rs`:
   - **Skip own relay echoes**: each `OrderChatUpdate` carries `local_trade_pubkey`; messages whose decrypted `sender_pubkey` matches are ignored (same rule as admin chat and Mostro Mobile — avoids showing your send on both **You** and **Peer** after the optimistic local append on Enter).
   - **Dedup**: relay self-echoes are skipped by `sender_pubkey == local_trade_pubkey`; peer dedup matches only existing **Peer** rows at the same `(timestamp, content)` (or same attachment / legacy placeholder) so an optimistic **You** line cannot hide a real counterparty message in the same second.
@@ -588,26 +588,20 @@ User-facing strings for `Payload::CantDo(Some(reason))` come from [`get_cant_do_
 
 Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)); they surface via waiters / `OperationResult` popups.
 
-## Admin Chat Fetch (Single-Flight, Shared-Key Based)
+## Admin Chat (Shared-Key Subscription Router)
 
-When the user is in **Admin** mode, the main event loop runs a periodic admin chat sync so the "Disputes in Progress" tab stays up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys**.
+When the user is in **Admin** mode, the shared-key chat subscription router keeps the "Disputes in Progress" tab up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys** — live via a relay subscription, not a timer.
 
-- **Trigger**: Every **2 seconds** on the shared **`admin_chat_interval`** timer in `src/main.rs` when `app.user_role == UserRole::Admin` (the same timer’s User-role branch calls `spawn_user_order_chat_fetch` instead).
-- **Shared keys**: For each `AdminDispute` in `InProgress` state, the database may hold `buyer_shared_key_hex` / `seller_shared_key_hex`. At runtime these are converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
-- **Entry point**: `spawn_admin_chat_fetch` in `src/util/order_utils/fetch_scheduler.rs` is called with the Nostr client, the current disputes, `admin_chat_last_seen`, and the channel to send results.
-- **Single-flight guard**: A shared `AtomicBool` (`CHAT_MESSAGES_SEMAPHORE`) ensures that only one admin chat fetch runs concurrently. If a previous fetch is still running, subsequent ticks are skipped until the flag is cleared.
-- **Fetch work**: The spawned task calls `fetch_admin_chat_updates`, which, for every dispute+party that has a stored shared key:
-  - Rebuilds the shared `Keys` from hex.
-  - Fetches `Kind::GiftWrap` events **addressed to the shared key’s public key** over a 7‑day rolling window.
-  - Decrypts each event with the shared key (first trying standard NIP‑59 `from_gift_wrap`, then falling back to the simplified Mostro‑chat format).
-  - Applies per‑(dispute, party) `last_seen_timestamp` filtering so only newer messages are returned.
+- **Trigger**: `execute_take_dispute` calls `track_dispute_chat` for the buyer and seller when a dispute is taken; `track_startup_chats` re-tracks all `InProgress` disputes at startup and on reconnect. Untracked when the dispute leaves `InProgress`.
+- **Shared keys**: For each `AdminDispute` in `InProgress` state, the database holds `buyer_shared_key_hex` / `seller_shared_key_hex`, converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
+- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) subscribes one batched `kind: 1059` filter over all tracked shared pubkeys, hydrates history once per key on track (`fetch_gift_wraps_for_shared_key`, 7‑day window, filtered by `last_seen`), and routes live gift wraps by `p` tag.
 - **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates`, which:
   - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
   - Updates in‑memory `admin_chat_last_seen` entries.
   - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.
 - **Attachments**: Attachment messages (Mostro Mobile Encrypted File Messaging: `image_encrypted` / `file_encrypted`) are parsed into structured attachment entries. From the dispute chat, the admin presses **Ctrl+S** to open a **Save attachment** popup listing all attachments for the current dispute/party; they select one with ↑/↓ and press Enter to download from Blossom (`blossom://` → `https://`), optionally decrypt with ChaCha20‑Poly1305 (nonce + ciphertext + tag), and save to `~/.mostrix/downloads/<dispute_id>_<filename>`. See `src/util/blossom.rs` and the "Receiving and saving file attachments" section in [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 
-This avoids overlapping relay queries and duplicate work when the 2‑second tick fires before a previous fetch has finished, while ensuring admin chat is driven entirely by the per‑dispute shared keys stored in the database.
+Admin chat is driven entirely by the per‑dispute shared keys stored in the database, delivered live over one batched subscription (same model as Mostro Mobile's `SubscriptionManager`).
 
 ### Database Errors
 Database operations (saving orders, updating trade indices) log errors but don't necessarily fail the entire operation, allowing the user to continue using the client.
