@@ -537,6 +537,7 @@ fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
             // Already on Disputes in Progress tab, do nothing
         } else {
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            app.admin_chat_scroll_tracker = None;
         }
     } else if let Tab::Admin(AdminTab::DisputesInProgress) = prev_tab {
         // Switching away from Disputes in Progress tab, reset to Normal mode
@@ -562,6 +563,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
+                app.admin_chat_scroll_tracker = None;
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.next(form.use_range);
             }
@@ -574,6 +576,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 };
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
+                app.admin_chat_scroll_tracker = None;
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.prev(form.use_range);
             }

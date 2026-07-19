@@ -553,11 +553,20 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             if visible_count > 0 {
                 let current_key = (dispute_id_key.clone(), app.active_chat_party);
-                if let Some((ref d, ref p, last_count)) = app.admin_chat_scroll_tracker {
-                    if *d == current_key.0 && *p == current_key.1 && visible_count > last_count {
-                        app.admin_chat_scrollview_state.scroll_to_bottom();
-                        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                let should_scroll = match &app.admin_chat_scroll_tracker {
+                    None => true,
+                    Some((d, p, last_count)) => {
+                        *d == current_key.0 && *p == current_key.1 && visible_count > *last_count
                     }
+                };
+                // if should_scroll {
+                //     app.admin_chat_scrollview_state.scroll_to_bottom();
+                //     app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                // }
+                if should_scroll {
+                    app.admin_chat_scrollview_state = Default::default();
+                    app.admin_chat_scrollview_state.scroll_to_bottom();
+                    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
                 }
                 app.admin_chat_scroll_tracker =
                     Some((dispute_id_key.clone(), app.active_chat_party, visible_count));
@@ -595,13 +604,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let inner_area = chat_block.inner(chat_area);
             f.render_widget(chat_block, chat_area);
 
-            let mut scroll_view = ScrollView::new(Size::new(
-                content.content_width,
-                content.content_height.max(1),
-            ))
-            .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
-            let content_rect =
-                Rect::new(0, 0, content.content_width, content.content_height.max(1));
+            let display_height = content.content_height.saturating_sub(1).max(1);
+            let mut scroll_view = ScrollView::new(Size::new(content.content_width, display_height))
+                .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
+            let content_rect = Rect::new(0, 0, content.content_width, display_height);
             scroll_view.render_widget(
                 Paragraph::new(content.lines).wrap(ratatui::widgets::Wrap { trim: true }),
                 content_rect,
