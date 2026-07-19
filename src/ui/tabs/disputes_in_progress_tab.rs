@@ -556,13 +556,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 let should_scroll = match &app.admin_chat_scroll_tracker {
                     None => true,
                     Some((d, p, last_count)) => {
-                        *d == current_key.0 && *p == current_key.1 && visible_count > *last_count
+                        if *d != current_key.0 {
+                            true
+                        } else {
+                            *p == current_key.1 && visible_count > *last_count
+                        }
                     }
                 };
-                // if should_scroll {
-                //     app.admin_chat_scrollview_state.scroll_to_bottom();
-                //     app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
-                // }
                 if should_scroll {
                     app.admin_chat_scrollview_state = Default::default();
                     app.admin_chat_scrollview_state.scroll_to_bottom();
