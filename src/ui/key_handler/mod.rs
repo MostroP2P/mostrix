@@ -1111,6 +1111,11 @@ pub fn handle_key_event(
         }
     }
 
+    // Currency dropdown (Create New Order) captures keys while open and on open triggers.
+    if let Some(consumed) = form_input::handle_currency_picker_key(code, app) {
+        return Some(consumed);
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups

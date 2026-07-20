@@ -25,17 +25,15 @@ pub fn handle_navigation(
 }
 
 fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
-    match &mut app.mode {
-        // From Create New Order form → single Left press moves to previous tab (e.g. Messages)
-        UiMode::UserMode(UserMode::CreatingOrder(_))
-            if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) =>
-        {
-            let prev_tab = app.active_tab;
-            app.active_tab = app.active_tab.prev(app.user_role);
-            handle_tab_switch(app, prev_tab);
-            // Leave form mode
-            app.mode = UiMode::UserMode(UserMode::Normal);
+    // Leaving Create New Order silently keeps the draft for when the user returns.
+    if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
+        if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
+            let form = form.clone();
+            save_and_leave_creating_order(app, form, true);
+            return;
         }
+    }
+    match &mut app.mode {
         // In order confirmation popup, Left should only move the selection to YES,
         // not switch tabs.
         UiMode::UserMode(UserMode::ConfirmingOrder {
@@ -53,8 +51,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             handle_tab_switch(app, prev_tab);
             // Auto-initialize form when switching to Create New Order tab (user mode only)
             if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-                let form = FormState::new_default_form();
-                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(restore_or_new_form(app)));
             }
         }
         UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
@@ -99,17 +96,15 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 }
 
 fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
-    match &mut app.mode {
-        // From Create New Order form → single Right press moves to next tab (Settings)
-        UiMode::UserMode(UserMode::CreatingOrder(_))
-            if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) =>
-        {
-            let prev_tab = app.active_tab;
-            app.active_tab = app.active_tab.next(app.user_role);
-            handle_tab_switch(app, prev_tab);
-            // Leave form mode
-            app.mode = UiMode::UserMode(UserMode::Normal);
+    // Leaving Create New Order silently keeps the draft for when the user returns.
+    if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
+        if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
+            let form = form.clone();
+            save_and_leave_creating_order(app, form, false);
+            return;
         }
+    }
+    match &mut app.mode {
         // In order confirmation popup, Right should only move the selection to NO,
         // not switch tabs.
         UiMode::UserMode(UserMode::ConfirmingOrder {
@@ -127,8 +122,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             handle_tab_switch(app, prev_tab);
             // Auto-initialize form when switching to Create New Order tab (user mode only)
             if let Tab::User(UserTab::CreateNewOrder) = app.active_tab {
-                let form = FormState::new_default_form();
-                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+                app.mode = UiMode::UserMode(UserMode::CreatingOrder(restore_or_new_form(app)));
             }
         }
         UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) => {
@@ -494,7 +488,32 @@ fn handle_down_key(
     }
 }
 
-fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
+/// Restore a preserved New Order draft (consuming it) or build a fresh form.
+fn restore_or_new_form(app: &mut AppState) -> FormState {
+    app.order_form_draft
+        .take()
+        .unwrap_or_else(FormState::new_default_form)
+}
+
+/// Save the current form as a draft and switch to the adjacent tab.
+fn save_and_leave_creating_order(app: &mut AppState, form: FormState, to_prev: bool) {
+    app.order_form_draft = Some(form);
+    leave_creating_order_to_adjacent_tab(app, to_prev);
+}
+
+/// Leave the Create New Order form for the previous/next tab, returning to Normal mode.
+fn leave_creating_order_to_adjacent_tab(app: &mut AppState, to_prev: bool) {
+    let prev_tab = app.active_tab;
+    app.active_tab = if to_prev {
+        app.active_tab.prev(app.user_role)
+    } else {
+        app.active_tab.next(app.user_role)
+    };
+    handle_tab_switch(app, prev_tab);
+    app.mode = UiMode::UserMode(UserMode::Normal);
+}
+
+pub(crate) fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
     // Clear pending notifications and mark messages as read when switching to Messages tab (user mode only)
     if let Tab::User(UserTab::Messages) = app.active_tab {
         if let Tab::User(UserTab::Messages) = prev_tab {

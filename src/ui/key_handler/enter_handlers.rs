@@ -394,6 +394,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             if selected_button {
                 // YES selected - send the order (similar to handle_confirm_key)
                 let form_clone = form.clone();
+                // Keep the draft until the async submit succeeds; on failure the
+                // user can return to Create New Order and resume editing.
+                app.order_form_draft = Some(form_clone.clone());
                 app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
                 spawn_send_new_order_task(ctx, form_clone);
             } else {
@@ -406,11 +409,12 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             handle_enter_taking_order(app, take_state, ctx);
             true
         }
-        UiMode::UserMode(UserMode::WaitingForMostro(_))
+        mode @ (UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
-        | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
-            // No action while waiting
-            app.mode = default_mode;
+        | UiMode::UserMode(UserMode::WaitingAddInvoice)) => {
+            // No action while waiting — restore the waiting mode that
+            // `mem::replace` swapped out at the start of this handler.
+            app.mode = mode;
             true
         }
         UiMode::ConfirmSavedLnAddressForInvoice(notification, selected_button) => {

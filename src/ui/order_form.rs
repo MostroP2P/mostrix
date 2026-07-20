@@ -1,265 +1,614 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::currencies::{filter_options, name_for, resolve_options};
 use crate::ui::orders::FormField;
+use crate::util::MostroInstanceInfo;
 
-pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
-    // Calculate number of fields dynamically
-    let field_count = if form.use_range { 10 } else { 9 };
-    // Start with a top spacer so the form doesn't hug the frame border
-    let mut constraints = vec![Constraint::Length(2)]; // spacer
-    for _ in 0..field_count {
-        // Give each field a bit more vertical space to improve readability
-        constraints.push(Constraint::Length(4));
-    }
-    // Slightly taller row for the footer hint
-    constraints.push(Constraint::Length(2)); // hint
+/// Width of the label column inside the details panel.
+const LABEL_W: usize = 10;
+/// Column where the value strip starts (arrow/margin + label column + space).
+const VALUE_OFFSET: usize = LABEL_W + 2;
+/// Subtle fill for unfocused input strips (slightly lighter than the background).
+const FIELD_BG: Color = Color::Rgb(38, 44, 58);
 
-    // Outer frame for the whole tab
+/// A single rendered field in the "Order details" panel.
+struct Row {
+    field: FormField,
+    label: &'static str,
+    value: Line<'static>,
+    prefix_len: usize, // chars before the editable text (for cursor placement)
+    text_len: usize,   // length of the editable value (for cursor placement)
+    editable: bool,    // whether a text cursor should be shown when focused
+}
+
+/// Per-field validation used for inline glyphs and section-header coloring.
+/// `Some(true)` = valid, `Some(false)` = invalid/missing, `None` = neutral/optional.
+type FieldStatus = Option<bool>;
+
+/// Live-preview validation state.
+enum PreviewStatus {
+    Ready,
+    Missing(String),
+    Invalid(String),
+}
+
+pub fn render_order_form(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    form: &FormState,
+    info: Option<&MostroInstanceInfo>,
+) {
+    let accepted: &[String] = info
+        .map(|i| i.fiat_currencies_accepted.as_slice())
+        .unwrap_or(&[]);
+    let min_amt = info.and_then(|i| i.min_order_amount);
+    let max_amt = info.and_then(|i| i.max_order_amount);
+
     let block = Block::default()
-        .title("✨ Create New Order")
+        .title(Line::from(Span::styled(
+            " ✨ Create New Order ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    // Work inside the inner area of the frame
-    let inner = block.inner(area);
-
-    // Horizontal layout: spacer | centered form | help panel
-    let h_chunks = Layout::new(
-        Direction::Horizontal,
+    let rows = Layout::new(
+        Direction::Vertical,
         [
-            Constraint::Percentage(10),
-            Constraint::Min(40),
-            Constraint::Percentage(30),
+            Constraint::Min(9),
+            Constraint::Length(4),
+            Constraint::Length(1),
         ],
     )
     .split(inner);
 
-    let form_area = h_chunks[1];
-    let help_area = h_chunks[2];
+    let top = Layout::new(
+        Direction::Horizontal,
+        [Constraint::Percentage(62), Constraint::Percentage(38)],
+    )
+    .split(rows[0]);
 
-    // Vertical layout for the form fields inside the centered column
-    let inner_chunks = Layout::new(Direction::Vertical, constraints).split(form_area);
+    let currency_row = render_details(f, top[0], form, accepted, min_amt, max_amt);
+    render_preview(f, top[1], form, accepted);
+    render_help(f, rows[1], form);
+    render_footer(f, rows[2]);
 
-    let mut field_idx = 1;
+    if form.currency_picker.open {
+        if let Some(anchor) = currency_row {
+            render_currency_dropdown(f, anchor, inner, form, accepted);
+        }
+    }
+}
 
-    // Field 0: Tipo (toggle buy/sell)
-    let tipo_title = Block::default()
-        .title(Line::from(vec![
-            Span::styled("📈 ", Style::default().fg(PRIMARY_COLOR)),
-            Span::styled("Order Type", Style::default().add_modifier(Modifier::BOLD)),
-        ]))
+/// One line in the details panel.
+enum Vis<'a> {
+    Header(&'static str, bool), // title, complete
+    Field(&'a Row, FieldStatus),
+    Hint(String),
+    Spacer,
+    Flex,
+}
+
+/// Render the "Order details" panel. Returns the Rect of the Currency row so the
+/// dropdown overlay can be anchored beneath it.
+fn render_details(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    form: &FormState,
+    accepted: &[String],
+    min_amt: Option<i64>,
+    max_amt: Option<i64>,
+) -> Option<Rect> {
+    let block = Block::default()
+        .title(" Order details ")
         .borders(Borders::ALL)
-        .style(if form.focused == FormField::OrderType {
-            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-        } else {
-            Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-        });
-    let is_buy = form.kind.to_lowercase() == "buy";
-    let tipo_line = if is_buy {
-        Line::from(vec![Span::styled(
-            "🟢 [ buy ]",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )])
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    let rows = build_rows(form);
+    let row_for = |field: FormField| rows.iter().find(|r| r.field == field).unwrap();
+
+    let pricing: Vec<FormField> = if form.use_range {
+        vec![
+            FormField::AmountSats,
+            FormField::FiatAmount,
+            FormField::FiatAmountMax,
+        ]
     } else {
-        Line::from(vec![Span::styled(
-            "🔴 [ sell ]",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )])
+        vec![FormField::AmountSats, FormField::FiatAmount]
     };
-    f.render_widget(
-        Paragraph::new(tipo_line).block(tipo_title),
-        inner_chunks[field_idx],
-    );
-    field_idx += 1;
+    let sections: [(&str, Vec<FormField>); 3] = [
+        ("TRADE", vec![FormField::OrderType, FormField::Currency]),
+        ("PRICING", pricing),
+        (
+            "TERMS",
+            vec![
+                FormField::PaymentMethod,
+                FormField::Premium,
+                FormField::Invoice,
+                FormField::ExpirationDays,
+            ],
+        ),
+    ];
 
-    // Field 1: Currency
-    let valuta = Paragraph::new(Line::from(form.fiat_code.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("💱 ", Style::default().fg(Color::Cyan)),
-                Span::styled("Currency", Style::default().add_modifier(Modifier::BOLD)),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::Currency {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(valuta, inner_chunks[field_idx]);
-    field_idx += 1;
+    // Build the visual item list (centered via equal top/bottom Flex).
+    let mut items: Vec<Vis> = vec![Vis::Flex];
+    for (idx, (title, fields)) in sections.iter().enumerate() {
+        if idx > 0 {
+            items.push(Vis::Spacer);
+        }
+        let complete = fields
+            .iter()
+            .all(|fld| field_status(form, *fld, accepted) != Some(false));
+        items.push(Vis::Header(title, complete));
+        for fld in fields {
+            items.push(Vis::Field(
+                row_for(*fld),
+                field_status(form, *fld, accepted),
+            ));
+            // Instance order-size limits hint under the sats amount field.
+            if *fld == FormField::AmountSats {
+                if let Some(hint) = limits_hint(min_amt, max_amt) {
+                    items.push(Vis::Hint(hint));
+                }
+            }
+        }
+    }
+    items.push(Vis::Flex);
 
-    // Field 2: Amount (sats)
-    let amount = Paragraph::new(Line::from(form.amount.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("₿ ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "Amount (sats)",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::AmountSats {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(amount, inner_chunks[field_idx]);
-    field_idx += 1;
+    let constraints: Vec<Constraint> = items
+        .iter()
+        .map(|it| match it {
+            Vis::Flex => Constraint::Min(0),
+            _ => Constraint::Length(1),
+        })
+        .collect();
+    let chunks = Layout::new(Direction::Vertical, constraints).split(inner);
 
-    // Field 3: Fiat Amount (toggle single/range with Space)
-    let fiat_title_block = Block::default()
-        .title(Line::from(vec![
-            Span::styled("💰 ", Style::default().fg(Color::Yellow)),
-            Span::styled("Fiat Amount", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(" (Space to toggle)", Style::default().fg(Color::DarkGray)),
-        ]))
-        .borders(Borders::ALL)
-        .style(if form.focused == FormField::FiatAmount {
-            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+    let strip_width = (inner.width as usize).saturating_sub(VALUE_OFFSET + 1);
+
+    let mut currency_row: Option<Rect> = None;
+    let mut cursor: Option<(Rect, usize, usize)> = None;
+
+    for (item, chunk) in items.iter().zip(chunks.iter()) {
+        match item {
+            Vis::Flex | Vis::Spacer => {}
+            Vis::Header(title, complete) => {
+                let head_color = if *complete {
+                    PRIMARY_COLOR
+                } else {
+                    Color::Gray
+                };
+                let dashes = "─".repeat((chunk.width as usize).saturating_sub(title.len() + 3));
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {title} "),
+                            Style::default().fg(head_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(dashes, Style::default().fg(Color::DarkGray)),
+                    ]))
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
+                    *chunk,
+                );
+            }
+            Vis::Hint(text) => {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::raw(" ".repeat(VALUE_OFFSET)),
+                        Span::styled(
+                            text.clone(),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]))
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
+                    *chunk,
+                );
+            }
+            Vis::Field(row, status) => {
+                let focused = row.field == form.focused;
+                if row.field == FormField::Currency {
+                    currency_row = Some(*chunk);
+                }
+                f.render_widget(
+                    Paragraph::new(field_line(row, focused, strip_width, *status))
+                        .style(Style::default().bg(BACKGROUND_COLOR)),
+                    *chunk,
+                );
+                if focused && row.editable && !form.currency_picker.open {
+                    cursor = Some((*chunk, row.prefix_len, row.text_len));
+                }
+            }
+        }
+    }
+
+    if let Some((chunk, prefix, len)) = cursor {
+        let x = chunk.x + VALUE_OFFSET as u16 + prefix as u16 + len as u16;
+        f.set_cursor_position((x, chunk.y));
+    }
+
+    currency_row
+}
+
+/// Build a single field line: focus arrow + `label` on the panel background,
+/// then the value on a tinted "input strip" (green when focused) padded to
+/// `strip_width`, with a trailing ✓/✗ status glyph.
+fn field_line(row: &Row, focused: bool, strip_width: usize, status: FieldStatus) -> Line<'static> {
+    let arrow = if focused { "▸" } else { " " };
+    let label_style = if focused {
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let strip_bg = if focused { PRIMARY_COLOR } else { FIELD_BG };
+
+    let mut spans = vec![Span::styled(
+        format!("{arrow}{:<width$} ", row.label, width = LABEL_W),
+        label_style,
+    )];
+
+    let mut used = 0usize;
+    for s in &row.value.spans {
+        used += s.content.chars().count();
+        let mut st = s.style.bg(strip_bg);
+        if focused {
+            st = st.fg(Color::Black);
+        }
+        spans.push(Span::styled(s.content.clone(), st));
+    }
+
+    let glyph = status.map(|ok| if ok { "✓ " } else { "✗ " });
+    let reserved = if glyph.is_some() { 2 } else { 0 };
+    let pad = strip_width.saturating_sub(used + reserved);
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(strip_bg)));
+    }
+    if let Some(g) = glyph {
+        let ok = status == Some(true);
+        let fg = if focused {
+            Color::Black
+        } else if ok {
+            Color::Green
         } else {
-            Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-        });
+            Color::Red
+        };
+        spans.push(Span::styled(g, Style::default().fg(fg).bg(strip_bg)));
+    }
 
-    // Show toggle indicator and value
-    let fiat_line = if form.use_range {
+    Line::from(spans)
+}
+
+fn build_rows(form: &FormState) -> Vec<Row> {
+    let is_buy = form.kind.eq_ignore_ascii_case("buy");
+
+    let type_val = {
+        let (label, color) = if is_buy {
+            ("buy", Color::Green)
+        } else {
+            ("sell", Color::Red)
+        };
         Line::from(vec![
+            Span::styled("● ", Style::default().fg(color)),
             Span::styled(
-                "[ Range ] ",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
+                label,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(&form.fiat_amount),
+            Span::styled("   ⇄ Space", Style::default().fg(Color::DarkGray)),
+        ])
+    };
+
+    let currency_val = if form.currency_picker.open {
+        Line::from(vec![
+            Span::raw(form.currency_picker.filter.clone()),
+            Span::styled("▏", Style::default().fg(Color::DarkGray)),
         ])
     } else {
-        Line::from(vec![
-            Span::styled(
-                "[ Single ] ",
+        let trimmed = form.fiat_code.trim();
+        if trimmed.is_empty() {
+            Line::from(vec![
+                Span::styled("— none —", Style::default().fg(Color::DarkGray)),
+                Span::styled("   ▾ pick", Style::default().fg(Color::DarkGray)),
+            ])
+        } else {
+            let code = trimmed.to_ascii_uppercase();
+            let name = name_for(&code);
+            let mut spans = vec![Span::styled(
+                code,
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(&form.fiat_amount),
-        ])
+            )];
+            if !name.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+            spans.push(Span::styled(
+                "   ▾ pick",
+                Style::default().fg(Color::DarkGray),
+            ));
+            Line::from(spans)
+        }
     };
-    f.render_widget(
-        Paragraph::new(fiat_line).block(fiat_title_block),
-        inner_chunks[field_idx],
-    );
-    field_idx += 1;
 
-    // Field 4: Fiat Amount Max (if range)
+    let amount_val = if form.focused == FormField::AmountSats {
+        Line::from(form.amount.clone())
+    } else if form.amount.trim() == "0" || form.amount.trim().is_empty() {
+        Line::from(Span::styled(
+            "market",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ))
+    } else {
+        Line::from(format!("{} sats", group_thousands(&form.amount)))
+    };
+
+    let mut rows = vec![
+        Row {
+            field: FormField::OrderType,
+            label: "Type",
+            value: type_val,
+            prefix_len: 0,
+            text_len: 0,
+            editable: false,
+        },
+        Row {
+            field: FormField::Currency,
+            label: "Currency",
+            value: currency_val,
+            prefix_len: 0,
+            text_len: 0,
+            editable: false,
+        },
+        Row {
+            field: FormField::AmountSats,
+            label: "Amount",
+            value: amount_val,
+            prefix_len: 0,
+            text_len: form.amount.len(),
+            editable: true,
+        },
+    ];
+
+    let (tag, tag_color) = if form.use_range {
+        ("[Range] ", Color::Magenta)
+    } else {
+        ("[Single] ", Color::Cyan)
+    };
+    rows.push(Row {
+        field: FormField::FiatAmount,
+        label: if form.use_range { "Fiat min" } else { "Fiat" },
+        value: Line::from(vec![
+            Span::styled(
+                tag,
+                Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(form.fiat_amount.clone()),
+        ]),
+        prefix_len: tag.chars().count(),
+        text_len: form.fiat_amount.len(),
+        editable: true,
+    });
+
     if form.use_range {
-        let qty_max = Paragraph::new(Line::from(form.fiat_amount_max.clone())).block(
-            Block::default()
-                .title(Line::from(vec![
-                    Span::styled("💰 ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        "Fiat Amount (Max)",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                ]))
-                .borders(Borders::ALL)
-                .style(if form.focused == FormField::FiatAmountMax {
-                    Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-                } else {
-                    Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-                }),
-        );
-        f.render_widget(qty_max, inner_chunks[field_idx]);
-        field_idx += 1;
+        rows.push(Row {
+            field: FormField::FiatAmountMax,
+            label: "Fiat max",
+            value: Line::from(form.fiat_amount_max.clone()),
+            prefix_len: 0,
+            text_len: form.fiat_amount_max.len(),
+            editable: true,
+        });
     }
 
-    // Field 5: Payment Method
-    let pm = Paragraph::new(Line::from(form.payment_method.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("💳 ", Style::default().fg(Color::Magenta)),
-                Span::styled(
-                    "Payment Method",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::PaymentMethod {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(pm, inner_chunks[field_idx]);
-    field_idx += 1;
+    rows.push(Row {
+        field: FormField::PaymentMethod,
+        label: "Method",
+        value: dim_if_empty(&form.payment_method, "(any)"),
+        prefix_len: 0,
+        text_len: form.payment_method.len(),
+        editable: true,
+    });
+    rows.push(Row {
+        field: FormField::Premium,
+        label: "Premium",
+        value: if form.focused == FormField::Premium {
+            Line::from(form.premium.clone())
+        } else {
+            premium_line(&form.premium)
+        },
+        prefix_len: 0,
+        text_len: form.premium.len(),
+        editable: true,
+    });
+    rows.push(Row {
+        field: FormField::Invoice,
+        label: "Invoice",
+        value: dim_if_empty(&form.invoice, "(optional)"),
+        prefix_len: 0,
+        text_len: form.invoice.len(),
+        editable: true,
+    });
+    rows.push(Row {
+        field: FormField::ExpirationDays,
+        label: "Expiry",
+        value: if form.focused == FormField::ExpirationDays {
+            Line::from(form.expiration_days.clone())
+        } else {
+            expiry_line(&form.expiration_days)
+        },
+        prefix_len: 0,
+        text_len: form.expiration_days.len(),
+        editable: true,
+    });
 
-    // Field 6: Premium
-    let premium = Paragraph::new(Line::from(form.premium.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("📈 ", Style::default().fg(Color::Green)),
-                Span::styled("Premium (%)", Style::default().add_modifier(Modifier::BOLD)),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::Premium {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(premium, inner_chunks[field_idx]);
-    field_idx += 1;
+    rows
+}
 
-    // Field 7: Invoice (optional)
-    let invoice = Paragraph::new(Line::from(form.invoice.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("🧾 ", Style::default().fg(Color::Blue)),
-                Span::styled(
-                    "Invoice (optional)",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::Invoice {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(invoice, inner_chunks[field_idx]);
-    field_idx += 1;
+fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState, accepted: &[String]) {
+    let block = Block::default()
+        .title(" Live preview ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
 
-    // Field 8: Expiration Days
-    let exp = Paragraph::new(Line::from(form.expiration_days.clone())).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled("⏰ ", Style::default().fg(Color::Red)),
-                Span::styled(
-                    "Expiration (days, 0=none)",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]))
-            .borders(Borders::ALL)
-            .style(if form.focused == FormField::ExpirationDays {
-                Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
-            } else {
-                Style::default().bg(BACKGROUND_COLOR).fg(Color::White)
-            }),
-    );
-    f.render_widget(exp, inner_chunks[field_idx]);
-    field_idx += 1;
+    let lines = build_preview_lines(form);
+    let card_h = (lines.len() as u16 + 2).min(inner.height.saturating_sub(2));
 
-    // Footer hint (still in the form column)
+    let split = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(card_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ],
+    )
+    .split(inner);
+
+    // Receipt-style card.
+    let card = Block::default()
+        .title(" Order ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let card_inner = card.inner(split[0]);
+    f.render_widget(card, split[0]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: true }),
+        card_inner,
+    );
+
+    // Status dot beneath the card.
+    let status = match validate(form, accepted) {
+        PreviewStatus::Ready => Line::from(vec![
+            Span::styled("● ", Style::default().fg(Color::Green)),
+            Span::styled("ready to submit", Style::default().fg(Color::Green)),
+        ]),
+        PreviewStatus::Missing(what) => Line::from(vec![
+            Span::styled("● ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("fill: {what}"), Style::default().fg(Color::Yellow)),
+        ]),
+        PreviewStatus::Invalid(why) => Line::from(vec![
+            Span::styled("● ", Style::default().fg(Color::Red)),
+            Span::styled(format!("invalid: {why}"), Style::default().fg(Color::Red)),
+        ]),
+    };
+    f.render_widget(
+        Paragraph::new(status).style(Style::default().bg(BACKGROUND_COLOR)),
+        split[2],
+    );
+}
+
+fn build_preview_lines(form: &FormState) -> Vec<Line<'static>> {
+    let is_buy = form.kind.eq_ignore_ascii_case("buy");
+    let (side, side_color) = if is_buy {
+        ("BUY", Color::Green)
+    } else {
+        ("SELL", Color::Red)
+    };
+    let code = if form.fiat_code.trim().is_empty() {
+        "—".to_string()
+    } else {
+        form.fiat_code.trim().to_ascii_uppercase()
+    };
+
+    let sats = if form.amount.trim() == "0" || form.amount.trim().is_empty() {
+        "market price".to_string()
+    } else {
+        format!("{} sats", group_thousands(&form.amount))
+    };
+
+    let fiat = if form.use_range {
+        let min = non_empty(&form.fiat_amount, "?");
+        let max = non_empty(&form.fiat_amount_max, "?");
+        format!("{min} – {max} {code}")
+    } else {
+        format!("{} {code}", non_empty(&form.fiat_amount, "?"))
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{side} "),
+                Style::default().fg(side_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(sats),
+        ]),
+        Line::from(format!("for  {fiat}")),
+        premium_preview_line(&form.premium),
+    ];
+
+    let method = form.payment_method.trim();
+    lines.push(Line::from(format!(
+        "via  {}",
+        if method.is_empty() { "—" } else { method }
+    )));
+    lines.push(Line::from(expiry_preview(&form.expiration_days)));
+
+    if let Some(price) = implied_price_per_btc(form) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("≈ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}/BTC", group_thousands(&price.to_string())),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+    lines
+}
+
+fn implied_price_per_btc(form: &FormState) -> Option<i64> {
+    if form.use_range {
+        return None;
+    }
+    let sats = form.amount.trim().parse::<i64>().ok()?;
+    let fiat = form.fiat_amount.trim().parse::<f64>().ok()?;
+    if sats <= 0 || fiat <= 0.0 {
+        return None;
+    }
+    let btc = sats as f64 / 100_000_000.0;
+    Some((fiat / btc).round() as i64)
+}
+
+fn render_help(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
+    let help_paragraph = Paragraph::new(build_field_help(form))
+        .block(
+            Block::default()
+                .title(" Field help ")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+        )
+        .style(Style::default().fg(Color::Gray))
+        .wrap(Wrap { trim: true });
+    f.render_widget(help_paragraph, area);
+}
+
+fn render_footer(f: &mut ratatui::Frame, area: Rect) {
     let hint = Paragraph::new(Line::from(vec![
-        Span::styled("💡 ", Style::default().fg(Color::Cyan)),
         Span::styled(
             "Enter",
             Style::default()
@@ -280,111 +629,411 @@ pub fn render_order_form(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" toggle type/range • "),
+        Span::raw(" toggle • "),
         Span::styled(
             "Esc",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" cancel"),
     ]))
-    .block(Block::default());
-    f.render_widget(hint, inner_chunks[field_idx]);
+    .alignment(Alignment::Center)
+    .style(Style::default().bg(BACKGROUND_COLOR));
+    f.render_widget(hint, area);
+}
 
-    // Contextual help panel on the right side
-    let help_lines = build_field_help(form);
-    let help_paragraph = Paragraph::new(help_lines)
-        .block(
-            Block::default()
-                .title("Field Help")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: true });
-    f.render_widget(help_paragraph, help_area);
+fn render_currency_dropdown(
+    f: &mut ratatui::Frame,
+    anchor: Rect,
+    bounds: Rect,
+    form: &FormState,
+    currencies: &[String],
+) {
+    let options = resolve_options(currencies);
+    let filtered = filter_options(&options, &form.currency_picker.filter);
+    let selected = form
+        .currency_picker
+        .selected
+        .min(filtered.len().saturating_sub(1));
 
-    // Show cursor in active text field
-    let cursor_field = match form.focused {
-        FormField::Currency => Some((inner_chunks[2], &form.fiat_code, 0)),
-        FormField::AmountSats => Some((inner_chunks[3], &form.amount, 0)),
-        FormField::FiatAmount => Some((inner_chunks[4], &form.fiat_amount, 11)), // 11 chars for "[ Single ] " or "[ Range ] "
-        FormField::FiatAmountMax if form.use_range => {
-            Some((inner_chunks[5], &form.fiat_amount_max, 0))
-        }
-        FormField::PaymentMethod => Some((
-            inner_chunks[if form.use_range { 6 } else { 5 }],
-            &form.payment_method,
-            0,
-        )),
-        FormField::Premium => Some((
-            inner_chunks[if form.use_range { 7 } else { 6 }],
-            &form.premium,
-            0,
-        )),
-        FormField::Invoice => Some((
-            inner_chunks[if form.use_range { 8 } else { 7 }],
-            &form.invoice,
-            0,
-        )),
-        FormField::ExpirationDays => Some((
-            inner_chunks[if form.use_range { 9 } else { 8 }],
-            &form.expiration_days,
-            0,
-        )),
-        _ => None,
+    let x = anchor.x + VALUE_OFFSET as u16;
+    let max_width = (bounds.x + bounds.width).saturating_sub(x);
+    let width = 40u16.clamp(24, max_width.max(24)).min(max_width);
+    let content_rows = filtered.len().clamp(1, 8) as u16;
+    let height = content_rows + 3; // border (2) + hint (1)
+    let mut y = anchor.y + 1;
+    if y + height > bounds.y + bounds.height {
+        y = anchor.y.saturating_sub(height);
+    }
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height: height.min(bounds.y + bounds.height - y),
     };
-    if let Some((chunk, text, offset)) = cursor_field {
-        let x = chunk.x + 1 + offset + text.len() as u16;
-        let y = chunk.y + 1;
-        f.set_cursor_position((x, y));
+
+    f.render_widget(Clear, popup);
+
+    let title = if currencies.is_empty() {
+        format!(" Select currency ({} common) ", options.len())
+    } else {
+        format!(" Select currency ({} accepted) ", options.len())
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let split = Layout::new(
+        Direction::Vertical,
+        [Constraint::Min(1), Constraint::Length(1)],
+    )
+    .split(inner);
+
+    if filtered.is_empty() {
+        let empty_msg = if currencies.is_empty() {
+            "  no match — Enter accepts a 3-letter code"
+        } else {
+            "  no match"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                empty_msg,
+                Style::default().fg(Color::DarkGray),
+            ))
+            .style(Style::default().bg(BACKGROUND_COLOR)),
+            split[0],
+        );
+    } else {
+        let items: Vec<ListItem> = filtered
+            .iter()
+            .map(|o| {
+                let mut spans = vec![Span::styled(
+                    format!("{:<5}", o.code),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )];
+                if !o.name.is_empty() {
+                    spans.push(Span::styled(
+                        o.name.clone(),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .style(Style::default().fg(Color::White).bg(BACKGROUND_COLOR))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› ");
+        let mut state = ListState::default().with_selected(Some(selected));
+        f.render_stateful_widget(list, split[0], &mut state);
+
+        if filtered.len() > split[0].height as usize {
+            let mut sb_state = ScrollbarState::new(filtered.len()).position(selected);
+            f.render_stateful_widget(
+                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                split[0],
+                &mut sb_state,
+            );
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "type filter • ↑↓ move • Enter select • Esc close",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .style(Style::default().bg(BACKGROUND_COLOR)),
+        split[1],
+    );
+
+    let caret_x =
+        anchor.x + VALUE_OFFSET as u16 + form.currency_picker.filter.chars().count() as u16;
+    f.set_cursor_position((caret_x, anchor.y));
+}
+
+// ── validation & formatting helpers ──────────────────────────────────────────
+
+fn field_status(form: &FormState, field: FormField, accepted: &[String]) -> FieldStatus {
+    match field {
+        FormField::OrderType => None,
+        FormField::Currency => {
+            let code = form.fiat_code.trim().to_ascii_uppercase();
+            if code.is_empty() {
+                Some(false)
+            } else if accepted.is_empty() || accepted.iter().any(|a| a.eq_ignore_ascii_case(&code))
+            {
+                Some(true)
+            } else {
+                Some(false)
+            }
+        }
+        FormField::AmountSats => {
+            let t = form.amount.trim();
+            if t.is_empty() || t == "0" {
+                Some(true) // market order
+            } else {
+                Some(t.parse::<i64>().map(|n| n > 0).unwrap_or(false))
+            }
+        }
+        FormField::FiatAmount => {
+            let t = form.fiat_amount.trim();
+            if t.is_empty() {
+                Some(false)
+            } else {
+                Some(t.parse::<i64>().map(|n| n > 0).unwrap_or(false))
+            }
+        }
+        FormField::FiatAmountMax => {
+            if !form.use_range {
+                None
+            } else {
+                match (
+                    form.fiat_amount.trim().parse::<i64>(),
+                    form.fiat_amount_max.trim().parse::<i64>(),
+                ) {
+                    (Ok(min), Ok(max)) if max > min => Some(true),
+                    _ => Some(false),
+                }
+            }
+        }
+        FormField::PaymentMethod => Some(!form.payment_method.trim().is_empty()),
+        FormField::Premium => {
+            let t = form.premium.trim();
+            Some(t.is_empty() || t.parse::<i64>().is_ok())
+        }
+        FormField::Invoice => {
+            if form.invoice.trim().is_empty() {
+                None
+            } else {
+                Some(true)
+            }
+        }
+        FormField::ExpirationDays => {
+            let t = form.expiration_days.trim();
+            if t.is_empty() {
+                Some(false)
+            } else {
+                Some(t.parse::<i64>().map(|n| n >= 1).unwrap_or(false))
+            }
+        }
     }
 }
 
+fn limits_hint(min_amt: Option<i64>, max_amt: Option<i64>) -> Option<String> {
+    match (min_amt, max_amt) {
+        (Some(min), Some(max)) => Some(format!(
+            "limits {} – {} sats",
+            group_thousands(&min.to_string()),
+            group_thousands(&max.to_string())
+        )),
+        (Some(min), None) => Some(format!("min {} sats", group_thousands(&min.to_string()))),
+        (None, Some(max)) => Some(format!("max {} sats", group_thousands(&max.to_string()))),
+        (None, None) => None,
+    }
+}
+
+fn non_empty(s: &str, fallback: &'static str) -> String {
+    let t = s.trim();
+    if t.is_empty() {
+        fallback.to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn group_thousands(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let (sign, digits) = match trimmed.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", trimmed),
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    let n = digits.len();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (n - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    format!("{sign}{out}")
+}
+
+fn dim_if_empty(value: &str, placeholder: &'static str) -> Line<'static> {
+    if value.trim().is_empty() {
+        Line::from(Span::styled(
+            placeholder,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ))
+    } else {
+        Line::from(value.to_string())
+    }
+}
+
+fn premium_line(premium: &str) -> Line<'static> {
+    match premium.trim().parse::<i64>() {
+        Ok(0) => Line::from("0 %"),
+        Ok(p) if p > 0 => Line::from(Span::styled(
+            format!("+{p} %"),
+            Style::default().fg(Color::Green),
+        )),
+        Ok(p) => Line::from(Span::styled(
+            format!("{p} %"),
+            Style::default().fg(Color::Red),
+        )),
+        Err(_) => dim_if_empty(premium, "0 %"),
+    }
+}
+
+fn expiry_line(days: &str) -> Line<'static> {
+    match days.trim().parse::<i64>() {
+        Ok(0) => Line::from(Span::styled(
+            "0 (min 1 day)",
+            Style::default().fg(Color::Red),
+        )),
+        Ok(1) => Line::from("1 day"),
+        Ok(d) if d > 1 => Line::from(format!("{d} days")),
+        Ok(_) => Line::from(Span::styled("invalid", Style::default().fg(Color::Red))),
+        Err(_) => dim_if_empty(days, "1 day"),
+    }
+}
+
+fn premium_preview_line(premium: &str) -> Line<'static> {
+    match premium.trim().parse::<i64>() {
+        Ok(0) => Line::from("@ no premium"),
+        Ok(p) if p > 0 => Line::from(vec![
+            Span::raw("@ "),
+            Span::styled(format!("+{p}%"), Style::default().fg(Color::Green)),
+            Span::raw(" premium"),
+        ]),
+        Ok(p) => Line::from(vec![
+            Span::raw("@ "),
+            Span::styled(format!("{p}%"), Style::default().fg(Color::Red)),
+            Span::raw(" discount"),
+        ]),
+        Err(_) => Line::from("@ ? premium"),
+    }
+}
+
+fn expiry_preview(days: &str) -> String {
+    match days.trim().parse::<i64>() {
+        Ok(n) if n >= 1 => format!("expires in {n}d"),
+        Ok(0) => "expiry invalid (min 1d)".to_string(),
+        _ => "expiry ?".to_string(),
+    }
+}
+
+fn validate(form: &FormState, accepted: &[String]) -> PreviewStatus {
+    let code = form.fiat_code.trim().to_ascii_uppercase();
+    if code.is_empty() {
+        return PreviewStatus::Missing("currency".into());
+    }
+    if !accepted.is_empty() && !accepted.iter().any(|a| a.eq_ignore_ascii_case(&code)) {
+        return PreviewStatus::Invalid("currency (not accepted)".into());
+    }
+    let amount = form.amount.trim();
+    if !(amount.is_empty() || amount == "0") {
+        match amount.parse::<i64>() {
+            Ok(n) if n > 0 => {}
+            Ok(_) => return PreviewStatus::Invalid("amount".into()),
+            Err(_) => return PreviewStatus::Invalid("amount".into()),
+        }
+    }
+    if form.fiat_amount.trim().is_empty() {
+        return PreviewStatus::Missing("fiat amount".into());
+    }
+    match form.fiat_amount.trim().parse::<i64>() {
+        Ok(n) if n > 0 => {}
+        Ok(_) => return PreviewStatus::Invalid("fiat amount".into()),
+        Err(_) => return PreviewStatus::Invalid("fiat amount".into()),
+    }
+    if form.use_range {
+        match form.fiat_amount_max.trim().parse::<i64>() {
+            Ok(max) => {
+                let min = form.fiat_amount.trim().parse::<i64>().unwrap_or(0);
+                if max <= min {
+                    return PreviewStatus::Invalid("max must exceed min".into());
+                }
+            }
+            Err(_) => return PreviewStatus::Missing("fiat max".into()),
+        }
+    }
+    if form.payment_method.trim().is_empty() {
+        return PreviewStatus::Missing("payment method".into());
+    }
+    if !form.premium.trim().is_empty() && form.premium.trim().parse::<i64>().is_err() {
+        return PreviewStatus::Invalid("premium".into());
+    }
+    match form.expiration_days.trim().parse::<i64>() {
+        Ok(n) if n >= 1 => {}
+        Ok(_) => return PreviewStatus::Invalid("expiration (min 1 day)".into()),
+        Err(_) if form.expiration_days.trim().is_empty() => {
+            return PreviewStatus::Missing("expiration".into());
+        }
+        Err(_) => return PreviewStatus::Invalid("expiration".into()),
+    }
+    PreviewStatus::Ready
+}
+
 fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
+    if form.currency_picker.open {
+        return vec![
+            Line::from("Currency"),
+            Line::from(
+                "Type to filter, ↑↓ to move, Enter to pick, Esc to close. \
+                 With no instance restriction, Enter also accepts a 3-letter code.",
+            ),
+        ];
+    }
     match form.focused {
         FormField::OrderType => vec![
             Line::from("Order Type"),
-            Line::from("Choose whether you want to buy or sell bitcoin."),
-            Line::from("Use Space to toggle between buy and sell orders."),
+            Line::from("Choose whether you want to buy or sell bitcoin. Space toggles buy/sell."),
         ],
         FormField::Currency => vec![
             Line::from("Currency"),
-            Line::from("Enter the fiat currency code (e.g. USD, EUR)."),
-            Line::from("It must be one of the currencies accepted by the Mostro instance."),
+            Line::from("Press Enter/Space or start typing to open the currency picker."),
         ],
         FormField::AmountSats => vec![
             Line::from("Amount (sats)"),
-            Line::from("Amount in satoshis you want to trade."),
-            Line::from("Set to 0 to create a market order, so the order will be executed at the current market price."),
+            Line::from("Satoshis to trade. Use 0 for a market order at the current price."),
         ],
         FormField::FiatAmount => vec![
             Line::from("Fiat Amount"),
-            Line::from("Price of the order in fiat currency (e.g. USD, EUR, ARS, etc.)."),
-            Line::from("Use Space to toggle between a single amount and a range (e.g. 100-200 USD)."),
+            Line::from("Price in fiat. Space toggles a single amount or a range (e.g. 100-200)."),
         ],
         FormField::FiatAmountMax if form.use_range => vec![
             Line::from("Fiat Amount (Max)"),
             Line::from("Upper bound of the fiat amount range."),
-            Line::from("Leave narrow if you only need a rough upper limit."),
         ],
         FormField::PaymentMethod => vec![
             Line::from("Payment Method"),
-            Line::from("Describe how you want to receive or send fiat."),
-            Line::from("Use a short but recognizable label (e.g. SEPA, Bizum)."),
+            Line::from("How you send/receive fiat. Spaces allowed (e.g. \"Bank transfer\")."),
         ],
         FormField::Premium => vec![
             Line::from("Premium (%)"),
-            Line::from("Markup or discount relative to the reference price."),
-            Line::from("Positive values are a premium, negative values a discount."),
+            Line::from("Markup or discount vs. the reference price. + premium, − discount."),
         ],
         FormField::Invoice => vec![
             Line::from("Invoice (optional)"),
-            Line::from("Pre-generated Lightning invoice, if applicable."),
-            Line::from("You can leave this empty for Mostro to handle invoices."),
+            Line::from("Pre-generated Lightning invoice. Leave empty for Mostro to handle it."),
         ],
         FormField::ExpirationDays => vec![
             Line::from("Expiration (days)"),
-            Line::from("How long the order should remain active."),
-            Line::from("Use 0 for no expiration."),
+            Line::from("How long the order stays active. Minimum 1 day."),
         ],
         _ => vec![
             Line::from("Create New Order"),
@@ -394,11 +1043,87 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
 }
 
 pub fn render_form_initializing(f: &mut ratatui::Frame, area: Rect) {
-    let paragraph = Paragraph::new(Span::raw("Initializing form...")).block(
-        Block::default()
-            .title("Create New Order")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(BACKGROUND_COLOR)),
-    );
-    f.render_widget(paragraph, area);
+    let block = Block::default()
+        .title(Line::from(Span::styled(
+            " ✨ Create New Order ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::orders::FormField;
+
+    fn ready_form() -> FormState {
+        let mut form = FormState::new_default_form();
+        form.fiat_amount = "100".to_string();
+        form.payment_method = "SEPA".to_string();
+        form.expiration_days = "1".to_string();
+        form
+    }
+
+    #[test]
+    fn validate_rejects_zero_expiration() {
+        let mut form = ready_form();
+        form.expiration_days = "0".to_string();
+        assert!(matches!(
+            validate(&form, &[]),
+            PreviewStatus::Invalid(ref s) if s.contains("expiration")
+        ));
+        assert_eq!(
+            field_status(&form, FormField::ExpirationDays, &[]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn validate_accepts_minimum_one_day_expiration() {
+        let form = ready_form();
+        assert!(matches!(validate(&form, &[]), PreviewStatus::Ready));
+        assert_eq!(
+            field_status(&form, FormField::ExpirationDays, &[]),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_negative_amount_and_fiat() {
+        let mut form = ready_form();
+        form.amount = "-1000".to_string();
+        assert!(matches!(
+            validate(&form, &[]),
+            PreviewStatus::Invalid(ref s) if s.contains("amount")
+        ));
+        assert_eq!(field_status(&form, FormField::AmountSats, &[]), Some(false));
+
+        form.amount = "0".to_string();
+        form.fiat_amount = "-5".to_string();
+        assert!(matches!(
+            validate(&form, &[]),
+            PreviewStatus::Invalid(ref s) if s.contains("fiat")
+        ));
+        assert_eq!(field_status(&form, FormField::FiatAmount, &[]), Some(false));
+    }
+
+    #[test]
+    fn validate_rejects_currency_outside_accepted_list() {
+        let form = ready_form();
+        let accepted = vec!["EUR".to_string(), "ARS".to_string()];
+        // Default form uses USD, which is not in this instance list.
+        assert_eq!(
+            field_status(&form, FormField::Currency, &accepted),
+            Some(false)
+        );
+        assert!(matches!(
+            validate(&form, &accepted),
+            PreviewStatus::Invalid(ref s) if s.contains("currency")
+        ));
+    }
 }

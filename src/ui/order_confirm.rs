@@ -1,9 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Flex, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::currencies;
 
 pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_button: bool) {
     let area = f.area();
@@ -77,7 +78,23 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("Currency: "),
-            Span::styled(&form.fiat_code, Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(
+                form.fiat_code.to_ascii_uppercase(),
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                {
+                    let name = currencies::name_for(&form.fiat_code);
+                    if name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {name}")
+                    }
+                },
+                Style::default().fg(Color::Gray),
+            ),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
         inner_chunks[4],
@@ -146,10 +163,11 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
         );
     }
 
-    let exp_str = if form.expiration_days.is_empty() || form.expiration_days == "0" {
-        "No expiration".to_string()
-    } else {
-        format!("{} days", form.expiration_days)
+    let exp_str = match form.expiration_days.trim().parse::<i64>() {
+        Ok(n) if n >= 1 => format!("{n} days"),
+        Ok(0) => "0 (invalid — min 1 day)".to_string(),
+        _ if form.expiration_days.trim().is_empty() => "—".to_string(),
+        _ => form.expiration_days.clone(),
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![

@@ -8,6 +8,7 @@ pub mod admin_state;
 pub(crate) mod app_state;
 pub(crate) mod chat;
 pub mod constants;
+pub mod currencies;
 pub mod dispute_bond_slash_popup;
 pub mod dispute_finalization_confirm;
 pub mod dispute_finalization_popup;

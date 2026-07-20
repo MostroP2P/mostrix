@@ -42,6 +42,20 @@ pub fn ui_draw(
         return;
     }
 
+    // Keep the Create New Order tab in a usable form instead of a dead
+    // placeholder when the user rests here in Normal mode (e.g. after
+    // submitting or clearing an order). Restores a saved draft if present.
+    if app.user_role == UserRole::User
+        && matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder))
+        && matches!(app.mode, UiMode::UserMode(UserMode::Normal))
+    {
+        let form = app
+            .order_form_draft
+            .take()
+            .unwrap_or_else(FormState::new_default_form);
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+    }
+
     // Render content based on active tab and role
     let content_area = chunks[1];
     match (&app.active_tab, app.user_role) {
@@ -87,7 +101,7 @@ pub fn ui_draw(
         ),
         (Tab::User(UserTab::CreateNewOrder), UserRole::User) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
-                order_form::render_order_form(f, content_area, form);
+                order_form::render_order_form(f, content_area, form, app.mostro_info.as_ref());
             } else {
                 order_form::render_form_initializing(f, content_area);
             }

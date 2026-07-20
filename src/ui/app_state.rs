@@ -16,7 +16,7 @@ use crate::ui::chat::{
 use crate::ui::helpers::OrderChatListItem;
 use crate::ui::navigation::{Tab, UserRole};
 use crate::ui::orders::{
-    BuyerInvoicePreference, InvoiceInputState, KeyInputState, MessageNotification,
+    BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
@@ -257,6 +257,9 @@ pub struct AppState {
     /// When set, closing an OperationResult popup (ESC/ENTER) will exit the app.
     /// Used for fatal errors that require a clean restart.
     pub fatal_exit_on_close: bool,
+    /// Preserved New Order form draft so leaving/returning to the tab keeps input.
+    /// Cleared on explicit cancel (Esc) or successful submit.
+    pub order_form_draft: Option<FormState>,
 }
 
 impl AppState {
@@ -320,6 +323,7 @@ impl AppState {
             pending_fetch_scheduler_reload: false,
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,
+            order_form_draft: None,
         }
     }
 

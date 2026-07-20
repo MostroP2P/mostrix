@@ -269,19 +269,28 @@ impl FormField {
     }
 }
 
+/// State for the searchable currency dropdown on the Currency field.
+#[derive(Clone, Debug, Default)]
+pub struct CurrencyPicker {
+    pub open: bool,      // whether the dropdown overlay is visible
+    pub filter: String,  // typed query used to narrow the list
+    pub selected: usize, // index into the *filtered* option list
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
-    pub kind: String,            // buy | sell
-    pub fiat_code: String,       // e.g. USD, EUR, ARS
-    pub fiat_amount: String,     // numeric (single amount or min for range)
-    pub fiat_amount_max: String, // max amount for range (optional)
-    pub amount: String,          // amount in sats (0 for market)
-    pub payment_method: String,  // comma separated
-    pub premium: String,         // premium percentage
-    pub invoice: String,         // optional invoice
-    pub expiration_days: String, // expiration days (0 for no expiration)
-    pub focused: FormField,      // which field is focused
-    pub use_range: bool,         // whether to use fiat range
+    pub kind: String,                    // buy | sell
+    pub fiat_code: String,               // e.g. USD, EUR, ARS
+    pub fiat_amount: String,             // numeric (single amount or min for range)
+    pub fiat_amount_max: String,         // max amount for range (optional)
+    pub amount: String,                  // amount in sats (0 for market)
+    pub payment_method: String,          // comma separated
+    pub premium: String,                 // premium percentage
+    pub invoice: String,                 // optional invoice
+    pub expiration_days: String,         // expiration days (minimum 1)
+    pub focused: FormField,              // which field is focused
+    pub use_range: bool,                 // whether to use fiat range
+    pub currency_picker: CurrencyPicker, // searchable currency dropdown state
 }
 
 impl FormState {
