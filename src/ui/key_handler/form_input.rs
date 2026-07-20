@@ -75,18 +75,24 @@ pub fn handle_currency_picker_key(code: KeyCode, app: &mut AppState) -> Option<b
                 Some(true)
             }
             KeyCode::Enter => {
+                let filter = form.currency_picker.filter.trim().to_ascii_uppercase();
                 let idx = form
                     .currency_picker
                     .selected
                     .min(filtered.len().saturating_sub(1));
-                if let Some(choice) = filtered.get(idx) {
+                // Prefer an exact code match. In unrestricted mode, a typed 3-letter
+                // code that is not an exact option code wins over name-substring hits
+                // (e.g. "NAD" must not become "CAD" via "Canadian Dollar").
+                if let Some(choice) = filtered.iter().find(|o| o.code == filter) {
                     form.fiat_code = choice.code.clone();
                 } else if accepted.is_empty() {
-                    // Instance advertises no restriction ("all currencies"): allow a
-                    // typed ISO-4217 code that is not in the curated picker list.
-                    if let Some(code) = custom_currency_code(&form.currency_picker.filter) {
+                    if let Some(code) = custom_currency_code(&filter) {
                         form.fiat_code = code;
+                    } else if let Some(choice) = filtered.get(idx) {
+                        form.fiat_code = choice.code.clone();
                     }
+                } else if let Some(choice) = filtered.get(idx) {
+                    form.fiat_code = choice.code.clone();
                 }
                 close_currency_picker(form);
                 Some(true)
@@ -289,6 +295,31 @@ mod tests {
             UiMode::UserMode(UserMode::CreatingOrder(form)) => {
                 assert_eq!(form.fiat_code, "KWD");
                 assert!(!form.currency_picker.open);
+            }
+            other => panic!("expected CreatingOrder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn currency_picker_enter_prefers_custom_nad_over_canadian_dollar_name_hit() {
+        // "NAD" is a valid ISO code not in CURRENCIES, but also a substring of
+        // "Canadian Dollar" — unrestricted Enter must keep NAD, not assign CAD.
+        let mut app = AppState::new(UserRole::User);
+        app.mostro_info = None;
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::Currency;
+        form.currency_picker.open = true;
+        form.currency_picker.filter = "NAD".to_string();
+        form.currency_picker.selected = 0;
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+
+        assert_eq!(
+            handle_currency_picker_key(KeyCode::Enter, &mut app),
+            Some(true)
+        );
+        match &app.mode {
+            UiMode::UserMode(UserMode::CreatingOrder(form)) => {
+                assert_eq!(form.fiat_code, "NAD");
             }
             other => panic!("expected CreatingOrder, got {other:?}"),
         }

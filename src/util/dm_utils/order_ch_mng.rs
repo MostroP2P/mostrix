@@ -215,6 +215,13 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         action,
     } = &result
     {
+        // New-order bond invoice path succeeds here and returns before the
+        // WaitingForMostro match below — clear the draft now so it cannot restore
+        // a duplicate form after the maker pays the bond.
+        if matches!(app.mode, UiMode::UserMode(UserMode::WaitingForMostro(_))) {
+            app.order_form_draft = None;
+        }
+
         // Track trade_index
         if let Some(order_id) = order.id {
             match app.active_order_trade_indices.lock() {
@@ -321,8 +328,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     match &app.mode {
         UiMode::UserMode(UserMode::WaitingForMostro(form)) => {
             match &result {
-                // Order published (or bond invoice next) — discard the draft.
-                OperationResult::Success(_) | OperationResult::PaymentRequestRequired { .. } => {
+                // Order published — discard the draft.
+                // (PaymentRequestRequired is handled earlier and returns before this match.)
+                OperationResult::Success(_) => {
                     app.order_form_draft = None;
                 }
                 // Submit failed — keep the form so the user can resume editing.
@@ -367,7 +375,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::orders::OrderChatStaticHeader;
     use crate::ui::{FormState, UserRole};
+    use mostro_core::prelude::{SmallOrder, Status};
 
     #[test]
     fn failed_new_order_keeps_form_draft() {
@@ -397,5 +407,42 @@ mod tests {
 
         assert!(app.order_form_draft.is_none());
         assert!(matches!(app.mode, UiMode::OperationResult(_)));
+    }
+
+    #[test]
+    fn payment_request_from_waiting_new_order_clears_form_draft() {
+        // PaymentRequestRequired returns before the WaitingForMostro match; draft
+        // must still be cleared so a successful bond-invoice create cannot restore.
+        let mut app = AppState::new(UserRole::User);
+        let form = FormState::new_default_form();
+        app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form.clone()));
+        app.order_form_draft = Some(form);
+
+        let order_id = uuid::Uuid::new_v4();
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    status: Some(Status::WaitingMakerBond),
+                    ..Default::default()
+                },
+                invoice: "lnbc1test".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 1,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: None,
+                    created_at: None,
+                    trade_index: 1,
+                    initiator_trade_pubkey: "pk".to_string(),
+                    is_mine: true,
+                },
+                action: Action::PayBondInvoice,
+            },
+            &mut app,
+        );
+
+        assert!(app.order_form_draft.is_none());
+        assert!(matches!(app.mode, UiMode::NewMessageNotification(_, _, _)));
     }
 }
