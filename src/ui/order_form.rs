@@ -81,7 +81,7 @@ pub fn render_order_form(
     .split(rows[0]);
 
     let currency_row = render_details(f, top[0], form, accepted, min_amt, max_amt);
-    render_preview(f, top[1], form);
+    render_preview(f, top[1], form, accepted);
     render_help(f, rows[1], form);
     render_footer(f, rows[2]);
 
@@ -464,7 +464,7 @@ fn build_rows(form: &FormState) -> Vec<Row> {
     rows
 }
 
-fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
+fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState, accepted: &[String]) {
     let block = Block::default()
         .title(" Live preview ")
         .borders(Borders::ALL)
@@ -502,7 +502,7 @@ fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
     );
 
     // Status dot beneath the card.
-    let status = match validate(form) {
+    let status = match validate(form, accepted) {
         PreviewStatus::Ready => Line::from(vec![
             Span::styled("● ", Style::default().fg(Color::Green)),
             Span::styled("ready to submit", Style::default().fg(Color::Green)),
@@ -936,20 +936,29 @@ fn expiry_preview(days: &str) -> String {
     }
 }
 
-fn validate(form: &FormState) -> PreviewStatus {
-    if form.fiat_code.trim().is_empty() {
+fn validate(form: &FormState, accepted: &[String]) -> PreviewStatus {
+    let code = form.fiat_code.trim().to_ascii_uppercase();
+    if code.is_empty() {
         return PreviewStatus::Missing("currency".into());
     }
-    if !(form.amount.trim().is_empty() || form.amount.trim() == "0")
-        && form.amount.trim().parse::<i64>().is_err()
-    {
-        return PreviewStatus::Invalid("amount".into());
+    if !accepted.is_empty() && !accepted.iter().any(|a| a.eq_ignore_ascii_case(&code)) {
+        return PreviewStatus::Invalid("currency (not accepted)".into());
+    }
+    let amount = form.amount.trim();
+    if !(amount.is_empty() || amount == "0") {
+        match amount.parse::<i64>() {
+            Ok(n) if n > 0 => {}
+            Ok(_) => return PreviewStatus::Invalid("amount".into()),
+            Err(_) => return PreviewStatus::Invalid("amount".into()),
+        }
     }
     if form.fiat_amount.trim().is_empty() {
         return PreviewStatus::Missing("fiat amount".into());
     }
-    if form.fiat_amount.trim().parse::<i64>().is_err() {
-        return PreviewStatus::Invalid("fiat amount".into());
+    match form.fiat_amount.trim().parse::<i64>() {
+        Ok(n) if n > 0 => {}
+        Ok(_) => return PreviewStatus::Invalid("fiat amount".into()),
+        Err(_) => return PreviewStatus::Invalid("fiat amount".into()),
     }
     if form.use_range {
         match form.fiat_amount_max.trim().parse::<i64>() {
@@ -1065,7 +1074,7 @@ mod tests {
         let mut form = ready_form();
         form.expiration_days = "0".to_string();
         assert!(matches!(
-            validate(&form),
+            validate(&form, &[]),
             PreviewStatus::Invalid(ref s) if s.contains("expiration")
         ));
         assert_eq!(
@@ -1077,10 +1086,44 @@ mod tests {
     #[test]
     fn validate_accepts_minimum_one_day_expiration() {
         let form = ready_form();
-        assert!(matches!(validate(&form), PreviewStatus::Ready));
+        assert!(matches!(validate(&form, &[]), PreviewStatus::Ready));
         assert_eq!(
             field_status(&form, FormField::ExpirationDays, &[]),
             Some(true)
         );
+    }
+
+    #[test]
+    fn validate_rejects_negative_amount_and_fiat() {
+        let mut form = ready_form();
+        form.amount = "-1000".to_string();
+        assert!(matches!(
+            validate(&form, &[]),
+            PreviewStatus::Invalid(ref s) if s.contains("amount")
+        ));
+        assert_eq!(field_status(&form, FormField::AmountSats, &[]), Some(false));
+
+        form.amount = "0".to_string();
+        form.fiat_amount = "-5".to_string();
+        assert!(matches!(
+            validate(&form, &[]),
+            PreviewStatus::Invalid(ref s) if s.contains("fiat")
+        ));
+        assert_eq!(field_status(&form, FormField::FiatAmount, &[]), Some(false));
+    }
+
+    #[test]
+    fn validate_rejects_currency_outside_accepted_list() {
+        let form = ready_form();
+        let accepted = vec!["EUR".to_string(), "ARS".to_string()];
+        // Default form uses USD, which is not in this instance list.
+        assert_eq!(
+            field_status(&form, FormField::Currency, &accepted),
+            Some(false)
+        );
+        assert!(matches!(
+            validate(&form, &accepted),
+            PreviewStatus::Invalid(ref s) if s.contains("currency")
+        ));
     }
 }

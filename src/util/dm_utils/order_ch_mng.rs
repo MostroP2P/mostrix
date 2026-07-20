@@ -410,6 +410,50 @@ mod tests {
     }
 
     #[test]
+    fn enter_while_waiting_then_success_clears_draft() {
+        // Mirrors handle_enter_key: mem::replace then restore waiting mode (no-op Enter).
+        // Success must still hit the WaitingForMostro cleanup and drop the draft.
+        let mut app = AppState::new(UserRole::User);
+        let form = FormState::new_default_form();
+        app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form.clone()));
+        app.order_form_draft = Some(form);
+
+        let default_mode = UiMode::UserMode(UserMode::Normal);
+        let current_mode = std::mem::replace(&mut app.mode, default_mode);
+        match current_mode {
+            mode @ (UiMode::UserMode(UserMode::WaitingForMostro(_))
+            | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
+            | UiMode::UserMode(UserMode::WaitingAddInvoice)) => {
+                app.mode = mode;
+            }
+            other => panic!("expected waiting mode, got {other:?}"),
+        }
+        assert!(matches!(
+            app.mode,
+            UiMode::UserMode(UserMode::WaitingForMostro(_))
+        ));
+
+        handle_operation_result(OperationResult::Success(OrderSuccess::default()), &mut app);
+        assert!(
+            app.order_form_draft.is_none(),
+            "draft must clear when Enter kept WaitingForMostro until Success"
+        );
+    }
+
+    #[test]
+    fn success_after_leaving_waiting_mode_leaves_draft() {
+        // Documents the Enter bug: if waiting mode was dropped to Normal, Success
+        // bypasses draft cleanup and the submitted form remains reusable.
+        let mut app = AppState::new(UserRole::User);
+        let form = FormState::new_default_form();
+        app.order_form_draft = Some(form);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+
+        handle_operation_result(OperationResult::Success(OrderSuccess::default()), &mut app);
+        assert!(app.order_form_draft.is_some());
+    }
+
+    #[test]
     fn payment_request_from_waiting_new_order_clears_form_draft() {
         // PaymentRequestRequired returns before the WaitingForMostro match; draft
         // must still be cleared so a successful bond-invoice create cannot restore.

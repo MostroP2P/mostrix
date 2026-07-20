@@ -409,11 +409,12 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             handle_enter_taking_order(app, take_state, ctx);
             true
         }
-        UiMode::UserMode(UserMode::WaitingForMostro(_))
+        mode @ (UiMode::UserMode(UserMode::WaitingForMostro(_))
         | UiMode::UserMode(UserMode::WaitingTakeOrder(_))
-        | UiMode::UserMode(UserMode::WaitingAddInvoice) => {
-            // No action while waiting
-            app.mode = default_mode;
+        | UiMode::UserMode(UserMode::WaitingAddInvoice)) => {
+            // No action while waiting — restore the waiting mode that
+            // `mem::replace` swapped out at the start of this handler.
+            app.mode = mode;
             true
         }
         UiMode::ConfirmSavedLnAddressForInvoice(notification, selected_button) => {
