@@ -930,16 +930,6 @@ fn expiry_preview(days: &str) -> String {
     }
 }
 
-/// Short description of what makes the order not ready, or `None` when it is
-/// ready to submit. Used by the leave-confirmation popup.
-pub fn missing_hint(form: &FormState) -> Option<String> {
-    match validate(form) {
-        PreviewStatus::Ready => None,
-        PreviewStatus::Missing(what) => Some(format!("missing {what}")),
-        PreviewStatus::Invalid(why) => Some(format!("invalid {why}")),
-    }
-}
-
 fn validate(form: &FormState) -> PreviewStatus {
     if form.fiat_code.trim().is_empty() {
         return PreviewStatus::Missing("currency".into());

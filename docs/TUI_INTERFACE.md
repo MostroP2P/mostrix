@@ -78,7 +78,7 @@ Focused on trading and order management.
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
 - **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
-- **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), draft persistence, and leave guard when switching tabs with unsaved input.
+- **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), and silent draft persistence when switching tabs.
 
 ### Admin Role
 
@@ -147,13 +147,12 @@ The primary shared popup is the **operation result** modal, used for:
 
 When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress** tab, the app stays on that tab and returns to **ManagingDispute** mode (it does not switch to the first tab).
 
-**Create New Order leave guard** (`UserMode::ConfirmLeaveOrder`):
+**Create New Order draft persistence**:
 
-- **Trigger**: **Left** / **Right** tab navigation while editing a dirty `FormState` on the Create New Order tab.
-- **Popup**: `order_confirm::render_leave_confirm` — "Leave this order draft?" with readiness hint (`missing_hint`) and note that the draft is preserved.
-- **Buttons**: **Keep editing** (default, left) returns to `CreatingOrder`; **Leave** (right) stores `AppState.order_form_draft` and switches to the adjacent tab.
-- **Close**: **Esc** returns to editing (same as Keep editing). **Enter** confirms the highlighted button.
-- **Source**: `src/ui/key_handler/navigation.rs` (`handle_form_leave_attempt`), `src/ui/draw.rs` (overlay render + auto-restore draft on tab entry).
+- **Leave**: **Left** / **Right** tab navigation from Create New Order silently saves the current `FormState` to `AppState.order_form_draft` and switches tabs — no confirmation popup.
+- **Return**: Opening Create New Order again restores that draft (`navigation::restore_or_new_form`, also auto-init in `draw.rs` when the tab is active in `Normal` mode).
+- **Discard**: **Esc** on the form (or a successful submit) clears `order_form_draft`.
+- **Source**: `src/ui/key_handler/navigation.rs` (`save_and_leave_creating_order`), `src/ui/draw.rs`.
 
 **Example**: Rendering the `OperationResult` popup.
 
@@ -242,7 +241,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
     - **Toggles**: **Space** on **Order Type** toggles buy/sell (`⇄ Space` hint); **Space** on **Fiat Amount** toggles single/range; **Space** on **Payment Method** inserts a space (labels like `SEPA Instant` are allowed).
     - **Currency picker** (`CurrencyPicker` on `FormState`, `form_input::handle_currency_picker_key` — early interceptor in `key_handler/mod.rs`): on **Currency**, **Enter** / **Space** / typing opens a searchable dropdown anchored under the row. Options come from `MostroInstanceInfo.fiat_currencies_accepted` when non-empty, else the bundled ISO-4217 list in `currencies.rs` (code + human name; no emoji flags — terminal fonts rarely render them). **↑/↓** move, **Enter** selects, **Esc** closes; filter matches code prefix or name substring.
     - **Submit**: **Enter** on a complete form opens `ConfirmingOrder` (YES/NO); **Esc** cancels and clears `order_form_draft`.
-    - **Leave guard**: **Left** / **Right** tab navigation while `form.is_dirty()` opens `ConfirmLeaveOrder` (`order_confirm::render_leave_confirm`): default **Keep editing** (left), **Leave** (right) saves draft to `AppState.order_form_draft` and switches tab. Returning to Create New Order restores the draft (`navigation::restore_or_new_form`, auto-init in `draw.rs` when tab is active in `Normal` mode).
+    - **Draft persistence**: **Left** / **Right** tab navigation silently saves the form to `AppState.order_form_draft` and switches tabs. Returning to Create New Order restores the draft (`navigation::restore_or_new_form`, auto-init in `draw.rs` when tab is active in `Normal` mode).
   - **Global shortcut guard**: `n` / `N` (cancel) and `c` / `C` (copy invoice / observer clear) are handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), those keys are routed to form typing instead (fixes payment method labels like **SEPA** / **Bizum**). On **Currency**, the picker interceptor runs first and consumes most keys while the dropdown is open. Outside the form, `n` still drives confirmation cancel (`handle_cancel_key`); `c` still copies PayInvoice / PayBondInvoice invoices.
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
@@ -306,13 +305,10 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 | `FormState` | `src/ui/orders.rs` | Field values, `focused`, `use_range`, embedded `CurrencyPicker` |
 | `FormField` | `src/ui/orders.rs` | Order Type, Currency, Amount (sats), Fiat (+ max when range), Payment Method, Premium, Invoice, Expiration |
 | `CurrencyPicker` | `src/ui/orders.rs` | `open`, `filter`, `selected` (index into filtered list) |
-| `order_form_draft` | `AppState` | `Option<FormState>` — draft kept when user confirms **Leave** on tab switch |
+| `order_form_draft` | `AppState` | `Option<FormState>` — draft silently kept when leaving the tab via Left/Right |
 | `UserMode::CreatingOrder` | `src/ui/user_state.rs` | Active editing |
 | `UserMode::ConfirmingOrder` | `src/ui/user_state.rs` | Pre-submit YES/NO popup |
-| `UserMode::ConfirmLeaveOrder` | `src/ui/user_state.rs` | Unsaved-draft guard on **Left**/**Right** tab navigation |
 | `UserMode::WaitingForMostro` | `src/ui/user_state.rs` | Async `send_new_order` in flight |
-
-`FormState::is_dirty()` compares against `new_default_form()` (non-default kind/currency/amount/premium/expiry, range mode, or any non-empty fiat/payment/invoice text) to decide whether tab navigation should prompt.
 
 #### Rendering (`render_order_form`)
 
@@ -338,7 +334,7 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 #### Tab lifecycle (`src/ui/draw.rs`, `navigation.rs`)
 
 1. User opens **Create New Order** → `CreatingOrder(restore_or_new_form())` (draft or default).
-2. Dirty form + **Left**/**Right** → `ConfirmLeaveOrder`; **Keep editing** returns to form; **Leave** stores `order_form_draft` and switches tab.
+2. **Left** / **Right** → silently store `order_form_draft` and switch tab.
 3. User returns to tab while `mode == Normal` → `draw.rs` auto-promotes to `CreatingOrder` (consumes draft or fresh default) so the tab is never stuck on an empty shell.
 4. Successful submit (`ConfirmingOrder` YES) or explicit **Esc** cancel clears `order_form_draft`.
 
@@ -347,13 +343,13 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 ```text
 src/ui/order_form.rs          # render_order_form, validation, preview
 src/ui/currencies.rs          # ISO list + resolve/filter helpers
-src/ui/orders.rs              # FormState, FormField, CurrencyPicker, is_dirty
-src/ui/order_confirm.rs       # render_order_confirm, render_leave_confirm
-src/ui/draw.rs                # tab render + ConfirmLeaveOrder overlay
+src/ui/orders.rs              # FormState, FormField, CurrencyPicker
+src/ui/order_confirm.rs       # render_order_confirm
+src/ui/draw.rs                # tab render + draft restore on entry
 src/ui/key_handler/form_input.rs   # char/backspace + handle_currency_picker_key
-src/ui/key_handler/navigation.rs   # tab leave guard, restore_or_new_form
-src/ui/key_handler/enter_handlers.rs  # ConfirmingOrder / ConfirmLeaveOrder Enter
-src/ui/key_handler/esc_handlers.rs    # Esc on form / leave guard
+src/ui/key_handler/navigation.rs   # silent draft save on leave, restore_or_new_form
+src/ui/key_handler/enter_handlers.rs  # ConfirmingOrder Enter
+src/ui/key_handler/esc_handlers.rs    # Esc clears draft
 ```
 
 ### My Trades interactive mode (`user_my_trades_interactive`)

@@ -286,9 +286,6 @@ pub fn handle_cancel_key(app: &mut AppState) {
     if let UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) = &app.mode {
         // User cancelled, go back to form
         app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
-    } else if let UiMode::UserMode(UserMode::ConfirmLeaveOrder { form, .. }) = &app.mode {
-        // 'n' keeps editing the order.
-        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
     } else if let UiMode::UserMode(UserMode::TakingOrder(_)) = &app.mode {
         // User cancelled taking the order
         app.mode = default_mode;

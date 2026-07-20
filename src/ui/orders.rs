@@ -306,22 +306,6 @@ impl FormState {
             ..Default::default()
         }
     }
-
-    /// True when the user has entered content that differs from a fresh form,
-    /// i.e. there is a draft worth guarding before leaving the tab.
-    pub fn is_dirty(&self) -> bool {
-        let d = FormState::new_default_form();
-        self.kind != d.kind
-            || self.fiat_code != d.fiat_code
-            || self.amount != d.amount
-            || self.premium != d.premium
-            || self.expiration_days != d.expiration_days
-            || self.use_range
-            || !self.fiat_amount.trim().is_empty()
-            || !self.fiat_amount_max.trim().is_empty()
-            || !self.payment_method.trim().is_empty()
-            || !self.invoice.trim().is_empty()
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -164,16 +164,6 @@ pub fn ui_draw(
         order_confirm::render_order_confirm(f, form, *selected_button);
     }
 
-    // Leave-order guard popup
-    if let UiMode::UserMode(UserMode::ConfirmLeaveOrder {
-        form,
-        selected_button,
-        ..
-    }) = &app.mode
-    {
-        order_confirm::render_leave_confirm(f, form, *selected_button);
-    }
-
     // Waiting for Mostro popup overlay (user mode only)
     if let UiMode::UserMode(UserMode::WaitingForMostro(_)) = &app.mode {
         waiting::render_waiting(f);

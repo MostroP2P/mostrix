@@ -25,11 +25,10 @@ pub fn handle_navigation(
 }
 
 fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
-    // From the Create New Order form, guard against accidentally abandoning a
-    // draft: confirm before leaving when the form has content, otherwise leave.
+    // Leaving Create New Order silently keeps the draft for when the user returns.
     if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
         if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
-            handle_form_leave_attempt(app, form.clone(), true);
+            save_and_leave_creating_order(app, form.clone(), true);
             return;
         }
     }
@@ -37,13 +36,6 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         // In order confirmation popup, Left should only move the selection to YES,
         // not switch tabs.
         UiMode::UserMode(UserMode::ConfirmingOrder {
-            ref mut selected_button,
-            ..
-        }) => {
-            *selected_button = true;
-        }
-        // Leave-order guard: Left selects "Keep editing".
-        UiMode::UserMode(UserMode::ConfirmLeaveOrder {
             ref mut selected_button,
             ..
         }) => {
@@ -103,9 +95,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 }
 
 fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
+    // Leaving Create New Order silently keeps the draft for when the user returns.
     if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
         if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
-            handle_form_leave_attempt(app, form.clone(), false);
+            save_and_leave_creating_order(app, form.clone(), false);
             return;
         }
     }
@@ -113,13 +106,6 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         // In order confirmation popup, Right should only move the selection to NO,
         // not switch tabs.
         UiMode::UserMode(UserMode::ConfirmingOrder {
-            ref mut selected_button,
-            ..
-        }) => {
-            *selected_button = false;
-        }
-        // Leave-order guard: Right selects "Leave".
-        UiMode::UserMode(UserMode::ConfirmLeaveOrder {
             ref mut selected_button,
             ..
         }) => {
@@ -323,7 +309,6 @@ fn handle_up_key(
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
-        | UiMode::UserMode(UserMode::ConfirmLeaveOrder { .. })
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -495,7 +480,6 @@ fn handle_down_key(
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::BackupNewKeys(_)
-        | UiMode::UserMode(UserMode::ConfirmLeaveOrder { .. })
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -509,24 +493,14 @@ fn restore_or_new_form(app: &mut AppState) -> FormState {
         .unwrap_or_else(FormState::new_default_form)
 }
 
-/// Decide what happens when the user tries to navigate away from the form:
-/// confirm when there is a draft worth keeping, otherwise leave immediately.
-fn handle_form_leave_attempt(app: &mut AppState, form: FormState, to_prev: bool) {
-    if form.is_dirty() {
-        app.mode = UiMode::UserMode(UserMode::ConfirmLeaveOrder {
-            form,
-            to_prev,
-            selected_button: true, // default to "Keep editing"
-        });
-    } else {
-        app.order_form_draft = None;
-        leave_creating_order_to_adjacent_tab(app, to_prev);
-    }
+/// Save the current form as a draft and switch to the adjacent tab.
+fn save_and_leave_creating_order(app: &mut AppState, form: FormState, to_prev: bool) {
+    app.order_form_draft = Some(form);
+    leave_creating_order_to_adjacent_tab(app, to_prev);
 }
 
-/// Leave the Create New Order form for the previous/next tab, preserving the
-/// current draft (saved by the caller) and returning to Normal mode.
-pub(crate) fn leave_creating_order_to_adjacent_tab(app: &mut AppState, to_prev: bool) {
+/// Leave the Create New Order form for the previous/next tab, returning to Normal mode.
+fn leave_creating_order_to_adjacent_tab(app: &mut AppState, to_prev: bool) {
     let prev_tab = app.active_tab;
     app.active_tab = if to_prev {
         app.active_tab.prev(app.user_role)

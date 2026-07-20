@@ -1,88 +1,10 @@
-use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout};
+use ratatui::layout::{Constraint, Direction, Flex, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::currencies;
-use crate::ui::order_form::missing_hint;
-
-/// Renders the guard shown when leaving a non-empty New Order form.
-///
-/// `selected_button = true` highlights "Keep editing" (safe default), `false`
-/// highlights "Leave".
-pub fn render_leave_confirm(f: &mut ratatui::Frame, form: &FormState, selected_button: bool) {
-    let area = f.area();
-    let popup = helpers::create_centered_popup(area, 62, 11);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(" Unfinished order ")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1), // message
-            Constraint::Length(1), // readiness note
-            Constraint::Length(1), // draft-kept note
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // buttons
-            Constraint::Length(1), // help text
-        ],
-    )
-    .split(inner);
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "Leave this order draft?",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Center),
-        chunks[0],
-    );
-
-    let readiness = match missing_hint(form) {
-        Some(hint) => Line::from(vec![
-            Span::styled("Not ready yet — ", Style::default().fg(Color::Yellow)),
-            Span::styled(hint, Style::default().fg(Color::Yellow)),
-        ]),
-        None => Line::from(Span::styled(
-            "This order is ready to submit.",
-            Style::default().fg(Color::Green),
-        )),
-    };
-    f.render_widget(
-        Paragraph::new(readiness)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
-        chunks[1],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "Your draft will be kept for when you return.",
-            Style::default().fg(Color::Gray),
-        )))
-        .alignment(Alignment::Center),
-        chunks[2],
-    );
-
-    helpers::render_yes_no_buttons(f, chunks[4], selected_button, "‹ Keep editing", "Leave ›");
-
-    helpers::render_help_text(
-        f,
-        chunks[5],
-        "Use ",
-        "←/→",
-        " to choose, Enter to confirm, Esc to keep editing",
-    );
-}
 
 pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_button: bool) {
     let area = f.area();

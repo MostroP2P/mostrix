@@ -15,11 +15,6 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::UserMode(UserMode::ConfirmLeaveOrder { form, .. }) => {
-            // Esc keeps editing (safe default).
-            app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));
-            true
-        }
         UiMode::UserMode(UserMode::ConfirmingOrder { form, .. }) => {
             // Cancel confirmation, go back to form
             app.mode = UiMode::UserMode(UserMode::CreatingOrder(form.clone()));

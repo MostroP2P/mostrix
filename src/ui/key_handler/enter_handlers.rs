@@ -403,21 +403,6 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
-        UiMode::UserMode(UserMode::ConfirmLeaveOrder {
-            form,
-            to_prev,
-            selected_button,
-        }) => {
-            if selected_button {
-                // Keep editing - return to the form untouched.
-                app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
-            } else {
-                // Leave - keep the draft and switch to the adjacent tab.
-                app.order_form_draft = Some(form);
-                super::navigation::leave_creating_order_to_adjacent_tab(app, to_prev);
-            }
-            true
-        }
         UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
             handle_enter_taking_order(app, take_state, ctx);
             true
