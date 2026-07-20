@@ -163,10 +163,11 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
         );
     }
 
-    let exp_str = if form.expiration_days.is_empty() || form.expiration_days == "0" {
-        "No expiration".to_string()
-    } else {
-        format!("{} days", form.expiration_days)
+    let exp_str = match form.expiration_days.trim().parse::<i64>() {
+        Ok(n) if n >= 1 => format!("{n} days"),
+        Ok(0) => "0 (invalid — min 1 day)".to_string(),
+        _ if form.expiration_days.trim().is_empty() => "—".to_string(),
+        _ => form.expiration_days.clone(),
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![

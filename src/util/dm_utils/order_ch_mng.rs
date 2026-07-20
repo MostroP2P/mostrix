@@ -319,6 +319,20 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 
     // Set appropriate result mode based on current state
     match &app.mode {
+        UiMode::UserMode(UserMode::WaitingForMostro(form)) => {
+            match &result {
+                // Order published (or bond invoice next) — discard the draft.
+                OperationResult::Success(_) | OperationResult::PaymentRequestRequired { .. } => {
+                    app.order_form_draft = None;
+                }
+                // Submit failed — keep the form so the user can resume editing.
+                OperationResult::Error(_) => {
+                    app.order_form_draft = Some(form.clone());
+                }
+                _ => {}
+            }
+            app.mode = UiMode::operation_result(result);
+        }
         UiMode::UserMode(UserMode::WaitingTakeOrder(_)) => {
             app.mode = UiMode::operation_result(result);
         }
@@ -347,5 +361,41 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         _ => {
             app.mode = UiMode::operation_result(result);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{FormState, UserRole};
+
+    #[test]
+    fn failed_new_order_keeps_form_draft() {
+        let mut app = AppState::new(UserRole::User);
+        let mut form = FormState::new_default_form();
+        form.fiat_amount = "42".to_string();
+        form.payment_method = "Bizum".to_string();
+        app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form.clone()));
+        app.order_form_draft = Some(form.clone());
+
+        handle_operation_result(OperationResult::Error("relay timeout".into()), &mut app);
+
+        let draft = app.order_form_draft.expect("draft should survive failure");
+        assert_eq!(draft.fiat_amount, "42");
+        assert_eq!(draft.payment_method, "Bizum");
+        assert!(matches!(app.mode, UiMode::OperationResult(_)));
+    }
+
+    #[test]
+    fn successful_new_order_clears_form_draft() {
+        let mut app = AppState::new(UserRole::User);
+        let form = FormState::new_default_form();
+        app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form.clone()));
+        app.order_form_draft = Some(form);
+
+        handle_operation_result(OperationResult::Success(OrderSuccess::default()), &mut app);
+
+        assert!(app.order_form_draft.is_none());
+        assert!(matches!(app.mode, UiMode::OperationResult(_)));
     }
 }

@@ -81,6 +81,12 @@ pub fn handle_currency_picker_key(code: KeyCode, app: &mut AppState) -> Option<b
                     .min(filtered.len().saturating_sub(1));
                 if let Some(choice) = filtered.get(idx) {
                     form.fiat_code = choice.code.clone();
+                } else if accepted.is_empty() {
+                    // Instance advertises no restriction ("all currencies"): allow a
+                    // typed ISO-4217 code that is not in the curated picker list.
+                    if let Some(code) = custom_currency_code(&form.currency_picker.filter) {
+                        form.fiat_code = code;
+                    }
                 }
                 close_currency_picker(form);
                 Some(true)
@@ -118,6 +124,17 @@ fn close_currency_picker(form: &mut FormState) {
     form.currency_picker.open = false;
     form.currency_picker.filter.clear();
     form.currency_picker.selected = 0;
+}
+
+/// Accept a typed ISO-4217 code (exactly three ASCII letters) when the instance
+/// advertises an empty accepted list (meaning all currencies).
+fn custom_currency_code(filter: &str) -> Option<String> {
+    let code = filter.trim().to_ascii_uppercase();
+    if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) {
+        Some(code)
+    } else {
+        None
+    }
 }
 
 /// Handle character input for forms
@@ -242,5 +259,38 @@ mod tests {
             form.focused = FormField::OrderType;
         }
         assert!(!is_creating_order_text_input(&app));
+    }
+
+    #[test]
+    fn custom_currency_code_accepts_three_letter_iso() {
+        assert_eq!(custom_currency_code("kwd").as_deref(), Some("KWD"));
+        assert_eq!(custom_currency_code("  BHD ").as_deref(), Some("BHD"));
+        assert_eq!(custom_currency_code("JO").as_deref(), None);
+        assert_eq!(custom_currency_code("USDT").as_deref(), None);
+        assert_eq!(custom_currency_code("12A").as_deref(), None);
+    }
+
+    #[test]
+    fn currency_picker_enter_accepts_unlisted_code_when_all_currencies_allowed() {
+        let mut app = AppState::new(UserRole::User);
+        app.mostro_info = None; // no accepted list → all currencies
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::Currency;
+        form.currency_picker.open = true;
+        form.currency_picker.filter = "KWD".to_string();
+        form.currency_picker.selected = 0;
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+
+        assert_eq!(
+            handle_currency_picker_key(KeyCode::Enter, &mut app),
+            Some(true)
+        );
+        match &app.mode {
+            UiMode::UserMode(UserMode::CreatingOrder(form)) => {
+                assert_eq!(form.fiat_code, "KWD");
+                assert!(!form.currency_picker.open);
+            }
+            other => panic!("expected CreatingOrder, got {other:?}"),
+        }
     }
 }

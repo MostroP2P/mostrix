@@ -394,7 +394,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             if selected_button {
                 // YES selected - send the order (similar to handle_confirm_key)
                 let form_clone = form.clone();
-                app.order_form_draft = None; // order submitted, drop the draft
+                // Keep the draft until the async submit succeeds; on failure the
+                // user can return to Create New Order and resume editing.
+                app.order_form_draft = Some(form_clone.clone());
                 app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form_clone.clone()));
                 spawn_send_new_order_task(ctx, form_clone);
             } else {

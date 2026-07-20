@@ -693,9 +693,14 @@ fn render_currency_dropdown(
     .split(inner);
 
     if filtered.is_empty() {
+        let empty_msg = if currencies.is_empty() {
+            "  no match — Enter accepts a 3-letter code"
+        } else {
+            "  no match"
+        };
         f.render_widget(
             Paragraph::new(Span::styled(
-                "  no match",
+                empty_msg,
                 Style::default().fg(Color::DarkGray),
             ))
             .style(Style::default().bg(BACKGROUND_COLOR)),
@@ -815,9 +820,9 @@ fn field_status(form: &FormState, field: FormField, accepted: &[String]) -> Fiel
         FormField::ExpirationDays => {
             let t = form.expiration_days.trim();
             if t.is_empty() {
-                Some(true)
+                Some(false)
             } else {
-                Some(t.parse::<i64>().map(|n| n >= 0).unwrap_or(false))
+                Some(t.parse::<i64>().map(|n| n >= 1).unwrap_or(false))
             }
         }
     }
@@ -896,11 +901,12 @@ fn premium_line(premium: &str) -> Line<'static> {
 fn expiry_line(days: &str) -> Line<'static> {
     match days.trim().parse::<i64>() {
         Ok(0) => Line::from(Span::styled(
-            "no expiry",
-            Style::default().fg(Color::DarkGray),
+            "0 (min 1 day)",
+            Style::default().fg(Color::Red),
         )),
         Ok(1) => Line::from("1 day"),
-        Ok(d) => Line::from(format!("{d} days")),
+        Ok(d) if d > 1 => Line::from(format!("{d} days")),
+        Ok(_) => Line::from(Span::styled("invalid", Style::default().fg(Color::Red))),
         Err(_) => dim_if_empty(days, "1 day"),
     }
 }
@@ -924,9 +930,9 @@ fn premium_preview_line(premium: &str) -> Line<'static> {
 
 fn expiry_preview(days: &str) -> String {
     match days.trim().parse::<i64>() {
-        Ok(0) => "no expiry".to_string(),
-        Ok(d) => format!("expires in {d}d"),
-        Err(_) => "expiry ?".to_string(),
+        Ok(n) if n >= 1 => format!("expires in {n}d"),
+        Ok(0) => "expiry invalid (min 1d)".to_string(),
+        _ => "expiry ?".to_string(),
     }
 }
 
@@ -962,10 +968,13 @@ fn validate(form: &FormState) -> PreviewStatus {
     if !form.premium.trim().is_empty() && form.premium.trim().parse::<i64>().is_err() {
         return PreviewStatus::Invalid("premium".into());
     }
-    if !form.expiration_days.trim().is_empty()
-        && form.expiration_days.trim().parse::<i64>().is_err()
-    {
-        return PreviewStatus::Invalid("expiration".into());
+    match form.expiration_days.trim().parse::<i64>() {
+        Ok(n) if n >= 1 => {}
+        Ok(_) => return PreviewStatus::Invalid("expiration (min 1 day)".into()),
+        Err(_) if form.expiration_days.trim().is_empty() => {
+            return PreviewStatus::Missing("expiration".into());
+        }
+        Err(_) => return PreviewStatus::Invalid("expiration".into()),
     }
     PreviewStatus::Ready
 }
@@ -974,7 +983,10 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
     if form.currency_picker.open {
         return vec![
             Line::from("Currency"),
-            Line::from("Type to filter, ↑↓ to move, Enter to pick, Esc to close."),
+            Line::from(
+                "Type to filter, ↑↓ to move, Enter to pick, Esc to close. \
+                 With no instance restriction, Enter also accepts a 3-letter code.",
+            ),
         ];
     }
     match form.focused {
@@ -1012,7 +1024,7 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
         ],
         FormField::ExpirationDays => vec![
             Line::from("Expiration (days)"),
-            Line::from("How long the order stays active. Use 0 for no expiration."),
+            Line::from("How long the order stays active. Minimum 1 day."),
         ],
         _ => vec![
             Line::from("Create New Order"),
@@ -1033,4 +1045,42 @@ pub fn render_form_initializing(f: &mut ratatui::Frame, area: Rect) {
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     f.render_widget(block, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::orders::FormField;
+
+    fn ready_form() -> FormState {
+        let mut form = FormState::new_default_form();
+        form.fiat_amount = "100".to_string();
+        form.payment_method = "SEPA".to_string();
+        form.expiration_days = "1".to_string();
+        form
+    }
+
+    #[test]
+    fn validate_rejects_zero_expiration() {
+        let mut form = ready_form();
+        form.expiration_days = "0".to_string();
+        assert!(matches!(
+            validate(&form),
+            PreviewStatus::Invalid(ref s) if s.contains("expiration")
+        ));
+        assert_eq!(
+            field_status(&form, FormField::ExpirationDays, &[]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn validate_accepts_minimum_one_day_expiration() {
+        let form = ready_form();
+        assert!(matches!(validate(&form), PreviewStatus::Ready));
+        assert_eq!(
+            field_status(&form, FormField::ExpirationDays, &[]),
+            Some(true)
+        );
+    }
 }

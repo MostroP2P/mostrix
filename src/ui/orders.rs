@@ -287,7 +287,7 @@ pub struct FormState {
     pub payment_method: String,          // comma separated
     pub premium: String,                 // premium percentage
     pub invoice: String,                 // optional invoice
-    pub expiration_days: String,         // expiration days (0 for no expiration)
+    pub expiration_days: String,         // expiration days (minimum 1)
     pub focused: FormField,              // which field is focused
     pub use_range: bool,                 // whether to use fiat range
     pub currency_picker: CurrencyPicker, // searchable currency dropdown state
