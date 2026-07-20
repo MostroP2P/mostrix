@@ -18,6 +18,20 @@ use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 use mostro_core::prelude::*;
 
+fn should_auto_scroll_chat(
+    tracker: Option<&(String, ChatParty, usize)>,
+    dispute_id: &str,
+    party: ChatParty,
+    visible_count: usize,
+) -> bool {
+    match tracker {
+        None => true,
+        Some((tracked_dispute, tracked_party, last_count)) => {
+            tracked_dispute != dispute_id || *tracked_party != party || visible_count > *last_count
+        }
+    }
+}
+
 /// Filter disputes based on the current filter state.
 /// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
 fn get_filtered_disputes(app: &AppState) -> Vec<(usize, crate::models::AdminDispute)> {
@@ -552,17 +566,12 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             app.admin_chat_line_starts = content.line_start_per_message.clone();
 
             if visible_count > 0 {
-                let current_key = (dispute_id_key.clone(), app.active_chat_party);
-                let should_scroll = match &app.admin_chat_scroll_tracker {
-                    None => true,
-                    Some((d, p, last_count)) => {
-                        if *d != current_key.0 {
-                            true
-                        } else {
-                            *p == current_key.1 && visible_count > *last_count
-                        }
-                    }
-                };
+                let should_scroll = should_auto_scroll_chat(
+                    app.admin_chat_scroll_tracker.as_ref(),
+                    dispute_id_key,
+                    app.active_chat_party,
+                    visible_count,
+                );
                 if should_scroll {
                     app.admin_chat_scrollview_state = Default::default();
                     app.admin_chat_scrollview_state.scroll_to_bottom();
@@ -850,5 +859,47 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
         // Reset index when no disputes are available
         app.selected_in_progress_idx = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_auto_scroll_chat;
+    use crate::ui::ChatParty;
+
+    #[test]
+    fn auto_scrolls_when_chat_context_changes_or_messages_arrive() {
+        let tracker = ("dispute-a".to_string(), ChatParty::Buyer, 3);
+
+        assert!(should_auto_scroll_chat(
+            None,
+            "dispute-a",
+            ChatParty::Buyer,
+            3
+        ));
+        assert!(should_auto_scroll_chat(
+            Some(&tracker),
+            "dispute-b",
+            ChatParty::Buyer,
+            3
+        ));
+        assert!(should_auto_scroll_chat(
+            Some(&tracker),
+            "dispute-a",
+            ChatParty::Seller,
+            3
+        ));
+        assert!(should_auto_scroll_chat(
+            Some(&tracker),
+            "dispute-a",
+            ChatParty::Buyer,
+            4
+        ));
+        assert!(!should_auto_scroll_chat(
+            Some(&tracker),
+            "dispute-a",
+            ChatParty::Buyer,
+            3
+        ));
     }
 }
