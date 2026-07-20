@@ -28,7 +28,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     // Leaving Create New Order silently keeps the draft for when the user returns.
     if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
         if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
-            save_and_leave_creating_order(app, form.clone(), true);
+            let form = form.clone();
+            save_and_leave_creating_order(app, form, true);
             return;
         }
     }
@@ -98,7 +99,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
     // Leaving Create New Order silently keeps the draft for when the user returns.
     if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
         if matches!(app.active_tab, Tab::User(UserTab::CreateNewOrder)) {
-            save_and_leave_creating_order(app, form.clone(), false);
+            let form = form.clone();
+            save_and_leave_creating_order(app, form, false);
             return;
         }
     }
