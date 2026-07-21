@@ -3,8 +3,8 @@ use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
 use crate::ui::key_handler::chat_helpers::{
-    handle_enter_finalize_popup, message_counter, scroll_order_chat_after_send,
-    FinalizeDisputePopupButton,
+    build_order_action_view_state, handle_enter_finalize_popup, message_counter,
+    scroll_order_chat_after_send, FinalizeDisputePopupButton,
 };
 use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
@@ -934,6 +934,29 @@ fn handle_enter_settings_mode(
     true // Continue the loop by default
 }
 
+/// Whether this order-book id is our maker listing still `pending` (cancel, do not take).
+fn is_my_pending_book_order(
+    app: &AppState,
+    order_id: uuid::Uuid,
+    status: Option<mostro_core::order::Status>,
+) -> bool {
+    let id = order_id.to_string();
+    if app
+        .my_trades_maker_book
+        .iter()
+        .any(|row| row.order_id == id)
+    {
+        return true;
+    }
+    // Fallback when maker-book cache has not refreshed yet after a successful create.
+    let looks_pending = matches!(status, None | Some(mostro_core::order::Status::Pending));
+    looks_pending
+        && app
+            .order_chat_static
+            .get(&order_id)
+            .is_some_and(|header| header.is_mine)
+}
+
 fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     // Refresh Mostro instance info when Enter is pressed in the Mostro Info tab (spawn, no UI freeze)
     if matches!(
@@ -950,7 +973,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
     } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
         handle_enter_user_order_chat(app, ctx);
     } else if let Tab::User(UserTab::Orders) = app.active_tab {
-        // Show take order popup when Enter is pressed in Orders tab (user mode only)
+        // Enter on Orders: take someone else's listing, or cancel our own pending maker order.
         let orders_lock = match ctx.orders.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -961,6 +984,17 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         };
         if let Some(order) = orders_lock.get(app.selected_order_idx) {
+            if let Some(order_id) = order
+                .id
+                .filter(|id| is_my_pending_book_order(app, *id, order.status))
+            {
+                drop(orders_lock);
+                let msg = crate::ui::constants::HELP_ORDERS_CANCEL_PENDING_MSG;
+                let view_state =
+                    build_order_action_view_state(order_id, Action::Cancel, msg.to_string());
+                app.mode = UiMode::ViewingMessage(view_state);
+                return;
+            }
             let is_range_order = order.min_amount.is_some() || order.max_amount.is_some();
             let take_state = TakeOrderState {
                 order: order.clone(),

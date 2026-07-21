@@ -80,8 +80,12 @@ pub const SETTINGS_INSTRUCTIONS_CLOSE_HINT: &str = "Esc, Enter, Shift+H or Ctrl+
 pub const HELP_EXIT_ENTER_CONFIRM: &str = "Enter: Confirm exit (then Yes/No)";
 
 // Help popup lines (Orders)
-pub const HELP_ORDERS_ENTER_TAKE: &str = "Enter: Take selected order";
+pub const HELP_ORDERS_ENTER_TAKE: &str =
+    "Enter: Take selected order (or cancel if it is your pending listing)";
 pub const HELP_ORDERS_SELECT: &str = "↑↓: Select order";
+/// Confirmation body when Enter on Orders targets a maker pending order we own.
+pub const HELP_ORDERS_CANCEL_PENDING_MSG: &str =
+    "Cancel this pending order? It will be removed from the order book.";
 
 // Help popup lines (My Trades)
 pub const HELP_MY_TRADES_NAV: &str = "↑↓: Select order";
