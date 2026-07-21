@@ -27,7 +27,10 @@ pub use chat_visibility::{
     count_order_attachments, count_visible_attachments, get_order_attachment_messages,
     get_selected_chat_message, get_visible_attachment_messages, message_visible_for_party,
 };
-pub use formatting::{format_order_id, format_user_rating, is_dispute_finalized};
+pub use formatting::{
+    format_order_id, format_user_rating, is_dispute_finalized, relative_time_compact,
+    short_order_id,
+};
 pub use layout::{
     create_centered_popup, render_help_text, render_yes_no_buttons, render_yes_no_cancel_buttons,
 };

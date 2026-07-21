@@ -9,6 +9,7 @@ use crate::ui::constants::{
     SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
     VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
 };
+use crate::ui::PRIMARY_COLOR;
 
 pub use crate::ui::constants::StepLabel;
 
@@ -735,6 +736,60 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
     }
 }
 
+/// Emoji glyph for an [`Action`], used to give Messages-tab rows an at-a-glance icon.
+/// Mirrors the action set covered by [`message_action_compact_label`] plus a generic fallback.
+pub fn message_action_emoji(action: &Action) -> &'static str {
+    match action {
+        Action::AddInvoice => "🧾",
+        Action::AddBondInvoice => "🔒",
+        Action::PayInvoice => "⚡",
+        Action::PayBondInvoice => "🔒",
+        Action::WaitingBuyerInvoice => "⏳",
+        Action::WaitingSellerToPay => "⏳",
+        Action::HoldInvoicePaymentAccepted => "🔐",
+        Action::BuyerTookOrder => "🤝",
+        Action::FiatSent => "💸",
+        Action::FiatSentOk => "✅",
+        Action::Release | Action::Released => "🔓",
+        Action::Dispute | Action::DisputeInitiatedByYou => "⚖️",
+        Action::Canceled => "❌",
+        Action::AdminCanceled => "🛑",
+        Action::Rate => "⭐",
+        Action::RateReceived => "🌟",
+        Action::CooperativeCancelInitiatedByPeer | Action::CooperativeCancelInitiatedByYou => "✋",
+        Action::NewOrder => "🆕",
+        _ => "✉️",
+    }
+}
+
+/// Emoji + color badge summarizing the overall order status (header card, sidebar accents).
+/// `None` (status not yet hydrated) renders the same as an active/in-progress trade.
+///
+/// Not yet called from any render path: wired into the Messages-tab header card in the
+/// Messages Tab UX Restyle plan's Step 3 (right-panel header + trade snapshot card).
+#[allow(dead_code)]
+pub fn order_status_badge(status: Option<Status>) -> (&'static str, Color) {
+    match status {
+        Some(Status::Success) => ("✅", Color::Green),
+        Some(Status::SettledByAdmin) | Some(Status::CompletedByAdmin) => ("⚖️", Color::Yellow),
+        Some(Status::Canceled)
+        | Some(Status::CanceledByAdmin)
+        | Some(Status::CooperativelyCanceled) => ("❌", Color::Red),
+        Some(Status::Expired) => ("⌛", Color::DarkGray),
+        Some(Status::Dispute) => ("⚖️", Color::Yellow),
+        Some(Status::FiatSent) => ("💸", PRIMARY_COLOR),
+        Some(Status::Pending)
+        | Some(Status::WaitingPayment)
+        | Some(Status::WaitingBuyerInvoice)
+        | Some(Status::WaitingTakerBond)
+        | Some(Status::WaitingMakerBond) => ("⏳", Color::Yellow),
+        Some(Status::InProgress)
+        | Some(Status::Active)
+        | Some(Status::SettledHoldInvoice)
+        | None => ("💬", PRIMARY_COLOR),
+    }
+}
+
 /// Book order kind for sidebar: prefer persisted [`OrderMessage::order_kind`], then payload,
 /// then take-action hints when the listing side is implied (`take-sell` → sell listing, etc.).
 pub fn message_order_kind_label(msg: &OrderMessage) -> &'static str {
@@ -1079,6 +1134,81 @@ pub fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
     match kind {
         mostro_core::order::Kind::Buy => Style::default().fg(Color::Green),
         mostro_core::order::Kind::Sell => Style::default().fg(Color::Red),
+    }
+}
+
+#[cfg(test)]
+mod message_emoji_and_badge_tests {
+    use super::*;
+
+    #[test]
+    fn add_invoice_and_pay_invoice_have_distinct_emoji() {
+        assert_eq!(message_action_emoji(&Action::AddInvoice), "🧾");
+        assert_eq!(message_action_emoji(&Action::PayInvoice), "⚡");
+    }
+
+    #[test]
+    fn dispute_actions_share_the_scales_emoji() {
+        assert_eq!(message_action_emoji(&Action::Dispute), "⚖️");
+        assert_eq!(message_action_emoji(&Action::DisputeInitiatedByYou), "⚖️");
+    }
+
+    #[test]
+    fn unmapped_action_falls_back_to_envelope() {
+        assert_eq!(message_action_emoji(&Action::Orders), "✉️");
+    }
+
+    #[test]
+    fn success_status_badge_is_green_check() {
+        assert_eq!(
+            order_status_badge(Some(Status::Success)),
+            ("✅", Color::Green)
+        );
+    }
+
+    #[test]
+    fn cancel_variants_badge_as_red_cross() {
+        assert_eq!(
+            order_status_badge(Some(Status::Canceled)),
+            ("❌", Color::Red)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::CanceledByAdmin)),
+            ("❌", Color::Red)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::CooperativelyCanceled)),
+            ("❌", Color::Red)
+        );
+    }
+
+    #[test]
+    fn waiting_phases_badge_as_yellow_hourglass() {
+        assert_eq!(
+            order_status_badge(Some(Status::WaitingBuyerInvoice)),
+            ("⏳", Color::Yellow)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::WaitingMakerBond)),
+            ("⏳", Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn dispute_status_badges_as_yellow_scales() {
+        assert_eq!(
+            order_status_badge(Some(Status::Dispute)),
+            ("⚖️", Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn none_status_defaults_to_active_chat_badge() {
+        assert_eq!(order_status_badge(None), ("💬", PRIMARY_COLOR));
+        assert_eq!(
+            order_status_badge(Some(Status::InProgress)),
+            ("💬", PRIMARY_COLOR)
+        );
     }
 }
 

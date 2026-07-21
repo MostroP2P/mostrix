@@ -4,11 +4,12 @@ use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
+use crate::ui::helpers;
 use crate::ui::orders::{
-    listing_timeline_labels, message_action_compact_label_for_message, message_order_kind_label,
-    message_timeline_warning, message_timeline_warning_for_order_status,
+    listing_timeline_labels, message_action_compact_label_for_message, message_action_emoji,
+    message_order_kind_label, message_timeline_warning, message_timeline_warning_for_order_status,
     message_trade_timeline_step, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -20,9 +21,10 @@ pub fn render_messages_tab(
     selected_idx: usize,
 ) {
     let block = Block::default()
-        .title("Messages")
+        .title(sidebar_title(messages))
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR));
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
 
     f.render_widget(block.clone(), area);
     let inner = block.inner(area);
@@ -48,21 +50,79 @@ pub fn render_messages_tab(
 
     let left_chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Min(0), Constraint::Length(2)],
+        [Constraint::Min(0), Constraint::Length(1)],
     )
     .split(columns[0]);
 
-    let items: Vec<ListItem> = messages
+    let separator_width = left_chunks[0].width as usize;
+    let items = build_sidebar_items(messages, selected_idx, separator_width);
+
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
+        .highlight_symbol("▶ ")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+
+    f.render_stateful_widget(
+        list,
+        left_chunks[0],
+        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_idx)),
+    );
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" move · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" open · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Ctrl+H", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" help", Style::default().fg(Color::DarkGray)),
+    ]))
+    .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(footer, left_chunks[1]);
+
+    render_message_timeline_panel(f, columns[1], selected_msg);
+}
+
+/// Sidebar title with total trade count and, when present, an unread badge.
+fn sidebar_title(messages: &[OrderMessage]) -> Line<'static> {
+    let unread = messages.iter().filter(|m| !m.read).count();
+    let mut spans = vec![Span::styled(
+        format!(" 📨 My Trades ({}) ", messages.len()),
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if unread > 0 {
+        spans.push(Span::styled("· ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            format!("● {unread} new "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Emoji + color for the order-kind dot shown on each sidebar row.
+fn kind_dot(kind_label: &str) -> (&'static str, Color) {
+    match kind_label {
+        "BUY" => ("🟢", Color::Green),
+        "SELL" => ("🔴", Color::Red),
+        _ => ("⚪", Color::DarkGray),
+    }
+}
+
+/// Builds the three-line-plus-separator sidebar rows: kind/id, action, relative time/unread.
+fn build_sidebar_items(
+    messages: &[OrderMessage],
+    selected_idx: usize,
+    separator_width: usize,
+) -> Vec<ListItem<'static>> {
+    let last_idx = messages.len().saturating_sub(1);
+    messages
         .iter()
         .enumerate()
         .map(|(idx, msg)| {
-            let kind = message_order_kind_label(msg);
-            let action_label = message_action_compact_label_for_message(msg);
-
-            let timestamp = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
-                .map(|dt| dt.format("%H:%M:%S").to_string())
-                .unwrap_or_else(|| "Unknown time".to_string());
-
             let is_selected = idx == selected_idx;
             let base_style = if is_selected {
                 Style::default()
@@ -74,58 +134,57 @@ pub fn render_messages_tab(
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Gray)
             };
 
+            let kind_label = message_order_kind_label(msg);
+            let (dot, kind_color) = kind_dot(kind_label);
             let kind_style = if is_selected {
                 base_style
-            } else if kind == "BUY" {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else if kind == "SELL" {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
             } else {
-                base_style
+                Style::default().fg(kind_color).add_modifier(Modifier::BOLD)
             };
 
+            let short_id = helpers::short_order_id(msg.order_id);
             let line1 = Line::from(vec![
-                Span::styled(format!("{kind:4} "), kind_style),
+                Span::styled(format!("{dot} "), kind_style),
+                Span::styled(format!("{kind_label:<4} "), kind_style),
+                Span::styled(short_id, base_style),
+            ]);
+
+            let action = msg.message.get_inner_message_kind().action.clone();
+            let emoji = message_action_emoji(&action);
+            let action_label = message_action_compact_label_for_message(msg);
+            let line2 = Line::from(vec![
+                Span::styled(format!("  {emoji} "), base_style),
                 Span::styled(action_label.to_string(), base_style),
             ]);
-            let line2 = Line::from(vec![Span::styled(format!("  {timestamp}"), base_style)]);
-            ListItem::new(vec![line1, line2])
+
+            let time = helpers::relative_time_compact(msg.timestamp);
+            let mut line3_spans = vec![
+                Span::styled("  🕐 ", base_style),
+                Span::styled(time, base_style),
+            ];
+            if !msg.read {
+                line3_spans.push(Span::styled(
+                    " · unread ",
+                    Style::default().fg(Color::DarkGray),
+                ));
+                line3_spans.push(Span::styled("●", Style::default().fg(Color::Yellow)));
+            }
+            let line3 = Line::from(line3_spans);
+
+            let mut lines = vec![line1, line2, line3];
+            if idx != last_idx {
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(separator_width.max(1)),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            ListItem::new(lines)
         })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title("Orders")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        )
-        .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-        .highlight_symbol(">>")
-        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
-
-    f.render_stateful_widget(
-        list,
-        left_chunks[0],
-        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_idx)),
-    );
-
-    let help = Paragraph::new(Line::from(vec![
-        Span::styled("Up/Down", Style::default().fg(PRIMARY_COLOR)),
-        Span::raw(" move   "),
-        Span::styled("Enter", Style::default().fg(PRIMARY_COLOR)),
-        Span::raw(" open action"),
-    ]))
-    .alignment(ratatui::layout::Alignment::Center)
-    .block(Block::default().borders(Borders::ALL).title("Controls"));
-    f.render_widget(help, left_chunks[1]);
-
-    render_message_timeline_panel(f, columns[1], selected_msg);
+        .collect()
 }
 
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
@@ -257,5 +316,72 @@ fn render_trade_stepper(
         .alignment(ratatui::layout::Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
         f.render_widget(step, step_columns[idx]);
+    }
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+    use mostro_core::prelude::{Action, Message};
+    use nostr_sdk::Keys;
+
+    fn sample_message(read: bool) -> OrderMessage {
+        let keys = Keys::generate();
+        OrderMessage {
+            message: Message::new_order(None, None, None, Action::PayInvoice, None),
+            timestamp: 0,
+            sender: keys.public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: None,
+            is_mine: None,
+            order_status: None,
+            read,
+            auto_popup_shown: false,
+        }
+    }
+
+    fn spans_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn kind_dot_maps_buy_sell_and_unknown_to_distinct_glyphs() {
+        assert_eq!(kind_dot("BUY"), ("🟢", Color::Green));
+        assert_eq!(kind_dot("SELL"), ("🔴", Color::Red));
+        assert_eq!(kind_dot("N/A"), ("⚪", Color::DarkGray));
+    }
+
+    #[test]
+    fn sidebar_title_omits_unread_badge_when_all_read() {
+        let messages = vec![sample_message(true), sample_message(true)];
+        let text = spans_text(&sidebar_title(&messages));
+        assert!(text.contains("My Trades (2)"));
+        assert!(!text.contains("new"));
+    }
+
+    #[test]
+    fn sidebar_title_shows_unread_count_badge() {
+        let messages = vec![
+            sample_message(false),
+            sample_message(true),
+            sample_message(false),
+        ];
+        let text = spans_text(&sidebar_title(&messages));
+        assert!(text.contains("My Trades (3)"));
+        assert!(text.contains("● 2 new"));
+    }
+
+    #[test]
+    fn build_sidebar_items_adds_separator_between_rows_but_not_after_last() {
+        let messages = vec![sample_message(false), sample_message(true)];
+        let items = build_sidebar_items(&messages, 0, 20);
+        assert_eq!(items.len(), 2);
+        // Non-last row: kind/id + action + time + separator = 4 lines.
+        assert_eq!(items[0].height(), 4);
+        // Last row: no trailing separator = 3 lines.
+        assert_eq!(items[1].height(), 3);
     }
 }
