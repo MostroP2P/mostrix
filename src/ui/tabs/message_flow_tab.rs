@@ -285,8 +285,10 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     f.render_widget(Paragraph::new(vec![line1, line2]), inner);
 }
 
-/// TRADE snapshot card: two-column receipt of the order payload (fiat, sats,
-/// premium, method, trade index, role). Values gracefully fall back to `—`.
+/// TRADE snapshot card: a receipt of the order payload (fiat, sats, premium,
+/// method, trade index, role). Values gracefully fall back to `—`. Renders two
+/// columns when there is room, and stacks into a single column on narrow panels
+/// so nothing is squeezed off-screen.
 fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let block = Block::default()
         .title(Span::styled(
@@ -311,29 +313,33 @@ fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMes
     let (role_emoji, role_label) = role_chip(msg.is_mine);
     let white = Style::default().fg(Color::White);
 
-    let left = vec![
-        snapshot_field("💰", "Fiat", fiat_display(order), white),
-        snapshot_field("⚡", "Sats", sats_display(order, msg.sat_amount), white),
-        snapshot_field("🔑", "Trade idx", msg.trade_index.to_string(), white),
-    ];
-    let right = vec![
-        snapshot_field("📈", "Premium", premium, Style::default().fg(premium_color)),
-        snapshot_field("🧾", "Method", method_display(order), white),
-        snapshot_field(
-            role_emoji,
-            "Role",
-            role_label.to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
-    ];
+    let fiat = snapshot_field("💰", "Fiat", fiat_display(order), white);
+    let sats = snapshot_field("⚡", "Sats", sats_display(order, msg.sat_amount), white);
+    let trade_idx = snapshot_field("🔑", "Trade idx", msg.trade_index.to_string(), white);
+    let premium = snapshot_field("📈", "Premium", premium, Style::default().fg(premium_color));
+    let method = snapshot_field("🧾", "Method", method_display(order), white);
+    let role = snapshot_field(
+        role_emoji,
+        "Role",
+        role_label.to_string(),
+        Style::default().fg(Color::Cyan),
+    );
 
-    let cols = Layout::new(
-        Direction::Horizontal,
-        [Constraint::Percentage(50), Constraint::Percentage(50)],
-    )
-    .split(inner);
-    f.render_widget(Paragraph::new(left), cols[0]);
-    f.render_widget(Paragraph::new(right), cols[1]);
+    if use_two_column_trade(inner.width) {
+        let cols = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .split(inner);
+        f.render_widget(Paragraph::new(vec![fiat, sats, trade_idx]), cols[0]);
+        f.render_widget(Paragraph::new(vec![premium, method, role]), cols[1]);
+    } else {
+        // Narrow panel: stack every field in one readable column.
+        f.render_widget(
+            Paragraph::new(vec![fiat, sats, premium, method, trade_idx, role]),
+            inner,
+        );
+    }
 }
 
 /// One `emoji label value` row inside the TRADE snapshot card. The leading emoji
@@ -457,47 +463,132 @@ fn render_trade_stepper(
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    // Glyph track + labels on the left; progress gauge on the right.
-    let halves = Layout::new(
-        Direction::Horizontal,
-        [Constraint::Min(0), Constraint::Length(20)],
-    )
-    .split(inner);
-
-    let step_columns =
-        Layout::new(Direction::Horizontal, [Constraint::Ratio(1, 6); 6]).split(halves[0]);
-
-    for (idx, step_label) in steps.iter().enumerate() {
-        let step_number = idx + 1;
-        let (glyph, style) = step_glyph(step_number, current);
-        let width = step_columns[idx].width as usize;
-        let cell = Paragraph::new(vec![
-            glyph_cell_line(width, glyph, style, idx == 0, idx == steps.len() - 1),
-            Line::from(Span::styled(center_in(step_label.top, width), style)),
-            Line::from(Span::styled(center_in(step_label.bottom, width), style)),
-        ]);
-        f.render_widget(cell, step_columns[idx]);
+    if use_full_progress(inner.width) {
+        render_progress_full(f, inner, current, steps);
+    } else {
+        render_progress_compact(f, inner, current, steps);
     }
+}
 
-    let ratio = (current as f64 / steps.len() as f64).clamp(0.0, 1.0);
-    let gauge = LineGauge::default()
+/// Progress gauge widget (`Step N of 6` + `▰▱` bar) shared by both layouts.
+fn progress_gauge(current: usize, total: usize) -> LineGauge<'static> {
+    let ratio = (current as f64 / total as f64).clamp(0.0, 1.0);
+    LineGauge::default()
         .filled_symbol("▰")
         .unfilled_symbol("▱")
         .filled_style(Style::default().fg(PRIMARY_COLOR))
         .unfilled_style(Style::default().fg(Color::DarkGray))
         .ratio(ratio)
         .label(Span::styled(
-            format!("Step {current} of {} ", steps.len()),
+            format!("Step {current} of {total} "),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-        ));
-    // Render on the top row of the gauge column, aligned with the glyph track.
+        ))
+}
+
+/// Render the glyph track across `area` as six columns, optionally with the
+/// top/bottom `StepLabel` words centered beneath each glyph.
+fn render_glyph_columns(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+    with_labels: bool,
+) {
+    let step_columns = Layout::new(Direction::Horizontal, [Constraint::Ratio(1, 6); 6]).split(area);
+    for (idx, step_label) in steps.iter().enumerate() {
+        let (glyph, style) = step_glyph(idx + 1, current);
+        let width = step_columns[idx].width as usize;
+        let mut lines = vec![glyph_cell_line(
+            width,
+            glyph,
+            style,
+            idx == 0,
+            idx == steps.len() - 1,
+        )];
+        if with_labels {
+            lines.push(Line::from(Span::styled(
+                center_in(step_label.top, width),
+                style,
+            )));
+            lines.push(Line::from(Span::styled(
+                center_in(step_label.bottom, width),
+                style,
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), step_columns[idx]);
+    }
+}
+
+/// Wide layout: glyph track + per-step labels on the left, gauge on the right.
+fn render_progress_full(
+    f: &mut ratatui::Frame,
+    inner: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+) {
+    let halves = Layout::new(
+        Direction::Horizontal,
+        [Constraint::Min(0), Constraint::Length(20)],
+    )
+    .split(inner);
+    render_glyph_columns(f, halves[0], current, steps, true);
+    // Gauge on the top row of its column, aligned with the glyph track.
     let gauge_area = Rect {
         height: 1,
         ..halves[1]
     };
-    f.render_widget(gauge, gauge_area);
+    f.render_widget(progress_gauge(current, steps.len()), gauge_area);
+}
+
+/// Narrow layout: drop the six per-step labels (unreadable when cramped) in
+/// favor of a full-width glyph track, a full-width gauge, and a single clear
+/// "current step" line — readability over beauty on small screens.
+fn render_progress_compact(
+    f: &mut ratatui::Frame,
+    inner: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+) {
+    let rows = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ],
+    )
+    .split(inner);
+
+    render_glyph_columns(f, rows[0], current, steps, false);
+    f.render_widget(progress_gauge(current, steps.len()), rows[1]);
+
+    let current_label = steps
+        .get(current.saturating_sub(1))
+        .map(|s| s.as_single_line())
+        .unwrap_or_default();
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("▸ {current_label}"),
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        rows[2],
+    );
+}
+
+/// Whether the TRADE card has room for its two-column receipt layout.
+fn use_two_column_trade(inner_width: u16) -> bool {
+    inner_width >= 48
+}
+
+/// Whether the PROGRESS block has room for the full glyph-track + per-step
+/// labels + side gauge layout (else fall back to the compact stacked layout).
+fn use_full_progress(inner_width: u16) -> bool {
+    inner_width >= 68
 }
 
 /// Glyph + style for one step relative to the current step: done (`✔`, green),
@@ -745,6 +836,20 @@ mod stepper_tests {
         assert_eq!(center_in("odd", 6), " odd  ");
         // Longer than width: truncate by char, no panic.
         assert_eq!(center_in("Counterparty", 5), "Count");
+    }
+
+    #[test]
+    fn responsive_thresholds_switch_layouts_by_width() {
+        // TRADE: two columns only when wide enough, else single stacked column.
+        assert!(use_two_column_trade(60));
+        assert!(use_two_column_trade(48));
+        assert!(!use_two_column_trade(47));
+        assert!(!use_two_column_trade(20));
+        // PROGRESS: full labels+gauge only when wide, else compact stacked.
+        assert!(use_full_progress(80));
+        assert!(use_full_progress(68));
+        assert!(!use_full_progress(67));
+        assert!(!use_full_progress(30));
     }
 
     #[test]
