@@ -6,6 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
+use mostro_core::prelude::{Payload, SmallOrder};
+
 use crate::ui::helpers;
 use crate::ui::orders::{
     listing_timeline_labels, message_action_compact_label_for_message, message_action_emoji,
@@ -188,38 +190,20 @@ fn build_sidebar_items(
 }
 
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
+    // Panel order mirrors the target mockup: header, progress stepper, TRADE
+    // snapshot (fills the space the old numbered timeline wasted), then STATUS.
     let right_chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Length(7),
-            Constraint::Length(3),
             Constraint::Min(0),
+            Constraint::Length(3),
         ],
     )
     .split(area);
 
-    let order_id = selected_msg
-        .order_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "Unknown order id".to_string());
-    let timestamp = DateTime::<Utc>::from_timestamp(selected_msg.timestamp, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "Unknown time".to_string());
-
-    let header = Paragraph::new(vec![
-        Line::from(Span::styled(
-            format!("Order {order_id}"),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::raw(format!("Last message at {timestamp}"))),
-    ])
-    .block(
-        Block::default()
-            .title("Selected Trade")
-            .borders(Borders::ALL),
-    );
-    f.render_widget(header, right_chunks[0]);
+    render_header_card(f, right_chunks[0], selected_msg);
 
     let step_labels = listing_timeline_labels(selected_msg);
     render_trade_stepper(
@@ -228,6 +212,8 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
         message_trade_timeline_step(selected_msg),
         &step_labels,
     );
+
+    render_trade_snapshot_card(f, right_chunks[2], selected_msg);
 
     let warning_from_status = message_timeline_warning_for_order_status(selected_msg.order_status);
     let warning_opt = warning_from_status.or_else(|| {
@@ -243,35 +229,208 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
     };
     let state = Paragraph::new(Line::from(Span::styled(warning, warning_style)))
         .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().title("State").borders(Borders::ALL));
-    f.render_widget(state, right_chunks[2]);
+        .block(
+            Block::default()
+                .title(" State ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+        );
+    f.render_widget(state, right_chunks[3]);
+}
 
-    let action_text = message_action_compact_label_for_message(selected_msg);
-    let details = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "Current action",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::raw(action_text)),
-        Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            "Trade timeline",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::raw(format!("1) {}", step_labels[0].as_single_line()))),
-        Line::from(Span::raw(format!("2) {}", step_labels[1].as_single_line()))),
-        Line::from(Span::raw(format!("3) {}", step_labels[2].as_single_line()))),
-        Line::from(Span::raw(format!("4) {}", step_labels[3].as_single_line()))),
-        Line::from(Span::raw(format!("5) {}", step_labels[4].as_single_line()))),
-        Line::from(Span::raw(format!("6) {}", step_labels[5].as_single_line()))),
-    ])
-    .block(
-        Block::default()
-            .title("Timeline Details")
-            .borders(Borders::ALL),
+/// Header card: order id + kind badge + maker/taker role chip, plus the absolute
+/// and relative last-update time.
+fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    let kind_label = message_order_kind_label(msg);
+    let (dot, kind_color) = kind_dot(kind_label);
+    let (role_emoji, role_label) = role_chip(msg.is_mine);
+
+    let line1 = Line::from(vec![
+        Span::styled("🧾 Order ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            helpers::short_order_id(msg.order_id),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(
+            format!("{dot} {kind_label}"),
+            Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(
+            format!("{role_emoji} {role_label}"),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]);
+
+    let absolute = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let relative = helpers::relative_time_compact(msg.timestamp);
+    let line2 = Line::from(Span::styled(
+        format!("Last update: {absolute} ({relative})"),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    f.render_widget(Paragraph::new(vec![line1, line2]), inner);
+}
+
+/// TRADE snapshot card: two-column receipt of the order payload (fiat, sats,
+/// premium, method, trade index, role). Values gracefully fall back to `—`.
+fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
+    let block = Block::default()
+        .title(Span::styled(
+            " TRADE ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    let inner_kind = msg.message.get_inner_message_kind();
+    let order = match &inner_kind.payload {
+        Some(Payload::Order(order)) => Some(order),
+        _ => None,
+    };
+
+    let (premium, premium_color) = premium_display(order);
+    let (role_emoji, role_label) = role_chip(msg.is_mine);
+    let white = Style::default().fg(Color::White);
+
+    let left = vec![
+        snapshot_field("💰", "Fiat", fiat_display(order), white),
+        snapshot_field("⚡", "Sats", sats_display(order, msg.sat_amount), white),
+        snapshot_field("🔑", "Trade idx", msg.trade_index.to_string(), white),
+    ];
+    let right = vec![
+        snapshot_field("📈", "Premium", premium, Style::default().fg(premium_color)),
+        snapshot_field("🧾", "Method", method_display(order), white),
+        snapshot_field(
+            role_emoji,
+            "Role",
+            role_label.to_string(),
+            Style::default().fg(Color::Cyan),
+        ),
+    ];
+
+    let cols = Layout::new(
+        Direction::Horizontal,
+        [Constraint::Percentage(50), Constraint::Percentage(50)],
     )
-    .wrap(ratatui::widgets::Wrap { trim: true });
-    f.render_widget(details, right_chunks[3]);
+    .split(inner);
+    f.render_widget(Paragraph::new(left), cols[0]);
+    f.render_widget(Paragraph::new(right), cols[1]);
+}
+
+/// One `emoji label value` row inside the TRADE snapshot card. The leading emoji
+/// stays at the start of the row (kept out of the aligned label/value columns) so
+/// double-width glyphs never break alignment.
+fn snapshot_field(emoji: &str, label: &str, value: String, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!(" {emoji} "), Style::default().fg(Color::Gray)),
+        Span::styled(format!("{label:<10}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(value, value_style),
+    ])
+}
+
+/// Maker/taker chip from [`OrderMessage::is_mine`] (`is_mine` == "I am the maker").
+fn role_chip(is_mine: Option<bool>) -> (&'static str, &'static str) {
+    match is_mine {
+        Some(true) => ("👤", "Maker"),
+        Some(false) => ("🤝", "Taker"),
+        None => ("❔", "—"),
+    }
+}
+
+/// Fiat amount (or min–max range) with currency code; `—` when no order payload.
+fn fiat_display(order: Option<&SmallOrder>) -> String {
+    let Some(order) = order else {
+        return "—".to_string();
+    };
+    let code = order.fiat_code.trim().to_ascii_uppercase();
+    let value = match (order.min_amount, order.max_amount) {
+        (Some(min), Some(max)) if min > 0 && max > 0 => format!("{min}–{max}"),
+        _ if order.fiat_amount > 0 => order.fiat_amount.to_string(),
+        _ => String::new(),
+    };
+    match (value.is_empty(), code.is_empty()) {
+        (true, true) => "—".to_string(),
+        (true, false) => code,
+        (false, true) => value,
+        (false, false) => format!("{value} {code}"),
+    }
+}
+
+/// Sats for the trade: prefer the message `sat_amount`, then the order amount,
+/// showing `market` for a 0-amount (market-price) order and `—` when unknown.
+fn sats_display(order: Option<&SmallOrder>, sat_amount: Option<i64>) -> String {
+    if let Some(sats) = sat_amount {
+        if sats > 0 {
+            return group_thousands(&sats.to_string());
+        }
+    }
+    match order {
+        Some(order) if order.amount > 0 => group_thousands(&order.amount.to_string()),
+        Some(_) => "market".to_string(),
+        None => "—".to_string(),
+    }
+}
+
+/// Premium string + color: `+p%` green, `p%` red, `0%` gray, `—` when absent.
+fn premium_display(order: Option<&SmallOrder>) -> (String, Color) {
+    match order {
+        None => ("—".to_string(), Color::DarkGray),
+        Some(order) => match order.premium {
+            0 => ("0%".to_string(), Color::Gray),
+            p if p > 0 => (format!("+{p}%"), Color::Green),
+            p => (format!("{p}%"), Color::Red),
+        },
+    }
+}
+
+/// Payment method, or `—` when absent/empty.
+fn method_display(order: Option<&SmallOrder>) -> String {
+    match order {
+        Some(order) if !order.payment_method.trim().is_empty() => {
+            order.payment_method.trim().to_string()
+        }
+        _ => "—".to_string(),
+    }
+}
+
+/// Group an integer string into thousands (e.g. `142857` → `142,857`).
+fn group_thousands(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let (sign, digits) = match trimmed.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", trimmed),
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    let n = digits.len();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (n - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    format!("{sign}{out}")
 }
 
 fn render_trade_stepper(
@@ -383,5 +542,95 @@ mod sidebar_tests {
         assert_eq!(items[0].height(), 4);
         // Last row: no trailing separator = 3 lines.
         assert_eq!(items[1].height(), 3);
+    }
+}
+
+#[cfg(test)]
+mod trade_snapshot_tests {
+    use super::*;
+    use mostro_core::prelude::SmallOrder;
+
+    fn order(fiat_amount: i64, min: Option<i64>, max: Option<i64>) -> SmallOrder {
+        SmallOrder {
+            fiat_code: "USD".to_string(),
+            fiat_amount,
+            min_amount: min,
+            max_amount: max,
+            amount: 0,
+            premium: 0,
+            payment_method: String::new(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fiat_display_none_is_placeholder() {
+        assert_eq!(fiat_display(None), "—");
+    }
+
+    #[test]
+    fn fiat_display_single_amount_with_code() {
+        assert_eq!(fiat_display(Some(&order(100, None, None))), "100 USD");
+    }
+
+    #[test]
+    fn fiat_display_prefers_min_max_range() {
+        assert_eq!(
+            fiat_display(Some(&order(0, Some(50), Some(200)))),
+            "50–200 USD"
+        );
+    }
+
+    #[test]
+    fn sats_display_prefers_message_sat_amount_grouped() {
+        let mut o = order(100, None, None);
+        o.amount = 5;
+        assert_eq!(sats_display(Some(&o), Some(142_857)), "142,857");
+    }
+
+    #[test]
+    fn sats_display_falls_back_to_order_amount_then_market() {
+        let mut o = order(100, None, None);
+        o.amount = 1_000;
+        assert_eq!(sats_display(Some(&o), None), "1,000");
+        o.amount = 0;
+        assert_eq!(sats_display(Some(&o), None), "market");
+        assert_eq!(sats_display(None, None), "—");
+    }
+
+    #[test]
+    fn premium_display_signs_and_colors() {
+        let mut o = order(100, None, None);
+        o.premium = 2;
+        assert_eq!(premium_display(Some(&o)), ("+2%".to_string(), Color::Green));
+        o.premium = -3;
+        assert_eq!(premium_display(Some(&o)), ("-3%".to_string(), Color::Red));
+        o.premium = 0;
+        assert_eq!(premium_display(Some(&o)), ("0%".to_string(), Color::Gray));
+        assert_eq!(premium_display(None), ("—".to_string(), Color::DarkGray));
+    }
+
+    #[test]
+    fn method_display_trims_and_falls_back() {
+        let mut o = order(100, None, None);
+        o.payment_method = "  SEPA  ".to_string();
+        assert_eq!(method_display(Some(&o)), "SEPA");
+        o.payment_method = "   ".to_string();
+        assert_eq!(method_display(Some(&o)), "—");
+        assert_eq!(method_display(None), "—");
+    }
+
+    #[test]
+    fn role_chip_maps_maker_taker_unknown() {
+        assert_eq!(role_chip(Some(true)), ("👤", "Maker"));
+        assert_eq!(role_chip(Some(false)), ("🤝", "Taker"));
+        assert_eq!(role_chip(None), ("❔", "—"));
+    }
+
+    #[test]
+    fn group_thousands_formats_and_passes_through_non_digits() {
+        assert_eq!(group_thousands("142857"), "142,857");
+        assert_eq!(group_thousands("999"), "999");
+        assert_eq!(group_thousands("market"), "market");
     }
 }
