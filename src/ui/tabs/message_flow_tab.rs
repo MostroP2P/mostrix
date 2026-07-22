@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, LineGauge, List, ListItem, Padding, Paragraph, Wrap,
+};
 
 use mostro_core::prelude::{Payload, SmallOrder};
 
@@ -32,12 +34,7 @@ pub fn render_messages_tab(
     let inner = block.inner(area);
 
     if messages.is_empty() {
-        let paragraph = Paragraph::new(Span::raw(
-            "No messages yet. Messages related to your orders will appear here.",
-        ))
-        .block(Block::default())
-        .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(paragraph, inner);
+        render_empty_state(f, inner);
         return;
     }
 
@@ -189,6 +186,75 @@ fn build_sidebar_items(
         .collect()
 }
 
+/// Empty state: a centered mailbox glyph over a short "no trades yet" message
+/// pointing at the Orders tab. On narrow/short panels the art is dropped so the
+/// text stays readable (readability over decoration).
+fn render_empty_state(f: &mut ratatui::Frame, area: Rect) {
+    let art = helpers::MAILBOX_EMPTY_ART;
+    let art_w = art.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+
+    // Text lines wrap (unlike the art), so the message stays readable when narrow.
+    let text_lines = vec![
+        Line::from(Span::styled(
+            "Your mailbox is empty",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "No trades yet — messages from your orders will appear here.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "Go to the Orders tab to create or take an order",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let show_art = area.width >= art_w && area.height >= art.len() as u16 + 4;
+    // Reserve a few rows for text (it may wrap to 2 lines on narrow panels).
+    let text_h = 4u16;
+    let block_h = if show_art {
+        art.len() as u16 + 1 + text_h
+    } else {
+        text_h
+    };
+    let mut y = area.y + area.height.saturating_sub(block_h) / 2;
+
+    if show_art {
+        let art_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: art.len() as u16,
+        };
+        helpers::render_centered_lines(f, art_area, art, style_mailbox_art);
+        y = y.saturating_add(art.len() as u16 + 1);
+    }
+
+    let text_area = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: area.height.saturating_sub(y.saturating_sub(area.y)),
+    };
+    f.render_widget(
+        Paragraph::new(text_lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        text_area,
+    );
+}
+
+fn style_mailbox_art(line: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        line.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )]
+}
+
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
     // Panel order mirrors the target mockup: header, progress stepper, TRADE
     // snapshot (fills the freed space), then the STATUS banner at the bottom.
@@ -235,6 +301,7 @@ fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
@@ -289,6 +356,7 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);

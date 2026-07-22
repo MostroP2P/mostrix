@@ -2,6 +2,19 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+/// Empty-mailbox art for the Messages tab empty state. All lines share the same
+/// visual width so [`render_centered_lines`] keeps the shape aligned when it
+/// centers each row independently.
+pub const MAILBOX_EMPTY_ART: &[&str] = &[
+    "   ╭──────────────╮   ",
+    "   │  ╲        ╱  │   ",
+    "   │   (empty)    │   ",
+    "   │              │   ",
+    "   ╰──────┬┬──────╯   ",
+    "          ││          ",
+    "          ││          ",
+];
+
 /// Renders each line centered horizontally within `area`, one row per line.
 pub fn render_centered_lines<F>(f: &mut ratatui::Frame, area: Rect, lines: &[&str], style_line: F)
 where
@@ -39,5 +52,24 @@ where
         };
 
         f.render_widget(Paragraph::new(Line::from(style_line(line))), centered_rect);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mailbox_art_lines_share_width() {
+        // Equal widths keep the shape aligned when each row is centered independently.
+        let widths: Vec<usize> = MAILBOX_EMPTY_ART
+            .iter()
+            .map(|l| l.chars().count())
+            .collect();
+        assert!(!widths.is_empty());
+        assert!(
+            widths.iter().all(|&w| w == widths[0]),
+            "mailbox art rows must share a width, got {widths:?}"
+        );
     }
 }
