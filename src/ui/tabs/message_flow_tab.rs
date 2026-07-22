@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, LineGauge, List, ListItem, Padding, Paragraph, Wrap,
+};
 
 use mostro_core::prelude::{Payload, SmallOrder};
 
@@ -12,7 +14,7 @@ use crate::ui::helpers;
 use crate::ui::orders::{
     listing_timeline_labels, message_action_compact_label_for_message, message_action_emoji,
     message_order_kind_label, message_timeline_warning, message_timeline_warning_for_order_status,
-    message_trade_timeline_step, FlowStep, StepLabel,
+    message_trade_timeline_step, waiting_phase_description, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -32,12 +34,7 @@ pub fn render_messages_tab(
     let inner = block.inner(area);
 
     if messages.is_empty() {
-        let paragraph = Paragraph::new(Span::raw(
-            "No messages yet. Messages related to your orders will appear here.",
-        ))
-        .block(Block::default())
-        .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(paragraph, inner);
+        render_empty_state(f, inner);
         return;
     }
 
@@ -189,16 +186,89 @@ fn build_sidebar_items(
         .collect()
 }
 
+/// Empty state: a centered mailbox glyph over a short "no trades yet" message
+/// pointing at the Orders tab. On narrow/short panels the art is dropped so the
+/// text stays readable (readability over decoration).
+fn render_empty_state(f: &mut ratatui::Frame, area: Rect) {
+    let art = helpers::MAILBOX_EMPTY_ART;
+    let art_w = art.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+
+    // Text lines wrap (unlike the art), so the message stays readable when narrow.
+    let text_lines = vec![
+        Line::from(Span::styled(
+            "Your mailbox is empty",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "No trades yet — messages from your orders will appear here.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "Go to the Orders tab to create or take an order",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let show_art = area.width >= art_w && area.height >= art.len() as u16 + 4;
+    // Reserve a few rows for text (it may wrap to 2 lines on narrow panels).
+    let text_h = 4u16;
+    let block_h = if show_art {
+        art.len() as u16 + 1 + text_h
+    } else {
+        text_h
+    };
+    let mut y = area.y + area.height.saturating_sub(block_h) / 2;
+
+    if show_art {
+        let art_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: art.len() as u16,
+        };
+        helpers::render_centered_lines(f, art_area, art, style_mailbox_art);
+        y = y.saturating_add(art.len() as u16 + 1);
+    }
+
+    let text_area = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: area.height.saturating_sub(y.saturating_sub(area.y)),
+    };
+    f.render_widget(
+        Paragraph::new(text_lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        text_area,
+    );
+}
+
+fn style_mailbox_art(line: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        line.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )]
+}
+
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
     // Panel order mirrors the target mockup: header, progress stepper, TRADE
-    // snapshot (fills the space the old numbered timeline wasted), then STATUS.
+    // snapshot (fills the freed space), then the STATUS banner at the bottom.
+    // On narrow panels the STATUS text wraps onto more lines, so give it extra
+    // height there so the "what's next" copy stays fully readable.
+    let narrow = !use_two_column_trade(area.width.saturating_sub(2));
+    let status_height = if narrow { 7 } else { 4 };
     let right_chunks = Layout::new(
         Direction::Vertical,
         [
             Constraint::Length(4),
-            Constraint::Length(7),
+            Constraint::Length(5),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(status_height),
         ],
     )
     .split(area);
@@ -214,29 +284,70 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
     );
 
     render_trade_snapshot_card(f, right_chunks[2], selected_msg);
+    render_status_card(f, right_chunks[3], selected_msg);
+}
 
-    let warning_from_status = message_timeline_warning_for_order_status(selected_msg.order_status);
-    let warning_opt = warning_from_status.or_else(|| {
-        message_timeline_warning(&selected_msg.message.get_inner_message_kind().action)
-    });
-    let warning = warning_opt.unwrap_or("Trade is on normal path").to_string();
-    let warning_style = if warning_opt.is_some() {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Green)
-    };
-    let state = Paragraph::new(Line::from(Span::styled(warning, warning_style)))
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(
-            Block::default()
-                .title(" State ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
-        );
-    f.render_widget(state, right_chunks[3]);
+/// STATUS banner: a one-line status (normal path / canceled / dispute) and, on
+/// the happy path, a `👉 Next:` callout describing the pending action. Replaces
+/// the old "State" box and the redundant numbered timeline. Text wraps, so it
+/// stays readable on narrow panels (which also get extra height from the caller).
+fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
+    let block = Block::default()
+        .title(Span::styled(
+            " STATUS ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    let (emoji, text, color, is_normal) = status_banner(msg);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{emoji} "), Style::default().fg(color)),
+        Span::styled(
+            text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    if is_normal {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "👉 Next: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                waiting_phase_description(msg).to_string(),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// Status banner content: `(emoji, text, color, is_normal)`. Prefers the
+/// persisted order status, then the last action, to classify canceled/dispute
+/// vs the happy path. `is_normal` gates the "what's next" callout.
+fn status_banner(msg: &OrderMessage) -> (&'static str, String, Color, bool) {
+    let action = msg.message.get_inner_message_kind().action.clone();
+    let warning = message_timeline_warning_for_order_status(msg.order_status)
+        .or_else(|| message_timeline_warning(&action));
+    match warning {
+        Some(text) if text.contains("dispute") => ("⚖️", text.to_string(), Color::Magenta, false),
+        Some(text) => ("❌", text.to_string(), Color::Red, false),
+        None => (
+            "✅",
+            "Trade is on the normal path".to_string(),
+            Color::Green,
+            true,
+        ),
+    }
 }
 
 /// Header card: order id + kind badge + maker/taker role chip, plus the absolute
@@ -245,6 +356,7 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
@@ -285,8 +397,10 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     f.render_widget(Paragraph::new(vec![line1, line2]), inner);
 }
 
-/// TRADE snapshot card: two-column receipt of the order payload (fiat, sats,
-/// premium, method, trade index, role). Values gracefully fall back to `—`.
+/// TRADE snapshot card: a receipt of the order payload (fiat, sats, premium,
+/// method, trade index, role). Values gracefully fall back to `—`. Renders two
+/// columns when there is room, and stacks into a single column on narrow panels
+/// so nothing is squeezed off-screen.
 fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let block = Block::default()
         .title(Span::styled(
@@ -311,29 +425,33 @@ fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMes
     let (role_emoji, role_label) = role_chip(msg.is_mine);
     let white = Style::default().fg(Color::White);
 
-    let left = vec![
-        snapshot_field("💰", "Fiat", fiat_display(order), white),
-        snapshot_field("⚡", "Sats", sats_display(order, msg.sat_amount), white),
-        snapshot_field("🔑", "Trade idx", msg.trade_index.to_string(), white),
-    ];
-    let right = vec![
-        snapshot_field("📈", "Premium", premium, Style::default().fg(premium_color)),
-        snapshot_field("🧾", "Method", method_display(order), white),
-        snapshot_field(
-            role_emoji,
-            "Role",
-            role_label.to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
-    ];
+    let fiat = snapshot_field("💰", "Fiat", fiat_display(order), white);
+    let sats = snapshot_field("⚡", "Sats", sats_display(order, msg.sat_amount), white);
+    let trade_idx = snapshot_field("🔑", "Trade idx", msg.trade_index.to_string(), white);
+    let premium = snapshot_field("📈", "Premium", premium, Style::default().fg(premium_color));
+    let method = snapshot_field("🧾", "Method", method_display(order), white);
+    let role = snapshot_field(
+        role_emoji,
+        "Role",
+        role_label.to_string(),
+        Style::default().fg(Color::Cyan),
+    );
 
-    let cols = Layout::new(
-        Direction::Horizontal,
-        [Constraint::Percentage(50), Constraint::Percentage(50)],
-    )
-    .split(inner);
-    f.render_widget(Paragraph::new(left), cols[0]);
-    f.render_widget(Paragraph::new(right), cols[1]);
+    if use_two_column_trade(inner.width) {
+        let cols = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .split(inner);
+        f.render_widget(Paragraph::new(vec![fiat, sats, trade_idx]), cols[0]);
+        f.render_widget(Paragraph::new(vec![premium, method, role]), cols[1]);
+    } else {
+        // Narrow panel: stack every field in one readable column.
+        f.render_widget(
+            Paragraph::new(vec![fiat, sats, premium, method, trade_idx, role]),
+            inner,
+        );
+    }
 }
 
 /// One `emoji label value` row inside the TRADE snapshot card. The leading emoji
@@ -433,49 +551,225 @@ fn group_thousands(raw: &str) -> String {
     format!("{sign}{out}")
 }
 
+/// Compact progress stepper: a single-line colored glyph track
+/// (`✔──✔──◉──○──○──○`) with the step labels underneath, plus a `LineGauge`
+/// showing `Step N of 6`. Render-only; `FlowStep`/label logic is unchanged.
 fn render_trade_stepper(
     f: &mut ratatui::Frame,
     area: Rect,
     current_step: FlowStep,
     steps: &[StepLabel; 6],
 ) {
-    let current_step = current_step.step_number();
-    let step_columns = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(16),
-            Constraint::Percentage(16),
-        ],
-    )
-    .split(area);
+    let current = current_step.step_number();
 
-    for (idx, step_label) in steps.iter().enumerate() {
-        let step_number = idx + 1;
-        let style = if step_number < current_step {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
-        } else if step_number == current_step {
+    let block = Block::default()
+        .title(Span::styled(
+            " PROGRESS ",
             Style::default()
                 .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
 
-        let step = Paragraph::new(vec![
-            Line::from(Span::styled(format!("Step {step_number}"), style)),
-            Line::from(Span::styled(step_label.top.to_string(), style)),
-            Line::from(Span::styled(step_label.bottom.to_string(), style)),
-        ])
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(step, step_columns[idx]);
+    if use_full_progress(inner.width) {
+        render_progress_full(f, inner, current, steps);
+    } else {
+        render_progress_compact(f, inner, current, steps);
     }
+}
+
+/// Progress gauge widget (`Step N of 6` + `▰▱` bar) shared by both layouts.
+fn progress_gauge(current: usize, total: usize) -> LineGauge<'static> {
+    let ratio = (current as f64 / total as f64).clamp(0.0, 1.0);
+    LineGauge::default()
+        .filled_symbol("▰")
+        .unfilled_symbol("▱")
+        .filled_style(Style::default().fg(PRIMARY_COLOR))
+        .unfilled_style(Style::default().fg(Color::DarkGray))
+        .ratio(ratio)
+        .label(Span::styled(
+            format!("Step {current} of {total} "),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Render the glyph track across `area` as six columns, optionally with the
+/// top/bottom `StepLabel` words centered beneath each glyph.
+fn render_glyph_columns(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+    with_labels: bool,
+) {
+    let step_columns = Layout::new(Direction::Horizontal, [Constraint::Ratio(1, 6); 6]).split(area);
+    for (idx, step_label) in steps.iter().enumerate() {
+        let (glyph, style) = step_glyph(idx + 1, current);
+        let width = step_columns[idx].width as usize;
+        let mut lines = vec![glyph_cell_line(
+            width,
+            glyph,
+            style,
+            idx == 0,
+            idx == steps.len() - 1,
+        )];
+        if with_labels {
+            lines.push(Line::from(Span::styled(
+                center_in(step_label.top, width),
+                style,
+            )));
+            lines.push(Line::from(Span::styled(
+                center_in(step_label.bottom, width),
+                style,
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), step_columns[idx]);
+    }
+}
+
+/// Wide layout: glyph track + per-step labels on the left, gauge on the right.
+fn render_progress_full(
+    f: &mut ratatui::Frame,
+    inner: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+) {
+    let halves = Layout::new(
+        Direction::Horizontal,
+        [Constraint::Min(0), Constraint::Length(20)],
+    )
+    .split(inner);
+    render_glyph_columns(f, halves[0], current, steps, true);
+    // Gauge on the top row of its column, aligned with the glyph track.
+    let gauge_area = Rect {
+        height: 1,
+        ..halves[1]
+    };
+    f.render_widget(progress_gauge(current, steps.len()), gauge_area);
+}
+
+/// Narrow layout: drop the six per-step labels (unreadable when cramped) in
+/// favor of a full-width glyph track, a full-width gauge, and a single clear
+/// "current step" line — readability over beauty on small screens.
+fn render_progress_compact(
+    f: &mut ratatui::Frame,
+    inner: Rect,
+    current: usize,
+    steps: &[StepLabel; 6],
+) {
+    let rows = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ],
+    )
+    .split(inner);
+
+    render_glyph_columns(f, rows[0], current, steps, false);
+    f.render_widget(progress_gauge(current, steps.len()), rows[1]);
+
+    let current_label = steps
+        .get(current.saturating_sub(1))
+        .map(|s| s.as_single_line())
+        .unwrap_or_default();
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("▸ {current_label}"),
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        rows[2],
+    );
+}
+
+/// Whether the TRADE card has room for its two-column receipt layout.
+fn use_two_column_trade(inner_width: u16) -> bool {
+    inner_width >= 48
+}
+
+/// Whether the PROGRESS block has room for the full glyph-track + per-step
+/// labels + side gauge layout (else fall back to the compact stacked layout).
+fn use_full_progress(inner_width: u16) -> bool {
+    inner_width >= 68
+}
+
+/// Glyph + style for one step relative to the current step: done (`✔`, green),
+/// current (`◉`, primary), or upcoming (`○`, dim).
+fn step_glyph(step_number: usize, current: usize) -> (&'static str, Style) {
+    if step_number < current {
+        (
+            "✔",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if step_number == current {
+        (
+            "◉",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        ("○", Style::default().fg(Color::DarkGray))
+    }
+}
+
+/// One cell of the glyph track: the step glyph centered in `width`, flanked by
+/// dim `─` connectors (blanked at the outer edges of the first/last steps) so
+/// adjacent cells join into a continuous line.
+fn glyph_cell_line(
+    width: usize,
+    glyph: &str,
+    glyph_style: Style,
+    is_first: bool,
+    is_last: bool,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let mid = width / 2;
+    let left_n = mid;
+    let right_n = width - mid - 1;
+    let dash = Style::default().fg(Color::DarkGray);
+    let left = if is_first {
+        " ".repeat(left_n)
+    } else {
+        "─".repeat(left_n)
+    };
+    let right = if is_last {
+        " ".repeat(right_n)
+    } else {
+        "─".repeat(right_n)
+    };
+    Line::from(vec![
+        Span::styled(left, dash),
+        Span::styled(glyph.to_string(), glyph_style),
+        Span::styled(right, dash),
+    ])
+}
+
+/// Center `text` within `width`, truncating (by char) when it does not fit.
+fn center_in(text: &str, width: usize) -> String {
+    let truncated: String = text.chars().take(width).collect();
+    let len = truncated.chars().count();
+    if len >= width {
+        return truncated;
+    }
+    let total = width - len;
+    let left = total / 2;
+    let right = total - left;
+    format!("{}{}{}", " ".repeat(left), truncated, " ".repeat(right))
 }
 
 #[cfg(test)]
@@ -548,7 +842,7 @@ mod sidebar_tests {
 #[cfg(test)]
 mod trade_snapshot_tests {
     use super::*;
-    use mostro_core::prelude::SmallOrder;
+    use mostro_core::prelude::{SmallOrder, Status};
 
     fn order(fiat_amount: i64, min: Option<i64>, max: Option<i64>) -> SmallOrder {
         SmallOrder {
@@ -627,10 +921,105 @@ mod trade_snapshot_tests {
         assert_eq!(role_chip(None), ("❔", "—"));
     }
 
+    fn message_with(action: mostro_core::prelude::Action, status: Option<Status>) -> OrderMessage {
+        use mostro_core::prelude::Message;
+        use nostr_sdk::Keys;
+        OrderMessage {
+            message: Message::new_order(None, None, None, action, None),
+            timestamp: 0,
+            sender: Keys::generate().public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: None,
+            is_mine: None,
+            order_status: status,
+            read: true,
+            auto_popup_shown: true,
+        }
+    }
+
+    #[test]
+    fn status_banner_happy_path_is_normal_with_next_callout() {
+        use mostro_core::prelude::Action;
+        let (emoji, _text, color, is_normal) =
+            status_banner(&message_with(Action::PayInvoice, None));
+        assert_eq!(emoji, "✅");
+        assert_eq!(color, Color::Green);
+        assert!(is_normal);
+    }
+
+    #[test]
+    fn status_banner_flags_canceled_and_dispute() {
+        use mostro_core::prelude::Action;
+        let (emoji, _t, color, is_normal) =
+            status_banner(&message_with(Action::Canceled, Some(Status::Canceled)));
+        assert_eq!(emoji, "❌");
+        assert_eq!(color, Color::Red);
+        assert!(!is_normal);
+
+        let (emoji, _t, color, is_normal) =
+            status_banner(&message_with(Action::Dispute, Some(Status::Dispute)));
+        assert_eq!(emoji, "⚖️");
+        assert_eq!(color, Color::Magenta);
+        assert!(!is_normal);
+    }
+
     #[test]
     fn group_thousands_formats_and_passes_through_non_digits() {
         assert_eq!(group_thousands("142857"), "142,857");
         assert_eq!(group_thousands("999"), "999");
         assert_eq!(group_thousands("market"), "market");
+    }
+}
+
+#[cfg(test)]
+mod stepper_tests {
+    use super::*;
+
+    #[test]
+    fn step_glyph_marks_done_current_and_upcoming() {
+        // current step = 3
+        assert_eq!(step_glyph(1, 3).0, "✔");
+        assert_eq!(step_glyph(2, 3).0, "✔");
+        assert_eq!(step_glyph(3, 3).0, "◉");
+        assert_eq!(step_glyph(4, 3).0, "○");
+    }
+
+    #[test]
+    fn center_in_centers_and_truncates() {
+        assert_eq!(center_in("Rate", 8), "  Rate  ");
+        assert_eq!(center_in("odd", 6), " odd  ");
+        // Longer than width: truncate by char, no panic.
+        assert_eq!(center_in("Counterparty", 5), "Count");
+    }
+
+    #[test]
+    fn responsive_thresholds_switch_layouts_by_width() {
+        // TRADE: two columns only when wide enough, else single stacked column.
+        assert!(use_two_column_trade(60));
+        assert!(use_two_column_trade(48));
+        assert!(!use_two_column_trade(47));
+        assert!(!use_two_column_trade(20));
+        // PROGRESS: full labels+gauge only when wide, else compact stacked.
+        assert!(use_full_progress(80));
+        assert!(use_full_progress(68));
+        assert!(!use_full_progress(67));
+        assert!(!use_full_progress(30));
+    }
+
+    #[test]
+    fn glyph_cell_line_blanks_outer_edges_of_first_and_last() {
+        let (glyph, style) = step_glyph(1, 1);
+        let first = glyph_cell_line(5, glyph, style, true, false);
+        let first_text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+        // First cell: no connector to the left of the glyph, dashes to the right.
+        assert_eq!(first_text, "  ◉──");
+
+        let last = glyph_cell_line(5, glyph, style, false, true);
+        let last_text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        // Last cell: dashes to the left, blank to the right.
+        assert_eq!(last_text, "──◉  ");
     }
 }
