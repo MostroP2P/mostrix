@@ -12,9 +12,9 @@ use mostro_core::prelude::{Payload, SmallOrder};
 
 use crate::ui::helpers;
 use crate::ui::orders::{
-    listing_timeline_labels, message_action_compact_label_for_message, message_action_emoji,
-    message_order_kind_label, message_timeline_warning, message_timeline_warning_for_order_status,
-    message_trade_timeline_step, waiting_phase_description, FlowStep, StepLabel,
+    listing_timeline_labels, message_action_compact_label_for_message,
+    message_action_emoji_for_message, message_order_kind_label, message_status_presentation,
+    message_trade_timeline_step, order_status_badge, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -151,8 +151,7 @@ fn build_sidebar_items(
                 Span::styled(short_id, base_style),
             ]);
 
-            let action = msg.message.get_inner_message_kind().action.clone();
-            let emoji = message_action_emoji(&action);
+            let emoji = message_action_emoji_for_message(msg);
             let action_label = message_action_compact_label_for_message(msg);
             let line2 = Line::from(vec![
                 Span::styled(format!("  {emoji} "), base_style),
@@ -258,17 +257,17 @@ fn style_mailbox_art(line: &str) -> Vec<Span<'static>> {
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
     // Panel order mirrors the target mockup: header, progress stepper, TRADE
     // snapshot (fills the freed space), then the STATUS banner at the bottom.
-    // On narrow panels the STATUS text wraps onto more lines, so give it extra
-    // height there so the "what's next" copy stays fully readable.
+    // Heights shrink on short terminals so TRADE keeps a usable receipt (Hermeme:
+    // at 80x24 the old fixed Length(4/5/4) left TRADE with one content row).
     let narrow = !use_two_column_trade(area.width.saturating_sub(2));
-    let status_height = if narrow { 7 } else { 4 };
+    let (header_h, progress_h, status_h) = right_panel_heights(area.height, narrow);
     let right_chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(4),
-            Constraint::Length(5),
+            Constraint::Length(header_h),
+            Constraint::Length(progress_h),
             Constraint::Min(0),
-            Constraint::Length(status_height),
+            Constraint::Length(status_h),
         ],
     )
     .split(area);
@@ -287,10 +286,40 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
     render_status_card(f, right_chunks[3], selected_msg);
 }
 
-/// STATUS banner: a one-line status (normal path / canceled / dispute) and, on
-/// the happy path, a `👉 Next:` callout describing the pending action. Replaces
-/// the old "State" box and the redundant numbered timeline. Text wraps, so it
-/// stays readable on narrow panels (which also get extra height from the caller).
+/// Allocate header / progress / status heights so TRADE retains a usable minimum
+/// on short panels. `area_height` is the right-column height (inside the outer
+/// Messages border). TRADE wants ≥5 rows (2 borders + 3 content) when wide, ≥8
+/// when stacked.
+fn right_panel_heights(area_height: u16, narrow: bool) -> (u16, u16, u16) {
+    let trade_min = if narrow { 8 } else { 5 };
+    let mut header = 4u16;
+    let mut progress = 5u16;
+    let mut status = if narrow { 7 } else { 4 };
+
+    let shrink_to_fit = |header: &mut u16, progress: &mut u16, status: &mut u16| {
+        while *header + *progress + *status + trade_min > area_height {
+            if *status > 3 {
+                *status -= 1;
+                continue;
+            }
+            if *progress > 3 {
+                *progress -= 1;
+                continue;
+            }
+            if *header > 3 {
+                *header -= 1;
+                continue;
+            }
+            break;
+        }
+    };
+    shrink_to_fit(&mut header, &mut progress, &mut status);
+    (header, progress, status)
+}
+
+/// STATUS banner: a one-line status (normal path / canceled / dispute) and, when
+/// appropriate, a `👉 Next:` callout. Replaces the old "State" box and the
+/// redundant numbered timeline. Text wraps, so it stays readable on narrow panels.
 fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let block = Block::default()
         .title(Span::styled(
@@ -306,15 +335,20 @@ fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    let (emoji, text, color, is_normal) = status_banner(msg);
+    let presentation = message_status_presentation(msg);
     let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{emoji} "), Style::default().fg(color)),
         Span::styled(
-            text,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            format!("{} ", presentation.emoji),
+            Style::default().fg(presentation.color),
+        ),
+        Span::styled(
+            presentation.title.to_string(),
+            Style::default()
+                .fg(presentation.color)
+                .add_modifier(Modifier::BOLD),
         ),
     ])];
-    if is_normal {
+    if let Some(next) = presentation.next {
         lines.push(Line::from(vec![
             Span::styled(
                 "👉 Next: ",
@@ -322,32 +356,10 @@ fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                waiting_phase_description(msg).to_string(),
-                Style::default().fg(Color::Gray),
-            ),
+            Span::styled(next.to_string(), Style::default().fg(Color::Gray)),
         ]));
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
-
-/// Status banner content: `(emoji, text, color, is_normal)`. Prefers the
-/// persisted order status, then the last action, to classify canceled/dispute
-/// vs the happy path. `is_normal` gates the "what's next" callout.
-fn status_banner(msg: &OrderMessage) -> (&'static str, String, Color, bool) {
-    let action = msg.message.get_inner_message_kind().action.clone();
-    let warning = message_timeline_warning_for_order_status(msg.order_status)
-        .or_else(|| message_timeline_warning(&action));
-    match warning {
-        Some(text) if text.contains("dispute") => ("⚖️", text.to_string(), Color::Magenta, false),
-        Some(text) => ("❌", text.to_string(), Color::Red, false),
-        None => (
-            "✅",
-            "Trade is on the normal path".to_string(),
-            Color::Green,
-            true,
-        ),
-    }
 }
 
 /// Header card: order id + kind badge + maker/taker role chip, plus the absolute
@@ -364,6 +376,7 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let kind_label = message_order_kind_label(msg);
     let (dot, kind_color) = kind_dot(kind_label);
     let (role_emoji, role_label) = role_chip(msg.is_mine);
+    let (status_emoji, status_color) = order_status_badge(msg.order_status);
 
     let line1 = Line::from(vec![
         Span::styled("🧾 Order ", Style::default().fg(Color::Gray)),
@@ -383,6 +396,8 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
             format!("{role_emoji} {role_label}"),
             Style::default().fg(Color::Cyan),
         ),
+        Span::raw("   "),
+        Span::styled(status_emoji.to_string(), Style::default().fg(status_color)),
     ]);
 
     let absolute = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
@@ -415,11 +430,7 @@ fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMes
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    let inner_kind = msg.message.get_inner_message_kind();
-    let order = match &inner_kind.payload {
-        Some(Payload::Order(order)) => Some(order),
-        _ => None,
-    };
+    let order = trade_order_snapshot(msg);
 
     let (premium, premium_color) = premium_display(order);
     let (role_emoji, role_label) = role_chip(msg.is_mine);
@@ -451,6 +462,20 @@ fn render_trade_snapshot_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMes
             Paragraph::new(vec![fiat, sats, premium, method, trade_idx, role]),
             inner,
         );
+    }
+}
+
+/// Prefer the stable [`OrderMessage::order_snapshot`], then any order embedded in
+/// the current DM payload (including `PaymentRequest`).
+fn trade_order_snapshot(msg: &OrderMessage) -> Option<&SmallOrder> {
+    if let Some(snap) = msg.order_snapshot.as_ref() {
+        return Some(snap);
+    }
+    match &msg.message.get_inner_message_kind().payload {
+        Some(Payload::Order(order)) => Some(order),
+        Some(Payload::PaymentRequest(Some(order), _, _)) => Some(order),
+        Some(Payload::BondPayoutRequest(req)) => Some(&req.order),
+        _ => None,
     }
 }
 
@@ -575,7 +600,7 @@ fn render_trade_stepper(
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    if use_full_progress(inner.width) {
+    if use_full_progress(inner.width) && inner.height >= 3 {
         render_progress_full(f, inner, current, steps);
     } else {
         render_progress_compact(f, inner, current, steps);
@@ -791,6 +816,7 @@ mod sidebar_tests {
             order_kind: None,
             is_mine: None,
             order_status: None,
+            order_snapshot: None,
             read,
             auto_popup_shown: false,
         }
@@ -935,35 +961,78 @@ mod trade_snapshot_tests {
             order_kind: None,
             is_mine: None,
             order_status: status,
+            order_snapshot: None,
             read: true,
             auto_popup_shown: true,
         }
     }
 
     #[test]
-    fn status_banner_happy_path_is_normal_with_next_callout() {
-        use mostro_core::prelude::Action;
-        let (emoji, _text, color, is_normal) =
-            status_banner(&message_with(Action::PayInvoice, None));
-        assert_eq!(emoji, "✅");
-        assert_eq!(color, Color::Green);
-        assert!(is_normal);
+    fn trade_order_snapshot_prefers_stable_field_over_empty_payload() {
+        use mostro_core::prelude::{Action, Message, Payload};
+        use nostr_sdk::Keys;
+        let snap = order(100, None, None);
+        let msg = OrderMessage {
+            message: Message::new_order(None, None, None, Action::FiatSent, None),
+            timestamp: 0,
+            sender: Keys::generate().public_key(),
+            order_id: None,
+            trade_index: 4,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Buy),
+            is_mine: Some(true),
+            order_status: Some(Status::FiatSent),
+            order_snapshot: Some(snap.clone()),
+            read: true,
+            auto_popup_shown: true,
+        };
+        assert_eq!(trade_order_snapshot(&msg).map(|o| o.fiat_amount), Some(100));
+
+        let with_payment = OrderMessage {
+            message: Message::new_order(
+                None,
+                None,
+                None,
+                Action::PayInvoice,
+                Some(Payload::PaymentRequest(
+                    Some(order(250, None, None)),
+                    "lnbc1".into(),
+                    None,
+                )),
+            ),
+            order_snapshot: None,
+            ..msg
+        };
+        assert_eq!(
+            trade_order_snapshot(&with_payment).map(|o| o.fiat_amount),
+            Some(250)
+        );
     }
 
     #[test]
-    fn status_banner_flags_canceled_and_dispute() {
+    fn status_presentation_waiting_pay_invoice_unknown_role_still_has_next() {
         use mostro_core::prelude::Action;
-        let (emoji, _t, color, is_normal) =
-            status_banner(&message_with(Action::Canceled, Some(Status::Canceled)));
-        assert_eq!(emoji, "❌");
-        assert_eq!(color, Color::Red);
-        assert!(!is_normal);
+        // Unknown role defaults to taker for buy PayInvoice → actionable.
+        let mut m = message_with(Action::PayInvoice, Some(Status::WaitingPayment));
+        m.order_kind = Some(mostro_core::order::Kind::Buy);
+        let p = message_status_presentation(&m);
+        assert_eq!(p.next, Some("Pay the hold invoice to continue."));
+    }
 
-        let (emoji, _t, color, is_normal) =
-            status_banner(&message_with(Action::Dispute, Some(Status::Dispute)));
-        assert_eq!(emoji, "⚖️");
-        assert_eq!(color, Color::Magenta);
-        assert!(!is_normal);
+    #[test]
+    fn status_presentation_flags_canceled_and_dispute_without_next() {
+        use mostro_core::prelude::Action;
+        let p =
+            message_status_presentation(&message_with(Action::Canceled, Some(Status::Canceled)));
+        assert_eq!(p.emoji, "❌");
+        assert_eq!(p.color, Color::Red);
+        assert!(p.next.is_none());
+
+        let p = message_status_presentation(&message_with(Action::Dispute, Some(Status::Dispute)));
+        assert_eq!(p.emoji, "⚖️");
+        assert_eq!(p.color, Color::Magenta);
+        assert!(p.next.is_none());
     }
 
     #[test]
@@ -971,6 +1040,97 @@ mod trade_snapshot_tests {
         assert_eq!(group_thousands("142857"), "142,857");
         assert_eq!(group_thousands("999"), "999");
         assert_eq!(group_thousands("market"), "market");
+    }
+}
+
+#[cfg(test)]
+mod layout_and_render_tests {
+    use super::*;
+    use mostro_core::prelude::{Action, Message, SmallOrder, Status};
+    use nostr_sdk::Keys;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn rich_message() -> OrderMessage {
+        let snap = SmallOrder {
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            amount: 142_857,
+            premium: 2,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        OrderMessage {
+            message: Message::new_order(None, None, None, Action::PayInvoice, None),
+            timestamp: 1_720_000_000,
+            sender: Keys::generate().public_key(),
+            order_id: Some(uuid::Uuid::parse_str("6c162b3f-0000-0000-0000-000000000000").unwrap()),
+            trade_index: 4,
+            sat_amount: Some(142_857),
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Buy),
+            is_mine: Some(true),
+            order_status: Some(Status::WaitingPayment),
+            order_snapshot: Some(snap),
+            read: false,
+            auto_popup_shown: true,
+        }
+    }
+
+    #[test]
+    fn right_panel_heights_preserve_trade_on_80x24_content() {
+        // App: 24 rows − tabs(3) − status(3) = 18 content; outer Messages borders → 16.
+        let (h, p, s) = right_panel_heights(16, false);
+        assert!(h + p + s + 5 <= 16, "header={h} progress={p} status={s}");
+        let trade = 16u16.saturating_sub(h + p + s);
+        assert!(trade >= 5, "TRADE height {trade} too small");
+    }
+
+    #[test]
+    fn right_panel_heights_preserve_trade_on_short_narrow() {
+        let (h, p, s) = right_panel_heights(16, true);
+        let trade = 16u16.saturating_sub(h + p + s);
+        assert!(trade >= 5, "TRADE height {trade} on narrow short panel");
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_messages_tab_shows_trade_fields_on_80x18() {
+        // 80x18 ≈ Messages content area on an 80x24 terminal (tabs+status reserved).
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let messages = vec![rich_message()];
+        terminal
+            .draw(|f| render_messages_tab(f, f.area(), &messages, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "TRADE"), "missing TRADE title");
+        assert!(buffer_contains(buf, "Fiat"), "missing Fiat label");
+        assert!(buffer_contains(buf, "SEPA"), "missing payment method");
+        assert!(buffer_contains(buf, "STATUS"), "missing STATUS title");
+    }
+
+    #[test]
+    fn render_messages_tab_shows_trade_on_60x18_narrow() {
+        let backend = TestBackend::new(60, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let messages = vec![rich_message()];
+        terminal
+            .draw(|f| render_messages_tab(f, f.area(), &messages, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "TRADE"));
+        assert!(buffer_contains(buf, "100 USD") || buffer_contains(buf, "Fiat"));
     }
 }
 

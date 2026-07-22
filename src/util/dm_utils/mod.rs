@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::models::{Order, User};
 use crate::ui::order_message_to_notification;
+use crate::ui::orders::{merge_order_snapshots, small_order_from_payload};
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::chat_listener::{maybe_track_order_chat, untrack_order_chat};
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
@@ -489,6 +490,29 @@ fn small_order_ref_from_payload(payload: &Option<Payload>) -> Option<&SmallOrder
     }
 }
 
+/// Build a TRADE-card snapshot from a persisted SQLite order row.
+fn small_order_from_db_order(row: &Order) -> SmallOrder {
+    SmallOrder {
+        id: row.id.as_ref().and_then(|s| uuid::Uuid::parse_str(s).ok()),
+        kind: row
+            .kind
+            .as_ref()
+            .and_then(|s| mostro_core::order::Kind::from_str(s).ok()),
+        status: row.status.as_ref().and_then(|s| Status::from_str(s).ok()),
+        amount: row.amount,
+        fiat_code: row.fiat_code.clone(),
+        min_amount: row.min_amount,
+        max_amount: row.max_amount,
+        fiat_amount: row.fiat_amount,
+        payment_method: row.payment_method.clone(),
+        premium: row.premium,
+        buyer_invoice: row.buyer_invoice.clone(),
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        ..Default::default()
+    }
+}
+
 fn resolved_status_candidate(action: &Action, payload: &Option<Payload>) -> Option<Status> {
     if let Some(order_payload) = small_order_ref_from_payload(payload) {
         return map_action_to_status(action, order_payload);
@@ -914,6 +938,7 @@ async fn handle_trade_dm_for_order(
                     m.order_kind,
                     m.is_mine,
                     m.order_status,
+                    m.order_snapshot.clone(),
                 )
             })
     };
@@ -926,7 +951,7 @@ async fn handle_trade_dm_for_order(
     // strictly newer timestamp (dedup stale/duplicate events).
     let is_new_message = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _, _, _)) => {
+        Some((existing_timestamp, existing_action, _, _, _, _, _, _, _)) => {
             if action != *existing_action {
                 true
             } else {
@@ -937,23 +962,26 @@ async fn handle_trade_dm_for_order(
 
     let prior_sat_amount = existing_message_data
         .as_ref()
-        .and_then(|(_, _, amt, _, _, _, _, _)| *amt);
+        .and_then(|(_, _, amt, _, _, _, _, _, _)| *amt);
     let prior_invoice = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, inv, _, _, _, _)| inv.clone());
+        .and_then(|(_, _, _, inv, _, _, _, _, _)| inv.clone());
     let prior_auto_popup_shown = existing_message_data
         .as_ref()
-        .map(|(_, existing_action, _, _, shown, _, _, _)| *shown && *existing_action == action)
+        .map(|(_, existing_action, _, _, shown, _, _, _, _)| *shown && *existing_action == action)
         .unwrap_or(false);
     let prior_order_kind = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, _, _, k, _, _)| *k);
+        .and_then(|(_, _, _, _, _, k, _, _, _)| *k);
     let prior_is_mine = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, _, _, _, im, _)| *im);
+        .and_then(|(_, _, _, _, _, _, im, _, _)| *im);
     let prior_order_status = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, _, _, _, _, st)| *st);
+        .and_then(|(_, _, _, _, _, _, _, st, _)| *st);
+    let prior_order_snapshot = existing_message_data
+        .as_ref()
+        .and_then(|(_, _, _, _, _, _, _, _, snap)| snap.clone());
 
     let kind_from_payload = small_order_ref_from_payload(&inner_kind.payload).and_then(|o| o.kind);
     let kind_from_take_action = match &action {
@@ -1032,6 +1060,13 @@ async fn handle_trade_dm_for_order(
     let effective_sat_amount = sat_amount.or(prior_sat_amount);
     let effective_invoice = invoice.clone().or(prior_invoice);
 
+    let snapshot_from_db = db_order.as_ref().map(small_order_from_db_order);
+    let effective_order_snapshot = merge_order_snapshots(
+        small_order_from_payload(&inner_kind.payload),
+        prior_order_snapshot,
+        snapshot_from_db,
+    );
+
     if notify && is_new_message && is_actionable_notification {
         match pending_notifications.lock() {
             Ok(mut pending_notifications) => {
@@ -1058,6 +1093,7 @@ async fn handle_trade_dm_for_order(
         order_kind: effective_order_kind,
         is_mine: effective_is_mine,
         order_status: effective_order_status,
+        order_snapshot: effective_order_snapshot,
         // Preserve popup-shown state for same-action updates (e.g. duplicate AddInvoice
         // carrying peer reputation payload but no amount), preventing noisy re-popups.
         auto_popup_shown: prior_auto_popup_shown,
@@ -1076,7 +1112,7 @@ async fn handle_trade_dm_for_order(
     // currently selected action row after startup/reconnect hydration.
     let should_replace_row = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status)) => {
+        Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status, _)) => {
             if new_order_would_regress_messages_row(&action, existing_action) {
                 false
             } else if timestamp > *existing_timestamp {
