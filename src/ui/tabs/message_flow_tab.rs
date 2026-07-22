@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, LineGauge, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, LineGauge, List, ListItem, Paragraph, Wrap};
 
 use mostro_core::prelude::{Payload, SmallOrder};
 
@@ -12,7 +12,7 @@ use crate::ui::helpers;
 use crate::ui::orders::{
     listing_timeline_labels, message_action_compact_label_for_message, message_action_emoji,
     message_order_kind_label, message_timeline_warning, message_timeline_warning_for_order_status,
-    message_trade_timeline_step, FlowStep, StepLabel,
+    message_trade_timeline_step, waiting_phase_description, FlowStep, StepLabel,
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -191,14 +191,18 @@ fn build_sidebar_items(
 
 fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
     // Panel order mirrors the target mockup: header, progress stepper, TRADE
-    // snapshot (fills the space the old numbered timeline wasted), then STATUS.
+    // snapshot (fills the freed space), then the STATUS banner at the bottom.
+    // On narrow panels the STATUS text wraps onto more lines, so give it extra
+    // height there so the "what's next" copy stays fully readable.
+    let narrow = !use_two_column_trade(area.width.saturating_sub(2));
+    let status_height = if narrow { 7 } else { 4 };
     let right_chunks = Layout::new(
         Direction::Vertical,
         [
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(status_height),
         ],
     )
     .split(area);
@@ -214,29 +218,69 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
     );
 
     render_trade_snapshot_card(f, right_chunks[2], selected_msg);
+    render_status_card(f, right_chunks[3], selected_msg);
+}
 
-    let warning_from_status = message_timeline_warning_for_order_status(selected_msg.order_status);
-    let warning_opt = warning_from_status.or_else(|| {
-        message_timeline_warning(&selected_msg.message.get_inner_message_kind().action)
-    });
-    let warning = warning_opt.unwrap_or("Trade is on normal path").to_string();
-    let warning_style = if warning_opt.is_some() {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Green)
-    };
-    let state = Paragraph::new(Line::from(Span::styled(warning, warning_style)))
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(
-            Block::default()
-                .title(" State ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
-        );
-    f.render_widget(state, right_chunks[3]);
+/// STATUS banner: a one-line status (normal path / canceled / dispute) and, on
+/// the happy path, a `👉 Next:` callout describing the pending action. Replaces
+/// the old "State" box and the redundant numbered timeline. Text wraps, so it
+/// stays readable on narrow panels (which also get extra height from the caller).
+fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
+    let block = Block::default()
+        .title(Span::styled(
+            " STATUS ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    let (emoji, text, color, is_normal) = status_banner(msg);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{emoji} "), Style::default().fg(color)),
+        Span::styled(
+            text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    if is_normal {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "👉 Next: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                waiting_phase_description(msg).to_string(),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// Status banner content: `(emoji, text, color, is_normal)`. Prefers the
+/// persisted order status, then the last action, to classify canceled/dispute
+/// vs the happy path. `is_normal` gates the "what's next" callout.
+fn status_banner(msg: &OrderMessage) -> (&'static str, String, Color, bool) {
+    let action = msg.message.get_inner_message_kind().action.clone();
+    let warning = message_timeline_warning_for_order_status(msg.order_status)
+        .or_else(|| message_timeline_warning(&action));
+    match warning {
+        Some(text) if text.contains("dispute") => ("⚖️", text.to_string(), Color::Magenta, false),
+        Some(text) => ("❌", text.to_string(), Color::Red, false),
+        None => (
+            "✅",
+            "Trade is on the normal path".to_string(),
+            Color::Green,
+            true,
+        ),
+    }
 }
 
 /// Header card: order id + kind badge + maker/taker role chip, plus the absolute
@@ -730,7 +774,7 @@ mod sidebar_tests {
 #[cfg(test)]
 mod trade_snapshot_tests {
     use super::*;
-    use mostro_core::prelude::SmallOrder;
+    use mostro_core::prelude::{SmallOrder, Status};
 
     fn order(fiat_amount: i64, min: Option<i64>, max: Option<i64>) -> SmallOrder {
         SmallOrder {
@@ -807,6 +851,51 @@ mod trade_snapshot_tests {
         assert_eq!(role_chip(Some(true)), ("👤", "Maker"));
         assert_eq!(role_chip(Some(false)), ("🤝", "Taker"));
         assert_eq!(role_chip(None), ("❔", "—"));
+    }
+
+    fn message_with(action: mostro_core::prelude::Action, status: Option<Status>) -> OrderMessage {
+        use mostro_core::prelude::Message;
+        use nostr_sdk::Keys;
+        OrderMessage {
+            message: Message::new_order(None, None, None, action, None),
+            timestamp: 0,
+            sender: Keys::generate().public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: None,
+            is_mine: None,
+            order_status: status,
+            read: true,
+            auto_popup_shown: true,
+        }
+    }
+
+    #[test]
+    fn status_banner_happy_path_is_normal_with_next_callout() {
+        use mostro_core::prelude::Action;
+        let (emoji, _text, color, is_normal) =
+            status_banner(&message_with(Action::PayInvoice, None));
+        assert_eq!(emoji, "✅");
+        assert_eq!(color, Color::Green);
+        assert!(is_normal);
+    }
+
+    #[test]
+    fn status_banner_flags_canceled_and_dispute() {
+        use mostro_core::prelude::Action;
+        let (emoji, _t, color, is_normal) =
+            status_banner(&message_with(Action::Canceled, Some(Status::Canceled)));
+        assert_eq!(emoji, "❌");
+        assert_eq!(color, Color::Red);
+        assert!(!is_normal);
+
+        let (emoji, _t, color, is_normal) =
+            status_banner(&message_with(Action::Dispute, Some(Status::Dispute)));
+        assert_eq!(emoji, "⚖️");
+        assert_eq!(color, Color::Magenta);
+        assert!(!is_normal);
     }
 
     #[test]
