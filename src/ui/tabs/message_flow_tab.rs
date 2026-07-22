@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, LineGauge, List, ListItem, Paragraph};
 
 use mostro_core::prelude::{Payload, SmallOrder};
 
@@ -196,7 +196,7 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
         Direction::Vertical,
         [
             Constraint::Length(4),
-            Constraint::Length(7),
+            Constraint::Length(5),
             Constraint::Min(0),
             Constraint::Length(3),
         ],
@@ -433,49 +433,140 @@ fn group_thousands(raw: &str) -> String {
     format!("{sign}{out}")
 }
 
+/// Compact progress stepper: a single-line colored glyph track
+/// (`✔──✔──◉──○──○──○`) with the step labels underneath, plus a `LineGauge`
+/// showing `Step N of 6`. Render-only; `FlowStep`/label logic is unchanged.
 fn render_trade_stepper(
     f: &mut ratatui::Frame,
     area: Rect,
     current_step: FlowStep,
     steps: &[StepLabel; 6],
 ) {
-    let current_step = current_step.step_number();
-    let step_columns = Layout::new(
+    let current = current_step.step_number();
+
+    let block = Block::default()
+        .title(Span::styled(
+            " PROGRESS ",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(area);
+    f.render_widget(&block, area);
+
+    // Glyph track + labels on the left; progress gauge on the right.
+    let halves = Layout::new(
         Direction::Horizontal,
-        [
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
-            Constraint::Percentage(16),
-            Constraint::Percentage(16),
-        ],
+        [Constraint::Min(0), Constraint::Length(20)],
     )
-    .split(area);
+    .split(inner);
+
+    let step_columns =
+        Layout::new(Direction::Horizontal, [Constraint::Ratio(1, 6); 6]).split(halves[0]);
 
     for (idx, step_label) in steps.iter().enumerate() {
         let step_number = idx + 1;
-        let style = if step_number < current_step {
+        let (glyph, style) = step_glyph(step_number, current);
+        let width = step_columns[idx].width as usize;
+        let cell = Paragraph::new(vec![
+            glyph_cell_line(width, glyph, style, idx == 0, idx == steps.len() - 1),
+            Line::from(Span::styled(center_in(step_label.top, width), style)),
+            Line::from(Span::styled(center_in(step_label.bottom, width), style)),
+        ]);
+        f.render_widget(cell, step_columns[idx]);
+    }
+
+    let ratio = (current as f64 / steps.len() as f64).clamp(0.0, 1.0);
+    let gauge = LineGauge::default()
+        .filled_symbol("▰")
+        .unfilled_symbol("▱")
+        .filled_style(Style::default().fg(PRIMARY_COLOR))
+        .unfilled_style(Style::default().fg(Color::DarkGray))
+        .ratio(ratio)
+        .label(Span::styled(
+            format!("Step {current} of {} ", steps.len()),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ));
+    // Render on the top row of the gauge column, aligned with the glyph track.
+    let gauge_area = Rect {
+        height: 1,
+        ..halves[1]
+    };
+    f.render_widget(gauge, gauge_area);
+}
+
+/// Glyph + style for one step relative to the current step: done (`✔`, green),
+/// current (`◉`, primary), or upcoming (`○`, dim).
+fn step_glyph(step_number: usize, current: usize) -> (&'static str, Style) {
+    if step_number < current {
+        (
+            "✔",
             Style::default()
                 .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
-        } else if step_number == current_step {
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if step_number == current {
+        (
+            "◉",
             Style::default()
                 .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        let step = Paragraph::new(vec![
-            Line::from(Span::styled(format!("Step {step_number}"), style)),
-            Line::from(Span::styled(step_label.top.to_string(), style)),
-            Line::from(Span::styled(step_label.bottom.to_string(), style)),
-        ])
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(step, step_columns[idx]);
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        ("○", Style::default().fg(Color::DarkGray))
     }
+}
+
+/// One cell of the glyph track: the step glyph centered in `width`, flanked by
+/// dim `─` connectors (blanked at the outer edges of the first/last steps) so
+/// adjacent cells join into a continuous line.
+fn glyph_cell_line(
+    width: usize,
+    glyph: &str,
+    glyph_style: Style,
+    is_first: bool,
+    is_last: bool,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let mid = width / 2;
+    let left_n = mid;
+    let right_n = width - mid - 1;
+    let dash = Style::default().fg(Color::DarkGray);
+    let left = if is_first {
+        " ".repeat(left_n)
+    } else {
+        "─".repeat(left_n)
+    };
+    let right = if is_last {
+        " ".repeat(right_n)
+    } else {
+        "─".repeat(right_n)
+    };
+    Line::from(vec![
+        Span::styled(left, dash),
+        Span::styled(glyph.to_string(), glyph_style),
+        Span::styled(right, dash),
+    ])
+}
+
+/// Center `text` within `width`, truncating (by char) when it does not fit.
+fn center_in(text: &str, width: usize) -> String {
+    let truncated: String = text.chars().take(width).collect();
+    let len = truncated.chars().count();
+    if len >= width {
+        return truncated;
+    }
+    let total = width - len;
+    let left = total / 2;
+    let right = total - left;
+    format!("{}{}{}", " ".repeat(left), truncated, " ".repeat(right))
 }
 
 #[cfg(test)]
@@ -632,5 +723,41 @@ mod trade_snapshot_tests {
         assert_eq!(group_thousands("142857"), "142,857");
         assert_eq!(group_thousands("999"), "999");
         assert_eq!(group_thousands("market"), "market");
+    }
+}
+
+#[cfg(test)]
+mod stepper_tests {
+    use super::*;
+
+    #[test]
+    fn step_glyph_marks_done_current_and_upcoming() {
+        // current step = 3
+        assert_eq!(step_glyph(1, 3).0, "✔");
+        assert_eq!(step_glyph(2, 3).0, "✔");
+        assert_eq!(step_glyph(3, 3).0, "◉");
+        assert_eq!(step_glyph(4, 3).0, "○");
+    }
+
+    #[test]
+    fn center_in_centers_and_truncates() {
+        assert_eq!(center_in("Rate", 8), "  Rate  ");
+        assert_eq!(center_in("odd", 6), " odd  ");
+        // Longer than width: truncate by char, no panic.
+        assert_eq!(center_in("Counterparty", 5), "Count");
+    }
+
+    #[test]
+    fn glyph_cell_line_blanks_outer_edges_of_first_and_last() {
+        let (glyph, style) = step_glyph(1, 1);
+        let first = glyph_cell_line(5, glyph, style, true, false);
+        let first_text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+        // First cell: no connector to the left of the glyph, dashes to the right.
+        assert_eq!(first_text, "  ◉──");
+
+        let last = glyph_cell_line(5, glyph, style, false, true);
+        let last_text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        // Last cell: dashes to the left, blank to the right.
+        assert_eq!(last_text, "──◉  ");
     }
 }
