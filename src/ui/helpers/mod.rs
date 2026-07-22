@@ -8,7 +8,7 @@ mod layout;
 mod order_chat_projection;
 mod startup;
 
-pub use ascii_art::render_centered_lines;
+pub use ascii_art::{render_centered_lines, MAILBOX_EMPTY_ART};
 
 pub(crate) use attachments::try_parse_attachment_message;
 pub use attachments::{
