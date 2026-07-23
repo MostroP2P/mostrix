@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::util::{
@@ -12,7 +12,8 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
     let block = Block::default()
         .title("🧌 Mostro Instance Info")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR));
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
 
     let inner = block.inner(area);
     f.render_widget(block, area);

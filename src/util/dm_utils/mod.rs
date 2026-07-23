@@ -801,6 +801,20 @@ fn effective_is_mine_for_trade_dm_message(
     prior_message_is_mine
 }
 
+/// Snapshot of the newest existing Messages row for an order, captured under a
+/// short `messages` lock so later dedup/merge logic can compare without holding it.
+struct PriorMessageSnapshot {
+    timestamp: i64,
+    action: Action,
+    sat_amount: Option<i64>,
+    buyer_invoice: Option<String>,
+    auto_popup_shown: bool,
+    order_kind: Option<mostro_core::order::Kind>,
+    is_mine: Option<bool>,
+    order_status: Option<Status>,
+    order_snapshot: Option<SmallOrder>,
+}
+
 /// Handle a single decoded trade DM for a given order/trade index.
 #[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
@@ -928,18 +942,16 @@ async fn handle_trade_dm_for_order(
             .iter()
             .filter(|m| m.order_id == Some(order_id))
             .max_by_key(|m| m.timestamp)
-            .map(|m| {
-                (
-                    m.timestamp,
-                    m.message.get_inner_message_kind().action.clone(),
-                    m.sat_amount,
-                    m.buyer_invoice.clone(),
-                    m.auto_popup_shown,
-                    m.order_kind,
-                    m.is_mine,
-                    m.order_status,
-                    m.order_snapshot.clone(),
-                )
+            .map(|m| PriorMessageSnapshot {
+                timestamp: m.timestamp,
+                action: m.message.get_inner_message_kind().action.clone(),
+                sat_amount: m.sat_amount,
+                buyer_invoice: m.buyer_invoice.clone(),
+                auto_popup_shown: m.auto_popup_shown,
+                order_kind: m.order_kind,
+                is_mine: m.is_mine,
+                order_status: m.order_status,
+                order_snapshot: m.order_snapshot.clone(),
             })
     };
 
@@ -951,37 +963,29 @@ async fn handle_trade_dm_for_order(
     // strictly newer timestamp (dedup stale/duplicate events).
     let is_new_message = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _, _, _, _)) => {
-            if action != *existing_action {
+        Some(prior) => {
+            if action != prior.action {
                 true
             } else {
-                timestamp > *existing_timestamp
+                timestamp > prior.timestamp
             }
         }
     };
 
-    let prior_sat_amount = existing_message_data
-        .as_ref()
-        .and_then(|(_, _, amt, _, _, _, _, _, _)| *amt);
+    let prior_sat_amount = existing_message_data.as_ref().and_then(|p| p.sat_amount);
     let prior_invoice = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, inv, _, _, _, _, _)| inv.clone());
+        .and_then(|p| p.buyer_invoice.clone());
     let prior_auto_popup_shown = existing_message_data
         .as_ref()
-        .map(|(_, existing_action, _, _, shown, _, _, _, _)| *shown && *existing_action == action)
+        .map(|p| p.auto_popup_shown && p.action == action)
         .unwrap_or(false);
-    let prior_order_kind = existing_message_data
-        .as_ref()
-        .and_then(|(_, _, _, _, _, k, _, _, _)| *k);
-    let prior_is_mine = existing_message_data
-        .as_ref()
-        .and_then(|(_, _, _, _, _, _, im, _, _)| *im);
-    let prior_order_status = existing_message_data
-        .as_ref()
-        .and_then(|(_, _, _, _, _, _, _, st, _)| *st);
+    let prior_order_kind = existing_message_data.as_ref().and_then(|p| p.order_kind);
+    let prior_is_mine = existing_message_data.as_ref().and_then(|p| p.is_mine);
+    let prior_order_status = existing_message_data.as_ref().and_then(|p| p.order_status);
     let prior_order_snapshot = existing_message_data
         .as_ref()
-        .and_then(|(_, _, _, _, _, _, _, _, snap)| snap.clone());
+        .and_then(|p| p.order_snapshot.clone());
 
     let kind_from_payload = small_order_ref_from_payload(&inner_kind.payload).and_then(|o| o.kind);
     let kind_from_take_action = match &action {
@@ -1112,19 +1116,22 @@ async fn handle_trade_dm_for_order(
     // currently selected action row after startup/reconnect hydration.
     let should_replace_row = match &existing_message_data {
         None => true,
-        Some((existing_timestamp, existing_action, _, _, _, _, _, existing_order_status, _)) => {
+        Some(prior) => {
+            let existing_timestamp = prior.timestamp;
+            let existing_action = &prior.action;
+            let existing_order_status = prior.order_status;
             if new_order_would_regress_messages_row(&action, existing_action) {
                 false
-            } else if timestamp > *existing_timestamp {
+            } else if timestamp > existing_timestamp {
                 true
-            } else if timestamp == *existing_timestamp {
+            } else if timestamp == existing_timestamp {
                 action != *existing_action
             } else {
                 // Older-than-current replay: only replace if the payload status **strictly** advances
                 // the status already shown on the row (not merely equal; `should_accept_candidate`
                 // allows equality vs baseline for DB updates).
                 status_candidate.is_some_and(|c| {
-                    should_strictly_advance_status(*existing_order_status, c, effective_order_kind)
+                    should_strictly_advance_status(existing_order_status, c, effective_order_kind)
                 })
             }
         }

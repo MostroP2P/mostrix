@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
 use crate::ui::{UserRole, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -97,7 +97,8 @@ pub fn render_settings_tab(
     let block = Block::default()
         .title("⚙️  Settings")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR));
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
 
     let inner_area = block.inner(area);
     f.render_widget(block, area);

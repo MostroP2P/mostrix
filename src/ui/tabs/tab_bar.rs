@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Tabs};
 
@@ -12,9 +12,11 @@ pub fn render_tabs(f: &mut ratatui::Frame, area: Rect, active_tab: Tab, role: Us
     let tabs = Tabs::new(tab_titles)
         .select(active_tab.as_index())
         .block(
+            // Keep the top tab selector a plain white, square frame so it stays
+            // visually distinct from the green rounded content frames below.
             Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White)),
         )
         .highlight_style(
             Style::default()
