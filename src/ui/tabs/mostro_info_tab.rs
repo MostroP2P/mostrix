@@ -13,7 +13,8 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
         .title("🧌 Mostro Instance Info")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
 
     let inner = block.inner(area);
     f.render_widget(block, area);

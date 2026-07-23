@@ -33,7 +33,8 @@ pub fn render_disputes_tab(
                     .title("Disputes Pending")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
             );
             f.render_widget(paragraph, area);
             return;
@@ -67,7 +68,8 @@ pub fn render_disputes_tab(
                 .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(paragraph, area);
     } else {
@@ -118,7 +120,8 @@ pub fn render_disputes_tab(
                 .title("Disputes Pending")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
         )
         .row_highlight_style(
             Style::default()

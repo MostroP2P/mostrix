@@ -170,7 +170,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .title("Orders In Progress")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     if active_orders.is_empty() {
         f.render_widget(
             Paragraph::new("No active orders yet")
@@ -189,7 +190,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     .title("Order Chat")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
             ),
             empty_main_chunks[0],
         );
@@ -410,7 +412,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
         ),
         main_chunks[0],
     );
@@ -438,7 +441,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .title(chat_title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let chat_inner = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
 
@@ -497,7 +501,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     })
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .style(Style::default().fg(PRIMARY_COLOR)),
+                    .border_style(Style::default().fg(PRIMARY_COLOR)),
             ),
         main_chunks[2],
     );

@@ -91,7 +91,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         .title(sidebar_title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
 
     if filtered_disputes.is_empty() {
         let empty_msg = match app.dispute_filter {
@@ -477,7 +478,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
+                    .style(Style::default().bg(BACKGROUND_COLOR)),
             )
             .alignment(ratatui::layout::Alignment::Left);
         f.render_widget(header, main_chunks[0]);
@@ -622,7 +624,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 .title(chat_title)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR));
             let inner_area = chat_block.inner(chat_area);
             f.render_widget(chat_block, chat_area);
 
@@ -836,7 +839,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let outer_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+            .border_style(Style::default().fg(PRIMARY_COLOR))
+            .style(Style::default().bg(BACKGROUND_COLOR));
         let inner_area = outer_block.inner(main_area);
         f.render_widget(outer_block, main_area);
 
