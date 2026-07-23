@@ -5,7 +5,7 @@ use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -30,6 +30,8 @@ pub fn render_orders_tab(
                 Block::default()
                     .title("Orders")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
                     .style(Style::default().bg(BACKGROUND_COLOR)),
             );
             f.render_widget(paragraph, area);
@@ -46,6 +48,8 @@ pub fn render_orders_tab(
             Block::default()
                 .title("Orders")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(paragraph, area);
@@ -183,6 +187,8 @@ pub fn render_orders_tab(
             Block::default()
                 .title("Orders")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(table, area);

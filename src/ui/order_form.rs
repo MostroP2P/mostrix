@@ -60,7 +60,9 @@ pub fn render_order_form(
         )))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
@@ -114,7 +116,9 @@ fn render_details(
     let block = Block::default()
         .title(" Order details ")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
@@ -468,7 +472,9 @@ fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState, accepted
     let block = Block::default()
         .title(" Live preview ")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
@@ -491,7 +497,8 @@ fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState, accepted
         .title(" Order ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let card_inner = card.inner(split[0]);
     f.render_widget(card, split[0]);
     f.render_widget(
@@ -600,7 +607,9 @@ fn render_help(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
             Block::default()
                 .title(" Field help ")
                 .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
         )
         .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: true });
@@ -682,7 +691,8 @@ fn render_currency_dropdown(
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
@@ -1052,7 +1062,9 @@ pub fn render_form_initializing(f: &mut ratatui::Frame, area: Rect) {
         )))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     f.render_widget(block, area);
 }
 

@@ -6,7 +6,7 @@ use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::*;
@@ -90,6 +90,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     let disputes_block = Block::default()
         .title(sidebar_title)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR));
 
     if filtered_disputes.is_empty() {
@@ -475,6 +477,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                             .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
                     .style(Style::default().bg(BACKGROUND_COLOR)),
             )
             .alignment(ratatui::layout::Alignment::Left);
@@ -526,13 +530,23 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             f.render_widget(
                 Paragraph::new(buyer_text)
-                    .block(Block::default().borders(Borders::ALL).style(buyer_style))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .style(buyer_style),
+                    )
                     .alignment(ratatui::layout::Alignment::Center),
                 party_chunks[0],
             );
             f.render_widget(
                 Paragraph::new(seller_text)
-                    .block(Block::default().borders(Borders::ALL).style(seller_style))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .style(seller_style),
+                    )
                     .alignment(ratatui::layout::Alignment::Center),
                 party_chunks[1],
             );
@@ -609,7 +623,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let chat_block = Block::default()
                 .title(chat_title)
                 .borders(Borders::ALL)
-                .style(Style::default());
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR));
             let inner_area = chat_block.inner(chat_area);
             f.render_widget(chat_block, chat_area);
 
@@ -662,6 +678,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Block::default()
                         .title(input_title)
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(input_border_style)
                         .style(input_style),
                 )
@@ -821,6 +838,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Render the outer block first, then content inside it
         let outer_block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(PRIMARY_COLOR))
             .style(Style::default().bg(BACKGROUND_COLOR));
         let inner_area = outer_block.inner(main_area);
         f.render_widget(outer_block, main_area);

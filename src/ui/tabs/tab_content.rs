@@ -2,7 +2,7 @@ use mostro_core::prelude::*;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 
 use crate::ui::{
     helpers::{self, render_centered_lines},
@@ -15,6 +15,8 @@ pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
         Block::default()
             .title(title)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(PRIMARY_COLOR))
             .style(Style::default().bg(BACKGROUND_COLOR)),
     );
     f.render_widget(paragraph, area);
@@ -81,6 +83,8 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
         Block::default()
             .title("Exit")
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(PRIMARY_COLOR))
             .style(Style::default().bg(BACKGROUND_COLOR)),
         area,
     );
@@ -88,6 +92,8 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
     let inner_area = Block::default()
         .title("Exit")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR))
         .inner(area);
 
@@ -197,7 +203,8 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
     let block = Block::default()
         .title("📨 Message")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     f.render_widget(block, popup);
 
     // Order ID
@@ -360,7 +367,8 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
     let block = Block::default()
         .title("Rate counterparty")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     f.render_widget(block.clone(), popup);
     let inner = block.inner(popup);
     let chunks = Layout::new(

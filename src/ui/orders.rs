@@ -9,6 +9,7 @@ use crate::ui::constants::{
     SELL_ORDER_FLOW_STEPS_MAKER, SELL_ORDER_FLOW_STEPS_TAKER,
     VIEW_MESSAGE_BUYER_TOOK_ORDER_PREVIEW, VIEW_MESSAGE_HOLD_INVOICE_PREVIEW,
 };
+use crate::ui::PRIMARY_COLOR;
 
 pub use crate::ui::constants::StepLabel;
 
@@ -97,7 +98,7 @@ pub(crate) fn try_placeholder_order_message_from_success(
         None,
         Some(trade_index),
         action,
-        Some(Payload::Order(small)),
+        Some(Payload::Order(small.clone())),
     );
     Some(OrderMessage {
         message,
@@ -110,6 +111,7 @@ pub(crate) fn try_placeholder_order_message_from_success(
         order_kind: os.kind,
         is_mine: Some(header.is_mine),
         order_status: os.status,
+        order_snapshot: Some(small),
         read: true,
         auto_popup_shown: true,
     })
@@ -336,6 +338,10 @@ pub struct OrderMessage {
     pub is_mine: Option<bool>,
     /// Last known Mostro order status for this trade (payload or DB).
     pub order_status: Option<mostro_core::order::Status>,
+    /// Stable trade receipt fields for the Messages TRADE card. Carried across
+    /// DMs that omit `Payload::Order` (e.g. `PaymentRequest`, payload-less
+    /// `FiatSent` / `Release`) so Fiat/Premium/Method do not blank mid-trade.
+    pub order_snapshot: Option<SmallOrder>,
     pub read: bool, // Whether the message has been read
     /// Whether we've already shown the automatic popup for this message
     pub auto_popup_shown: bool,
@@ -470,6 +476,11 @@ pub fn waiting_phase_description(msg: &OrderMessage) -> &'static str {
         }
         (_, true, Action::PayBondInvoice) => {
             "Pay the anti-abuse bond to publish your order to the book."
+        }
+        // Your order was taken: the next actionable prompt (invoice/payment) arrives
+        // as a follow-up DM, so this phase is informational, not something to act on.
+        (_, _, Action::BuyerTookOrder) => {
+            "Your order was taken. Waiting for the trade to proceed."
         }
         _ => "Waiting for the counterparty. No action is required from you right now.",
     }
@@ -732,6 +743,266 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
         Some(_) | None => {
             message_action_compact_label(&msg.message.get_inner_message_kind().action)
         }
+    }
+}
+
+/// Emoji glyph for an [`Action`], used to give Messages-tab rows an at-a-glance icon.
+/// Mirrors the action set covered by [`message_action_compact_label`] plus a generic fallback.
+pub fn message_action_emoji(action: &Action) -> &'static str {
+    match action {
+        Action::AddInvoice => "🧾",
+        Action::AddBondInvoice => "🔒",
+        Action::PayInvoice => "⚡",
+        Action::PayBondInvoice => "🔒",
+        Action::WaitingBuyerInvoice => "⏳",
+        Action::WaitingSellerToPay => "⏳",
+        Action::HoldInvoicePaymentAccepted => "🔐",
+        Action::BuyerTookOrder => "🤝",
+        Action::FiatSent => "💸",
+        Action::FiatSentOk => "✅",
+        Action::Release | Action::Released => "🔓",
+        Action::Dispute | Action::DisputeInitiatedByYou => "⚖️",
+        Action::Canceled => "❌",
+        Action::AdminCanceled => "🛑",
+        Action::Rate => "⭐",
+        Action::RateReceived => "🌟",
+        Action::CooperativeCancelInitiatedByPeer | Action::CooperativeCancelInitiatedByYou => "✋",
+        Action::NewOrder => "🆕",
+        _ => "✉️",
+    }
+}
+
+/// Status-aware emoji for Messages sidebar rows. Prefers [`OrderMessage::order_status`]
+/// so terminal/waiting rows do not keep a stale action glyph (e.g. `🆕` after Success).
+pub fn message_action_emoji_for_message(msg: &OrderMessage) -> &'static str {
+    match msg.order_status {
+        Some(Status::Success) => "✅",
+        Some(Status::SettledByAdmin) | Some(Status::CompletedByAdmin) => "✅",
+        Some(Status::Canceled)
+        | Some(Status::CanceledByAdmin)
+        | Some(Status::CooperativelyCanceled) => "❌",
+        Some(Status::Expired) => "⌛",
+        Some(Status::Dispute) => "⚖️",
+        Some(Status::FiatSent) => "💸",
+        Some(Status::Pending)
+        | Some(Status::WaitingPayment)
+        | Some(Status::WaitingBuyerInvoice)
+        | Some(Status::WaitingTakerBond)
+        | Some(Status::WaitingMakerBond) => "⏳",
+        Some(Status::InProgress) | Some(Status::Active) | Some(Status::SettledHoldInvoice) => "💬",
+        None => message_action_emoji(&msg.message.get_inner_message_kind().action),
+    }
+}
+
+/// Emoji + color badge summarizing the overall order status (header card, sidebar accents).
+/// `None` (status not yet hydrated) renders the same as an active/in-progress trade.
+pub fn order_status_badge(status: Option<Status>) -> (&'static str, Color) {
+    match status {
+        Some(Status::Success) => ("✅", Color::Green),
+        Some(Status::SettledByAdmin) | Some(Status::CompletedByAdmin) => ("✅", Color::Green),
+        Some(Status::Canceled)
+        | Some(Status::CanceledByAdmin)
+        | Some(Status::CooperativelyCanceled) => ("❌", Color::Red),
+        Some(Status::Expired) => ("⌛", Color::DarkGray),
+        Some(Status::Dispute) => ("⚖️", Color::Magenta),
+        Some(Status::FiatSent) => ("💸", PRIMARY_COLOR),
+        Some(Status::Pending)
+        | Some(Status::WaitingPayment)
+        | Some(Status::WaitingBuyerInvoice)
+        | Some(Status::WaitingTakerBond)
+        | Some(Status::WaitingMakerBond) => ("⏳", Color::Yellow),
+        Some(Status::InProgress)
+        | Some(Status::Active)
+        | Some(Status::SettledHoldInvoice)
+        | None => ("💬", PRIMARY_COLOR),
+    }
+}
+
+/// Own a [`SmallOrder`] from any payload shape that embeds one (standalone order,
+/// payment-request with order, or bond-payout request).
+pub fn small_order_from_payload(payload: &Option<Payload>) -> Option<SmallOrder> {
+    match payload.as_ref()? {
+        Payload::Order(o) => Some(o.clone()),
+        Payload::PaymentRequest(Some(o), _, _) => Some(o.clone()),
+        Payload::BondPayoutRequest(req) => Some(req.order.clone()),
+        _ => None,
+    }
+}
+
+/// Score how useful a snapshot is for the TRADE receipt (higher = richer).
+fn snapshot_richness(o: &SmallOrder) -> i32 {
+    let mut score = 0;
+    if !o.payment_method.trim().is_empty() {
+        score += 4;
+    }
+    if o.fiat_amount > 0 || o.min_amount.is_some() || o.max_amount.is_some() {
+        score += 2;
+    }
+    if !o.fiat_code.trim().is_empty() {
+        score += 1;
+    }
+    if o.amount > 0 {
+        score += 1;
+    }
+    score
+}
+
+/// Pick the richest snapshot among payload / prior row / DB-derived candidates.
+pub fn merge_order_snapshots(
+    incoming: Option<SmallOrder>,
+    prior: Option<SmallOrder>,
+    from_db: Option<SmallOrder>,
+) -> Option<SmallOrder> {
+    [incoming, prior, from_db]
+        .into_iter()
+        .flatten()
+        .max_by_key(snapshot_richness)
+}
+
+/// STATUS / Next presentation for the Messages detail panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageStatusPresentation {
+    pub emoji: &'static str,
+    pub title: &'static str,
+    pub color: Color,
+    /// `None` for terminal / warning states (no "what's next" callout).
+    pub next: Option<&'static str>,
+}
+
+/// Single status/role/action-aware mapping for the STATUS banner.
+///
+/// Prefer persisted [`OrderMessage::order_status`], then fall back to the last
+/// DM action. Actionable invoice phases get explicit "do X" copy; waiting phases
+/// reuse [`waiting_phase_description`]; terminal/warning states omit Next.
+pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentation {
+    let action = msg.message.get_inner_message_kind().action.clone();
+    if let Some(text) = message_timeline_warning_for_order_status(msg.order_status)
+        .or_else(|| message_timeline_warning(&action))
+    {
+        let (emoji, color) = if text.contains("dispute") {
+            ("⚖️", Color::Magenta)
+        } else {
+            ("❌", Color::Red)
+        };
+        return MessageStatusPresentation {
+            emoji,
+            title: text,
+            color,
+            next: None,
+        };
+    }
+
+    match msg.order_status {
+        Some(Status::Success) => {
+            if matches!(action, Action::Rate) {
+                return MessageStatusPresentation {
+                    emoji: "⭐",
+                    title: "Trade completed",
+                    color: Color::Green,
+                    next: Some("Rate your counterparty."),
+                };
+            }
+            return MessageStatusPresentation {
+                emoji: "✅",
+                title: "Trade completed",
+                color: Color::Green,
+                next: None,
+            };
+        }
+        Some(Status::SettledByAdmin) | Some(Status::CompletedByAdmin) => {
+            return MessageStatusPresentation {
+                emoji: "✅",
+                title: "Trade settled by admin",
+                color: Color::Green,
+                next: None,
+            };
+        }
+        _ => {}
+    }
+
+    if let Some(next) = actionable_next_step(msg, &action) {
+        let (emoji, title) = match action {
+            Action::AddInvoice => ("🧾", "Invoice required"),
+            Action::PayInvoice => ("⚡", "Payment required"),
+            Action::PayBondInvoice => ("🔒", "Bond payment required"),
+            Action::AddBondInvoice => ("🔒", "Bond payout invoice required"),
+            Action::Release | Action::FiatSentOk => ("🔓", "Release required"),
+            Action::FiatSent | Action::HoldInvoicePaymentAccepted => ("💸", "Confirm fiat sent"),
+            Action::CooperativeCancelInitiatedByPeer => ("⚠️", "Cancel requested"),
+            Action::Rate => ("⭐", "Rating required"),
+            _ => ("👉", "Action required"),
+        };
+        return MessageStatusPresentation {
+            emoji,
+            title,
+            color: PRIMARY_COLOR,
+            next: Some(next),
+        };
+    }
+
+    MessageStatusPresentation {
+        emoji: "✅",
+        title: "Trade is on the normal path",
+        color: Color::Green,
+        next: Some(waiting_phase_description(msg)),
+    }
+}
+
+/// Explicit next-step copy when the local user must act; `None` when waiting or N/A.
+fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static str> {
+    match action {
+        Action::AddInvoice
+        | Action::PayInvoice
+        | Action::PayBondInvoice
+        | Action::AddBondInvoice
+            if local_user_must_act_on_invoice_popup(msg, action) =>
+        {
+            Some(match action {
+                Action::AddInvoice => "Add your Lightning invoice to continue.",
+                Action::PayInvoice => "Pay the hold invoice to continue.",
+                Action::PayBondInvoice
+                    if msg.order_status == Some(Status::WaitingMakerBond)
+                        || (msg.order_status.is_none() && msg.is_mine == Some(true)) =>
+                {
+                    "Pay the anti-abuse bond to publish your order to the book."
+                }
+                Action::PayBondInvoice => "Pay the anti-abuse bond to continue.",
+                Action::AddBondInvoice => "Add a bond payout invoice to claim your share.",
+                _ => "Complete the required payment step.",
+            })
+        }
+        Action::FiatSentOk | Action::Release
+            if matches!(
+                (msg.order_kind, msg.is_mine),
+                (Some(mostro_core::order::Kind::Buy), Some(false))
+                    | (Some(mostro_core::order::Kind::Sell), Some(true))
+            ) =>
+        {
+            Some("Release sats to complete the trade.")
+        }
+        Action::FiatSent
+            if matches!(
+                (msg.order_kind, msg.is_mine),
+                (Some(mostro_core::order::Kind::Buy), Some(true))
+                    | (Some(mostro_core::order::Kind::Sell), Some(false))
+            ) =>
+        {
+            Some("Confirm that you sent the fiat payment.")
+        }
+        // Mostro reports the seller's hold invoice is paid: the Enter router
+        // (`enter_handlers.rs`) opens the fiat-confirmation popup that sends
+        // `FiatSent`, so this is actionable for the buyer — not a waiting phase.
+        // Kept unconditional to match that router's actionability classification.
+        Action::HoldInvoicePaymentAccepted => {
+            Some("Confirm you sent the fiat payment to continue.")
+        }
+        // Peer asked to cooperatively cancel: the Enter router opens a decision
+        // popup, so surface it as a decision rather than a silent waiting state.
+        Action::CooperativeCancelInitiatedByPeer => {
+            Some("Your counterparty asked to cooperatively cancel — press Enter to review.")
+        }
+        Action::Rate => Some("Rate your counterparty."),
+        _ => None,
     }
 }
 
@@ -1083,6 +1354,246 @@ pub fn apply_kind_color(kind: &mostro_core::order::Kind) -> Style {
 }
 
 #[cfg(test)]
+mod message_emoji_and_badge_tests {
+    use super::*;
+
+    #[test]
+    fn add_invoice_and_pay_invoice_have_distinct_emoji() {
+        assert_eq!(message_action_emoji(&Action::AddInvoice), "🧾");
+        assert_eq!(message_action_emoji(&Action::PayInvoice), "⚡");
+    }
+
+    #[test]
+    fn dispute_actions_share_the_scales_emoji() {
+        assert_eq!(message_action_emoji(&Action::Dispute), "⚖️");
+        assert_eq!(message_action_emoji(&Action::DisputeInitiatedByYou), "⚖️");
+    }
+
+    #[test]
+    fn unmapped_action_falls_back_to_envelope() {
+        assert_eq!(message_action_emoji(&Action::Orders), "✉️");
+    }
+
+    #[test]
+    fn success_status_badge_is_green_check() {
+        assert_eq!(
+            order_status_badge(Some(Status::Success)),
+            ("✅", Color::Green)
+        );
+    }
+
+    #[test]
+    fn cancel_variants_badge_as_red_cross() {
+        assert_eq!(
+            order_status_badge(Some(Status::Canceled)),
+            ("❌", Color::Red)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::CanceledByAdmin)),
+            ("❌", Color::Red)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::CooperativelyCanceled)),
+            ("❌", Color::Red)
+        );
+    }
+
+    #[test]
+    fn waiting_phases_badge_as_yellow_hourglass() {
+        assert_eq!(
+            order_status_badge(Some(Status::WaitingBuyerInvoice)),
+            ("⏳", Color::Yellow)
+        );
+        assert_eq!(
+            order_status_badge(Some(Status::WaitingMakerBond)),
+            ("⏳", Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn dispute_status_badges_as_magenta_scales() {
+        assert_eq!(
+            order_status_badge(Some(Status::Dispute)),
+            ("⚖️", Color::Magenta)
+        );
+    }
+
+    #[test]
+    fn admin_settled_badge_is_green_check_not_dispute_scales() {
+        assert_eq!(
+            order_status_badge(Some(Status::SettledByAdmin)),
+            ("✅", Color::Green)
+        );
+    }
+
+    #[test]
+    fn none_status_defaults_to_active_chat_badge() {
+        assert_eq!(order_status_badge(None), ("💬", PRIMARY_COLOR));
+        assert_eq!(
+            order_status_badge(Some(Status::InProgress)),
+            ("💬", PRIMARY_COLOR)
+        );
+    }
+
+    fn sample_msg(
+        action: Action,
+        order_kind: Option<mostro_core::order::Kind>,
+        is_mine: Option<bool>,
+        order_status: Option<Status>,
+    ) -> OrderMessage {
+        let keys = nostr_sdk::Keys::generate();
+        OrderMessage {
+            message: Message::new_order(None, None, None, action, None),
+            timestamp: 0,
+            sender: keys.public_key(),
+            order_id: None,
+            trade_index: 0,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind,
+            is_mine,
+            order_status,
+            order_snapshot: None,
+            read: true,
+            auto_popup_shown: true,
+        }
+    }
+
+    #[test]
+    fn sidebar_emoji_prefers_success_status_over_stale_new_order_action() {
+        let m = sample_msg(
+            Action::NewOrder,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::Success),
+        );
+        assert_eq!(message_action_emoji_for_message(&m), "✅");
+    }
+
+    #[test]
+    fn status_presentation_buy_maker_add_invoice_is_actionable() {
+        let m = sample_msg(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::WaitingBuyerInvoice),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.title, "Invoice required");
+        assert_eq!(p.next, Some("Add your Lightning invoice to continue."));
+    }
+
+    #[test]
+    fn status_presentation_hold_invoice_accepted_is_actionable() {
+        // Mostro reports the hold invoice paid; the Enter router opens the
+        // fiat-confirmation popup, so STATUS must prompt the buyer to act rather
+        // than fall through to the "no action required" waiting default.
+        let m = sample_msg(
+            Action::HoldInvoicePaymentAccepted,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::SettledHoldInvoice),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.emoji, "💸");
+        assert_eq!(p.title, "Confirm fiat sent");
+        assert_eq!(
+            p.next,
+            Some("Confirm you sent the fiat payment to continue.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_cooperative_cancel_peer_is_actionable() {
+        // Peer-initiated cooperative cancel: Enter opens a decision popup, so STATUS
+        // must surface it rather than showing the generic waiting default.
+        let m = sample_msg(
+            Action::CooperativeCancelInitiatedByPeer,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::Active),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.emoji, "⚠️");
+        assert_eq!(p.title, "Cancel requested");
+        assert_eq!(
+            p.next,
+            Some("Your counterparty asked to cooperatively cancel — press Enter to review.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_buyer_took_order_is_informational_waiting() {
+        // "Order taken" is a waiting phase (the actionable prompt arrives later), so
+        // it should read as normal-path waiting with specific copy, not "must act".
+        let m = sample_msg(
+            Action::BuyerTookOrder,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Active),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.title, "Trade is on the normal path");
+        assert_eq!(
+            p.next,
+            Some("Your order was taken. Waiting for the trade to proceed.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_success_has_no_waiting_callout() {
+        let m = sample_msg(
+            Action::Released,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::Success),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.title, "Trade completed");
+        assert!(p.next.is_none());
+    }
+
+    #[test]
+    fn payment_request_payload_yields_order_snapshot() {
+        let order = SmallOrder {
+            fiat_amount: 100,
+            fiat_code: "USD".to_string(),
+            payment_method: "SEPA".to_string(),
+            amount: 50_000,
+            premium: 1,
+            ..Default::default()
+        };
+        let payload = Some(Payload::PaymentRequest(
+            Some(order.clone()),
+            "lnbc1…".to_string(),
+            None,
+        ));
+        let snap = small_order_from_payload(&payload).expect("order");
+        assert_eq!(snap.fiat_amount, 100);
+        assert_eq!(snap.payment_method, "SEPA");
+    }
+
+    #[test]
+    fn merge_order_snapshots_keeps_richer_prior_over_sparse_incoming() {
+        let rich = SmallOrder {
+            fiat_amount: 100,
+            fiat_code: "EUR".to_string(),
+            payment_method: "Revolut".to_string(),
+            amount: 10_000,
+            premium: 0,
+            ..Default::default()
+        };
+        let sparse = SmallOrder {
+            amount: 10_000,
+            ..Default::default()
+        };
+        let merged = merge_order_snapshots(Some(sparse), Some(rich.clone()), None).unwrap();
+        assert_eq!(merged.payment_method, "Revolut");
+        assert_eq!(merged.fiat_code, "EUR");
+    }
+}
+
+#[cfg(test)]
 mod order_success_placeholder_tests {
     use super::*;
     use nostr_sdk::Keys;
@@ -1181,6 +1692,7 @@ mod timeline_step_tests {
             order_kind,
             is_mine,
             order_status,
+            order_snapshot: None,
             read: false,
             auto_popup_shown: false,
         }
@@ -1374,6 +1886,7 @@ mod invoice_popup_role_tests {
             order_kind,
             is_mine,
             order_status,
+            order_snapshot: None,
             read: false,
             auto_popup_shown: false,
         }

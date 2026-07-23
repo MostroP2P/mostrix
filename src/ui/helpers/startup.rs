@@ -290,7 +290,7 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         request_id,
         Some(trade_index),
         action,
-        Some(Payload::Order(payload_order)),
+        Some(Payload::Order(payload_order.clone())),
     );
 
     let history_message = OrderMessage {
@@ -307,6 +307,7 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         order_kind: kind,
         is_mine: Some(order.is_mine),
         order_status: status,
+        order_snapshot: Some(payload_order),
         read: true,
         auto_popup_shown: !matches!(
             status,

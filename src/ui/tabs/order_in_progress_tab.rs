@@ -4,7 +4,7 @@ use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use uuid::Uuid;
 
@@ -169,6 +169,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let sidebar_block = Block::default()
         .title("Orders In Progress")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR));
     if active_orders.is_empty() {
         f.render_widget(
@@ -187,6 +189,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 Block::default()
                     .title("Order Chat")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
                     .style(Style::default().bg(BACKGROUND_COLOR)),
             ),
             empty_main_chunks[0],
@@ -407,6 +411,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                         .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         ),
         main_chunks[0],
@@ -434,6 +440,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let chat_block = Block::default()
         .title(chat_title)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR));
     let chat_inner = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
@@ -491,7 +499,9 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     } else {
                         "Message (disabled: Shift+I)"
                     })
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(PRIMARY_COLOR)),
             ),
         main_chunks[2],
     );

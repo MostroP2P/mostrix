@@ -127,6 +127,26 @@ fn build_order_message_from_reply(
         order_kind: order_kind_from_db(db_order),
         is_mine: Some(db_order.is_mine),
         order_status: status,
+        order_snapshot: crate::ui::orders::merge_order_snapshots(
+            crate::ui::orders::small_order_from_payload(&inner.payload),
+            None,
+            Some(SmallOrder {
+                id: Some(order_id),
+                kind: order_kind_from_db(db_order),
+                status: status_from_db(db_order),
+                amount: db_order.amount,
+                fiat_code: db_order.fiat_code.clone(),
+                min_amount: db_order.min_amount,
+                max_amount: db_order.max_amount,
+                fiat_amount: db_order.fiat_amount,
+                payment_method: db_order.payment_method.clone(),
+                premium: db_order.premium,
+                buyer_invoice: db_order.buyer_invoice.clone(),
+                created_at: db_order.created_at,
+                expires_at: db_order.expires_at,
+                ..Default::default()
+            }),
+        ),
         read: false,
         auto_popup_shown: false,
     }

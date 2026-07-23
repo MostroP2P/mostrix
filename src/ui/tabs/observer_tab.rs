@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::helpers::build_observer_scrollview_content;
@@ -77,6 +77,8 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(PRIMARY_COLOR))
             .style(Style::default().bg(BACKGROUND_COLOR)),
     );
     f.render_widget(header, chunks[0]);
@@ -84,7 +86,10 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     // Chat view (reuses the same formatting as dispute chat) with scrollview.
     let chat_block = Block::default()
         .title("Chat messages")
-        .borders(Borders::ALL);
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let chat_area = chunks[1];
     let inner_area = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
@@ -160,6 +165,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         Block::default()
             .title(key_title)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(key_border),
     );
     f.render_widget(key_input, input_chunks[0]);
