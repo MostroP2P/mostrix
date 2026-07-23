@@ -78,7 +78,8 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
             ))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
+            .border_style(Style::default().fg(PRIMARY_COLOR))
+            .style(Style::default().bg(BACKGROUND_COLOR)),
     );
     f.render_widget(header, chunks[0]);
 
@@ -87,7 +88,8 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         .title("Chat messages")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
     let chat_area = chunks[1];
     let inner_area = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
