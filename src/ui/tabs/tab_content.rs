@@ -2,7 +2,7 @@ use mostro_core::prelude::*;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 
 use crate::ui::{
     helpers::{self, render_centered_lines},
@@ -15,7 +15,8 @@ pub fn render_coming_soon(f: &mut ratatui::Frame, area: Rect, title: &str) {
         Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .style(Style::default().bg(BACKGROUND_COLOR)),
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
     );
     f.render_widget(paragraph, area);
 }
@@ -81,14 +82,16 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
         Block::default()
             .title("Exit")
             .borders(Borders::ALL)
-            .style(Style::default().bg(BACKGROUND_COLOR)),
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
         area,
     );
 
     let inner_area = Block::default()
         .title("Exit")
         .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR))
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR))
         .inner(area);
 
     let line_refs: Vec<&str> = logo_lines.to_vec();
