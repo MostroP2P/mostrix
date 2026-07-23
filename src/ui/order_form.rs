@@ -60,6 +60,7 @@ pub fn render_order_form(
         )))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
@@ -114,6 +115,7 @@ fn render_details(
     let block = Block::default()
         .title(" Order details ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
@@ -468,6 +470,7 @@ fn render_preview(f: &mut ratatui::Frame, area: Rect, form: &FormState, accepted
     let block = Block::default()
         .title(" Live preview ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(area);
     f.render_widget(&block, area);
@@ -600,6 +603,7 @@ fn render_help(f: &mut ratatui::Frame, area: Rect, form: &FormState) {
             Block::default()
                 .title(" Field help ")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
         )
         .style(Style::default().fg(Color::Gray))
@@ -1052,6 +1056,7 @@ pub fn render_form_initializing(f: &mut ratatui::Frame, area: Rect) {
         )))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     f.render_widget(block, area);
 }

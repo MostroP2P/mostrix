@@ -6,7 +6,7 @@ use mostro_core::prelude::*;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -32,7 +32,8 @@ pub fn render_disputes_tab(
                 Block::default()
                     .title("Disputes Pending")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(BACKGROUND_COLOR)),
+                    .border_type(BorderType::Rounded)
+                    .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
             );
             f.render_widget(paragraph, area);
             return;
@@ -65,7 +66,8 @@ pub fn render_disputes_tab(
             Block::default()
                 .title("Disputes Pending")
                 .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
+                .border_type(BorderType::Rounded)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
         );
         f.render_widget(paragraph, area);
     } else {
@@ -115,7 +117,8 @@ pub fn render_disputes_tab(
             Block::default()
                 .title("Disputes Pending")
                 .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR)),
+                .border_type(BorderType::Rounded)
+                .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR)),
         )
         .row_highlight_style(
             Style::default()
