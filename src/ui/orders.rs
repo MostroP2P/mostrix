@@ -477,6 +477,11 @@ pub fn waiting_phase_description(msg: &OrderMessage) -> &'static str {
         (_, true, Action::PayBondInvoice) => {
             "Pay the anti-abuse bond to publish your order to the book."
         }
+        // Your order was taken: the next actionable prompt (invoice/payment) arrives
+        // as a follow-up DM, so this phase is informational, not something to act on.
+        (_, _, Action::BuyerTookOrder) => {
+            "Your order was taken. Waiting for the trade to proceed."
+        }
         _ => "Waiting for the counterparty. No action is required from you right now.",
     }
 }
@@ -923,6 +928,7 @@ pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentat
             Action::AddBondInvoice => ("🔒", "Bond payout invoice required"),
             Action::Release | Action::FiatSentOk => ("🔓", "Release required"),
             Action::FiatSent | Action::HoldInvoicePaymentAccepted => ("💸", "Confirm fiat sent"),
+            Action::CooperativeCancelInitiatedByPeer => ("⚠️", "Cancel requested"),
             Action::Rate => ("⭐", "Rating required"),
             _ => ("👉", "Action required"),
         };
@@ -989,6 +995,11 @@ fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static 
         // Kept unconditional to match that router's actionability classification.
         Action::HoldInvoicePaymentAccepted => {
             Some("Confirm you sent the fiat payment to continue.")
+        }
+        // Peer asked to cooperatively cancel: the Enter router opens a decision
+        // popup, so surface it as a decision rather than a silent waiting state.
+        Action::CooperativeCancelInitiatedByPeer => {
+            Some("Your counterparty asked to cooperatively cancel — press Enter to review.")
         }
         Action::Rate => Some("Rate your counterparty."),
         _ => None,
@@ -1489,6 +1500,43 @@ mod message_emoji_and_badge_tests {
         assert_eq!(
             p.next,
             Some("Confirm you sent the fiat payment to continue.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_cooperative_cancel_peer_is_actionable() {
+        // Peer-initiated cooperative cancel: Enter opens a decision popup, so STATUS
+        // must surface it rather than showing the generic waiting default.
+        let m = sample_msg(
+            Action::CooperativeCancelInitiatedByPeer,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::Active),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.emoji, "⚠️");
+        assert_eq!(p.title, "Cancel requested");
+        assert_eq!(
+            p.next,
+            Some("Your counterparty asked to cooperatively cancel — press Enter to review.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_buyer_took_order_is_informational_waiting() {
+        // "Order taken" is a waiting phase (the actionable prompt arrives later), so
+        // it should read as normal-path waiting with specific copy, not "must act".
+        let m = sample_msg(
+            Action::BuyerTookOrder,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Active),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.title, "Trade is on the normal path");
+        assert_eq!(
+            p.next,
+            Some("Your order was taken. Waiting for the trade to proceed.")
         );
     }
 
