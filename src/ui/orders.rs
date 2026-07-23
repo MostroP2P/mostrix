@@ -922,7 +922,7 @@ pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentat
             Action::PayBondInvoice => ("🔒", "Bond payment required"),
             Action::AddBondInvoice => ("🔒", "Bond payout invoice required"),
             Action::Release | Action::FiatSentOk => ("🔓", "Release required"),
-            Action::FiatSent => ("💸", "Confirm fiat sent"),
+            Action::FiatSent | Action::HoldInvoicePaymentAccepted => ("💸", "Confirm fiat sent"),
             Action::Rate => ("⭐", "Rating required"),
             _ => ("👉", "Action required"),
         };
@@ -982,6 +982,13 @@ fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static 
             ) =>
         {
             Some("Confirm that you sent the fiat payment.")
+        }
+        // Mostro reports the seller's hold invoice is paid: the Enter router
+        // (`enter_handlers.rs`) opens the fiat-confirmation popup that sends
+        // `FiatSent`, so this is actionable for the buyer — not a waiting phase.
+        // Kept unconditional to match that router's actionability classification.
+        Action::HoldInvoicePaymentAccepted => {
+            Some("Confirm you sent the fiat payment to continue.")
         }
         Action::Rate => Some("Rate your counterparty."),
         _ => None,
@@ -1463,6 +1470,26 @@ mod message_emoji_and_badge_tests {
         let p = message_status_presentation(&m);
         assert_eq!(p.title, "Invoice required");
         assert_eq!(p.next, Some("Add your Lightning invoice to continue."));
+    }
+
+    #[test]
+    fn status_presentation_hold_invoice_accepted_is_actionable() {
+        // Mostro reports the hold invoice paid; the Enter router opens the
+        // fiat-confirmation popup, so STATUS must prompt the buyer to act rather
+        // than fall through to the "no action required" waiting default.
+        let m = sample_msg(
+            Action::HoldInvoicePaymentAccepted,
+            Some(mostro_core::order::Kind::Buy),
+            Some(true),
+            Some(Status::SettledHoldInvoice),
+        );
+        let p = message_status_presentation(&m);
+        assert_eq!(p.emoji, "💸");
+        assert_eq!(p.title, "Confirm fiat sent");
+        assert_eq!(
+            p.next,
+            Some("Confirm you sent the fiat payment to continue.")
+        );
     }
 
     #[test]
