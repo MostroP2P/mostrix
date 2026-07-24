@@ -48,7 +48,7 @@ pub fn handle_enter_taking_order(
 
 /// Execute taking an order.
 ///
-/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Shared by the Enter-key confirmation handler to avoid code duplication.
 /// Validates the take_state, sets the UI mode to waiting, and spawns an async task to take the order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_take_order_action(

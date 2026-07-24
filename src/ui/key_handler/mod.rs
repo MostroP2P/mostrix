@@ -80,7 +80,7 @@ pub use async_tasks::{
     respawn_trade_dm_listener, spawn_refresh_mostro_info_task, AppChannels,
     RuntimeReconnectContext,
 };
-pub use confirmation::{handle_cancel_key, handle_confirm_key};
+pub use confirmation::handle_cancel_key;
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
 pub use form_input::{handle_backspace, handle_char_input, is_creating_order_text_input};
