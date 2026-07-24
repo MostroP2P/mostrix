@@ -80,7 +80,6 @@ pub use async_tasks::{
     respawn_trade_dm_listener, spawn_refresh_mostro_info_task, AppChannels,
     RuntimeReconnectContext,
 };
-pub use confirmation::handle_cancel_key;
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
 pub use form_input::{handle_backspace, handle_char_input, is_creating_order_text_input};
@@ -1347,15 +1346,9 @@ pub fn handle_key_event(
             Some(true)
         }
         // 'q' key removed - use Exit tab instead.
-        // For confirmations, prefer using Enter on the focused button instead of 'y'/'n'.
-        KeyCode::Char('n') | KeyCode::Char('N') if is_creating_order_text_input(app) => {
-            handle_char_input(code, app, validate_range_amount);
-            Some(true)
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
-            handle_cancel_key(app);
-            Some(true)
-        }
+        // Confirmations use Enter on the focused button to confirm and Esc to
+        // cancel; the 'y'/'n' shortcuts were removed. ('n'/'N' now just falls
+        // through to the generic Char(_) arm for form text entry.)
         KeyCode::Char('c') | KeyCode::Char('C') if is_creating_order_text_input(app) => {
             handle_char_input(code, app, validate_range_amount);
             Some(true)
