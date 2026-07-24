@@ -392,7 +392,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             selected_button,
         }) => {
             if selected_button {
-                // YES selected - send the order (similar to handle_confirm_key)
+                // YES selected - send the order
                 let form_clone = form.clone();
                 // Keep the draft until the async submit succeeds; on failure the
                 // user can return to Create New Order and resume editing.
