@@ -12,7 +12,7 @@ use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
-use crate::ui::key_handler::validation::{validate_npub, validate_nsec};
+use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::orders::OperationResult;
 use crate::ui::UserRole;
 use crate::util::order_utils::execute_take_dispute;
@@ -237,12 +237,11 @@ pub(crate) fn handle_enter_admin_mode(
             }
         }
         UiMode::AdminMode(AdminMode::SetupAdminKey(key_state)) => {
-            match validate_nsec(&key_state.key_input) {
-                Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::AdminMode(AdminMode::ConfirmAdminKey(input, true))
-                        });
+            match normalize_to_nsec(&key_state.key_input) {
+                Ok(normalized) => {
+                    app.mode = handle_input_to_confirmation(&normalized, default_mode, |input| {
+                        UiMode::AdminMode(AdminMode::ConfirmAdminKey(input, true))
+                    });
                 }
                 Err(e) => {
                     // Show error popup

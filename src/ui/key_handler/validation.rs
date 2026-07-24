@@ -26,6 +26,7 @@ pub fn validate_npub(npub_or_hex: &str) -> Result<(), String> {
 /// Validate if a string is a valid nsec (Nostr secret key) or hex secret key.
 /// Accepts both bech32 (nsec1...) and 64-character hex formats.
 /// Returns Ok(()) if valid, Err with error message if invalid.
+#[allow(unused)]
 pub fn validate_nsec(nsec_or_hex: &str) -> Result<(), String> {
     let key = nsec_or_hex.trim();
     if key.is_empty() {
@@ -62,6 +63,21 @@ pub fn hex_seckey_to_nsec(hex: &str) -> Option<String> {
     SecretKey::from_str(hex)
         .ok()
         .and_then(|sk| sk.to_bech32().ok())
+}
+
+/// Normalize a secret key to bech32 nsec format.
+/// Accepts nsec1... (bech32) or 64-char hex. Always returns nsec1... on success.
+pub fn normalize_to_nsec(input: &str) -> Result<String, String> {
+    let key = input.trim();
+    if key.is_empty() {
+        return Err("Secret key cannot be empty".to_string());
+    }
+    if SecretKey::from_bech32(key).is_ok() {
+        return Ok(key.to_string());
+    }
+    hex_seckey_to_nsec(key).ok_or_else(|| {
+        "Invalid secret key: expected nsec1... (bech32) or 64-char hex string".to_string()
+    })
 }
 
 /// Validate if a string is a valid hex-encoded Mostro pubkey
@@ -178,5 +194,37 @@ mod tests {
     #[test]
     fn hex_seckey_to_nsec_returns_none_for_invalid() {
         assert!(hex_seckey_to_nsec("invalid").is_none());
+    }
+
+    #[test]
+    fn normalize_to_nsec_accepts_bech32_and_returns_it() {
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af";
+        let nsec = SecretKey::from_str(hex)
+            .expect("hex must parse as secret key")
+            .to_bech32()
+            .expect("secret key must convert to bech32");
+        let result = normalize_to_nsec(&nsec).expect("bech32 input must succeed");
+        assert_eq!(result, nsec);
+    }
+
+    #[test]
+    fn normalize_to_nsec_converts_hex_to_bech32() {
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af";
+        let result = normalize_to_nsec(hex).expect("hex input must succeed");
+        assert!(result.starts_with("nsec1"));
+    }
+
+    #[test]
+    fn normalize_to_nsec_rejects_invalid() {
+        assert!(normalize_to_nsec("not-a-key").is_err());
+        assert!(normalize_to_nsec("").is_err());
+    }
+
+    #[test]
+    fn normalize_to_nsec_roundtrip_matches_hex() {
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84af";
+        let nsec = normalize_to_nsec(hex).expect("must convert");
+        let sk = SecretKey::from_bech32(&nsec).expect("must decode");
+        assert_eq!(sk.to_secret_hex(), hex);
     }
 }
