@@ -1062,14 +1062,6 @@ pub fn spawn_refresh_mostro_info_task(
     });
 }
 
-pub fn spawn_add_relay_task(client: Client, relay: String) {
-    tokio::spawn(async move {
-        if let Err(e) = client.add_relay(relay.trim()).await {
-            log::error!("Failed to add relay at runtime: {}", e);
-        }
-    });
-}
-
 pub fn spawn_key_rotation_task(
     pool: SqlitePool,
     is_user_mode: bool,

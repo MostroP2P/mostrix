@@ -1096,8 +1096,28 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     // Takers often see `is_mine: None` until the local row hydrates; default to taker so the
     // highlighted column matches [`listing_timeline_labels`] (taker wording per kind).
     let is_maker = msg.is_mine.unwrap_or(false);
-    // Post-`success` phases are action-specific (`rate` vs release); handle before status.
-    if matches!(&action, Action::FiatSentOk) {
+    // Post-fiat / post-release phases are action-specific. While status is still `FiatSent`,
+    // `Release`/`Released` must win so the stepper does not fall back to "Wait for Fiat".
+    // Do not override canceled/expired/dispute/admin-settled terminals (or Success for
+    // Release, which should land on the Rate column via status).
+    //
+    // Seller ACK after `release` is `HoldInvoicePaymentSettled` (buyer may see
+    // `PurchaseCompleted`); both mean release is done — stay on Rate, not SendFiat.
+    if matches!(
+        &action,
+        Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted
+    ) && !timeline_blocks_post_fiat_action_override(msg.order_status, false)
+    {
+        return FlowStep::BuyFlowStep(StepLabelsBuy::StepRate);
+    }
+    if matches!(
+        &action,
+        Action::FiatSentOk | Action::Release | Action::Released
+    ) && !timeline_blocks_post_fiat_action_override(msg.order_status, true)
+    {
         return FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
@@ -1115,7 +1135,23 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
         return message_buy_flow_step_fallback(&action);
     }
     let is_maker = msg.is_mine.unwrap_or(false);
-    if matches!(&action, Action::FiatSentOk) {
+    // Seller release ACK is `HoldInvoicePaymentSettled` (see mostro.network/protocol/release);
+    // without this, status still `FiatSent` would briefly highlight StepSendFiat.
+    if matches!(
+        &action,
+        Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted
+    ) && !timeline_blocks_post_fiat_action_override(msg.order_status, false)
+    {
+        return FlowStep::SellFlowStep(StepLabelsSell::StepRate);
+    }
+    if matches!(
+        &action,
+        Action::FiatSentOk | Action::Release | Action::Released
+    ) && !timeline_blocks_post_fiat_action_override(msg.order_status, true)
+    {
         return FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats);
     }
     if let Some(status) = msg.order_status {
@@ -1124,6 +1160,27 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
         }
     }
     sell_listing_flow_step_from_action(&action, is_maker)
+}
+
+/// When true, Rate/Release action-priority branches must defer to [`listing_step_from_status`].
+///
+/// Always blocks cancel/expire/dispute/admin-settled. `block_success` is for Release only:
+/// `Success` + Release should fall through to the Rate column, while `Success` + Rate may
+/// still use the Rate action override (same column either way).
+fn timeline_blocks_post_fiat_action_override(status: Option<Status>, block_success: bool) -> bool {
+    match status {
+        Some(
+            Status::Canceled
+            | Status::CanceledByAdmin
+            | Status::CooperativelyCanceled
+            | Status::Expired
+            | Status::Dispute
+            | Status::SettledByAdmin
+            | Status::CompletedByAdmin,
+        ) => true,
+        Some(Status::Success) if block_success => true,
+        _ => false,
+    }
 }
 
 /// Shared Mostro `Status` machine; column indices differ for buy vs sell (see [`StepLabelsBuy`] vs [`StepLabelsSell`]).
@@ -1205,7 +1262,10 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
             Action::FiatSentOk | Action::Release | Action::Released => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
             }
-            Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
+            Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
             Action::TakeBuy | Action::TakeSell => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
@@ -1226,7 +1286,10 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
             Action::FiatSentOk | Action::Release | Action::Released => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
             }
-            Action::Rate | Action::RateReceived => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
+            Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted => FlowStep::SellFlowStep(StepLabelsSell::StepRate),
             Action::TakeBuy | Action::TakeSell => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
@@ -1250,7 +1313,10 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
             Action::FiatSentOk | Action::Release | Action::Released => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
             }
-            Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+            Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
             Action::TakeBuy | Action::TakeSell => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
@@ -1271,7 +1337,10 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
             Action::FiatSentOk | Action::Release | Action::Released => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
             }
-            Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+            Action::Rate
+            | Action::RateReceived
+            | Action::HoldInvoicePaymentSettled
+            | Action::PurchaseCompleted => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
             Action::TakeBuy | Action::TakeSell => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
@@ -1299,7 +1368,10 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
         Action::FiatSentOk | Action::Release | Action::Released => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
         }
-        Action::Rate | Action::RateReceived => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
+        Action::Rate
+        | Action::RateReceived
+        | Action::HoldInvoicePaymentSettled
+        | Action::PurchaseCompleted => FlowStep::BuyFlowStep(StepLabelsBuy::StepRate),
         _ => FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder),
     }
 }
@@ -1782,6 +1854,154 @@ mod timeline_step_tests {
             message_trade_timeline_step(&m),
             FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment)
         );
+    }
+
+    #[test]
+    fn buy_taker_release_while_status_still_fiat_sent_stays_on_release_step() {
+        // Regression: Release must not fall back to "Wait for Fiat" while DB/status
+        // is still FiatSent (common until Mostro confirms Success).
+        let m = sample_order_message(
+            Action::Release,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(mostro_core::order::Status::FiatSent),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
+        );
+    }
+
+    #[test]
+    fn sell_maker_released_while_status_still_fiat_sent_stays_on_release_step() {
+        let m = sample_order_message(
+            Action::Released,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(mostro_core::order::Status::FiatSent),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
+        );
+    }
+
+    #[test]
+    fn sell_maker_hold_invoice_payment_settled_while_fiat_sent_goes_to_rate() {
+        // Protocol: after seller `release`, Mostro replies with HoldInvoicePaymentSettled.
+        // Must not fall through to Status::FiatSent → StepSendFiat.
+        let m = sample_order_message(
+            Action::HoldInvoicePaymentSettled,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(mostro_core::order::Status::FiatSent),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::SellFlowStep(StepLabelsSell::StepRate)
+        );
+    }
+
+    #[test]
+    fn buy_taker_purchase_completed_while_fiat_sent_goes_to_rate() {
+        let m = sample_order_message(
+            Action::PurchaseCompleted,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(mostro_core::order::Status::FiatSent),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepRate)
+        );
+    }
+
+    #[test]
+    fn release_with_success_status_advances_to_rate_step() {
+        let m = sample_order_message(
+            Action::Released,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(mostro_core::order::Status::Success),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&m),
+            FlowStep::BuyFlowStep(StepLabelsBuy::StepRate)
+        );
+    }
+
+    #[test]
+    fn stale_release_does_not_override_canceled_expired_or_dispute() {
+        for status in [
+            Status::Canceled,
+            Status::CanceledByAdmin,
+            Status::CooperativelyCanceled,
+            Status::Expired,
+            Status::Dispute,
+        ] {
+            let m = sample_order_message(
+                Action::Release,
+                Some(mostro_core::order::Kind::Buy),
+                Some(false),
+                Some(status),
+            );
+            assert_eq!(
+                message_trade_timeline_step(&m),
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder),
+                "Release must defer to status {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_rate_does_not_override_canceled_expired_or_dispute() {
+        for status in [
+            Status::Canceled,
+            Status::CanceledByAdmin,
+            Status::CooperativelyCanceled,
+            Status::Expired,
+            Status::Dispute,
+        ] {
+            let m = sample_order_message(
+                Action::Rate,
+                Some(mostro_core::order::Kind::Sell),
+                Some(true),
+                Some(status),
+            );
+            assert_eq!(
+                message_trade_timeline_step(&m),
+                FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder),
+                "Rate must defer to status {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_release_and_rate_do_not_override_admin_settled_terminals() {
+        for status in [Status::SettledByAdmin, Status::CompletedByAdmin] {
+            let release = sample_order_message(
+                Action::Released,
+                Some(mostro_core::order::Kind::Buy),
+                Some(false),
+                Some(status),
+            );
+            assert_eq!(
+                message_trade_timeline_step(&release),
+                FlowStep::BuyFlowStep(StepLabelsBuy::StepPendingOrder),
+                "Released must defer to {status:?}"
+            );
+            let rate = sample_order_message(
+                Action::RateReceived,
+                Some(mostro_core::order::Kind::Sell),
+                Some(true),
+                Some(status),
+            );
+            assert_eq!(
+                message_trade_timeline_step(&rate),
+                FlowStep::SellFlowStep(StepLabelsSell::StepPendingOrder),
+                "RateReceived must defer to {status:?}"
+            );
+        }
     }
 
     #[test]

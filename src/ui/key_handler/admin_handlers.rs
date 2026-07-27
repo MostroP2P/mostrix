@@ -19,7 +19,7 @@ use crate::util::order_utils::execute_take_dispute;
 
 /// Helper function to execute taking a dispute.
 ///
-/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Shared by the Enter-key confirmation handler to avoid code duplication.
 /// Sets the UI mode to waiting and spawns an async task to take the dispute.
 pub(crate) fn execute_take_dispute_action(
     app: &mut AppState,
@@ -75,7 +75,7 @@ pub(crate) fn execute_take_dispute_action(
 
 /// Helper function to execute adding a solver.
 ///
-/// This avoids code duplication between Enter key and 'y' key handlers.
+/// Shared by the Enter-key confirmation handler to avoid code duplication.
 /// Sets the UI mode to waiting and spawns an async task to add the solver.
 pub(crate) fn execute_add_solver_action(
     app: &mut AppState,
@@ -189,7 +189,7 @@ pub(crate) fn execute_finalize_dispute_action(
 }
 
 /// Handle Enter key for admin-specific modes (AddSolver, SetupAdminKey, etc.)
-/// Kept `pub(crate)` so it can be reused by the 'y' confirmation handler
+/// Kept `pub(crate)` so it can be reused by the Enter confirmation handler
 /// to avoid duplicating the AddSolver execution logic (DRY).
 pub(crate) fn handle_enter_admin_mode(
     app: &mut AppState,

@@ -452,7 +452,7 @@ sequenceDiagram
         TUI-->>Admin: Show error popup
     else Valid Format
         TUI->>TUI: Show confirmation popup
-        Admin->>TUI: Confirm (press 'y')
+        Admin->>TUI: Confirm (Enter on YES)
         TUI->>Client: execute_admin_add_solver(solver_pubkey, admin_keys)
         Client->>AdminKey: Use live runtime admin key
         Client->>Client: Construct AdminAddSolver message

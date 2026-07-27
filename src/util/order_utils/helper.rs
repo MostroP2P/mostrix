@@ -81,7 +81,12 @@ pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
         Action::PayBondInvoice => Some(Status::WaitingTakerBond),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::FiatSent),
-        Action::Release | Action::Released => Some(Status::Success),
+        // Release ACK to seller (`hold-invoice-payment-settled`), buyer `released` /
+        // `purchase-completed`: trade complete from Mostro's view → Success / Rate column.
+        Action::Release
+        | Action::Released
+        | Action::HoldInvoicePaymentSettled
+        | Action::PurchaseCompleted => Some(Status::Success),
         _ => None,
     }
 }
@@ -697,11 +702,24 @@ pub(super) fn handle_mostro_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_terminal_trade_status, should_apply_status_transition, should_strictly_advance_status,
+        inferred_status_from_trade_action, is_terminal_trade_status,
+        should_apply_status_transition, should_strictly_advance_status,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::Status;
+    use mostro_core::prelude::{Action, Status};
     use std::str::FromStr;
+
+    #[test]
+    fn hold_invoice_payment_settled_and_purchase_completed_infer_success() {
+        assert_eq!(
+            inferred_status_from_trade_action(&Action::HoldInvoicePaymentSettled),
+            Some(Status::Success)
+        );
+        assert_eq!(
+            inferred_status_from_trade_action(&Action::PurchaseCompleted),
+            Some(Status::Success)
+        );
+    }
 
     #[test]
     fn terminal_order_history_statuses_match_is_terminal_trade_status() {
