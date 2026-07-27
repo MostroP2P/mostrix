@@ -213,3 +213,166 @@ pub fn render_yes_no_cancel_buttons(
         Color::Yellow,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn cell_with_bg(buf: &ratatui::buffer::Buffer, bg: Color) -> bool {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().bg == Some(bg) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn create_centered_popup_centers_within_area() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let popup = create_centered_popup(area, 40, 10);
+        assert_eq!(popup.width, 40);
+        assert_eq!(popup.height, 10);
+        assert_eq!(popup.x, 20);
+        // (24 - 10) / 2 = 7 via Flex::Center
+        assert_eq!(popup.y, 7);
+    }
+
+    #[test]
+    fn create_centered_popup_respects_area_origin() {
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 60,
+            height: 20,
+        };
+        let popup = create_centered_popup(area, 20, 8);
+        assert_eq!(popup.width, 20);
+        assert_eq!(popup.height, 8);
+        assert_eq!(popup.x, 30);
+        assert_eq!(popup.y, 11);
+    }
+
+    #[test]
+    fn create_centered_popup_clamps_to_area() {
+        let area = Rect {
+            x: 2,
+            y: 3,
+            width: 20,
+            height: 10,
+        };
+        let popup = create_centered_popup(area, 40, 20);
+        assert_eq!(popup.width, 20);
+        assert_eq!(popup.height, 10);
+        assert_eq!(popup.x, 2);
+        assert_eq!(popup.y, 3);
+    }
+
+    #[test]
+    fn render_help_text_shows_prefix_key_and_suffix() {
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_help_text(f, f.area(), "Press ", "Enter", " to confirm"))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Press "), "missing prefix");
+        assert!(buffer_contains(buf, "Enter"), "missing key");
+        assert!(buffer_contains(buf, " to confirm"), "missing suffix");
+    }
+
+    #[test]
+    fn render_yes_no_buttons_shows_labels_and_yes_selection() {
+        let backend = TestBackend::new(50, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_yes_no_buttons(f, f.area(), true, "YES", "NO"))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "YES"), "missing YES label");
+        assert!(buffer_contains(buf, "NO"), "missing NO label");
+        assert!(
+            cell_with_bg(buf, Color::Green),
+            "YES selection should paint green background"
+        );
+        assert!(
+            !cell_with_bg(buf, Color::Red),
+            "NO should not be highlighted when YES is selected"
+        );
+    }
+
+    #[test]
+    fn render_yes_no_buttons_highlights_no_when_unselected() {
+        let backend = TestBackend::new(50, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_yes_no_buttons(f, f.area(), false, "Confirm", "Cancel"))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Confirm"));
+        assert!(buffer_contains(buf, "Cancel"));
+        assert!(
+            cell_with_bg(buf, Color::Red),
+            "NO selection should paint red background"
+        );
+        assert!(
+            !cell_with_bg(buf, Color::Green),
+            "YES should not be highlighted when NO is selected"
+        );
+    }
+
+    #[test]
+    fn render_yes_no_cancel_buttons_shows_all_labels() {
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_yes_no_cancel_buttons(f, f.area(), 0, "YES", "NO", "CANCEL");
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+        assert!(buffer_contains(buf, "CANCEL"));
+    }
+
+    #[test]
+    fn render_yes_no_cancel_buttons_highlights_each_selection() {
+        for (selected, expected_bg) in
+            [(0u8, Color::Green), (1u8, Color::Red), (2u8, Color::Yellow)]
+        {
+            let backend = TestBackend::new(60, 5);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| {
+                    render_yes_no_cancel_buttons(f, f.area(), selected, "YES", "NO", "CANCEL");
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            assert!(
+                cell_with_bg(buf, expected_bg),
+                "selected={selected} should paint {expected_bg:?} background"
+            );
+        }
+    }
+}
