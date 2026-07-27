@@ -414,7 +414,8 @@ The admin chat system in the "Disputes in Progress" tab provides real-time, Nost
 The previous monolithic helper file was split into focused modules under `src/ui/helpers/`:
 
 - `mod.rs`: compatibility re-export layer (`crate::ui::helpers::...`) for existing call sites.
-- `layout.rs`: popup/help/button rendering helpers.
+- `layout.rs`: popup/help/button rendering helpers (`create_centered_popup`, `render_help_text`, `render_yes_no_buttons`, `render_yes_no_cancel_buttons`). **Unit-tested** with `TestBackend` (geometry + selection highlights) — reuse as the template for other popup tests.
+- Thin overlays with the same TestBackend pattern: `exit_confirm`, `waiting`, `offline_overlay`, `key_input_popup`, `generate_keys_popup`, `dispute_bond_slash_popup`, `order_confirm`, `status` (and `network_status` enum smoke tests; monitor spawn is not unit-tested).
 - `formatting.rs`: UI formatting helpers (ratings, order id labels, finalized status check).
 - `chat_visibility.rs`: per-party visibility and selection helpers.
 - `chat_render.rs`: wrapped line formatting plus list/scrollview builders.

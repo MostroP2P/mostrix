@@ -93,3 +93,47 @@ pub fn render_exit_confirm(f: &mut ratatui::Frame, selected_button: bool) {
         chunks[5],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_exit_confirm_yes_selected() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_exit_confirm(f, true)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Exit Mostrix"));
+        assert!(buffer_contains(buf, "Are you sure"));
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+
+    #[test]
+    fn render_exit_confirm_no_selected() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_exit_confirm(f, false)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Exit Mostrix"));
+        assert!(buffer_contains(buf, "Are you sure"));
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+}

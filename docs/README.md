@@ -26,13 +26,13 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Contributing & tooling
 
-- **Coding Standards**: [CODING_STANDARDS.md](CODING_STANDARDS.md) — Style, re-exports, tests, clippy
+- **Coding Standards**: [CODING_STANDARDS.md](CODING_STANDARDS.md) — Style, re-exports, clippy (`-D warnings` on Rust **1.96**), **TestBackend** TUI tests, coverage waves
 - **Settings analysis**: [SETTINGS_ANALYSIS.md](SETTINGS_ANALYSIS.md) — Deeper notes on `settings.toml` / options (buyer `ln_address`, LNURL verify-on-save, **`ConfirmSavedLnAddressForInvoice`** → **YES** auto-submits **`AddInvoice`** when saved address exists; Settings tab **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** tables + **`SettingsMenuAction`** Enter routing)
 
 ## Tips
 
-- Run tests and lints before pushing: `cargo test`, `cargo fmt`, `cargo clippy --all-targets --all-features`.
-- See [CODING_STANDARDS.md](CODING_STANDARDS.md) for detailed coding guidelines and best practices.
+- Run tests and lints before pushing: `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features` (or Cursor `/build`).
+- See [CODING_STANDARDS.md](CODING_STANDARDS.md) for detailed coding guidelines and best practices. Weekly line coverage: [mostro.network/mostrix/coverage](https://mostro.network/mostrix/coverage/).
 
 ## Implementation plans (AI / contributors)
 

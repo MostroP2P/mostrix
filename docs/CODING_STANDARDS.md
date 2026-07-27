@@ -193,18 +193,31 @@ This allows clean imports: `use crate::util::send_dm;` instead of `use crate::ut
 
 ### Before Pushing
 
-Run these commands before committing:
+Toolchain is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) (currently **1.96.0**). Run:
 
 ```bash
-cargo test              # Run all tests
-cargo fmt              # Format code
-cargo clippy --all-targets --all-features  # Lint code
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+cargo build --all-features
 ```
+
+(Or use the Cursor `/build` command, which runs the same checklist.)
 
 ### Clippy Warnings
 
-- **Fix all clippy warnings**: Don't ignore clippy suggestions unless there's a good reason.
+- **Fix all clippy warnings**: Don't ignore clippy suggestions unless there's a good reason. Treat `-D warnings` as the bar for CI/local `/build`.
 - **Use `#[allow(clippy::...)]` sparingly**: Only when the warning is a false positive.
+- **Rust 1.96 notes** (common findings after the toolchain bump): prefer `sort_by_key` / `std::cmp::Reverse` over `sort_by(|a, b| …cmp…)`; drop redundant `.max(0)` on already-non-negative `usize` values; prefer `match` / `if let` over `is_some()` + `unwrap()`; derive `Default` when the first enum variant is the default (`#[default]`).
+
+### TUI unit tests (`TestBackend`)
+
+Render/popup logic should be covered with **deterministic** `ratatui::backend::TestBackend` tests — no live relays or Lightning.
+
+- **Template**: [`src/ui/helpers/layout.rs`](../src/ui/helpers/layout.rs) (`buffer_contains`, optional `cell_with_bg` for selection highlights). Also used by Messages tab layout tests in [`message_flow_tab.rs`](../src/ui/tabs/message_flow_tab.rs).
+- **Placement**: keep unit tests **inline** as `#[cfg(test)] mod tests` (or named modules like `layout_and_render_tests`) in the same `.rs` file. For source files **≥ ~500 LOC** where the test block would dominate, split to a sibling via `#[cfg(test)] #[path = "foo_tests.rs"] mod foo_tests;`.
+- **Assertions**: flatten the buffer and assert substrings (titles, labels, help keys). Avoid asserting time-based spinner/blink glyphs.
+- **Coverage roadmap**: knock out 0% files in small waves (shared layout helpers → thin popups → chat helpers → tabs → util → large handlers). Live report: [mostro.network/mostrix/coverage](https://mostro.network/mostrix/coverage/). Agent priority list: [`.cursor/rules/test-coverage.mdc`](../.cursor/rules/test-coverage.mdc).
 
 ## Naming Conventions
 
@@ -225,7 +238,7 @@ cargo clippy --all-targets --all-features  # Lint code
 
 - **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the same minor line as the Mostro daemon you test against (currently **0.13.0** — adds `mostro_core::transport::{Transport, wrap_message_with, unwrap_incoming}` for protocol v2). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, `Transport`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix. Re-export transport helpers from [`src/util/mod.rs`](../src/util/mod.rs) when used across the crate.
 - **Bond invoice replies**: shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) for `take_order` and `send_new_order` — returns `PaymentRequestRequired`, not `Success`.
-- **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) — TUI labels via `label()` (emoji + text); state on `ReviewingDisputeForFinalization.bond`; pass through `execute_finalize_dispute(dispute_id, bond, …)` and `bond.to_optional_payload()` on the wire (`None` → `null`); see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
+- **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) — TUI labels via `label()` (emoji + text); `#[derive(Default)]` with `#[default]` on `None`; state on `ReviewingDisputeForFinalization.bond`; pass through `execute_finalize_dispute(dispute_id, bond, …)` and `bond.to_optional_payload()` on the wire (`None` → `null`); see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 
 ## Summary Checklist
 

@@ -57,3 +57,47 @@ pub fn render_status_bar(
         );
     f.render_widget(bar, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_status_bar_without_notifications() {
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let lines = vec!["Connected to relays".to_string()];
+        terminal
+            .draw(|f| render_status_bar(f, f.area(), &lines, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Connected to relays"));
+        assert!(!buffer_contains(buf, "new notification"));
+    }
+
+    #[test]
+    fn render_status_bar_with_pending_notifications() {
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let lines = vec!["Status line".to_string()];
+        terminal
+            .draw(|f| render_status_bar(f, f.area(), &lines, 3))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Status line"));
+        assert!(buffer_contains(buf, "new notification"));
+    }
+}

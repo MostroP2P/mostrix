@@ -41,3 +41,39 @@ pub fn spawn_network_status_monitor(
         .await;
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_status_variants_carry_message() {
+        let online = NetworkStatus::Online("Internet restored".to_string());
+        let offline = NetworkStatus::Offline("No internet / relays unreachable".to_string());
+
+        match &online {
+            NetworkStatus::Online(msg) => assert_eq!(msg, "Internet restored"),
+            NetworkStatus::Offline(_) => panic!("expected Online"),
+        }
+        match &offline {
+            NetworkStatus::Offline(msg) => {
+                assert_eq!(msg, "No internet / relays unreachable");
+            }
+            NetworkStatus::Online(_) => panic!("expected Offline"),
+        }
+
+        let debug_online = format!("{online:?}");
+        let debug_offline = format!("{offline:?}");
+        assert!(debug_online.contains("Online"));
+        assert!(debug_online.contains("Internet restored"));
+        assert!(debug_offline.contains("Offline"));
+        assert!(debug_offline.contains("No internet"));
+    }
+
+    #[test]
+    fn network_status_clone_preserves_payload() {
+        let status = NetworkStatus::Offline("down".to_string());
+        let cloned = status.clone();
+        assert!(matches!(cloned, NetworkStatus::Offline(ref m) if m == "down"));
+    }
+}

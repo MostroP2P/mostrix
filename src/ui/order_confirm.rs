@@ -190,3 +190,69 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
         " to confirm, Esc to cancel",
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_buy_market_order_confirmation() {
+        let mut form = FormState::new_default_form();
+        form.payment_method = "SEPA".to_string();
+        form.fiat_amount = "100".to_string();
+        form.amount = "0".to_string();
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_confirm(f, &form, true))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Order Confirmation"));
+        assert!(buffer_contains(buf, "Buy"));
+        assert!(buffer_contains(buf, "USD"));
+        assert!(buffer_contains(buf, "market"));
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+    }
+
+    #[test]
+    fn render_sell_range_with_invoice() {
+        let mut form = FormState::new_default_form();
+        form.kind = "sell".to_string();
+        form.payment_method = "Cash".to_string();
+        form.fiat_amount = "50".to_string();
+        form.fiat_amount_max = "150".to_string();
+        form.use_range = true;
+        form.amount = "10000".to_string();
+        form.invoice = "lnbc1testinvoice".to_string();
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_confirm(f, &form, false))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Order Confirmation"));
+        assert!(buffer_contains(buf, "Sell"));
+        assert!(buffer_contains(buf, "USD"));
+        assert!(buffer_contains(buf, "50-150"));
+        assert!(buffer_contains(buf, "10000 sats"));
+        assert!(buffer_contains(buf, "lnbc1testinvoice"));
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+    }
+}

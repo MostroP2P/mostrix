@@ -124,3 +124,62 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
         chunks[5],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn confirm_generate_admin_keys_shows_warning() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_confirm_generate_new_keys(f, true, true))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Generate Admin Keys"));
+        assert!(buffer_contains(buf, "WARNING"));
+    }
+
+    #[test]
+    fn confirm_generate_user_keys_shows_warning() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_confirm_generate_new_keys(f, false, false))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Generate User Keys"));
+        assert!(buffer_contains(buf, "WARNING"));
+    }
+
+    #[test]
+    fn backup_new_keys_shows_mnemonic_words() {
+        let mnemonic =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_backup_new_keys(f, mnemonic))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Save Backup"));
+        assert!(buffer_contains(buf, "Esc"));
+        for word in mnemonic.split_whitespace() {
+            assert!(buffer_contains(buf, word), "missing mnemonic word: {word}");
+        }
+    }
+}

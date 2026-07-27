@@ -124,3 +124,98 @@ pub fn render_key_input_popup(
     // Esc help text
     helpers::render_help_text(f, chunks[6], "Press ", "Esc", " to cancel");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn key_state(input: &str) -> KeyInputState {
+        KeyInputState {
+            key_input: input.to_string(),
+            focused: true,
+            just_pasted: false,
+        }
+    }
+
+    #[test]
+    fn render_sensitive_shows_warning_and_chrome() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_key_input_popup(
+                    f,
+                    " Enter Private Key ",
+                    "nsec / hex:",
+                    "paste your key here",
+                    &key_state(""),
+                    true,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Enter Private Key"));
+        assert!(buffer_contains(buf, "nsec / hex:"));
+        assert!(buffer_contains(buf, "SENSITIVE DATA"));
+        assert!(buffer_contains(buf, "paste your key here"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+
+    #[test]
+    fn render_with_input_shows_typed_text() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_key_input_popup(
+                    f,
+                    " Enter Key ",
+                    "Key:",
+                    "placeholder text",
+                    &key_state("npub1abcxyz"),
+                    false,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Enter Key"));
+        assert!(buffer_contains(buf, "Key:"));
+        assert!(buffer_contains(buf, "npub1abcxyz"));
+        assert!(!buffer_contains(buf, "placeholder text"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+
+    #[test]
+    fn render_empty_shows_placeholder() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_key_input_popup(
+                    f,
+                    " Enter Key ",
+                    "Key:",
+                    "paste your key here",
+                    &key_state(""),
+                    false,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "paste your key here"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+}

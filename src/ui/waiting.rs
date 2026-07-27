@@ -66,3 +66,46 @@ pub fn render_waiting_with_message(f: &mut ratatui::Frame, message: &str) {
         inner_chunks[2],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_waiting_shows_title_and_default_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(render_waiting).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Waiting for Mostro"));
+        assert!(buffer_contains(
+            buf,
+            "Sending order and waiting for confirmation..."
+        ));
+    }
+
+    #[test]
+    fn render_waiting_with_custom_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_waiting_with_message(f, "Custom wait message"))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Waiting for Mostro"));
+        assert!(buffer_contains(buf, "Custom wait message"));
+    }
+}

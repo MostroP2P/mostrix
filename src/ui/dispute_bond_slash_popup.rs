@@ -93,3 +93,49 @@ pub fn render_bond_slash_overlay(
         chunks[4],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn assert_overlay_chrome(buf: &ratatui::buffer::Buffer) {
+        assert!(buffer_contains(buf, "Bond resolution"));
+        assert!(buffer_contains(buf, "No bond slash"));
+        assert!(buffer_contains(buf, "Slash buyer"));
+        assert!(buffer_contains(buf, "Enter"));
+        assert!(buffer_contains(buf, "Esc"));
+    }
+
+    #[test]
+    fn render_bond_slash_overlay_selected_none() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_bond_slash_overlay(f, f.area(), 0))
+            .unwrap();
+        assert_overlay_chrome(terminal.backend().buffer());
+    }
+
+    #[test]
+    fn render_bond_slash_overlay_selected_slash_buyer() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_bond_slash_overlay(f, f.area(), 1))
+            .unwrap();
+        assert_overlay_chrome(terminal.backend().buffer());
+    }
+}
