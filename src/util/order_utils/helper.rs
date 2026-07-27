@@ -297,7 +297,7 @@ pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
 
     // Collect latest disputes and sort by creation time (newest first)
     let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().collect();
-    disputes_list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    disputes_list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     disputes_list
 }
 
@@ -369,7 +369,7 @@ pub fn parse_orders_events(
         })
         .collect();
 
-    requested.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    requested.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     requested
 }
 
@@ -404,7 +404,7 @@ pub fn pending_orders_for_book(
         })
         .cloned()
         .collect();
-    requested.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    requested.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     requested
 }
 

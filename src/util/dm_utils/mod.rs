@@ -461,7 +461,7 @@ pub async fn parse_dm_events(
         }
         direct_messages.push((message, created_at.as_secs() as i64, sender));
     }
-    direct_messages.sort_by(|a, b| a.1.cmp(&b.1));
+    direct_messages.sort_by_key(|a| a.1);
     direct_messages
 }
 
@@ -1139,7 +1139,7 @@ async fn handle_trade_dm_for_order(
     if should_replace_row {
         messages_lock.retain(|m| m.order_id != Some(order_id));
         messages_lock.push(order_message.clone());
-        messages_lock.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        messages_lock.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
     }
 
     // Send notification only for actionable/new updates; this avoids follow-up AddInvoice

@@ -802,33 +802,37 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             (line1, Some(line2))
         };
 
-        if !is_finalized && app.attachment_toast.is_some() {
-            let n = if footer_line2.is_some() { 3 } else { 2 };
-            let chunks = Layout::new(
-                Direction::Vertical,
-                (0..n).map(|_| Constraint::Length(1)).collect::<Vec<_>>(),
-            )
-            .split(footer_area);
-            let (toast_area, footer_areas) = (chunks[0], &chunks[1..]);
-            let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
-            f.render_widget(
-                Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
-                toast_area,
-            );
-            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_areas[0]);
-            if let Some(ref line2) = footer_line2 {
-                f.render_widget(Paragraph::new(line2.as_str()), footer_areas[1]);
+        match (!is_finalized, app.attachment_toast.as_ref()) {
+            (true, Some((toast_msg, _))) => {
+                let n = if footer_line2.is_some() { 3 } else { 2 };
+                let chunks = Layout::new(
+                    Direction::Vertical,
+                    (0..n).map(|_| Constraint::Length(1)).collect::<Vec<_>>(),
+                )
+                .split(footer_area);
+                let (toast_area, footer_areas) = (chunks[0], &chunks[1..]);
+                f.render_widget(
+                    Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
+                    toast_area,
+                );
+                f.render_widget(Paragraph::new(footer_line1.as_str()), footer_areas[0]);
+                if let Some(ref line2) = footer_line2 {
+                    f.render_widget(Paragraph::new(line2.as_str()), footer_areas[1]);
+                }
             }
-        } else if let Some(ref line2) = footer_line2 {
-            let footer_chunks = Layout::new(
-                Direction::Vertical,
-                [Constraint::Length(1), Constraint::Length(1)],
-            )
-            .split(footer_area);
-            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_chunks[0]);
-            f.render_widget(Paragraph::new(line2.as_str()), footer_chunks[1]);
-        } else {
-            f.render_widget(Paragraph::new(footer_line1.as_str()), footer_area);
+            _ => {
+                if let Some(ref line2) = footer_line2 {
+                    let footer_chunks = Layout::new(
+                        Direction::Vertical,
+                        [Constraint::Length(1), Constraint::Length(1)],
+                    )
+                    .split(footer_area);
+                    f.render_widget(Paragraph::new(footer_line1.as_str()), footer_chunks[0]);
+                    f.render_widget(Paragraph::new(line2.as_str()), footer_chunks[1]);
+                } else {
+                    f.render_widget(Paragraph::new(footer_line1.as_str()), footer_area);
+                }
+            }
         }
 
         // Update the selected index after rendering is complete (to avoid borrow checker issues)

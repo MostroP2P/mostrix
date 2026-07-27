@@ -6,9 +6,10 @@
 use mostro_core::prelude::*;
 
 /// How to resolve anti-abuse bonds when an admin finalizes a dispute.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BondSlashChoice {
     /// Release bonds; do not slash either party.
+    #[default]
     None,
     /// Slash the buyer's bond (if posted).
     SlashBuyer,
@@ -16,13 +17,6 @@ pub enum BondSlashChoice {
     SlashSeller,
     /// Slash both parties' bonds (if posted).
     SlashBoth,
-}
-
-// Default for bond slash choice is None
-impl Default for BondSlashChoice {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 // BondSlashChoice implementation

@@ -105,7 +105,7 @@ fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSucce
                 return;
             }
             messages.push(placeholder);
-            messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         }
         Err(e) => {
             crate::util::request_fatal_restart(format!(

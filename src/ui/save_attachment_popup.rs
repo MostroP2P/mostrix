@@ -66,7 +66,7 @@ pub fn render_save_attachment_popup(f: &mut ratatui::Frame, app: &AppState, sele
     let half_window = visible_list_height / 2;
     let window_start = selected_idx
         .saturating_sub(half_window)
-        .min(list.len().saturating_sub(visible_list_height).max(0));
+        .min(list.len().saturating_sub(visible_list_height));
     let window_end = (window_start + visible_list_height).min(list.len());
 
     let content: Vec<Line> = list[window_start..window_end]
@@ -148,7 +148,7 @@ pub fn render_observer_save_attachment_popup(
     let half_window = visible_list_height / 2;
     let window_start = selected_idx
         .saturating_sub(half_window)
-        .min(attachments.len().saturating_sub(visible_list_height).max(0));
+        .min(attachments.len().saturating_sub(visible_list_height));
     let window_end = (window_start + visible_list_height).min(attachments.len());
 
     let content: Vec<Line> = attachments[window_start..window_end]
@@ -225,7 +225,7 @@ pub fn render_user_save_attachment_popup(
     let half_window = visible_list_height / 2;
     let window_start = selected_idx
         .saturating_sub(half_window)
-        .min(list.len().saturating_sub(visible_list_height).max(0));
+        .min(list.len().saturating_sub(visible_list_height));
     let window_end = (window_start + visible_list_height).min(list.len());
 
     let content: Vec<Line> = list[window_start..window_end]

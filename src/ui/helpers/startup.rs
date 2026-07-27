@@ -360,7 +360,7 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
         .iter()
         .filter_map(|row| db_order_to_history_message(row, sender))
         .collect();
-    history_messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    history_messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
     match app.messages.lock() {
         Ok(mut messages) => {
@@ -368,7 +368,7 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
                 messages.retain(|m| m.order_id != msg.order_id);
                 messages.push(msg);
             }
-            messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         }
         Err(e) => {
             crate::util::request_fatal_restart(format!(

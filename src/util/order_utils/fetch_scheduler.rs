@@ -68,7 +68,7 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
     } else {
         orders_lock.push(order);
     }
-    orders_lock.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    orders_lock.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     log::debug!(
         "[orders_live] upserted pending order_id={}, total_pending={}",
         order_id,
@@ -98,7 +98,7 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
     } else {
         disputes_lock.push(dispute);
     }
-    disputes_lock.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    disputes_lock.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     log::debug!(
         "[disputes_live] upserted dispute_id={} status={} total_disputes={}",
         dispute_id,
