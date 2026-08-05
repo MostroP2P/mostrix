@@ -227,23 +227,16 @@ pub async fn fetch_chat_messages_for_shared_key(
         .since(since)
         .limit(100);
 
-    let mut events: Vec<Event> = client
+    // Run both fetches independently so a transient failure of either query does
+    // not hide history still available on the other envelope during migration.
+    let kind14_result = client
         .fetch_events(kind14_filter, FETCH_EVENTS_TIMEOUT)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch kind-14 chat events: {e}"))?
-        .into_iter()
-        .collect();
-
-    if let Ok(legacy) = client
+        .await;
+    let legacy_result = client
         .fetch_events(giftwrap_filter, FETCH_EVENTS_TIMEOUT)
-        .await
-    {
-        for ev in legacy {
-            if events.iter().all(|e| e.id != ev.id) {
-                events.push(ev);
-            }
-        }
-    }
+        .await;
+
+    let events = merge_dual_read_events(kind14_result, legacy_result)?;
 
     let mut messages = Vec::new();
     for wrapped in events.iter() {
@@ -258,6 +251,38 @@ pub async fn fetch_chat_messages_for_shared_key(
     }
     messages.sort_by_key(|(_, ts, _)| *ts);
     Ok(messages)
+}
+
+/// Merge kind-14 and legacy GiftWrap fetch results for dual-read hydration.
+///
+/// Succeeds if either source returns events; errors only when both fetches fail.
+/// Event ids are deduplicated (kind-14 first, then legacy).
+pub(crate) fn merge_dual_read_events(
+    kind14: Result<impl IntoIterator<Item = Event>, impl std::fmt::Display>,
+    legacy: Result<impl IntoIterator<Item = Event>, impl std::fmt::Display>,
+) -> Result<Vec<Event>> {
+    match (kind14, legacy) {
+        (Ok(a), Ok(b)) => {
+            let mut events: Vec<Event> = a.into_iter().collect();
+            for ev in b {
+                if events.iter().all(|e| e.id != ev.id) {
+                    events.push(ev);
+                }
+            }
+            Ok(events)
+        }
+        (Ok(a), Err(e)) => {
+            log::warn!("legacy GiftWrap chat fetch failed (using kind-14 only): {e}");
+            Ok(a.into_iter().collect())
+        }
+        (Err(e), Ok(b)) => {
+            log::warn!("kind-14 chat fetch failed (using legacy GiftWrap only): {e}");
+            Ok(b.into_iter().collect())
+        }
+        (Err(e14), Err(e_legacy)) => Err(anyhow::anyhow!(
+            "Failed to fetch chat events (kind-14: {e14}; giftwrap: {e_legacy})"
+        )),
+    }
 }
 
 /// Fetch and collect new messages for a single (dispute, party) shared key.
@@ -515,5 +540,64 @@ mod tests {
             .expect("from ecdh");
         assert_eq!(conv.public_key(), conv2.public_key());
         assert_eq!(sign.public_key(), sign2.public_key());
+    }
+
+    fn sample_text_event(keys: &Keys, content: &str) -> Event {
+        EventBuilder::text_note(content)
+            .sign_with_keys(keys)
+            .expect("sign event")
+    }
+
+    #[test]
+    fn merge_dual_read_keeps_legacy_when_kind14_fails() {
+        let keys = Keys::generate();
+        let legacy_ev = sample_text_event(&keys, "legacy");
+        let merged = merge_dual_read_events(
+            Err::<Vec<Event>, _>("kind14 down"),
+            Ok::<Vec<Event>, &str>(vec![legacy_ev.clone()]),
+        )
+        .expect("legacy alone succeeds");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, legacy_ev.id);
+    }
+
+    #[test]
+    fn merge_dual_read_keeps_kind14_when_legacy_fails() {
+        let keys = Keys::generate();
+        let kind14_ev = sample_text_event(&keys, "kind14");
+        let merged = merge_dual_read_events(
+            Ok::<Vec<Event>, &str>(vec![kind14_ev.clone()]),
+            Err::<Vec<Event>, _>("giftwrap down"),
+        )
+        .expect("kind14 alone succeeds");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, kind14_ev.id);
+    }
+
+    #[test]
+    fn merge_dual_read_errors_when_both_fail() {
+        let err = merge_dual_read_events(
+            Err::<Vec<Event>, _>("kind14 down"),
+            Err::<Vec<Event>, _>("giftwrap down"),
+        )
+        .expect_err("both failed");
+        let msg = err.to_string();
+        assert!(msg.contains("kind14 down"));
+        assert!(msg.contains("giftwrap down"));
+    }
+
+    #[test]
+    fn merge_dual_read_dedupes_by_event_id() {
+        let keys = Keys::generate();
+        let shared = sample_text_event(&keys, "same");
+        let other = sample_text_event(&keys, "other");
+        let merged = merge_dual_read_events(
+            Ok::<Vec<Event>, &str>(vec![shared.clone()]),
+            Ok::<Vec<Event>, &str>(vec![shared.clone(), other.clone()]),
+        )
+        .expect("merge");
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, shared.id);
+        assert_eq!(merged[1].id, other.id);
     }
 }
