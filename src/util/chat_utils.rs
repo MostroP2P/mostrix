@@ -2,9 +2,12 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::Result;
-use mostro_core::chat::{chat_filter, unwrap_chat_message, wrap_chat_message, SharedKey};
+use mostro_core::chat::{
+    chat_filter, unwrap_chat_message, unwrap_giftwrap_chat_message, wrap_chat_message, SharedKey,
+};
 use mostro_core::prelude::DisputeStatus;
 use mostro_core::prelude::SmallOrder;
+use nostr_sdk::nips::nip44;
 use nostr_sdk::prelude::*;
 
 use crate::models::{AdminDispute, Order};
@@ -16,17 +19,14 @@ use crate::util::mostro_info::MostroInstanceInfo;
 type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, i64, PublicKey)>>;
 
 // ---------------------------------------------------------------------------
-// Shared-key helpers (ECDH derivation, hex conversion)
+// Shared-key helpers (ECDH IKM + K_conv / K_sign)
 // ---------------------------------------------------------------------------
 
-/// Derive the per-channel shared key (ECDH) for a chat counterparty.
+/// Derive the per-channel ECDH shared secret for a chat counterparty.
 ///
-/// This is **not** a normal identity/trade key: it is the 32-byte ECDH output
-/// between the local secret key and the counterparty pubkey (see
-/// `mostro_core::chat::SharedKey`). Both peers derive the same value, and the
-/// corresponding **shared pubkey** is used as the GiftWrap `p` tag and recipient.
-///
-/// Mostrix keeps the return type as `Keys` to avoid churn in existing call sites.
+/// This is the 32-byte ECDH output used as HKDF IKM for `K_conv` / `K_sign`
+/// (see `mostro_core::chat`). Mostrix persists that secret as hex; wire
+/// addressing uses `pub(K_conv)` / `pub(K_sign)` from [`chat_keys_from_ecdh`].
 ///
 /// Returns `None` if either argument is missing or derivation fails.
 pub fn derive_shared_keys(
@@ -40,12 +40,10 @@ pub fn derive_shared_keys(
         .map(|shared| shared.keys().clone())
 }
 
-/// Derive a shared key and return its secret as hex for DB persistence.
+/// Derive a shared ECDH secret and return it as hex for DB persistence.
 ///
-/// The persisted hex represents the **shared secret**, not a user’s secret key.
-/// It round-trips via `keys_from_shared_hex`.
-///
-/// Returns `None` when derivation is not possible.
+/// The persisted hex is the ECDH IKM, not `K_conv` / `K_sign`. It round-trips
+/// via [`keys_from_shared_hex`] then [`chat_keys_from_ecdh`].
 pub fn derive_shared_key_hex(
     admin_keys: Option<&Keys>,
     counterparty_pubkey_str: Option<&str>,
@@ -58,21 +56,28 @@ pub fn derive_shared_key_hex(
         .map(|shared| shared.to_hex())
 }
 
-/// Rebuild a `Keys` from a stored shared-key hex string.
-///
-/// The persisted hex is the `SharedKey` secret (ECDH output), not a normal
-/// user/trade secret key.
+/// Rebuild ECDH `Keys` from a stored shared-key hex string.
 pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
     SharedKey::from_hex(hex)
         .ok()
         .map(|shared| shared.keys().clone())
 }
 
+/// Derive `(K_conv, K_sign)` from ECDH keys rebuilt via [`keys_from_shared_hex`].
+pub fn chat_keys_from_ecdh(ecdh_keys: &Keys) -> Option<(Keys, Keys)> {
+    SharedKey::from_keys(ecdh_keys.clone()).chat_keys().ok()
+}
+
+/// Derive `(K_conv, K_sign)` from a persisted ECDH hex string.
+pub fn chat_keys_from_shared_hex(hex: &str) -> Option<(Keys, Keys)> {
+    SharedKey::from_hex(hex).ok()?.chat_keys().ok()
+}
+
 /// 32-byte ChaCha20 key for decrypting order-chat attachments (shared ECDH secret).
 pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
     if let Some(hex) = order.order_chat_shared_key_hex.as_deref() {
         if let Some(keys) = keys_from_shared_hex(hex) {
-            return Some(keys.secret_key().secret_bytes().to_vec());
+            return Some(keys.secret_key().to_secret_bytes().to_vec());
         }
     }
     let trade_keys_hex = order.trade_keys.as_deref()?;
@@ -81,10 +86,10 @@ pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
     let cp = order.counterparty_pubkey.as_deref()?;
     let cp_pk = PublicKey::parse(cp).ok()?;
     derive_shared_keys(Some(&trade_keys), Some(&cp_pk))
-        .map(|k| k.secret_key().secret_bytes().to_vec())
+        .map(|k| k.secret_key().to_secret_bytes().to_vec())
 }
 
-/// Resolve the order-chat counterparty pubkey and the shared-key hex used for chat GiftWraps.
+/// Resolve the order-chat counterparty pubkey and the ECDH shared-key hex.
 ///
 /// This is only possible once `SmallOrder` includes both `buyer_trade_pubkey` and
 /// `seller_trade_pubkey`, and the local `trade_keys` matches one of them.
@@ -116,13 +121,10 @@ pub fn order_chat_counterparty_and_shared_hex(
     Some((counterparty_str, shared_hex))
 }
 
-/// Send one admin dispute chat message via the per-dispute shared key.
+/// Send one admin dispute chat message via the per-dispute ECDH shared secret.
 ///
-/// The GiftWrap is addressed to the **shared pubkey** (`SharedKey.public_key()`),
-/// allowing both sides (admin and counterparty) to fetch the same events and
-/// decrypt them by deriving/rebuilding the same shared secret.
-///
-/// `shared_keys` is the `Keys` instance rebuilt from the stored shared-key hex.
+/// Wraps with the gift-wrap-free envelope: kind 14 signed by `K_sign`, encrypted
+/// under `K_conv`. `shared_keys` is the ECDH `Keys` from stored hex.
 pub async fn send_admin_chat_message_via_shared_key(
     client: &Client,
     admin_keys: &Keys,
@@ -134,11 +136,11 @@ pub async fn send_admin_chat_message_via_shared_key(
     if content.is_empty() {
         return Err(anyhow::anyhow!("Cannot send empty admin chat message"));
     }
-    let shared_pubkey = shared_keys.public_key();
-    let event = wrap_chat_message(admin_keys, &shared_pubkey, content)
+    let (conv, sign) = chat_keys_from_ecdh(shared_keys)
+        .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
+    let event = wrap_chat_message(admin_keys, &conv, &sign, content)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to wrap admin chat message: {e}"))?;
-    // Send the event to the relay
     client
         .send_event(&event)
         .await
@@ -146,54 +148,111 @@ pub async fn send_admin_chat_message_via_shared_key(
     Ok(())
 }
 
-/// Unwrap a Mostro P2P chat GiftWrap addressed to a shared key.
+/// Unwrap a chat envelope addressed via the channel ECDH secret.
 ///
-/// Uses `mostro_core::chat::unwrap_chat_message`, which decrypts and verifies the
-/// inner kind-1 signature so the returned sender pubkey can be trusted.
+/// Accepts the new kind-14 form and, during migration, legacy GiftWrap.
+/// When `allowed_signers` is `None`, any verified inner signer is accepted
+/// (observer / hydration paths that do not yet know both party pubkeys).
 pub async fn unwrap_giftwrap_with_shared_key(
     shared_keys: &Keys,
     event: &Event,
+    allowed_signers: Option<&[PublicKey]>,
 ) -> Result<(String, i64, PublicKey)> {
-    let msg = unwrap_chat_message(shared_keys, event)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to unwrap chat gift wrap: {e}"))?;
+    if event.kind == Kind::GiftWrap {
+        let msg = unwrap_giftwrap_chat_message(shared_keys, event)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to unwrap chat gift wrap: {e}"))?;
+        if let Some(allowed) = allowed_signers {
+            if !allowed.contains(&msg.sender) {
+                return Err(anyhow::anyhow!(
+                    "inner gift-wrap signer is not a party to this conversation"
+                ));
+            }
+        }
+        return Ok((msg.content, msg.created_at.as_secs() as i64, msg.sender));
+    }
+
+    let (conv, sign) = chat_keys_from_ecdh(shared_keys)
+        .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
+    let sign_pk = sign.public_key();
+    let now = Timestamp::now();
+
+    let allowed_owned: Vec<PublicKey>;
+    let allowed: &[PublicKey] = match allowed_signers {
+        Some(s) => s,
+        None => {
+            // Learn the inner signer cheaply, then run the full normative unwrap.
+            let decrypted = nip44::decrypt(conv.secret_key(), &conv.public_key(), &event.content)
+                .map_err(|e| anyhow::anyhow!("K_conv decrypt failed: {e}"))?;
+            let inner = Event::from_json(&decrypted)
+                .map_err(|e| anyhow::anyhow!("malformed inner chat event: {e}"))?;
+            allowed_owned = vec![inner.pubkey];
+            &allowed_owned
+        }
+    };
+
+    let msg = unwrap_chat_message(&conv, &sign_pk, allowed, event, now)
+        .map_err(|e| anyhow::anyhow!("Failed to unwrap chat event: {e}"))?;
     Ok((msg.content, msg.created_at.as_secs() as i64, msg.sender))
 }
 
-/// Fetch recent chat GiftWrap events for a shared key and return decoded messages.
+/// Fetch recent chat events for a shared ECDH key and return decoded messages.
 ///
-/// This uses a wide (7 day) lookback for resiliency on restart / relay lag, and
-/// then unwraps each event with `unwrap_chat_message`.
+/// Subscribes by `authors = [pub(K_sign)]` (kind 14). Also tries the legacy
+/// gift-wrap `#p` filter so dual-read hydration still works during migration.
 pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
 ) -> Result<Vec<(String, i64, PublicKey)>> {
+    fetch_chat_messages_for_shared_key(client, shared_keys, None).await
+}
+
+/// Like [`fetch_gift_wraps_for_shared_key`], with optional inner-signer allow-list.
+pub async fn fetch_chat_messages_for_shared_key(
+    client: &Client,
+    shared_keys: &Keys,
+    allowed_signers: Option<&[PublicKey]>,
+) -> Result<Vec<(String, i64, PublicKey)>> {
     let now = Timestamp::now().as_secs();
     let seven_days_secs: u64 = 7 * 24 * 60 * 60;
     let wide_since = now.saturating_sub(seven_days_secs);
+    let since = Timestamp::from(wide_since);
 
-    let shared_pubkey = shared_keys.public_key();
-    let filter = chat_filter(shared_pubkey)
-        .since(Timestamp::from(wide_since))
+    let (_conv, sign) = chat_keys_from_ecdh(shared_keys)
+        .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
+
+    let kind14_filter = chat_filter(sign.public_key()).since(since).limit(100);
+    // Dual-read: legacy gift wraps addressed to the ECDH pubkey (superseded p tag).
+    let giftwrap_filter = mostro_core::chat::giftwrap_chat_filter(shared_keys.public_key())
+        .since(since)
         .limit(100);
 
-    let events = client
-        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+    let mut events: Vec<Event> = client
+        .fetch_events(kind14_filter, FETCH_EVENTS_TIMEOUT)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch admin chat events for shared key: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to fetch kind-14 chat events: {e}"))?
+        .into_iter()
+        .collect();
+
+    if let Ok(legacy) = client
+        .fetch_events(giftwrap_filter, FETCH_EVENTS_TIMEOUT)
+        .await
+    {
+        for ev in legacy {
+            if events.iter().all(|e| e.id != ev.id) {
+                events.push(ev);
+            }
+        }
+    }
 
     let mut messages = Vec::new();
     for wrapped in events.iter() {
-        match unwrap_giftwrap_with_shared_key(shared_keys, wrapped).await {
+        match unwrap_giftwrap_with_shared_key(shared_keys, wrapped, allowed_signers).await {
             Ok((content, ts, sender_pubkey)) => {
                 messages.push((content, ts, sender_pubkey));
             }
             Err(e) => {
-                log::warn!(
-                    "Failed to unwrap gift wrap for shared key {}: {}",
-                    wrapped.id,
-                    e
-                );
+                log::warn!("Failed to unwrap chat event {}: {}", wrapped.id, e);
             }
         }
     }
@@ -202,9 +261,6 @@ pub async fn fetch_gift_wraps_for_shared_key(
 }
 
 /// Fetch and collect new messages for a single (dispute, party) shared key.
-///
-/// Rebuilds `Keys` from the stored hex, fetches gift wraps addressed to that
-/// shared key's pubkey, filters by `last_seen`, and appends results to `by_key`.
 async fn fetch_party_messages(
     client: &Client,
     dispute_id: &str,
@@ -234,11 +290,6 @@ async fn fetch_party_messages(
 }
 
 /// Fetch admin chat updates for all active disputes using per-dispute shared keys.
-///
-/// For each (dispute, party) that has a stored `shared_key_hex`, we rebuild the
-/// `Keys`, fetch gift wrap events addressed to the shared key's public key, and
-/// apply `last_seen_timestamp` filtering. Messages are grouped into
-/// `AdminChatUpdate` results the same way as before.
 pub async fn fetch_admin_chat_updates(
     client: &Client,
     disputes: &[AdminDispute],
@@ -247,7 +298,6 @@ pub async fn fetch_admin_chat_updates(
     let mut by_key: AdminChatByKey = HashMap::new();
 
     for d in disputes {
-        // Only fetch for InProgress disputes
         let is_in_progress = d
             .status
             .as_deref()
@@ -283,11 +333,11 @@ pub async fn fetch_admin_chat_updates(
     Ok(updates)
 }
 
-/// Fetch chat messages for the Observer tab using a pasted shared key hex.
+/// Fetch chat messages for the Observer tab using a pasted ECDH shared key hex.
 ///
-/// Converts the hex to `Keys`, fetches gift wraps from the last 7 days,
-/// decrypts them, assigns Buyer/Seller/Admin roles by pubkey order, and
-/// returns `DisputeChatMessage` items ready for display.
+/// Derives `K_conv` / `K_sign` for fetch/decrypt. Observer UX that accepts
+/// `K_conv`-only disclosure is Step 6; this path still expects the ECDH secret
+/// Mostrix stores today (which can derive both keys).
 pub async fn fetch_observer_chat(
     client: &Client,
     shared_key_hex: &str,
@@ -302,7 +352,6 @@ pub async fn fetch_observer_chat(
 
     let raw = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
 
-    // Map pubkeys to roles: admin (if known) → Admin, first unknown → Buyer, second → Seller
     let mut role_map: HashMap<PublicKey, ChatSender> = HashMap::new();
     if let Some(apk) = admin_pubkey {
         role_map.insert(*apk, ChatSender::Admin);
@@ -435,18 +484,36 @@ mod tests {
         let receiver = Keys::generate();
         let shared = SharedKey::derive(sender.secret_key(), &receiver.public_key())
             .expect("shared key derives");
-        let shared_pubkey = shared.public_key();
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
 
         let content = "hello from test";
-        let wrapped = wrap_chat_message(&sender, &shared_pubkey, content)
+        let wrapped = wrap_chat_message(&sender, &conv, &sign, content)
             .await
             .expect("wrap_chat_message succeeds");
 
-        let unwrapped = unwrap_chat_message(shared.keys(), &wrapped)
-            .await
-            .expect("unwrap_chat_message succeeds");
+        assert_eq!(wrapped.kind, Kind::PrivateDirectMessage);
+        assert_eq!(wrapped.pubkey, sign.public_key());
 
-        assert_eq!(unwrapped.sender, sender.public_key());
-        assert_eq!(unwrapped.content, content);
+        let allowed = [sender.public_key(), receiver.public_key()];
+        let unwrapped = unwrap_giftwrap_with_shared_key(shared.keys(), &wrapped, Some(&allowed))
+            .await
+            .expect("unwrap succeeds");
+
+        assert_eq!(unwrapped.2, sender.public_key());
+        assert_eq!(unwrapped.0, content);
+    }
+
+    #[test]
+    fn chat_keys_from_shared_hex_matches_derive() {
+        let a = Keys::generate();
+        let b = Keys::generate();
+        let hex = derive_shared_key_hex(Some(&a), Some(b.public_key().to_string().as_str()))
+            .expect("hex");
+        let (conv, sign) = chat_keys_from_shared_hex(&hex).expect("chat keys");
+        let (conv2, sign2) = derive_shared_keys(Some(&a), Some(&b.public_key()))
+            .and_then(|ecdh| chat_keys_from_ecdh(&ecdh))
+            .expect("from ecdh");
+        assert_eq!(conv.public_key(), conv2.public_key());
+        assert_eq!(sign.public_key(), sign2.public_key());
     }
 }

@@ -454,7 +454,7 @@ pub async fn listen_for_chat_messages(
                 let Some(target) = targets.get(&target_pubkey) else {
                     continue;
                 };
-                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event).await {
+                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event, None).await {
                     Ok((content, ts, sender)) => {
                         emit_messages(
                             target,
