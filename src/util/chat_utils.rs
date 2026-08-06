@@ -40,6 +40,20 @@ pub fn derive_shared_keys(
         .map(|shared| shared.keys().clone())
 }
 
+/// Clamp a chat `since` cursor to the client's clock.
+///
+/// Protocol requirement: persisted `since` MUST be `min(accepted_ts, local_now)`.
+/// Without this, a counterparty can date a message far in the future, poison the
+/// cursor, and permanently silence the conversation until that date.
+pub fn clamp_chat_since_cursor(accepted_ts: i64, local_now: i64) -> i64 {
+    accepted_ts.min(local_now)
+}
+
+/// [`clamp_chat_since_cursor`] against [`Timestamp::now`].
+pub fn clamp_chat_since_cursor_now(accepted_ts: i64) -> i64 {
+    clamp_chat_since_cursor(accepted_ts, Timestamp::now().as_secs() as i64)
+}
+
 /// Derive a shared ECDH secret and return it as hex for DB persistence.
 ///
 /// The persisted hex is the ECDH IKM, not `K_conv` / `K_sign`. It round-trips
@@ -204,27 +218,34 @@ pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
 ) -> Result<Vec<(String, i64, PublicKey)>> {
-    fetch_chat_messages_for_shared_key(client, shared_keys, None).await
+    fetch_chat_messages_for_shared_key(client, shared_keys, None, None).await
 }
 
-/// Like [`fetch_gift_wraps_for_shared_key`], with optional inner-signer allow-list.
+/// Like [`fetch_gift_wraps_for_shared_key`], with optional inner-signer allow-list
+/// and optional last-seen `since` cursor (clamped to local now; lookback capped
+/// at seven days when the cursor is older or absent).
 pub async fn fetch_chat_messages_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
     allowed_signers: Option<&[PublicKey]>,
+    since: Option<i64>,
 ) -> Result<Vec<(String, i64, PublicKey)>> {
-    let now = Timestamp::now().as_secs();
-    let seven_days_secs: u64 = 7 * 24 * 60 * 60;
-    let wide_since = now.saturating_sub(seven_days_secs);
-    let since = Timestamp::from(wide_since);
+    let local_now = Timestamp::now().as_secs() as i64;
+    let seven_days_secs: i64 = 7 * 24 * 60 * 60;
+    let lookback_floor = local_now.saturating_sub(seven_days_secs);
+    let since_secs = match since {
+        Some(ts) => clamp_chat_since_cursor(ts, local_now).max(lookback_floor),
+        None => lookback_floor,
+    } as u64;
+    let since_ts = Timestamp::from(since_secs);
 
     let (_conv, sign) = chat_keys_from_ecdh(shared_keys)
         .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
 
-    let kind14_filter = chat_filter(sign.public_key()).since(since).limit(100);
+    let kind14_filter = chat_filter(sign.public_key()).since(since_ts).limit(100);
     // Dual-read: legacy gift wraps addressed to the ECDH pubkey (superseded p tag).
     let giftwrap_filter = mostro_core::chat::giftwrap_chat_filter(shared_keys.public_key())
-        .since(since)
+        .since(since_ts)
         .limit(100);
 
     // Run both fetches independently so a transient failure of either query does
@@ -299,7 +320,9 @@ async fn fetch_party_messages(
         return;
     };
 
-    let Ok(messages) = fetch_gift_wraps_for_shared_key(client, &shared_keys).await else {
+    let Ok(messages) =
+        fetch_chat_messages_for_shared_key(client, &shared_keys, None, Some(last_seen)).await
+    else {
         return;
     };
 
@@ -546,6 +569,14 @@ mod tests {
         EventBuilder::text_note(content)
             .sign_with_keys(keys)
             .expect("sign event")
+    }
+
+    #[test]
+    fn clamp_chat_since_cursor_caps_future_poison() {
+        let now = 1_700_000_000_i64;
+        assert_eq!(clamp_chat_since_cursor(now + 86_400, now), now);
+        assert_eq!(clamp_chat_since_cursor(now - 10, now), now - 10);
+        assert_eq!(clamp_chat_since_cursor(now, now), now);
     }
 
     #[test]

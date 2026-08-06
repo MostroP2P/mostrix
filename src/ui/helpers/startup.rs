@@ -17,7 +17,7 @@ use crate::ui::{
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat},
-    chat_utils::derive_shared_key_hex,
+    chat_utils::{clamp_chat_since_cursor_now, derive_shared_key_hex},
     seed_admin_chat_last_seen,
 };
 
@@ -88,7 +88,7 @@ fn update_last_seen_timestamp(
             last_seen_timestamp: None,
         });
     if buyer_max_timestamp > buyer_entry.last_seen_timestamp.unwrap_or(0) {
-        buyer_entry.last_seen_timestamp = Some(buyer_max_timestamp);
+        buyer_entry.last_seen_timestamp = Some(clamp_chat_since_cursor_now(buyer_max_timestamp));
     }
 
     let seller_entry = admin_chat_last_seen
@@ -97,7 +97,7 @@ fn update_last_seen_timestamp(
             last_seen_timestamp: None,
         });
     if seller_max_timestamp > seller_entry.last_seen_timestamp.unwrap_or(0) {
-        seller_entry.last_seen_timestamp = Some(seller_max_timestamp);
+        seller_entry.last_seen_timestamp = Some(clamp_chat_since_cursor_now(seller_max_timestamp));
     }
 }
 
@@ -161,7 +161,8 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
                 let since = app
                     .order_chat_last_seen
                     .get(&row.id)
-                    .and_then(|s| s.last_seen_timestamp);
+                    .and_then(|s| s.last_seen_timestamp)
+                    .map(clamp_chat_since_cursor_now);
                 track_order_chat(row.id.clone(), shared_hex, trade_keys.public_key(), since);
             }
         }
@@ -185,7 +186,8 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
                     let since = app
                         .admin_chat_last_seen
                         .get(&(dispute.dispute_id.clone(), party))
-                        .and_then(|s| s.last_seen_timestamp);
+                        .and_then(|s| s.last_seen_timestamp)
+                        .map(clamp_chat_since_cursor_now);
                     track_dispute_chat(dispute.dispute_id.clone(), party, hex.to_string(), since);
                 }
             }
@@ -214,7 +216,7 @@ pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppSt
             app.order_chat_last_seen.insert(
                 order_id.clone(),
                 OrderChatLastSeen {
-                    last_seen_timestamp: Some(max_ts),
+                    last_seen_timestamp: Some(clamp_chat_since_cursor_now(max_ts)),
                 },
             );
         }
@@ -475,7 +477,7 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
         app.order_chat_last_seen.insert(
             order_id,
             OrderChatLastSeen {
-                last_seen_timestamp: Some(max_ts),
+                last_seen_timestamp: Some(clamp_chat_since_cursor_now(max_ts)),
             },
         );
     }
@@ -627,15 +629,16 @@ pub async fn apply_admin_chat_updates(
             .or_insert_with(|| AdminChatLastSeen {
                 last_seen_timestamp: None,
             });
-        if max_ts > entry.last_seen_timestamp.unwrap_or(0) {
-            entry.last_seen_timestamp = Some(max_ts);
+        let clamped_max = clamp_chat_since_cursor_now(max_ts);
+        if clamped_max > entry.last_seen_timestamp.unwrap_or(0) {
+            entry.last_seen_timestamp = Some(clamped_max);
         }
 
-        if max_ts > 0 {
+        if clamped_max > 0 {
             if let Err(e) = AdminDispute::update_chat_last_seen_by_dispute_id(
                 pool,
                 &dispute_key,
-                max_ts,
+                clamped_max,
                 party == ChatParty::Buyer,
             )
             .await
