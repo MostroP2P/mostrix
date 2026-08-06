@@ -1,12 +1,12 @@
 //! Shared-key chat subscription router (P2P order chat + admin dispute chat).
 //!
-//! Replaces the previous 2-second timed `fetch_events` polling with a single
-//! long-lived subscription, mirroring Mostro Mobile's `SubscriptionManager`: one
-//! relay subscription whose filter batches **all** active shared-key pubkeys
-//! (`kind: 1059`, `#p: [shared pubkeys]`). Incoming gift wraps are routed to the
-//! owning chat by matching the event's `p` tag against the tracked pubkey set,
-//! decrypted with the per-channel shared `Keys`, and emitted on the existing
-//! `admin_chat_updates` / `user_order_chat_updates` channels so the
+//! Long-lived dual-read subscriptions (migration window):
+//! * legacy GiftWrap (`kind: 1059`, `#p: [ECDH pubkeys]`)
+//! * gift-wrap-free kind 14 (`authors: [pub(K_sign)]`)
+//!
+//! Incoming events are routed to the owning chat, decrypted with the per-channel
+//! ECDH secret (`K_conv` / `K_sign` derived at unwrap), and emitted on the
+//! existing `admin_chat_updates` / `user_order_chat_updates` channels so the
 //! `apply_*_chat_updates` handlers stay unchanged.
 //!
 //! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): the task is spawned once at
@@ -25,8 +25,8 @@ use crate::models::Order;
 use crate::ui::helpers::order_chat_since_from_file;
 use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate};
 use crate::util::chat_utils::{
-    derive_shared_key_hex, fetch_gift_wraps_for_shared_key, keys_from_shared_hex,
-    unwrap_giftwrap_with_shared_key,
+    chat_keys_from_ecdh, derive_shared_key_hex, fetch_gift_wraps_for_shared_key,
+    keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
 };
 
 /// Identifies which chat a shared key belongs to.
@@ -58,9 +58,30 @@ pub enum ChatRouterCmd {
 /// Per-tracked-key routing metadata.
 struct ChatTarget {
     key_id: ChatKeyId,
+    /// ECDH IKM keys (persisted hex); GiftWrap `#p` lookup uses [`Keys::public_key`].
     shared_keys: Keys,
+    /// `pub(K_sign)` — kind-14 outer author used for live `authors` filter / routing.
+    sign_pubkey: PublicKey,
     /// Order chat only; enables echo-skip in `apply_user_order_chat_updates`.
     local_trade_pubkey: Option<PublicKey>,
+}
+
+/// Live subscription ids for the dual-read migration window.
+#[derive(Default)]
+struct LiveSubs {
+    giftwrap: Option<SubscriptionId>,
+    kind14: Option<SubscriptionId>,
+}
+
+impl LiveSubs {
+    async fn clear(&mut self, client: &Client) {
+        if let Some(id) = self.giftwrap.take() {
+            client.unsubscribe(&id).await;
+        }
+        if let Some(id) = self.kind14.take() {
+            client.unsubscribe(&id).await;
+        }
+    }
 }
 
 /// Global sender published for track/untrack helpers, mirroring the DM router's
@@ -203,64 +224,99 @@ fn emit_messages(
     }
 }
 
-/// Rebuild the single batched live subscription from the current tracked set.
+/// Rebuild live subscriptions from the current tracked set.
 ///
-/// Subscribes to `kind: 1059` gift wraps addressed to all tracked shared pubkeys
-/// and, **only once the replacement subscription is live**, unsubscribes the
-/// previous one (make-before-break). Uses `.limit(0)` (live-only, same as the DM
-/// listener's `LiveOnly` mode); startup history is hydrated separately per key.
-///
-/// Make-before-break guarantees a transient subscribe failure can never leave
-/// shared-key chat offline: on failure the existing subscription (if any) stays
-/// alive and the next command or reconnect retries the rebuild. Subscribe is also
-/// retried with backoff to smooth over transient relay errors. The brief window
-/// where both subscriptions are live only yields duplicate events, which are
-/// deduped downstream by the last-seen cursors.
+/// Dual-read: GiftWrap `#p` (legacy) and kind-14 `authors = [pub(K_sign)]`.
+/// Make-before-break: only drop previous subscriptions after the replacements
+/// are live. Uses `.limit(0)` (live-only); history is hydrated separately.
 async fn resubscribe(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
-    current_sub: &mut Option<SubscriptionId>,
+    current_subs: &mut LiveSubs,
 ) {
-    // No keys remain: tear down the live subscription and return.
     if targets.is_empty() {
-        if let Some(id) = current_sub.take() {
-            client.unsubscribe(&id).await;
-        }
+        current_subs.clear(client).await;
         return;
     }
-    let pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
-    let filter = Filter::new().kind(Kind::GiftWrap).pubkeys(pubkeys).limit(0);
+
+    let ecdh_pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
+    let sign_pubkeys: Vec<PublicKey> = targets.values().map(|t| t.sign_pubkey).collect();
+
+    let giftwrap_filter = Filter::new()
+        .kind(Kind::GiftWrap)
+        .pubkeys(ecdh_pubkeys)
+        .limit(0);
+    let kind14_filter = Filter::new()
+        .kind(Kind::PrivateDirectMessage)
+        .authors(sign_pubkeys)
+        .limit(0);
 
     const MAX_ATTEMPTS: u32 = 3;
+    let mut new_giftwrap: Option<SubscriptionId> = None;
+    let mut new_kind14: Option<SubscriptionId> = None;
+
     for attempt in 1..=MAX_ATTEMPTS {
-        match client.subscribe(filter.clone(), None).await {
+        match client.subscribe(giftwrap_filter.clone(), None).await {
             Ok(output) => {
-                log::debug!(
-                    "[chat_live] subscribed to {} shared-key chat(s) subscription_id={}",
-                    targets.len(),
-                    output.val
-                );
-                // Replacement is live; only now drop the previous subscription so a
-                // failed subscribe never leaves shared-key chat disconnected.
-                if let Some(old_id) = current_sub.replace(output.val) {
-                    client.unsubscribe(&old_id).await;
-                }
-                return;
+                new_giftwrap = Some(output.val);
+                break;
             }
             Err(e) => {
                 if attempt == MAX_ATTEMPTS {
                     log::error!(
-                        "[chat_live] failed to subscribe shared-key chats after {MAX_ATTEMPTS} attempts: {e}; keeping previous subscription alive"
+                        "[chat_live] failed to subscribe GiftWrap chats after {MAX_ATTEMPTS} attempts: {e}; keeping previous subscriptions alive"
                     );
-                } else {
-                    let delay_ms = 250u64 * (1 << (attempt - 1)); // 250ms, 500ms
-                    log::warn!(
-                        "[chat_live] subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    return;
                 }
+                let delay_ms = 250u64 * (1 << (attempt - 1));
+                log::warn!(
+                    "[chat_live] GiftWrap subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
         }
+    }
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.subscribe(kind14_filter.clone(), None).await {
+            Ok(output) => {
+                new_kind14 = Some(output.val);
+                break;
+            }
+            Err(e) => {
+                if attempt == MAX_ATTEMPTS {
+                    log::error!(
+                        "[chat_live] failed to subscribe kind-14 chats after {MAX_ATTEMPTS} attempts: {e}; rolling back new GiftWrap sub"
+                    );
+                    if let Some(id) = new_giftwrap.take() {
+                        client.unsubscribe(&id).await;
+                    }
+                    return;
+                }
+                let delay_ms = 250u64 * (1 << (attempt - 1));
+                log::warn!(
+                    "[chat_live] kind-14 subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+
+    log::debug!(
+        "[chat_live] subscribed to {} chat(s) giftwrap={:?} kind14={:?}",
+        targets.len(),
+        new_giftwrap,
+        new_kind14
+    );
+
+    if let Some(old_id) = current_subs
+        .giftwrap
+        .replace(new_giftwrap.expect("subscribed"))
+    {
+        client.unsubscribe(&old_id).await;
+    }
+    if let Some(old_id) = current_subs.kind14.replace(new_kind14.expect("subscribed")) {
+        client.unsubscribe(&old_id).await;
     }
 }
 
@@ -305,6 +361,13 @@ fn apply_chat_router_cmd(
                     hydrate: None,
                 };
             };
+            let Some((_conv, sign)) = chat_keys_from_ecdh(&shared_keys) else {
+                log::warn!("[chat_live] failed to derive K_sign for {key_id:?}; not tracking");
+                return CmdOutcome {
+                    needs_resubscribe: false,
+                    hydrate: None,
+                };
+            };
             let target_pubkey = shared_keys.public_key();
             // Idempotent: skip redundant history fetch + resubscribe if already tracked.
             if targets
@@ -321,6 +384,7 @@ fn apply_chat_router_cmd(
                 ChatTarget {
                     key_id,
                     shared_keys: shared_keys.clone(),
+                    sign_pubkey: sign.public_key(),
                     local_trade_pubkey,
                 },
             );
@@ -379,7 +443,7 @@ async fn hydrate_history(
 ///
 /// Spawned once at startup and respawned on client reload/reconnect (mirrors
 /// `listen_for_order_messages`). Consumes [`ChatRouterCmd`] for track/untrack and
-/// routes live `kind: 1059` gift wraps by `p` tag to the owning chat.
+/// routes live GiftWrap (`#p`) and kind-14 (`authors = pub(K_sign)`) events.
 ///
 /// Multiple buffered track/untrack commands are drained and applied before a single
 /// [`resubscribe`], so startup bursts (e.g. [`crate::ui::helpers::track_startup_chats`])
@@ -393,16 +457,14 @@ pub async fn listen_for_chat_messages(
     // Create the notification receiver BEFORE subscribing so no live event is missed.
     let mut notifications = client.notifications();
     let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
-    let mut current_sub: Option<SubscriptionId> = None;
+    let mut current_subs = LiveSubs::default();
 
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else {
                     // Sender dropped (respawn/shutdown): unsubscribe and exit.
-                    if let Some(id) = current_sub.take() {
-                        client.unsubscribe(&id).await;
-                    }
+                    current_subs.clear(&client).await;
                     break;
                 };
                 let CmdOutcome {
@@ -418,7 +480,7 @@ pub async fn listen_for_chat_messages(
                     pending_hydration.extend(outcome.hydrate);
                 }
                 if needs_resubscribe {
-                    resubscribe(&client, &targets, &mut current_sub).await;
+                    resubscribe(&client, &targets, &mut current_subs).await;
                 }
                 // Subscribe-first, then backfill: the live filter now covers the newly
                 // tracked keys, so messages published during hydration are captured
@@ -444,17 +506,10 @@ pub async fn listen_for_chat_messages(
                         continue;
                     }
                 };
-                if event.kind != Kind::GiftWrap {
-                    continue;
-                }
-                // Gift wrap recipient is the shared-key pubkey in the `p` tag.
-                let Some(target_pubkey) = event.tags.public_keys().next().copied() else {
+                let Some(target) = resolve_chat_target(&targets, &event) else {
                     continue;
                 };
-                let Some(target) = targets.get(&target_pubkey) else {
-                    continue;
-                };
-                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event).await {
+                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event, None).await {
                     Ok((content, ts, sender)) => {
                         emit_messages(
                             target,
@@ -464,12 +519,27 @@ pub async fn listen_for_chat_messages(
                         );
                     }
                     Err(e) => log::warn!(
-                        "[chat_live] failed to unwrap chat gift wrap {}: {e}",
+                        "[chat_live] failed to unwrap chat event {}: {e}",
                         event.id
                     ),
                 }
             }
         }
+    }
+}
+
+/// Route a live event to its tracked chat (GiftWrap by `#p`, kind 14 by author).
+fn resolve_chat_target<'a>(
+    targets: &'a HashMap<PublicKey, ChatTarget>,
+    event: &Event,
+) -> Option<&'a ChatTarget> {
+    match event.kind {
+        Kind::GiftWrap => {
+            let target_pubkey = event.tags.public_keys().next().copied()?;
+            targets.get(&target_pubkey)
+        }
+        Kind::PrivateDirectMessage => targets.values().find(|t| t.sign_pubkey == event.pubkey),
+        _ => None,
     }
 }
 
@@ -600,5 +670,31 @@ mod tests {
 
         assert!(!outcome.needs_resubscribe);
         assert!(outcome.hydrate.is_none());
+    }
+
+    #[test]
+    fn resolve_chat_target_routes_kind14_by_sign_author() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let _ = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: shared_hex,
+                local_trade_pubkey: None,
+                since: None,
+            },
+            &mut targets,
+        );
+        let target = targets.values().next().expect("tracked");
+        let (_conv, sign) = chat_keys_from_ecdh(&target.shared_keys).expect("chat keys");
+        // Outer kind-14 authored by K_sign
+        let event = EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
+            .tag(Tag::public_key(Keys::generate().public_key()))
+            .sign_with_keys(&sign)
+            .expect("sign");
+
+        let resolved = resolve_chat_target(&targets, &event).expect("route kind14");
+        assert_eq!(resolved.key_id, ChatKeyId::Order("order-1".to_string()));
+        assert_eq!(resolved.sign_pubkey, event.pubkey);
     }
 }

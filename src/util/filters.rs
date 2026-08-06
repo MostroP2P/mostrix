@@ -28,6 +28,7 @@ pub fn filter_protocol_dm_from_mostro(
     mostro_pubkey: PublicKey,
     trade_pubkey: PublicKey,
 ) -> Filter {
+    #[allow(deprecated)]
     match transport {
         Transport::GiftWrap => filter_giftwrap_to_recipient(trade_pubkey),
         Transport::Nip44Direct if mostro_pubkey == trade_pubkey => Filter::new()
@@ -68,6 +69,7 @@ pub fn create_filter(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use mostro_core::prelude::Transport;

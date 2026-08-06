@@ -2138,15 +2138,16 @@ dependencies = [
 
 [[package]]
 name = "mostro-core"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d763fddd85d86033f78dacadb8b75041100af7dae4d50e5bea9dc91fc1a1d24c"
+version = "0.14.1"
+source = "git+https://github.com/MostroP2P/mostro-core?rev=f2f4480ccf1374076985547b6f82c630d359bd9f#f2f4480ccf1374076985547b6f82c630d359bd9f"
 dependencies = [
  "bitcoin",
  "chrono",
+ "hkdf",
  "nostr-sdk",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
  "wasm-bindgen",
 ]

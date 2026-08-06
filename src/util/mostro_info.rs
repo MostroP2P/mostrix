@@ -162,6 +162,7 @@ pub fn instance_bonds_enabled(instance: Option<&MostroInstanceInfo>) -> bool {
 pub fn transport_from_instance(info: Option<&MostroInstanceInfo>) -> Transport {
     match info.and_then(|i| i.protocol_version) {
         Some(2) => Transport::Nip44Direct,
+        #[allow(deprecated)]
         _ => Transport::GiftWrap,
     }
 }
@@ -311,6 +312,7 @@ pub async fn fetch_mostro_instance_info_from_settings(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use mostro_core::prelude::Transport;

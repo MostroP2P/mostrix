@@ -192,6 +192,7 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
 }
 
 fn transport_display_label(transport: Transport) -> &'static str {
+    #[allow(deprecated)]
     match transport {
         Transport::GiftWrap => "GiftWrap (NIP-59)",
         Transport::Nip44Direct => "NIP-44 direct",

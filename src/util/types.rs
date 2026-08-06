@@ -83,5 +83,8 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::CashuSignatureMissing => {
             "Cashu signature missing from the request".to_string()
         }
+        CantDoReason::PriceTooStale => {
+            "Price quote is too stale — refresh the rate and try again".to_string()
+        }
     }
 }
