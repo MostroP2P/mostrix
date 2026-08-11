@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
+use crate::ui::helpers::format_premium;
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_orders_tab(
@@ -83,6 +84,7 @@ pub fn render_orders_tab(
             Cell::from("₿ Amount").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("💱 Fiat").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("💵 Fiat Amt").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("± Premium").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("💳 Payment Method").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
         ];
@@ -136,6 +138,7 @@ pub fn render_orders_tab(
                 };
 
                 let payment_method_cell = Cell::from(order.payment_method.clone());
+                let premium_cell = premium_cell(order.premium);
 
                 // Missing created_at must not fall back to epoch (unwrap_or(0)); propagate None.
                 let date_cell = Cell::from(
@@ -157,6 +160,7 @@ pub fn render_orders_tab(
                     amount_cell,
                     fiat_code_cell,
                     fiat_amount_cell,
+                    premium_cell,
                     payment_method_cell,
                     date_cell,
                 ]);
@@ -178,6 +182,7 @@ pub fn render_orders_tab(
                 Constraint::Max(12),
                 Constraint::Max(10),
                 Constraint::Max(12),
+                Constraint::Max(10),
                 Constraint::Min(15),
                 Constraint::Max(18),
             ],
@@ -192,5 +197,57 @@ pub fn render_orders_tab(
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(table, area);
+    }
+}
+
+fn premium_cell(premium: i64) -> Cell<'static> {
+    let (text, color) = format_premium(premium);
+    Cell::from(text).style(Style::default().fg(color))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use crate::ui::UserRole;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn render_at_width(width: u16, premium: i64) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![SmallOrder {
+            kind: Some(mostro_core::order::Kind::Buy),
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            amount: 50_000,
+            premium,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }]));
+        let app = AppState::new(UserRole::User);
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, 0, &app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn orders_table_renders_premium_column() {
+        let buf = render_at_width(130, -3);
+        assert!(buffer_contains(&buf, "Premium"));
+        assert!(buffer_contains(&buf, "-3%"));
+        assert!(buffer_contains(&buf, "SEPA"));
     }
 }

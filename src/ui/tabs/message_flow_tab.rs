@@ -537,11 +537,7 @@ fn sats_display(order: Option<&SmallOrder>, sat_amount: Option<i64>) -> String {
 fn premium_display(order: Option<&SmallOrder>) -> (String, Color) {
     match order {
         None => ("—".to_string(), Color::DarkGray),
-        Some(order) => match order.premium {
-            0 => ("0%".to_string(), Color::Gray),
-            p if p > 0 => (format!("+{p}%"), Color::Green),
-            p => (format!("{p}%"), Color::Red),
-        },
+        Some(order) => helpers::format_premium(order.premium),
     }
 }
 

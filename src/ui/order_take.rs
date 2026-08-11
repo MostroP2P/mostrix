@@ -3,21 +3,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use crate::ui::helpers::format_premium;
+
 use super::{TakeOrderState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
     // Adjust height based on whether it's a range order (needs input field and error)
-    // Calculate total height needed: sum of all constraints + borders (2 lines)
-    // Base constraints: spacer(1) + title(2) + separator(1) + kind(1) + currency(1) + fiat(1) + payment(1) + separator(1) + buttons(5) + help(1) = 15
+    // Calculate total height needed from the fixed constraints and surrounding popup space.
+    // Base constraints: spacer(1) + title(2) + separator(1) + kind(1) + currency(1) + fiat(1) + payment(1) + premium(1) + buttons(3) + help(1) = 13
     // For range: + label(1) + input(3) + error(1) + spacer(1) = +6 (always reserve error space to prevent resizing)
-    // Borders: top(1) + bottom(1) = 2
+    // Popup border and vertical breathing room: +4
     // IMPORTANT: Always use fixed height for range orders to prevent popup from moving when typing
     let popup_height = if take_state.is_range_order {
-        23 // Base(15) + range(6) + borders(2) = 23 (fixed, never changes)
+        23 // Base(13) + range(6) + popup space(4) = 23 (fixed, never changes)
     } else {
-        17 // Base(15) + borders(2) = 17
+        17 // Base(13) + popup space(4) = 17
     };
     // Center the popup using Flex::Center
     let popup = {
@@ -41,6 +43,7 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         Constraint::Length(1), // currency
         Constraint::Length(1), // fiat amount (or range)
         Constraint::Length(1), // payment method
+        Constraint::Length(1), // premium
     ];
 
     // Add input field and error for range orders
@@ -51,7 +54,6 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         constraints.push(Constraint::Length(1)); // error message (always reserve space, even if empty)
     }
 
-    constraints.push(Constraint::Length(1)); // separator
     constraints.push(Constraint::Length(3)); // YES/NO buttons (need space for borders, margins, and content)
     if take_state.is_range_order {
         constraints.push(Constraint::Length(1)); // spacer for buttons
@@ -138,14 +140,24 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         inner_chunks[6],
     );
 
+    let (premium_text, premium_color) = format_premium(take_state.order.premium);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("Premium: "),
+            Span::styled(premium_text, Style::default().fg(premium_color)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[7],
+    );
+
     // Input field for range orders
-    // Calculate button index: buttons come after separator
-    // For range orders: indices 0-6 (base), 7-9 (range fields), 10 (separator), 11 (buttons)
-    // For non-range: indices 0-6 (base), 7 (separator), 8 (buttons)
+    // Calculate button index: buttons come after premium and any range fields
+    // For range orders: indices 0-6 (base), 7 (premium), 8-10 (range fields), 11 (buttons)
+    // For non-range: indices 0-6 (base), 7 (premium), 8 (buttons)
     let button_idx = if take_state.is_range_order {
-        11 // separator at 10, buttons at 11
+        11 // range fields at 8-10, buttons at 11
     } else {
-        8 // separator at 7, buttons at 8
+        8 // premium at 7, buttons at 8
     };
 
     if take_state.is_range_order {
@@ -164,7 +176,7 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
                 Span::raw("):"),
             ]))
             .alignment(ratatui::layout::Alignment::Center),
-            inner_chunks[7],
+            inner_chunks[8],
         );
 
         // Input box with borders
@@ -184,7 +196,7 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         };
 
         // Create a smaller input box centered in the area
-        let input_area = inner_chunks[8];
+        let input_area = inner_chunks[9];
         let input_width = (input_area.width * 2 / 3).min(30); // Max 30 chars wide, 2/3 of available width
         let input_x = input_area.x + (input_area.width.saturating_sub(input_width)) / 2;
         let input_rect = Rect {
@@ -217,7 +229,7 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         );
 
         // Error message - always render in reserved space (show empty if no error)
-        let error_chunk = inner_chunks[9];
+        let error_chunk = inner_chunks[10];
         if let Some(error_msg) = &take_state.validation_error {
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
@@ -354,5 +366,59 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
             .alignment(ratatui::layout::Alignment::Center),
             inner_chunks[help_idx],
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mostro_core::prelude::SmallOrder;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn render_take_order(is_range_order: bool) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let take_state = TakeOrderState {
+            order: SmallOrder {
+                fiat_code: "MXN".to_string(),
+                fiat_amount: 500,
+                min_amount: is_range_order.then_some(500),
+                max_amount: is_range_order.then_some(1_000),
+                premium: -3,
+                payment_method: "SPEI".to_string(),
+                ..Default::default()
+            },
+            amount_input: String::new(),
+            is_range_order,
+            validation_error: None,
+            selected_button: true,
+        };
+        terminal
+            .draw(|f| render_order_take(f, &take_state))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn take_order_shows_premium_for_fixed_and_range_orders() {
+        for is_range_order in [false, true] {
+            let buf = render_take_order(is_range_order);
+            assert!(buffer_contains(&buf, "Premium:"));
+            assert!(buffer_contains(&buf, "-3%"));
+            assert!(buffer_contains(&buf, "SPEI"));
+            assert!(buffer_contains(&buf, "YES"));
+        }
     }
 }

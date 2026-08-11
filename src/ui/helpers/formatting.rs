@@ -1,5 +1,6 @@
 use chrono::Utc;
 use mostro_core::prelude::UserInfo;
+use ratatui::style::Color;
 
 use crate::models::AdminDispute;
 
@@ -33,6 +34,16 @@ pub fn format_order_id(order_id: Option<uuid::Uuid>) -> String {
         )
     } else {
         "Order: Unknown".to_string()
+    }
+}
+
+/// Formats an order premium with an explicit sign and its semantic UI color.
+#[must_use]
+pub fn format_premium(premium: i64) -> (String, Color) {
+    match premium {
+        0 => ("0%".to_string(), Color::Gray),
+        value if value > 0 => (format!("+{value}%"), Color::Green),
+        value => (format!("{value}%"), Color::Red),
     }
 }
 
@@ -128,5 +139,17 @@ mod relative_time_tests {
     #[test]
     fn future_timestamp_clamps_to_just_now() {
         assert_eq!(relative_time_compact_from(2_000, 1_000), "just now");
+    }
+}
+
+#[cfg(test)]
+mod premium_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_sign_and_uses_semantic_color() {
+        assert_eq!(format_premium(2), ("+2%".to_string(), Color::Green));
+        assert_eq!(format_premium(-3), ("-3%".to_string(), Color::Red));
+        assert_eq!(format_premium(0), ("0%".to_string(), Color::Gray));
     }
 }
