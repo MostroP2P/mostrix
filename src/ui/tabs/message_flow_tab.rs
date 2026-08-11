@@ -18,6 +18,7 @@ use crate::ui::orders::{
 };
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// Renders the order-message list and the selected trade timeline.
 pub fn render_messages_tab(
     f: &mut ratatui::Frame,
     area: Rect,
