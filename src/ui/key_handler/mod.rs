@@ -73,6 +73,16 @@ fn is_terminal_order_status(status: Option<Status>) -> bool {
     )
 }
 
+/// Mostro only accepts a dispute once the trade is under way: sats locked and the fiat leg
+/// in flight. `None` (status not yet synced locally) is let through so a lagging local DB
+/// never blocks the user — Mostro answers `CantDo` if it disagrees.
+fn can_dispute_order_status(status: Option<Status>) -> bool {
+    match status {
+        None => true,
+        Some(s) => matches!(s, Status::Active | Status::FiatSent),
+    }
+}
+
 // Re-export public functions
 pub use async_tasks::{
     apply_pending_fetch_scheduler_reload, apply_pending_key_reload, apply_pending_runtime_reloads,
@@ -1063,6 +1073,31 @@ pub fn handle_key_event(
                         return Some(true);
                     }
                 }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if matches!(status, Some(Status::Dispute)) {
+                            app.mode = UiMode::operation_result(OperationResult::Info(
+                                "This order already has an open dispute.".to_string(),
+                            ));
+                            return Some(true);
+                        }
+                        if !can_dispute_order_status(status) {
+                            app.mode = UiMode::operation_result(OperationResult::Info(
+                                crate::ui::constants::HELP_MY_TRADES_DISPUTE_UNAVAILABLE
+                                    .to_string(),
+                            ));
+                            return Some(true);
+                        }
+                        let msg = crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG;
+                        let view_state = build_order_action_view_state(
+                            order_id,
+                            Action::Dispute,
+                            msg.to_string(),
+                        );
+                        app.mode = UiMode::ViewingMessage(view_state);
+                        return Some(true);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1379,6 +1414,26 @@ mod key_handler_tests {
     use super::*;
     use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn dispute_is_allowed_only_while_the_trade_is_under_way() {
+        assert!(can_dispute_order_status(Some(Status::Active)));
+        assert!(can_dispute_order_status(Some(Status::FiatSent)));
+
+        // Nothing to dispute before the sats are locked or after the trade is closed.
+        assert!(!can_dispute_order_status(Some(Status::Pending)));
+        assert!(!can_dispute_order_status(Some(Status::WaitingPayment)));
+        assert!(!can_dispute_order_status(Some(Status::WaitingBuyerInvoice)));
+        assert!(!can_dispute_order_status(Some(Status::Success)));
+        assert!(!can_dispute_order_status(Some(Status::Canceled)));
+        assert!(!can_dispute_order_status(Some(Status::Expired)));
+    }
+
+    #[test]
+    fn unknown_status_does_not_block_dispute() {
+        // Local status can lag behind Mostro; let the daemon be the one to say no.
+        assert!(can_dispute_order_status(None));
+    }
 
     #[test]
     fn paste_shortcut_accepts_shift_insert_and_ctrl_v() {

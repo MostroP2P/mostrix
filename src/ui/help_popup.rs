@@ -374,6 +374,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_SHIFT_F_FIAT_SENT.to_string(),
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
                 HELP_MY_TRADES_SHIFT_V_RATE.to_string(),
+                HELP_MY_TRADES_SHIFT_D_DISPUTE.to_string(),
                 HELP_MY_TRADES_CTRL_S_ATTACH.to_string(),
                 HELP_MY_TRADES_CTRL_O_SEND.to_string(),
                 HELP_MY_TRADES_CTRL_SHIFT_O_RETRY.to_string(),
@@ -409,5 +410,20 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_EXIT.to_string(),
             vec![HELP_EXIT_ENTER_CONFIRM.to_string()],
         ),
+    }
+}
+
+#[cfg(test)]
+mod help_content_tests {
+    use super::*;
+
+    #[test]
+    fn my_trades_help_lists_the_dispute_shortcut() {
+        let app = AppState::new(UserRole::User);
+        let (_, lines) = help_content(&app, Tab::User(UserTab::MyTrades));
+        assert!(
+            lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_D_DISPUTE),
+            "Shift+D missing from My Trades help: {lines:?}"
+        );
     }
 }

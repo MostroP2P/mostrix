@@ -664,6 +664,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::Canceled => "Order canceled",
         Action::AdminCanceled => "Order canceled by admin",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        Action::DisputeInitiatedByPeer => "Your counterpart opened a dispute",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived | Action::PurchaseCompleted => "Rate Counterparty completed",
         Action::Release | Action::Released => "Release",
@@ -715,6 +716,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::FiatSentOk => "Fiat Confirmed",
         Action::Release | Action::Released => "Release sats",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
+        Action::DisputeInitiatedByPeer => "Dispute by Peer",
         Action::Canceled => "Canceled",
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
@@ -761,7 +763,7 @@ pub fn message_action_emoji(action: &Action) -> &'static str {
         Action::FiatSent => "💸",
         Action::FiatSentOk => "✅",
         Action::Release | Action::Released => "🔓",
-        Action::Dispute | Action::DisputeInitiatedByYou => "⚖️",
+        Action::Dispute | Action::DisputeInitiatedByYou | Action::DisputeInitiatedByPeer => "⚖️",
         Action::Canceled => "❌",
         Action::AdminCanceled => "🛑",
         Action::Rate => "⭐",
@@ -1397,7 +1399,9 @@ pub fn message_timeline_warning(action: &Action) -> Option<&'static str> {
     match action {
         Action::Canceled => Some("Trade canceled"),
         Action::AdminCanceled => Some("Trade canceled by admin"),
-        Action::Dispute | Action::DisputeInitiatedByYou => Some("Trade in dispute state"),
+        Action::Dispute | Action::DisputeInitiatedByYou | Action::DisputeInitiatedByPeer => {
+            Some("Trade in dispute state")
+        }
         _ => None,
     }
 }
@@ -1439,6 +1443,27 @@ mod message_emoji_and_badge_tests {
     fn dispute_actions_share_the_scales_emoji() {
         assert_eq!(message_action_emoji(&Action::Dispute), "⚖️");
         assert_eq!(message_action_emoji(&Action::DisputeInitiatedByYou), "⚖️");
+        assert_eq!(message_action_emoji(&Action::DisputeInitiatedByPeer), "⚖️");
+    }
+
+    #[test]
+    fn peer_initiated_dispute_is_labelled_apart_from_our_own() {
+        assert_eq!(
+            message_action_compact_label(&Action::DisputeInitiatedByPeer),
+            "Dispute by Peer"
+        );
+        assert_eq!(
+            message_action_compact_label(&Action::DisputeInitiatedByYou),
+            "Dispute"
+        );
+    }
+
+    #[test]
+    fn peer_initiated_dispute_warns_in_the_timeline() {
+        assert_eq!(
+            message_timeline_warning(&Action::DisputeInitiatedByPeer),
+            Some("Trade in dispute state")
+        );
     }
 
     #[test]

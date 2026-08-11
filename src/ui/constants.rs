@@ -95,6 +95,7 @@ pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order (cooperat
 pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (FiatSent message)";
 pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
 pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
+pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (Dispute message)";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const HELP_MY_TRADES_CTRL_O_SEND: &str = "Ctrl+O: Send attachment (file picker)";
@@ -108,6 +109,15 @@ pub const HELP_MY_TRADES_FIAT_SENT_MSG: &str =
     "Confirm fiat sent for this order? This sends a FiatSent message.";
 pub const HELP_MY_TRADES_RELEASE_MSG: &str =
     "Release sats for this order? This sends a Release message.";
+pub const HELP_MY_TRADES_DISPUTE_MSG: &str = concat!(
+    "Open a dispute for this order?\n",
+    "\n",
+    "A solver will be assigned and can read the dispute chat.\n",
+    "Only do this if the trade is stuck — try the order chat first.",
+);
+/// Shown when Shift+D is pressed on an order whose status cannot be disputed.
+pub const HELP_MY_TRADES_DISPUTE_UNAVAILABLE: &str =
+    "Dispute is only available once the trade is active (waiting for fiat or fiat sent).";
 
 /// Multi-line body for Messages-tab confirmation when Mostro reports hold invoice paid (`HoldInvoicePaymentAccepted`).
 /// Last line matches [`HELP_MY_TRADES_CANCEL_MSG`] (cooperative cancel).
