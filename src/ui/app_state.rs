@@ -162,10 +162,10 @@ pub struct AppState {
     pub active_tab: Tab,
     pub selected_order_idx: usize,
     pub selected_dispute_idx: usize, // Selected dispute in Disputes Pending tab
-    pub selected_in_progress_idx: usize, // Selected dispute in Disputes in Progress tab
-    pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
-    pub admin_chat_input: String,    // Current message being typed by admin
-    pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
+    pub selected_dispute_id: Option<String>, // Selected dispute (by dispute id) in Disputes in Progress tab
+    pub active_chat_party: ChatParty,        // Which party the admin is currently chatting with
+    pub admin_chat_input: String,            // Current message being typed by admin
+    pub admin_chat_input_enabled: bool,      // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
     /// Selected message index for chat navigation (Up/Down) and footer hint; Save Attachment popup uses its own selection.
@@ -270,7 +270,7 @@ impl AppState {
             active_tab: initial_tab,
             selected_order_idx: 0,
             selected_dispute_idx: 0,
-            selected_in_progress_idx: 0,
+            selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
             admin_chat_input_enabled: true, // Chat input enabled by default
@@ -358,7 +358,7 @@ impl AppState {
         self.mode = UiMode::default_for_role(new_role);
         self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
-        self.selected_in_progress_idx = 0;
+        self.selected_dispute_id = None;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
         self.offline_overlay_message = None;

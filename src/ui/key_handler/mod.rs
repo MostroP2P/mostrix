@@ -19,7 +19,7 @@ use crate::ui::key_handler::chat_helpers::{
 use crate::ui::{
     helpers::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
-        get_visible_attachment_messages, is_dispute_finalized,
+        get_visible_attachment_messages, is_dispute_finalized, selected_filtered_dispute,
     },
     send_attachment_picker::{
         close_user_send_attachment_picker, explorer_selection_is_sendable_file,
@@ -520,10 +520,8 @@ pub fn handle_key_event(
 
     // Save attachment popup: Up/Down to select, Enter to save, Esc to cancel
     if matches!(app.mode, UiMode::SaveAttachmentPopup(_)) {
-        let dispute_id_key = app
-            .admin_disputes_in_progress
-            .get(app.selected_in_progress_idx)
-            .map(|d| d.dispute_id.clone());
+        let selected_dispute = selected_filtered_dispute(app);
+        let dispute_id_key = selected_dispute.as_ref().map(|d| d.dispute_id.clone());
         let list_len = dispute_id_key
             .as_ref()
             .map(|id| get_visible_attachment_messages(app, id).len())
@@ -556,8 +554,7 @@ pub fn handle_key_event(
             KeyCode::Enter => {
                 if let (Some(tx), Some(dispute), Some(id)) = (
                     save_attachment_tx,
-                    app.admin_disputes_in_progress
-                        .get(app.selected_in_progress_idx),
+                    selected_dispute.as_ref(),
                     dispute_id_key.as_ref(),
                 ) {
                     let list = get_visible_attachment_messages(app, id);
@@ -792,10 +789,7 @@ pub fn handle_key_event(
     if key_event.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
         if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-                if let Some(dispute) = app
-                    .admin_disputes_in_progress
-                    .get(app.selected_in_progress_idx)
-                {
+                if let Some(dispute) = selected_filtered_dispute(app) {
                     let list = get_visible_attachment_messages(app, &dispute.dispute_id);
                     if !list.is_empty() {
                         app.mode = UiMode::SaveAttachmentPopup(0);
@@ -931,10 +925,7 @@ pub fn handle_key_event(
             // Only handle if we're in ManagingDispute mode
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 // Open finalization popup if a dispute is selected
-                if let Some(selected_dispute) = app
-                    .admin_disputes_in_progress
-                    .get(app.selected_in_progress_idx)
-                {
+                if let Some(selected_dispute) = selected_filtered_dispute(app) {
                     if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
                         app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                             dispute_id,
@@ -956,8 +947,8 @@ pub fn handle_key_event(
                 DisputeFilter::InProgress => DisputeFilter::Finalized,
                 DisputeFilter::Finalized => DisputeFilter::InProgress,
             };
-            // Reset selection index when switching filters
-            app.selected_in_progress_idx = 0;
+            // Reset selection when switching filters
+            app.selected_dispute_id = None;
             return Some(true);
         }
 
@@ -1220,10 +1211,7 @@ pub fn handle_key_event(
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                     if !app.admin_chat_input_enabled {
-                        let dispute_id_key = app
-                            .admin_disputes_in_progress
-                            .get(app.selected_in_progress_idx)
-                            .map(|d| d.dispute_id.clone());
+                        let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                         if let Some(dispute_id_key) = dispute_id_key {
                             if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
                                 return Some(true);
@@ -1255,10 +1243,7 @@ pub fn handle_key_event(
             // Handle chat scrolling in ManagingDispute mode using ListState
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    let dispute_id_key = app
-                        .admin_disputes_in_progress
-                        .get(app.selected_in_progress_idx)
-                        .map(|d| d.dispute_id.clone());
+                    let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                     if let Some(dispute_id_key) = dispute_id_key {
                         if chat_helpers::scroll_chat_messages(app, &dispute_id_key, code) {
                             return Some(true);
@@ -1325,10 +1310,7 @@ pub fn handle_key_event(
             // Jump to bottom of chat (latest messages)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    let dispute_id_key = app
-                        .admin_disputes_in_progress
-                        .get(app.selected_in_progress_idx)
-                        .map(|d| d.dispute_id.clone());
+                    let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                     if let Some(dispute_id_key) = dispute_id_key {
                         if chat_helpers::jump_to_chat_bottom(app, &dispute_id_key) {
                             return Some(true);

@@ -303,10 +303,8 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
 fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
     match tab {
         Tab::Admin(AdminTab::DisputesInProgress) => {
-            let is_finalized = app
-                .admin_disputes_in_progress
-                .get(app.selected_in_progress_idx)
-                .and_then(crate::ui::helpers::is_dispute_finalized)
+            let is_finalized = crate::ui::helpers::selected_filtered_dispute(app)
+                .and_then(|d| crate::ui::helpers::is_dispute_finalized(&d))
                 .unwrap_or(false);
             let filter_hint = match app.dispute_filter {
                 DisputeFilter::InProgress => FILTER_VIEW_FINALIZED,

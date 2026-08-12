@@ -598,12 +598,12 @@ pub async fn apply_admin_chat_updates(
 
             if let Some(att) = &attachment {
                 app.attachment_toast = Some(build_attachment_toast(&att.filename));
-                if let Some(idx) = app
+                if app
                     .admin_disputes_in_progress
                     .iter()
-                    .position(|d| d.dispute_id == dispute_key)
+                    .any(|d| d.dispute_id == dispute_key)
                 {
-                    app.selected_in_progress_idx = idx;
+                    app.selected_dispute_id = Some(dispute_key.clone());
                     app.active_chat_party = party;
                 }
             }

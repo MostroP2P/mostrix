@@ -1,4 +1,4 @@
-use crate::ui::helpers::active_order_chat_list_len;
+use crate::ui::helpers::{active_order_chat_list_len, move_dispute_selection};
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
@@ -225,9 +225,7 @@ fn handle_up_key(
                         .min(initiated_count.saturating_sub(1));
                 }
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if !app.admin_disputes_in_progress.is_empty() && app.selected_in_progress_idx > 0 {
-                    app.selected_in_progress_idx -= 1;
-                }
+                move_dispute_selection(app, -1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = match app.messages.lock() {
                     Ok(g) => g,
@@ -375,12 +373,7 @@ fn handle_down_key(
                         .min(initiated_count.saturating_sub(1));
                 }
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if !app.admin_disputes_in_progress.is_empty()
-                    && app.selected_in_progress_idx
-                        < app.admin_disputes_in_progress.len().saturating_sub(1)
-                {
-                    app.selected_in_progress_idx += 1;
-                }
+                move_dispute_selection(app, 1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
                 let mut messages = match app.messages.lock() {
                     Ok(g) => g,
@@ -434,12 +427,7 @@ fn handle_down_key(
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Navigate within disputes in progress list
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                if !app.admin_disputes_in_progress.is_empty()
-                    && app.selected_in_progress_idx
-                        < app.admin_disputes_in_progress.len().saturating_sub(1)
-                {
-                    app.selected_in_progress_idx += 1;
-                }
+                move_dispute_selection(app, 1);
             }
         }
         UiMode::UserMode(UserMode::ConfirmingOrder { .. })

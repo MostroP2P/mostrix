@@ -1,7 +1,5 @@
 //! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
-use std::str::FromStr;
-
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,11 +10,10 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use crate::ui::constants::*;
 use crate::ui::helpers::{
     build_chat_scrollview_content, count_visible_attachments, format_user_rating,
-    get_selected_chat_message,
+    get_filtered_disputes, get_selected_chat_message,
 };
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
-use mostro_core::prelude::*;
 
 fn should_auto_scroll_chat(
     tracker: Option<&(String, ChatParty, usize)>,
@@ -30,31 +27,6 @@ fn should_auto_scroll_chat(
             tracked_dispute != dispute_id || *tracked_party != party || visible_count > *last_count
         }
     }
-}
-
-/// Filter disputes based on the current filter state.
-/// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
-fn get_filtered_disputes(app: &AppState) -> Vec<(usize, crate::models::AdminDispute)> {
-    app.admin_disputes_in_progress
-        .iter()
-        .enumerate()
-        .filter(|(_, d)| {
-            let status = d
-                .status
-                .as_deref()
-                .and_then(|s| DisputeStatus::from_str(s).ok());
-            match app.dispute_filter {
-                DisputeFilter::InProgress => status == Some(DisputeStatus::InProgress),
-                DisputeFilter::Finalized => matches!(
-                    status,
-                    Some(DisputeStatus::Settled)
-                        | Some(DisputeStatus::SellerRefunded)
-                        | Some(DisputeStatus::Released)
-                ),
-            }
-        })
-        .map(|(i, d)| (i, d.clone()))
-        .collect()
 }
 
 /// Render the "Disputes in Progress" tab for admin mode
@@ -73,14 +45,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     // Filter disputes based on current filter
     let filtered_disputes = get_filtered_disputes(app);
 
-    // Ensure selected index is within bounds of filtered list
-    // Use a local variable to avoid borrow checker issues
-    let valid_selected_idx = if filtered_disputes.is_empty() {
-        0
-    } else {
-        app.selected_in_progress_idx
-            .min(filtered_disputes.len().saturating_sub(1))
-    };
+    // Resolve the selected dispute id to its display row in the filtered list
+    let valid_selected_idx =
+        crate::ui::helpers::selected_display_idx(app, &filtered_disputes).unwrap_or(0);
 
     // 1. Sidebar - Dispute List
     let sidebar_title = match app.dispute_filter {
@@ -834,9 +801,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 }
             }
         }
-
-        // Update the selected index after rendering is complete (to avoid borrow checker issues)
-        app.selected_in_progress_idx = valid_selected_idx;
     } else {
         // No disputes available - show empty message with footer
         // Render the outer block first, then content inside it
@@ -879,9 +843,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         };
         let footer = Paragraph::new(footer_text);
         f.render_widget(footer, inner_chunks[1]);
-
-        // Reset index when no disputes are available
-        app.selected_in_progress_idx = 0;
     }
 }
 
