@@ -40,11 +40,13 @@ Shows disputes that have been taken by this admin (state: `InProgress`). This is
 
 The interface is divided into three main sections:
 
-1. **Left Sidebar (20%)**: List of disputes in progress
+1. **Left Sidebar (20%)**: List of disputes in progress (or finalized when Shift+C filter is active)
    - Shows truncated dispute IDs (safely handles short IDs without panicking)
-   - Highlighted selection with Up/Down arrow keys
+   - **Selection by dispute id** (`AppState.selected_dispute_id`), resolved through `get_filtered_disputes` / `selected_filtered_dispute` / `move_dispute_selection` in `src/ui/helpers/dispute_selection.rs` — Up/Down and all chat/finalize/attachment actions use the **visible** filtered list, never a raw index into mixed open+closed rows
+   - **Scrollable list**: stateful `List` + `ListState` keeps the highlighted row in view when disputes overflow the sidebar; vertical scrollbar when the list is taller than the panel
+   - Highlighted selection with Up/Down arrow keys (skips disputes hidden by the current filter)
    - Updates main area when selection changes
-   - Shows "No disputes in progress" when empty
+   - Shows "No disputes in progress" / "No finalized disputes" when empty
 
 2. **Main Area (80%)**:
    - **Empty State**: When no disputes are available, displays "Select a dispute from the sidebar" with a footer showing key hints (filter + `↑↓: Select Dispute | Ctrl+H: Help`). The footer is width-aware and always includes Ctrl+H for the help popup.
@@ -75,12 +77,13 @@ The interface is divided into three main sections:
 - **Party switching**: Tab key toggles between buyer and seller
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
+- **Selection safety**: chat send, Shift+F finalize, Ctrl+S save-attachment, and chat scroll all call `selected_filtered_dispute` so messages are encrypted to the shared key of the dispute the sidebar highlights (avoids silently targeting a closed dispute sorted above an open one by `taken_at DESC`)
    - **Finalization**: Press **Shift+F** for the finalize popup (💰 pay buyer / ↩️ refund seller bodies show **Admin settle** / **Admin cancel**; optional bond slash when instance `bond_enabled` is true on kind 38385; **Esc** to close). Confirm shows bond recap when bonds are enabled. Execute: `execute_finalize_dispute` → `execute_admin_settle` / `execute_admin_cancel` (`request_id`, `wait_for_dm`, `handle_mostro_response` for `CantDo`); success toast via `BondSlashChoice::finalize_success_message`. See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 - **Visual indicators**: Focus states, colors, and icons for clarity
 
 #### Keyboard Navigation
 
-- **Up/Down**: Select dispute in sidebar
+- **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible)
 - **Tab**: Switch between buyer and seller chat
 - **Type**: Start composing message (when input enabled)
 - **Enter**: Send message (when input has text)
@@ -697,7 +700,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Shift+I**: Toggle chat input enabled/disabled
 - **Ctrl+S**: Open save-attachment popup (when the current dispute/party has attachments). In the popup: **↑/↓** select attachment, **Enter** save selected to disk, **Esc** cancel.
 - **Backspace**: Delete characters from input (when input enabled)
-- **Up/Down**: Select different dispute in sidebar
+- **Up/Down**: Select different dispute in sidebar (filtered list + viewport scroll)
 
 **Visual Safety Features**:
 
@@ -735,9 +738,11 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Source Files**:
 
-- `src/ui/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, scrollbar, attachment toast, block title file count, footer hint
-- `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn`
+- `src/ui/tabs/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, **scrollable dispute sidebar** (`ListState`), chat scrollbar, attachment toast, block title file count, footer hint
+- `src/ui/helpers/dispute_selection.rs` - Shared filter + id-based selection (`get_filtered_disputes`, `selected_filtered_dispute`, `move_dispute_selection`); regression tests for mixed open/closed lists
+- `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn` (logs target dispute id on send)
 - `src/ui/key_handler/mod.rs` - Chat input handling (prioritized over other inputs), Shift+I toggle, End key, Ctrl+S open save-attachment popup and popup key handling (Up/Down/Enter/Esc)
+- `src/ui/key_handler/navigation.rs` - Up/Down dispute sidebar via `move_dispute_selection`
 - `src/ui/save_attachment_popup.rs` - Save attachment popup rendering (centered list, selection highlight, footer hint)
 - `src/ui/helpers/mod.rs` - Compatibility re-export layer for helper APIs used across UI modules
 - `src/ui/helpers/startup.rs` - Startup hydration, admin/user chat update application, and last-seen cursor updates

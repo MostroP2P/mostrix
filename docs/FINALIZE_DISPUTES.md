@@ -22,7 +22,7 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 ## User Flow
 
 1. **Navigate to Disputes**: Admin opens the "Disputes in Progress" tab
-2. **Select Dispute**: Use Up/Down arrows to select a dispute from the left sidebar
+2. **Select Dispute**: Use Up/Down arrows to select a dispute from the left sidebar (selection is by dispute id against the **filtered** InProgress/Finalized list — see `helpers/dispute_selection.rs`; the sidebar scrolls to keep the highlight visible)
 3. **Review Details**: View dispute information in the header (parties, amounts, ratings, privacy)
 4. **Chat with Parties**:
    - Use Tab to switch between buyer and seller chat views
@@ -376,7 +376,8 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 - `src/util/order_utils/execute_finalize_dispute.rs` - DB checks + dispatches settle/cancel
 - `src/util/order_utils/execute_add_invoice.rs` - `execute_add_invoice`, `execute_add_bond_invoice` / `execute_bond_payment_request_reply`
 - `src/util/dm_utils/notifications_ch_mng.rs` - `apply_open_invoice_popup_from_execute`, `present_add_invoice_popup`
-- `src/ui/disputes_in_progress_tab.rs` - Main disputes UI with chat interface
+- `src/ui/tabs/disputes_in_progress_tab.rs` - Main disputes UI with chat interface (scrollable sidebar `ListState`)
+- `src/ui/helpers/dispute_selection.rs` - Id-based selection against the filtered dispute list
 - `src/ui/key_handler/enter_handlers.rs` - Enter key handling and chat message sending
 - `src/ui/key_handler/mod.rs` - Chat input handling and clipboard operations
 - `src/ui/mod.rs` - AppState with chat storage (DisputeChatMessage, ChatSender)

@@ -22,8 +22,10 @@ pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
     pub selected_order_idx: usize,
-    pub selected_dispute_idx: usize,
-    pub selected_in_progress_idx: usize,
+    pub selected_dispute_idx: usize, // Disputes Pending (Initiated) list index
+    /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
+    /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
+    pub selected_dispute_id: Option<String>,
     pub active_chat_party: ChatParty,
     pub admin_chat_input: String,
     pub admin_chat_input_enabled: bool,
@@ -74,7 +76,7 @@ Mostrix supports two distinct roles, each with its own set of tabs and workflows
 
 Focused on trading and order management.
 
-- **Orders**: View the global order book.
+- **Orders**: View the global order book (stateful table scrolls with ↑↓ when the book is taller than the terminal; optional vertical scrollbar).
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
 - **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
@@ -90,6 +92,8 @@ Focused on dispute resolution and protocol management.
   - Comprehensive dispute information header
   - Dynamic message input with text wrapping
   - Chat history with scrolling (PageUp/PageDown)
+  - **Sidebar selection by dispute id** (`selected_dispute_id` + `selected_filtered_dispute`) so chat/finalize/attachments always target the highlighted dispute under the InProgress/Finalized filter — not a hidden closed row above it in `taken_at DESC` order
+  - **Scrollable sidebar list** (`List` + `ListState`): ↑↓ keeps the selected dispute in view when many disputes overflow the sidebar; scrollbar when the list is taller than the panel
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a shared key:
@@ -265,7 +269,11 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 Renders a table of pending orders from the Mostro network. Status and order kinds are color-coded for readability.
 
-**Source**: `src/ui/orders_tab.rs`
+- **Scrolling**: uses a stateful [`Table`](https://docs.rs/ratatui) + `TableState` so ↑↓ keeps the selected row in view when the order book is taller than the terminal (same idea as the Messages sidebar / Disputes In Progress list). A vertical scrollbar appears when row count exceeds the visible body height.
+- **Selection vs currency filter**: `selected_order_idx` still indexes the full in-memory order vec (Enter/take use that index). Render maps it to the **filtered** display-row index for highlight/scroll; if the selected row is hidden by the currency filter, highlight falls back to the first visible row.
+- **Narrow terminals** (`width < 100`): compact column set (Kind / Fiat Amt / Premium / Payment) — Premium stays visible.
+
+**Source**: `src/ui/tabs/orders_tab.rs`
 
 ### 2. Messages Tab
 
@@ -401,7 +409,7 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
   - Green for Buyer messages
   - Red for Seller messages
 
-**Source**: `src/ui/mod.rs` (color constants), `src/ui/orders_tab.rs` and `src/ui/disputes_in_progress_tab.rs` (status colors), `src/ui/disputes_in_progress_tab.rs` (chat colors)
+**Source**: `src/ui/mod.rs` (color constants), `src/ui/tabs/orders_tab.rs` and `src/ui/tabs/disputes_in_progress_tab.rs` (status colors), `src/ui/tabs/disputes_in_progress_tab.rs` (chat colors)
 
 ### 5. Admin Chat System
 
@@ -452,6 +460,7 @@ pub struct AdminChatLastSeen {
 
 #### UI Features
 
+- **Dispute selection**: `selected_dispute_id` + `selected_filtered_dispute` — send/finalize/attachments always target the sidebar highlight under the current filter.
 - **Direct input**: Type immediately without mode switching (when input enabled).
 - **Input toggle**: Press **Shift+I** to enable/disable chat input.
 - **Dynamic sizing**: Input box grows from 1 to 10 lines based on content.
@@ -459,6 +468,7 @@ pub struct AdminChatLastSeen {
 - **Scrolling**:
   - **PageUp/PageDown**: Navigate through message history.
   - **End**: Jump to bottom of chat (latest messages).
+  - **Sidebar**: ↑↓ dispute list uses stateful `List` so selection stays visible when many disputes are open.
   - **Visual scrollbar**: Right-side scrollbar shows position (↑/↓/│/█ symbols).
 - **Party filtering**:
   - Admin messages are only shown in the chat view of the party they were sent to (based on `target_party`).

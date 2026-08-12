@@ -4,7 +4,10 @@ use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
+};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::*;
@@ -71,31 +74,43 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(empty_paragraph, sidebar_area);
     } else {
+        // Stateful List keeps the selected row in view when the sidebar overflows
+        // (same pattern as Messages tab). Highlight is applied by ListState.
         let items: Vec<ListItem> = filtered_disputes
             .iter()
-            .enumerate()
-            .map(|(display_idx, (_original_idx, d))| {
-                let style = if display_idx == valid_selected_idx {
-                    Style::default().bg(PRIMARY_COLOR).fg(Color::Black)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                // Show dispute_id
+            .map(|(_original_idx, d)| {
                 let display_id = &d.dispute_id;
                 let truncated_id = if display_id.len() > 20 {
                     format!("{}...", &display_id[..20])
                 } else {
                     display_id.to_string()
                 };
-                ListItem::new(Line::from(vec![Span::styled(
+                ListItem::new(Line::from(Span::styled(
                     format!("Dispute ID: {}", truncated_id),
-                    style,
-                )]))
+                    Style::default().fg(Color::White),
+                )))
             })
             .collect();
 
-        let list = List::new(items).block(disputes_block);
-        f.render_widget(list, sidebar_area);
+        let list = List::new(items)
+            .block(disputes_block)
+            .highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
+            .highlight_symbol("▶ ")
+            .highlight_spacing(HighlightSpacing::Always);
+
+        let mut list_state = ListState::default().with_selected(Some(valid_selected_idx));
+        f.render_stateful_widget(list, sidebar_area, &mut list_state);
+
+        let visible_rows = sidebar_area.height.saturating_sub(2) as usize;
+        if filtered_disputes.len() > visible_rows && visible_rows > 0 {
+            let mut scrollbar_state =
+                ScrollbarState::new(filtered_disputes.len()).position(valid_selected_idx);
+            f.render_stateful_widget(
+                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                sidebar_area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     // 2. Main Area
@@ -848,8 +863,35 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
 #[cfg(test)]
 mod tests {
+    use super::render_disputes_in_progress;
     use super::should_auto_scroll_chat;
-    use crate::ui::ChatParty;
+    use crate::models::AdminDispute;
+    use crate::ui::{AppState, ChatParty, UserRole};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn dispute(id: &str, status: &str) -> AdminDispute {
+        AdminDispute {
+            dispute_id: id.to_string(),
+            status: Some(status.to_string()),
+            // Keep main-panel fields non-empty so render doesn't panic on unwraps.
+            initiator_pubkey: "npub1test".to_string(),
+            payment_method: "sepa".to_string(),
+            fiat_code: "USD".to_string(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn auto_scrolls_when_chat_context_changes_or_messages_arrive() {
@@ -885,5 +927,60 @@ mod tests {
             ChatParty::Buyer,
             3
         ));
+    }
+
+    /// When more disputes exist than sidebar rows, selecting a late row must
+    /// scroll the stateful list so that dispute id is visible (not stuck on
+    /// the first rows).
+    #[test]
+    fn sidebar_scrolls_to_keep_selected_dispute_visible() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = (0..20)
+            .map(|i| dispute(&format!("dip-{i:02}"), "in-progress"))
+            .collect();
+        app.selected_dispute_id = Some("dip-19".to_string());
+
+        // Tall enough for the main panel constraints; sidebar inner height is
+        // small enough that 20 rows must scroll (20% of 100 ≈ 20 cols, h=16 → ~14 rows).
+        let backend = TestBackend::new(100, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "dip-19"),
+            "selected late dispute must be visible after list scroll"
+        );
+        assert!(
+            !buffer_contains(buf, "dip-00"),
+            "first dispute should scroll off-screen when selecting the last"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_first_disputes_when_selection_is_at_top() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = (0..20)
+            .map(|i| dispute(&format!("dip-{i:02}"), "in-progress"))
+            .collect();
+        app.selected_dispute_id = Some("dip-00".to_string());
+
+        let backend = TestBackend::new(100, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "dip-00"),
+            "first dispute must stay visible when selected"
+        );
+        assert!(
+            !buffer_contains(buf, "dip-19"),
+            "last dispute should not appear while scrolled to the top"
+        );
     }
 }
