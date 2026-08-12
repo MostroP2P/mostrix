@@ -1,7 +1,7 @@
 # MostriX 🧌
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Rust Version](https://img.shields.io/badge/rust-1.96.0%2B-blue.svg)](https://www.rust-lang.org)
+[![Rust Version](https://img.shields.io/badge/rust-1.97.0%2B-blue.svg)](https://www.rust-lang.org)
 [![Coverage](https://img.shields.io/endpoint?url=https://mostrop2p.github.io/mostrix/coverage/badge.json)](https://mostrop2p.github.io/mostrix/coverage/)
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MostroP2P/mostrix)

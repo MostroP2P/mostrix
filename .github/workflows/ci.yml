@@ -66,13 +66,13 @@ jobs:
         run: cargo test --all-features
 
   msrv:
-    name: MSRV build (1.90.0)
+    name: MSRV build (1.97.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.97.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with: { cache-on-failure: true }

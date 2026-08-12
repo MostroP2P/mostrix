@@ -1,7 +1,7 @@
 [package]
 name = "mostrix"
 version = "0.2.3"
-rust-version = "1.90.0"
+rust-version = "1.97.0"
 edition = "2021"
 license = "MIT"
 authors = ["Francisco Calderón <negrunch@grunch.dev>"]

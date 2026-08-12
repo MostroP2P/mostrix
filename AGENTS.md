@@ -16,7 +16,7 @@
 
 ## Build / test
 
-Standard Cargo workflow (toolchain pinned in `rust-toolchain.toml`, currently **1.96.0**):
+Standard Cargo workflow (toolchain pinned in `rust-toolchain.toml`, currently **1.97.0**):
 
 - Build: `cargo build --all-features`
 - Lint: `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`

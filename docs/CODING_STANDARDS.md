@@ -193,7 +193,7 @@ This allows clean imports: `use crate::util::send_dm;` instead of `use crate::ut
 
 ### Before Pushing
 
-Toolchain is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) (currently **1.96.0**). Run:
+Toolchain is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) (currently **1.97.0**). Run:
 
 ```bash
 cargo fmt --all
