@@ -1,7 +1,9 @@
 use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
-use crate::ui::helpers::{build_active_order_chat_list, save_order_chat_message};
+use crate::ui::helpers::{
+    build_active_order_chat_list, save_order_chat_message, selected_filtered_dispute,
+};
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, handle_enter_finalize_popup, message_counter,
     scroll_order_chat_after_send, FinalizeDisputePopupButton,
@@ -299,18 +301,16 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             content,
         },
         |app| {
-            app.admin_disputes_in_progress
-                .get(app.selected_in_progress_idx)
-                .map(|selected_dispute| {
-                    let shared_key_hex = match app.active_chat_party {
-                        ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
-                        ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
-                    };
-                    DisputeChatTarget {
-                        dispute_id_key: selected_dispute.dispute_id.clone(),
-                        shared_key_hex,
-                    }
-                })
+            selected_filtered_dispute(app).map(|selected_dispute| {
+                let shared_key_hex = match app.active_chat_party {
+                    ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
+                    ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
+                };
+                DisputeChatTarget {
+                    dispute_id_key: selected_dispute.dispute_id.clone(),
+                    shared_key_hex,
+                }
+            })
         },
         |app, target, content| {
             prepare_admin_chat_message(&target.dispute_id_key, content, app);

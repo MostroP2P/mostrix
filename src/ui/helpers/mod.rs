@@ -28,7 +28,9 @@ pub use chat_visibility::{
     count_order_attachments, count_visible_attachments, get_order_attachment_messages,
     get_selected_chat_message, get_visible_attachment_messages, message_visible_for_party,
 };
-pub use dispute_selection::get_filtered_disputes;
+pub use dispute_selection::{
+    get_filtered_disputes, move_dispute_selection, selected_display_idx, selected_filtered_dispute,
+};
 pub use formatting::{
     format_order_id, format_premium, format_user_rating, is_dispute_finalized,
     relative_time_compact, short_order_id,

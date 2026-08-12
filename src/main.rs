@@ -79,7 +79,6 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
         match AdminDispute::get_all(pool).await {
             Ok(all_disputes) => {
                 app.admin_disputes_in_progress = all_disputes;
-                app.selected_in_progress_idx = 0;
                 log::info!(
                     "Refreshed admin disputes list: {} total disputes",
                     app.admin_disputes_in_progress.len()

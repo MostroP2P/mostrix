@@ -45,14 +45,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     // Filter disputes based on current filter
     let filtered_disputes = get_filtered_disputes(app);
 
-    // Ensure selected index is within bounds of filtered list
-    // Use a local variable to avoid borrow checker issues
-    let valid_selected_idx = if filtered_disputes.is_empty() {
-        0
-    } else {
-        app.selected_in_progress_idx
-            .min(filtered_disputes.len().saturating_sub(1))
-    };
+    // Resolve the selected dispute id to its display row in the filtered list
+    let valid_selected_idx =
+        crate::ui::helpers::selected_display_idx(app, &filtered_disputes).unwrap_or(0);
 
     // 1. Sidebar - Dispute List
     let sidebar_title = match app.dispute_filter {
@@ -806,9 +801,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 }
             }
         }
-
-        // Update the selected index after rendering is complete (to avoid borrow checker issues)
-        app.selected_in_progress_idx = valid_selected_idx;
     } else {
         // No disputes available - show empty message with footer
         // Render the outer block first, then content inside it
@@ -851,9 +843,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         };
         let footer = Paragraph::new(footer_text);
         f.render_widget(footer, inner_chunks[1]);
-
-        // Reset index when no disputes are available
-        app.selected_in_progress_idx = 0;
     }
 }
 

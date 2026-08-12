@@ -6,7 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::ui::helpers::{get_order_attachment_messages, get_visible_attachment_messages};
+use crate::ui::helpers::{
+    get_order_attachment_messages, get_visible_attachment_messages, selected_filtered_dispute,
+};
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 use super::chat::ChatAttachmentType;
@@ -18,13 +20,10 @@ const TITLE: &str = "📎 Save attachment";
 /// Renders the Save Attachment popup with a selectable list.
 /// `selected_idx` is the index into the visible attachment list (clamped inside).
 pub fn render_save_attachment_popup(f: &mut ratatui::Frame, app: &AppState, selected_idx: usize) {
-    let dispute_id_key = match app
-        .admin_disputes_in_progress
-        .get(app.selected_in_progress_idx)
-    {
-        Some(d) => d.dispute_id.as_str(),
-        None => return,
+    let Some(selected_dispute) = selected_filtered_dispute(app) else {
+        return;
     };
+    let dispute_id_key = selected_dispute.dispute_id.as_str();
 
     let list = get_visible_attachment_messages(app, dispute_id_key);
     if list.is_empty() {
