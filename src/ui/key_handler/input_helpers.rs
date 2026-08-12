@@ -139,9 +139,10 @@ pub fn send_admin_chat_message_via_shared_key(
     let client = client.clone();
     let admin_keys = admin_keys.clone();
     let message_content = message_content.trim().to_string();
+    let dispute_id_key = dispute_id_key.to_string();
 
     tokio::spawn(async move {
-        if let Err(e) = crate::util::send_admin_chat_message_via_shared_key(
+        match crate::util::send_admin_chat_message_via_shared_key(
             &client,
             &admin_keys,
             &shared_keys,
@@ -150,7 +151,12 @@ pub fn send_admin_chat_message_via_shared_key(
         )
         .await
         {
-            log::error!("Failed to send admin chat message: {}", e);
+            Ok(()) => log::info!("Admin chat message sent for dispute {}", dispute_id_key),
+            Err(e) => log::error!(
+                "Failed to send admin chat message for dispute {}: {}",
+                dispute_id_key,
+                e
+            ),
         }
     });
 }

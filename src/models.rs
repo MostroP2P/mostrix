@@ -894,7 +894,6 @@ impl AdminDispute {
         let mut disputes = sqlx::query_as::<_, AdminDispute>(
             r#"SELECT * FROM admin_disputes ORDER BY taken_at DESC"#,
         )
-        .bind(DisputeStatus::InProgress.to_string())
         .fetch_all(pool)
         .await?;
 
