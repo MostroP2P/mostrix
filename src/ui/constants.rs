@@ -94,6 +94,7 @@ pub const HELP_MY_TRADES_SHIFT_I: &str = "Shift+I: Enable/disable message input"
 pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order (cooperative cancel)";
 pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (FiatSent message)";
 pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
+pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open dispute";
 pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
@@ -108,6 +109,8 @@ pub const HELP_MY_TRADES_FIAT_SENT_MSG: &str =
     "Confirm fiat sent for this order? This sends a FiatSent message.";
 pub const HELP_MY_TRADES_RELEASE_MSG: &str =
     "Release sats for this order? This sends a Release message.";
+pub const HELP_MY_TRADES_DISPUTE_MSG: &str =
+    "Open a dispute for this order? This sends a Dispute message to Mostro.";
 
 /// Multi-line body for Messages-tab confirmation when Mostro reports hold invoice paid (`HoldInvoicePaymentAccepted`).
 /// Last line matches [`HELP_MY_TRADES_CANCEL_MSG`] (cooperative cancel).
@@ -170,6 +173,7 @@ pub const FOOTER_MYTRADES_SHIFT_I_ENABLE: &str = "Shift+I: Enable input";
 pub const FOOTER_MYTRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order";
 pub const FOOTER_MYTRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat sent";
 pub const FOOTER_MYTRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats";
+pub const FOOTER_MYTRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Dispute";
 pub const FOOTER_MYTRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty";
 pub const FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
 pub const FOOTER_MYTRADES_END_BOTTOM: &str = "End: Bottom";

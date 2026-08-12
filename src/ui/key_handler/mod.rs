@@ -147,7 +147,7 @@ fn handle_user_order_chat_input(
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::SHIFT);
             if has_shift {
-                // Let Shift+I/C/F/R/V/H be handled by shortcut logic
+                // Let Shift+I/C/F/R/D/V/H be handled by shortcut logic
                 if matches!(
                     code,
                     KeyCode::Char('i')
@@ -158,6 +158,8 @@ fn handle_user_order_chat_input(
                         | KeyCode::Char('F')
                         | KeyCode::Char('r')
                         | KeyCode::Char('R')
+                        | KeyCode::Char('d')
+                        | KeyCode::Char('D')
                         | KeyCode::Char('v')
                         | KeyCode::Char('V')
                         | KeyCode::Char('h')
@@ -1051,6 +1053,24 @@ pub fn handle_key_event(
                         let view_state = build_order_action_view_state(
                             order_id,
                             Action::Release,
+                            msg.to_string(),
+                        );
+                        app.mode = UiMode::ViewingMessage(view_state);
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
+                        if is_terminal_order_status(status) {
+                            app.mode = UiMode::operation_result(OperationResult::Info(
+                                "Dispute is disabled for terminal orders.".to_string(),
+                            ));
+                            return Some(true);
+                        }
+                        let msg = crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG;
+                        let view_state = build_order_action_view_state(
+                            order_id,
+                            Action::Dispute,
                             msg.to_string(),
                         );
                         app.mode = UiMode::ViewingMessage(view_state);

@@ -216,8 +216,10 @@ pub fn handle_enter_viewing_message(
         Action::BuyerTookOrder => Action::Cancel,
         Action::FiatSentOk => Action::Release,
         Action::CooperativeCancelInitiatedByPeer => Action::Cancel,
-        // For Shift+C/F/R confirmations, the action is already the one we want to send.
-        Action::Cancel | Action::FiatSent | Action::Release => view_state.action.clone(),
+        // For My Trades confirmations, the action is already the one we want to send.
+        Action::Cancel | Action::FiatSent | Action::Release | Action::Dispute => {
+            view_state.action.clone()
+        }
         _ => {
             // This view is sometimes used as a generic "view message" popup; if the message
             // doesn't map to a sendable action, just dismiss without error.
@@ -288,6 +290,8 @@ pub fn handle_enter_viewing_message(
                     }
                 } else if sent_cooperative_cancel_request {
                     OperationResult::Info("Cooperative cancel request sent.".to_string())
+                } else if source_action == Action::Dispute {
+                    OperationResult::Info("Dispute opened.".to_string())
                 } else {
                     OperationResult::Info("Message sent successfully".to_string())
                 };

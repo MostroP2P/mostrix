@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::ui::constants::{
     FOOTER_CTRL_O_SEND_FILE, FOOTER_CTRL_SHIFT_O_RETRY, FOOTER_CTRL_S_SAVE_FILE,
     FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-    FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL,
+    FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_D_DISPUTE,
     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_I_DISABLE,
     FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
     FOOTER_SENDING_ATTACHMENT, HELP_KEY,
@@ -534,8 +534,9 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_I_DISABLE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}",
+                    "{} | {} | {} | {}",
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
                     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
@@ -554,8 +555,9 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}",
+                    "{} | {} | {} | {}",
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
                     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
@@ -572,20 +574,21 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         if app.order_chat_input_enabled {
             Text::from(vec![
                 Line::from(format!(
-                    "{} | {} | {} | {} | {}",
+                    "{} | {} | {} | {} | {} | {}",
                     HELP_KEY,
                     FOOTER_MYTRADES_SELECT_ORDER,
                     FOOTER_MYTRADES_ENTER_SEND,
                     FOOTER_MYTRADES_SHIFT_I_DISABLE,
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
                 )),
                 Line::from(format!(
                     "{} | {} | {} | {} | {}{}",
                     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
                     attach_hints,
                 )),
             ])
@@ -597,14 +600,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SELECT_ORDER,
                     FOOTER_MYTRADES_SHIFT_I_ENABLE,
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
+                    "{} | {} | {} | {} | {}{}",
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
                     attach_hints,
                 )),
             ])
@@ -612,20 +616,22 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     } else {
         let base = if app.order_chat_input_enabled {
             format!(
-                "{} | {} | {} | {} | {}",
+                "{} | {} | {} | {} | {} | {}",
                 HELP_KEY,
                 FOOTER_MYTRADES_SELECT_ORDER,
                 FOOTER_MYTRADES_ENTER_SEND,
                 FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL
+                FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                FOOTER_MYTRADES_SHIFT_D_DISPUTE
             )
         } else {
             format!(
-                "{} | {} | {} | {}",
+                "{} | {} | {} | {} | {}",
                 HELP_KEY,
                 FOOTER_MYTRADES_SELECT_ORDER,
                 FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL
+                FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                FOOTER_MYTRADES_SHIFT_D_DISPUTE
             )
         };
         Text::raw(format!("{base}{attach_hints}"))

@@ -141,6 +141,13 @@ pub async fn execute_send_msg(
                 inner_message.action
             )),
         },
+        Action::Dispute => match inner_message.action {
+            Action::DisputeInitiatedByYou | Action::DisputeInitiatedByPeer => Ok(()),
+            _ => Err(anyhow::anyhow!(
+                "Unexpected action in response: {:?}",
+                inner_message.action
+            )),
+        },
         _ => Err(anyhow::anyhow!("Unsupported action: {:?}", action)),
     }
 }

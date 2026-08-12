@@ -115,6 +115,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             | Action::Cancel
             | Action::FiatSent
             | Action::Release
+            | Action::Dispute
     );
 
     let hold_invoice_trinary = matches!(view_state.action, Action::HoldInvoicePaymentAccepted)
