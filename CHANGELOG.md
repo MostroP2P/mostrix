@@ -40,6 +40,7 @@ That will verify the signature of the manifest file, which ensures integrity and
 ### 🐛 Bug Fixes
 
 
+* build Windows releases with MSVC instead of MinGW by [@arkanoider](https://github.com/arkanoider)
 * select Orders book by id via shared filtered projection by [@arkanoider](https://github.com/arkanoider)
 * truncate dispute sidebar IDs on char boundaries by [@arkanoider](https://github.com/arkanoider)
 * select admin disputes by id instead of index by [@Catrya](https://github.com/Catrya)
@@ -111,7 +112,7 @@ That will verify the signature of the manifest file, which ensures integrity and
 * add coverage and README badge workflows by [@arkanoider](https://github.com/arkanoider)
 
 ## Contributors
-* [@arkanoider](https://github.com/arkanoider) made their contribution in [#110](https://github.com/MostroP2P/mostrix/pull/110)
+* [@arkanoider](https://github.com/arkanoider) made their contribution
 * [@Catrya](https://github.com/Catrya) made their contribution
 * [@Vidarte-Alberto](https://github.com/Vidarte-Alberto) made their contribution
 * [@amuntri](https://github.com/amuntri) made their contribution
