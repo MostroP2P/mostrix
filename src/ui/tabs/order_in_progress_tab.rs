@@ -148,6 +148,27 @@ fn build_order_chat_content(
     (lines, content_width.max(1), starts)
 }
 
+fn trailing_order_chat_input(input: &str, visible_width: u16) -> String {
+    let max_width = visible_width as usize;
+    if max_width == 0 || input.is_empty() {
+        return String::new();
+    }
+    if Span::raw(input).width() <= max_width {
+        return input.to_string();
+    }
+
+    let mut best_start = input.len();
+    for (idx, _) in input.char_indices().rev() {
+        let tail = &input[idx..];
+        if Span::raw(tail).width() <= max_width {
+            best_start = idx;
+        } else {
+            break;
+        }
+    }
+    input[best_start..].to_string()
+}
+
 pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let active_orders = active_order_chat_list_snapshot(app);
 
@@ -484,25 +505,28 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     );
 
     let input_active = app.mode.user_my_trades_interactive() && app.order_chat_input_enabled;
+    let input_block = Block::default()
+        .title(if app.order_chat_input_enabled {
+            "Message"
+        } else {
+            "Message (disabled: Shift+I)"
+        })
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR));
+    let visible_input = trailing_order_chat_input(
+        &app.order_chat_input,
+        input_block.inner(main_chunks[2]).width,
+    );
     f.render_widget(
-        Paragraph::new(app.order_chat_input.clone())
+        Paragraph::new(visible_input)
             .wrap(Wrap { trim: false })
             .style(if input_active {
                 Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)
             })
-            .block(
-                Block::default()
-                    .title(if app.order_chat_input_enabled {
-                        "Message"
-                    } else {
-                        "Message (disabled: Shift+I)"
-                    })
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(PRIMARY_COLOR)),
-            ),
+            .block(input_block),
         main_chunks[2],
     );
 
@@ -675,4 +699,34 @@ pub fn push_local_order_chat_message(
         .or_default()
         .push(msg.clone());
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trailing_order_chat_input;
+    use ratatui::text::Span;
+
+    #[test]
+    fn trailing_input_keeps_full_text_when_it_fits() {
+        assert_eq!(
+            trailing_order_chat_input("short message", 20),
+            "short message"
+        );
+    }
+
+    #[test]
+    fn trailing_input_shows_latest_text_when_overflowing() {
+        let input = "abcdefghijklmnopqrstuvwxyz";
+
+        assert_eq!(trailing_order_chat_input(input, 10), "qrstuvwxyz");
+    }
+
+    #[test]
+    fn trailing_input_respects_unicode_display_width() {
+        let input = "abc你好def";
+        let visible = trailing_order_chat_input(input, 6);
+
+        assert_eq!(visible, "好def");
+        assert!(Span::raw(visible.as_str()).width() <= 6);
+    }
 }
