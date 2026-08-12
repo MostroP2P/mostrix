@@ -659,10 +659,19 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        // Ensure the selected index is valid when orders list changes.
+        // Ensure the selected order id is still on the book when the list changes.
         {
-            let orders_len = match orders.lock() {
-                Ok(g) => g.len(),
+            let still_present = match orders.lock() {
+                Ok(g) => {
+                    if g.is_empty() {
+                        app.selected_order_id = None;
+                        true
+                    } else if let Some(id) = app.selected_order_id {
+                        g.iter().any(|o| o.id == Some(id))
+                    } else {
+                        true
+                    }
+                }
                 Err(e) => {
                     let msg = format!(
                         "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
@@ -673,11 +682,11 @@ async fn main() -> Result<(), anyhow::Error> {
                     chat_listener_handle.abort();
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
-                    0
+                    true
                 }
             };
-            if orders_len > 0 && app.selected_order_idx >= orders_len {
-                app.selected_order_idx = orders_len - 1;
+            if !still_present {
+                app.selected_order_id = None;
             }
         }
 

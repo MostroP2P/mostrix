@@ -160,12 +160,17 @@ impl Clone for UiMode {
 pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
-    pub selected_order_idx: usize,
+    /// Orders tab selection by **order UUID**, resolved through the currency-filtered
+    /// book projection (`helpers/order_selection.rs`). Not a raw index into the
+    /// unfiltered in-memory order vec — highlight, ↑↓, and Enter share this id.
+    pub selected_order_id: Option<uuid::Uuid>,
     pub selected_dispute_idx: usize, // Selected dispute in Disputes Pending tab
+    /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
+    /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
     pub selected_dispute_id: Option<String>, // Selected dispute (by dispute id) in Disputes in Progress tab
-    pub active_chat_party: ChatParty,        // Which party the admin is currently chatting with
-    pub admin_chat_input: String,            // Current message being typed by admin
-    pub admin_chat_input_enabled: bool,      // Whether chat input is enabled (toggle with Shift+I)
+    pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
+    pub admin_chat_input: String,     // Current message being typed by admin
+    pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
     /// Selected message index for chat navigation (Up/Down) and footer hint; Save Attachment popup uses its own selection.
@@ -268,7 +273,7 @@ impl AppState {
         Self {
             user_role,
             active_tab: initial_tab,
-            selected_order_idx: 0,
+            selected_order_id: None,
             selected_dispute_idx: 0,
             selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
@@ -358,6 +363,7 @@ impl AppState {
         self.mode = UiMode::default_for_role(new_role);
         self.selected_dispute_idx = 0;
         self.selected_settings_option = 0;
+        self.selected_order_id = None;
         self.selected_dispute_id = None;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();

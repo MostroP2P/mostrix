@@ -21,7 +21,8 @@ The `AppState` struct in `src/ui/app_state.rs` manages the global state of the i
 pub struct AppState {
     pub user_role: UserRole,
     pub active_tab: Tab,
-    pub selected_order_idx: usize,
+    /// Orders tab selection by order UUID (currency-filtered; see helpers/order_selection.rs).
+    pub selected_order_id: Option<Uuid>,
     pub selected_dispute_idx: usize, // Disputes Pending (Initiated) list index
     /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
     /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
@@ -270,10 +271,10 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 Renders a table of pending orders from the Mostro network. Status and order kinds are color-coded for readability.
 
 - **Scrolling**: uses a stateful [`Table`](https://docs.rs/ratatui) + `TableState` so ↑↓ keeps the selected row in view when the order book is taller than the terminal (same idea as the Messages sidebar / Disputes In Progress list). A vertical scrollbar appears when row count exceeds the visible body height.
-- **Selection vs currency filter**: `selected_order_idx` still indexes the full in-memory order vec (Enter/take use that index). Render maps it to the **filtered** display-row index for highlight/scroll; if the selected row is hidden by the currency filter, highlight falls back to the first visible row.
+- **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same currency-filtered book projection. If the stored id is hidden by `currencies_filter`, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
 - **Narrow terminals** (`width < 100`): compact column set (Kind / Fiat Amt / Premium / Payment) — Premium stays visible.
 
-**Source**: `src/ui/tabs/orders_tab.rs`
+**Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`
 
 ### 2. Messages Tab
 

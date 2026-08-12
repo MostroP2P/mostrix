@@ -10,18 +10,18 @@ use ratatui::widgets::{
     ScrollbarState, Table, TableState,
 };
 
-use crate::ui::helpers::format_premium;
+use crate::ui::helpers::{format_premium, get_filtered_book_orders, selected_book_display_idx};
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
 ///
 /// Uses a stateful [`Table`] so ↑↓ selection stays in view when the book is taller
-/// than the terminal (same idea as the disputes sidebar scroll list).
+/// than the terminal. Selection is resolved by order id against the currency-filtered
+/// projection (`helpers/order_selection.rs`) so highlight and Enter stay aligned.
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    selected_order_idx: usize,
     app: &AppState,
 ) {
     let orders_lock = match orders.lock() {
@@ -64,27 +64,26 @@ pub fn render_orders_tab(
         return;
     }
 
-    // Build a case-insensitive set of currencies from the cached filter.
-    let currency_filter: Option<std::collections::HashSet<String>> =
-        if app.currencies_filter.is_empty() {
-            None
-        } else {
-            Some(
-                app.currencies_filter
-                    .iter()
-                    .map(|c| c.to_uppercase())
-                    .collect::<std::collections::HashSet<String>>(),
-            )
-        };
+    let filtered = get_filtered_book_orders(&orders_lock, &app.currencies_filter);
+    if filtered.is_empty() {
+        let paragraph = Paragraph::new(Span::styled(
+            "📭 No offers match the current currency filter…",
+            Style::default().fg(Color::Yellow),
+        ))
+        .block(
+            Block::default()
+                .title("Orders")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        );
+        f.render_widget(paragraph, area);
+        return;
+    }
 
-    let order_passes_filter = |order: &SmallOrder| -> bool {
-        if let Some(ref filter_set) = currency_filter {
-            let fiat_upper = order.fiat_code.to_uppercase();
-            filter_set.contains(&fiat_upper)
-        } else {
-            true
-        }
-    };
+    let display_selected_idx =
+        selected_book_display_idx(app.selected_order_id, &filtered).unwrap_or(0);
 
     let compact = area.width < 100;
     let header_labels = if compact {
@@ -108,17 +107,9 @@ pub fn render_orders_tab(
         .collect::<Vec<_>>();
     let header = Row::new(header_cells);
 
-    // Track original list indices so TableState can highlight the selected
-    // row among the *filtered* display rows.
-    let mut display_original_indices: Vec<usize> = Vec::new();
-    let rows: Vec<Row> = orders_lock
+    let rows: Vec<Row> = filtered
         .iter()
-        .enumerate()
-        .filter_map(|(i, order)| {
-            if !order_passes_filter(order) {
-                return None;
-            }
-
+        .map(|(_orig, order)| {
             let kind_cell = if let Some(k) = &order.kind {
                 Cell::from(k.to_string()).style(apply_kind_color(k))
             } else {
@@ -174,7 +165,7 @@ pub fn render_orders_tab(
                     .unwrap_or_else(|| "Invalid date".to_string()),
             );
 
-            let row = if compact {
+            if compact {
                 Row::new(vec![
                     kind_cell,
                     Cell::from(format!("{} {}", fiat_amount_text, order.fiat_code)),
@@ -193,34 +184,9 @@ pub fn render_orders_tab(
                     payment_method_cell,
                     date_cell,
                 ])
-            };
-
-            display_original_indices.push(i);
-            Some(row)
+            }
         })
         .collect();
-
-    if rows.is_empty() {
-        let paragraph = Paragraph::new(Span::styled(
-            "📭 No offers match the current currency filter…",
-            Style::default().fg(Color::Yellow),
-        ))
-        .block(
-            Block::default()
-                .title("Orders")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(PRIMARY_COLOR))
-                .style(Style::default().bg(BACKGROUND_COLOR)),
-        );
-        f.render_widget(paragraph, area);
-        return;
-    }
-
-    let display_selected_idx = display_original_indices
-        .iter()
-        .position(|&orig| orig == selected_order_idx)
-        .unwrap_or(0);
 
     let widths = if compact {
         vec![
@@ -281,6 +247,7 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use uuid::Uuid;
 
     use crate::ui::UserRole;
 
@@ -297,6 +264,7 @@ mod tests {
 
     fn sample_order(payment_method: &str, premium: i64) -> SmallOrder {
         SmallOrder {
+            id: Some(Uuid::new_v4()),
             kind: Some(mostro_core::order::Kind::Buy),
             fiat_code: "USD".to_string(),
             fiat_amount: 100,
@@ -313,7 +281,7 @@ mod tests {
         let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", premium)]));
         let app = AppState::new(UserRole::User);
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, 0, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -340,17 +308,21 @@ mod tests {
     /// scroll the stateful table so that marker is visible.
     #[test]
     fn orders_table_scrolls_to_keep_selected_row_visible() {
-        let orders = Arc::new(Mutex::new(
-            (0..40)
-                .map(|i| sample_order(&format!("PAY-{i:02}"), 0))
-                .collect::<Vec<_>>(),
-        ));
-        let app = AppState::new(UserRole::User);
-        // Height 10 → ~7 body rows after borders+header; selecting index 39 must scroll.
+        let mut book = Vec::new();
+        let mut last_id = Uuid::nil();
+        for i in 0..40 {
+            let o = sample_order(&format!("PAY-{i:02}"), 0);
+            last_id = o.id.unwrap();
+            book.push(o);
+        }
+        let orders = Arc::new(Mutex::new(book));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(last_id);
+        // Height 10 → ~7 body rows after borders+header; selecting last must scroll.
         let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, 39, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -366,16 +338,22 @@ mod tests {
 
     #[test]
     fn orders_table_shows_first_rows_when_selection_is_at_top() {
-        let orders = Arc::new(Mutex::new(
-            (0..40)
-                .map(|i| sample_order(&format!("PAY-{i:02}"), 0))
-                .collect::<Vec<_>>(),
-        ));
-        let app = AppState::new(UserRole::User);
+        let mut book = Vec::new();
+        let mut first_id = Uuid::nil();
+        for i in 0..40 {
+            let o = sample_order(&format!("PAY-{i:02}"), 0);
+            if i == 0 {
+                first_id = o.id.unwrap();
+            }
+            book.push(o);
+        }
+        let orders = Arc::new(Mutex::new(book));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(first_id);
         let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, 0, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -387,5 +365,58 @@ mod tests {
             !buffer_contains(buf, "PAY-39"),
             "last order should not appear while scrolled to the top"
         );
+    }
+
+    /// Highlighted row after a currency filter must match what Enter would take:
+    /// a hidden previous selection falls back to the first visible fiat.
+    #[test]
+    fn orders_table_highlights_visible_fallback_when_selection_filtered_out() {
+        let usd_id = Uuid::new_v4();
+        let eur_id = Uuid::new_v4();
+        let orders = Arc::new(Mutex::new(vec![
+            SmallOrder {
+                id: Some(usd_id),
+                kind: Some(mostro_core::order::Kind::Buy),
+                fiat_code: "USD".to_string(),
+                fiat_amount: 100,
+                amount: 50_000,
+                payment_method: "PAY-USD".to_string(),
+                ..Default::default()
+            },
+            SmallOrder {
+                id: Some(eur_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                fiat_code: "EUR".to_string(),
+                fiat_amount: 200,
+                amount: 60_000,
+                payment_method: "PAY-EUR".to_string(),
+                ..Default::default()
+            },
+        ]));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(usd_id);
+        app.currencies_filter = vec!["EUR".to_string()];
+
+        let backend = TestBackend::new(130, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "PAY-EUR"),
+            "visible filtered order must appear"
+        );
+        assert!(
+            !buffer_contains(buf, "PAY-USD"),
+            "filtered-out USD order must not appear"
+        );
+
+        let selected =
+            crate::ui::helpers::selected_filtered_book_order(&app, &orders.lock().unwrap())
+                .expect("Enter resolves a visible order");
+        assert_eq!(selected.id, Some(eur_id));
+        assert_eq!(selected.payment_method, "PAY-EUR");
     }
 }
