@@ -1,7 +1,5 @@
 //! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
-use std::str::FromStr;
-
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,11 +10,10 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use crate::ui::constants::*;
 use crate::ui::helpers::{
     build_chat_scrollview_content, count_visible_attachments, format_user_rating,
-    get_selected_chat_message,
+    get_filtered_disputes, get_selected_chat_message,
 };
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
-use mostro_core::prelude::*;
 
 fn should_auto_scroll_chat(
     tracker: Option<&(String, ChatParty, usize)>,
@@ -30,31 +27,6 @@ fn should_auto_scroll_chat(
             tracked_dispute != dispute_id || *tracked_party != party || visible_count > *last_count
         }
     }
-}
-
-/// Filter disputes based on the current filter state.
-/// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
-fn get_filtered_disputes(app: &AppState) -> Vec<(usize, crate::models::AdminDispute)> {
-    app.admin_disputes_in_progress
-        .iter()
-        .enumerate()
-        .filter(|(_, d)| {
-            let status = d
-                .status
-                .as_deref()
-                .and_then(|s| DisputeStatus::from_str(s).ok());
-            match app.dispute_filter {
-                DisputeFilter::InProgress => status == Some(DisputeStatus::InProgress),
-                DisputeFilter::Finalized => matches!(
-                    status,
-                    Some(DisputeStatus::Settled)
-                        | Some(DisputeStatus::SellerRefunded)
-                        | Some(DisputeStatus::Released)
-                ),
-            }
-        })
-        .map(|(i, d)| (i, d.clone()))
-        .collect()
 }
 
 /// Render the "Disputes in Progress" tab for admin mode
