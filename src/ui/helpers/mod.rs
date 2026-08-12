@@ -28,8 +28,8 @@ pub use chat_visibility::{
     get_selected_chat_message, get_visible_attachment_messages, message_visible_for_party,
 };
 pub use formatting::{
-    format_order_id, format_user_rating, is_dispute_finalized, relative_time_compact,
-    short_order_id,
+    format_order_id, format_premium, format_user_rating, is_dispute_finalized,
+    relative_time_compact, short_order_id,
 };
 pub use layout::{
     create_centered_popup, render_help_text, render_yes_no_buttons, render_yes_no_cancel_buttons,

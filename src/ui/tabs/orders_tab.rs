@@ -7,8 +7,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
+use crate::ui::helpers::format_premium;
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// Renders the available orders table, with fewer columns when terminal width is limited.
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -76,16 +78,26 @@ pub fn render_orders_tab(
             }
         };
 
-        let header_cells = vec![
-            Cell::from("📈 Kind").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("🆔 Order Id").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("📊 Status").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("₿ Amount").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("💱 Fiat").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("💵 Fiat Amt").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("💳 Payment Method").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
-        ];
+        let compact = area.width < 100;
+        let header_labels = if compact {
+            vec!["📈 Kind", "💵 Fiat Amt", "± Premium", "💳 Payment"]
+        } else {
+            vec![
+                "📈 Kind",
+                "🆔 Order Id",
+                "📊 Status",
+                "₿ Amount",
+                "💱 Fiat",
+                "💵 Fiat Amt",
+                "± Premium",
+                "💳 Payment Method",
+                "📅 Created",
+            ]
+        };
+        let header_cells = header_labels
+            .into_iter()
+            .map(|label| Cell::from(label).style(Style::default().add_modifier(Modifier::BOLD)))
+            .collect::<Vec<_>>();
         let header = Row::new(header_cells);
 
         let rows: Vec<Row> = orders_lock
@@ -123,19 +135,20 @@ pub fn render_orders_tab(
 
                 let fiat_code_cell = Cell::from(order.fiat_code.clone());
 
-                let fiat_amount_cell = if order.min_amount.is_none() && order.max_amount.is_none() {
-                    Cell::from(order.fiat_amount.to_string())
+                let fiat_amount_text = if order.min_amount.is_none() && order.max_amount.is_none() {
+                    order.fiat_amount.to_string()
                 } else {
-                    let range_str = match (order.min_amount, order.max_amount) {
+                    match (order.min_amount, order.max_amount) {
                         (Some(min), Some(max)) => format!("{}-{}", min, max),
                         (Some(min), None) => format!("{}-?", min),
                         (None, Some(max)) => format!("?-{}", max),
                         (None, None) => "?".to_string(),
-                    };
-                    Cell::from(range_str)
+                    }
                 };
+                let fiat_amount_cell = Cell::from(fiat_amount_text.clone());
 
                 let payment_method_cell = Cell::from(order.payment_method.clone());
+                let premium_cell = premium_cell(order.premium);
 
                 // Missing created_at must not fall back to epoch (unwrap_or(0)); propagate None.
                 let date_cell = Cell::from(
@@ -150,16 +163,26 @@ pub fn render_orders_tab(
                         .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 
-                let row = Row::new(vec![
-                    kind_cell,
-                    id_cell,
-                    status_cell,
-                    amount_cell,
-                    fiat_code_cell,
-                    fiat_amount_cell,
-                    payment_method_cell,
-                    date_cell,
-                ]);
+                let row = if compact {
+                    Row::new(vec![
+                        kind_cell,
+                        Cell::from(format!("{} {}", fiat_amount_text, order.fiat_code)),
+                        premium_cell,
+                        payment_method_cell,
+                    ])
+                } else {
+                    Row::new(vec![
+                        kind_cell,
+                        id_cell,
+                        status_cell,
+                        amount_cell,
+                        fiat_code_cell,
+                        fiat_amount_cell,
+                        premium_cell,
+                        payment_method_cell,
+                        date_cell,
+                    ])
+                };
 
                 Some(if i == selected_order_idx {
                     row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
@@ -169,21 +192,27 @@ pub fn render_orders_tab(
             })
             .collect();
 
-        let table = Table::new(
-            rows,
-            &[
+        let widths = if compact {
+            vec![
+                Constraint::Max(8),
+                Constraint::Max(18),
+                Constraint::Max(10),
+                Constraint::Min(12),
+            ]
+        } else {
+            vec![
                 Constraint::Max(8),
                 Constraint::Max(15),
                 Constraint::Max(10),
                 Constraint::Max(12),
                 Constraint::Max(10),
                 Constraint::Max(12),
+                Constraint::Max(10),
                 Constraint::Min(15),
                 Constraint::Max(18),
-            ],
-        )
-        .header(header)
-        .block(
+            ]
+        };
+        let table = Table::new(rows, widths).header(header).block(
             Block::default()
                 .title("Orders")
                 .borders(Borders::ALL)
@@ -192,5 +221,67 @@ pub fn render_orders_tab(
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(table, area);
+    }
+}
+
+fn premium_cell(premium: i64) -> Cell<'static> {
+    let (text, color) = format_premium(premium);
+    Cell::from(text).style(Style::default().fg(color))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use crate::ui::UserRole;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn render_at_width(width: u16, premium: i64) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![SmallOrder {
+            kind: Some(mostro_core::order::Kind::Buy),
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            amount: 50_000,
+            premium,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }]));
+        let app = AppState::new(UserRole::User);
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, 0, &app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn orders_table_renders_premium_column() {
+        let buf = render_at_width(130, -3);
+        assert!(buffer_contains(&buf, "Premium"));
+        assert!(buffer_contains(&buf, "-3%"));
+        assert!(buffer_contains(&buf, "SEPA"));
+    }
+
+    #[test]
+    fn narrow_orders_table_keeps_premium_readable() {
+        let buf = render_at_width(60, -3);
+        assert!(buffer_contains(&buf, "Premium"));
+        assert!(buffer_contains(&buf, "-3%"));
+        assert!(buffer_contains(&buf, "100 USD"));
+        assert!(buffer_contains(&buf, "SEPA"));
+        assert!(!buffer_contains(&buf, "Created"));
     }
 }
