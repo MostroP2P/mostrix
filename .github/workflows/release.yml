@@ -48,7 +48,7 @@ jobs:
       - name: cargo test
         run: cargo test --all-features --locked
 
-  # Prepare matrix of targets from archs file
+  # Prepare matrix of targets from archs file (os + whether to use cross)
   matrix:
     runs-on: ubuntu-latest
     needs: test
@@ -63,17 +63,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          targets=$(grep -v '^\s*$' archs | jq -R -s -c 'split("\n") | map(select(length>0))')
+          # Windows MSVC must build on windows-latest (native); other targets use cross on Ubuntu.
+          # windows-gnu via cross is avoided: MinGW ld in the cross image rejects LLVM
+          # -exclude-symbols .drectve directives from modern Rust (link failure).
+          targets=$(
+            grep -v '^\s*$' archs | while read -r t; do
+              case "$t" in
+                *-pc-windows-msvc)
+                  jq -nc --arg t "$t" '{target:$t,os:"windows-latest",use_cross:false}'
+                  ;;
+                *-pc-windows-*)
+                  echo "Unsupported Windows target in archs (use x86_64-pc-windows-msvc): $t" >&2
+                  exit 1
+                  ;;
+                *)
+                  jq -nc --arg t "$t" '{target:$t,os:"ubuntu-latest",use_cross:true}'
+                  ;;
+              esac
+            done | jq -s -c .
+          )
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
-  # Build binaries for all targets using cross
+  # Build binaries for all targets (cross on Linux, native cargo on Windows MSVC)
   build:
-    runs-on: ubuntu-latest
     needs: matrix
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.matrix.outputs.targets) }}
+        include: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -81,8 +99,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: release-${{ matrix.target }}
 
       - name: Cache cross binary
+        if: matrix.use_cross
         id: cache-cross
         uses: actions/cache@v4
         with:
@@ -90,11 +117,16 @@ jobs:
           key: cross-${{ runner.os }}-0.2.5
 
       - name: Install cross (pinned version for reproducibility)
-        if: steps.cache-cross.outputs.cache-hit != 'true'
+        if: matrix.use_cross && steps.cache-cross.outputs.cache-hit != 'true'
         run: cargo install cross --version 0.2.5
 
-      - name: Build release
+      - name: Build release (cross)
+        if: matrix.use_cross
         run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Build release (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Prepare conventional artifact name
         shell: bash
@@ -114,7 +146,7 @@ jobs:
           name: artifact-${{ matrix.target }}
           path: artifacts/*
 
-  # Create release with all artifacts (Linux, Windows, FreeBSD from cross)
+  # Create release with all artifacts
   release:
     runs-on: ubuntu-latest
     needs: [changelog, build]
