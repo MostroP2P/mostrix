@@ -32,6 +32,21 @@ fn should_auto_scroll_chat(
     }
 }
 
+/// Truncate a dispute id for the sidebar label by Unicode scalar values.
+///
+/// Preserves a `max_chars` prefix and appends `...` when longer. Using
+/// `chars()` avoids panics from byte-indexing into multi-byte UTF-8.
+fn truncate_dispute_id_label(display_id: &str, max_chars: usize) -> String {
+    if display_id.chars().count() > max_chars {
+        format!(
+            "{}...",
+            display_id.chars().take(max_chars).collect::<String>()
+        )
+    } else {
+        display_id.to_string()
+    }
+}
+
 /// Render the "Disputes in Progress" tab for admin mode
 /// This shows a sidebar with active disputes and a detailed view with chat interface
 /// Can filter between InProgress and Finalized disputes
@@ -79,12 +94,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let items: Vec<ListItem> = filtered_disputes
             .iter()
             .map(|(_original_idx, d)| {
-                let display_id = &d.dispute_id;
-                let truncated_id = if display_id.len() > 20 {
-                    format!("{}...", &display_id[..20])
-                } else {
-                    display_id.to_string()
-                };
+                let truncated_id = truncate_dispute_id_label(&d.dispute_id, 20);
                 ListItem::new(Line::from(Span::styled(
                     format!("Dispute ID: {}", truncated_id),
                     Style::default().fg(Color::White),
@@ -865,6 +875,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 mod tests {
     use super::render_disputes_in_progress;
     use super::should_auto_scroll_chat;
+    use super::truncate_dispute_id_label;
     use crate::models::AdminDispute;
     use crate::ui::{AppState, ChatParty, UserRole};
     use ratatui::backend::TestBackend;
@@ -891,6 +902,28 @@ mod tests {
             fiat_code: "USD".to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn truncate_dispute_id_label_keeps_short_ids_unchanged() {
+        assert_eq!(truncate_dispute_id_label("short-id", 20), "short-id");
+        assert_eq!(
+            truncate_dispute_id_label("12345678901234567890", 20),
+            "12345678901234567890"
+        );
+    }
+
+    #[test]
+    fn truncate_dispute_id_label_uses_char_boundaries_not_bytes() {
+        // 21 multi-byte chars: a byte slice at 20 would panic / split a char.
+        let id: String = "あ".repeat(21);
+        let truncated = truncate_dispute_id_label(&id, 20);
+        assert_eq!(truncated.chars().count(), 23); // 20 + "..."
+        assert!(truncated.ends_with("..."));
+        assert_eq!(
+            truncated.chars().take(20).collect::<String>(),
+            "あ".repeat(20)
+        );
     }
 
     #[test]
