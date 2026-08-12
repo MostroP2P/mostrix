@@ -59,13 +59,9 @@ pub fn ui_draw(
     // Render content based on active tab and role
     let content_area = chunks[1];
     match (&app.active_tab, app.user_role) {
-        (Tab::User(UserTab::Orders), UserRole::User) => tabs::orders_tab::render_orders_tab(
-            f,
-            content_area,
-            orders,
-            app.selected_order_idx,
-            app,
-        ),
+        (Tab::User(UserTab::Orders), UserRole::User) => {
+            tabs::orders_tab::render_orders_tab(f, content_area, orders, app)
+        }
         (Tab::User(UserTab::MyTrades), UserRole::User) => {
             tabs::order_in_progress_tab::render_order_in_progress(f, content_area, app)
         }

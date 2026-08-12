@@ -7,6 +7,7 @@ mod dispute_selection;
 mod formatting;
 mod layout;
 mod order_chat_projection;
+mod order_selection;
 mod startup;
 
 pub use ascii_art::{render_centered_lines, MAILBOX_EMPTY_ART};
@@ -41,6 +42,10 @@ pub use layout::{
 pub use order_chat_projection::{
     active_order_chat_list_len, active_order_chat_list_snapshot, build_active_order_chat_list,
     order_chat_list_item_from_db_order, OrderChatListItem,
+};
+pub use order_selection::{
+    get_filtered_book_orders, move_book_order_selection, order_passes_currency_filter,
+    selected_book_display_idx, selected_filtered_book_order,
 };
 pub use startup::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,

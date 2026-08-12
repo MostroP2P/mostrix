@@ -1,4 +1,6 @@
-use crate::ui::helpers::{active_order_chat_list_len, move_dispute_selection};
+use crate::ui::helpers::{
+    active_order_chat_list_len, move_book_order_selection, move_dispute_selection,
+};
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
     AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
@@ -177,8 +179,8 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::Normal)
         | UiMode::AdminMode(AdminMode::ManagingDispute) => {
             if let Tab::User(UserTab::Orders) = app.active_tab {
-                let orders_len = match orders.lock() {
-                    Ok(g) => g.len(),
+                let orders_lock = match orders.lock() {
+                    Ok(g) => g,
                     Err(e) => {
                         crate::util::request_fatal_restart(format!(
                             "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
@@ -186,9 +188,7 @@ fn handle_up_key(
                         return;
                     }
                 };
-                if orders_len > 0 && app.selected_order_idx > 0 {
-                    app.selected_order_idx -= 1;
-                }
+                move_book_order_selection(app, &orders_lock, -1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
                 // Only count disputes with "initiated" status
                 use mostro_core::prelude::*;
@@ -325,8 +325,8 @@ fn handle_down_key(
         | UiMode::UserMode(UserMode::Normal)
         | UiMode::AdminMode(AdminMode::Normal) => {
             if let Tab::User(UserTab::Orders) = app.active_tab {
-                let orders_len = match orders.lock() {
-                    Ok(g) => g.len(),
+                let orders_lock = match orders.lock() {
+                    Ok(g) => g,
                     Err(e) => {
                         crate::util::request_fatal_restart(format!(
                             "Mostrix encountered an internal error (poisoned orders lock: {e}). Please restart the app."
@@ -334,9 +334,7 @@ fn handle_down_key(
                         return;
                     }
                 };
-                if orders_len > 0 && app.selected_order_idx < orders_len.saturating_sub(1) {
-                    app.selected_order_idx += 1;
-                }
+                move_book_order_selection(app, &orders_lock, 1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
                 // Only count disputes with "initiated" status
                 use mostro_core::prelude::*;
