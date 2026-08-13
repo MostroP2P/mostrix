@@ -399,6 +399,10 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.
+///
+/// Durable inner-event ids are recorded only after a successful transcript
+/// [`save_order_chat_message`] / [`rewrite_order_chat_messages`]. On write
+/// failure the id is left unrecorded so a later delivery can retry.
 pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui::OrderChatUpdate>) {
     for update in updates {
         let order_id = update.order_id.clone();
@@ -528,6 +532,10 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
 
 /// Apply fetched admin chat updates back into the UI state and persist
 /// last_seen timestamps to the database.
+///
+/// Durable inner-event ids are recorded only after a successful transcript
+/// [`save_chat_message`] / [`rewrite_dispute_chat_messages`]. On write failure
+/// the id is left unrecorded so a later delivery can retry.
 pub async fn apply_admin_chat_updates(
     app: &mut AppState,
     updates: Vec<AdminChatUpdate>,

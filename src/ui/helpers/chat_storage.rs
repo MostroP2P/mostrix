@@ -291,6 +291,9 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) -
 }
 
 /// Rewrite the full order-chat transcript (used when upgrading a placeholder in place).
+///
+/// Returns `true` on successful atomic replace; `false` on I/O failure (caller should
+/// not treat the in-memory upgrade as durable).
 pub fn rewrite_order_chat_messages(order_id: &str, messages: &[UserOrderChatMessage]) -> bool {
     let file_path = match chat_file_path(ChatStorageKind::Orders, order_id) {
         Some(path) => path,
@@ -417,6 +420,9 @@ pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) -> bool
 }
 
 /// Rewrite the full dispute-chat transcript (placeholder-in-place upgrades).
+///
+/// Returns `true` on successful atomic replace; `false` on I/O failure (caller should
+/// not treat the in-memory upgrade as durable).
 pub fn rewrite_dispute_chat_messages(dispute_id: &str, messages: &[DisputeChatMessage]) -> bool {
     let file_path = match chat_file_path(ChatStorageKind::Disputes, dispute_id) {
         Some(path) => path,
@@ -646,6 +652,8 @@ fn remember_inner_id_at_path(path: &Path, id: &EventId) -> bool {
 }
 
 /// Load durable inner event ids for an order chat (replay protection).
+///
+/// Reads through a process-wide per-path cache (first touch loads the `.inner_ids` file).
 pub fn load_order_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
     match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
         Some(path) => with_inner_id_set(&path, |set| set.clone()),
@@ -661,7 +669,11 @@ pub fn order_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
     }
 }
 
-/// Persist an accepted order-chat inner id. Returns `false` if already known (replay).
+/// Persist an accepted order-chat inner id.
+///
+/// Returns `false` if the id was already known, or if the durable append failed
+/// (cache insert is rolled back so a later retry can succeed). Call only after
+/// the matching transcript mutation has succeeded.
 pub fn remember_order_chat_inner_id(order_id: &str, id: &EventId) -> bool {
     match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
         Some(path) => remember_inner_id_at_path(&path, id),
@@ -670,6 +682,8 @@ pub fn remember_order_chat_inner_id(order_id: &str, id: &EventId) -> bool {
 }
 
 /// Load durable inner event ids for one admin↔party dispute channel.
+///
+/// Reads through a process-wide per-path cache (first touch loads the `.inner_ids` file).
 pub fn load_dispute_chat_inner_ids(dispute_id: &str, party: ChatParty) -> HashSet<EventId> {
     let sfx = match party {
         ChatParty::Buyer => "buyer",
@@ -693,7 +707,11 @@ pub fn dispute_chat_inner_id_known(dispute_id: &str, party: ChatParty, id: &Even
     }
 }
 
-/// Persist an accepted dispute-chat inner id. Returns `false` if already known (replay).
+/// Persist an accepted dispute-chat inner id.
+///
+/// Returns `false` if the id was already known, or if the durable append failed
+/// (cache insert is rolled back so a later retry can succeed). Call only after
+/// the matching transcript mutation has succeeded.
 pub fn remember_dispute_chat_inner_id(dispute_id: &str, party: ChatParty, id: &EventId) -> bool {
     let sfx = match party {
         ChatParty::Buyer => "buyer",
