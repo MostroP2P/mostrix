@@ -4,9 +4,14 @@
 //! * legacy GiftWrap (`kind: 1059`, `#p: [ECDH pubkeys]`)
 //! * gift-wrap-free kind 14 (`authors: [pub(K_sign)]`)
 //!
-//! Incoming events are routed to the owning chat, decrypted with the per-channel
-//! ECDH secret (`K_conv` / `K_sign` derived at unwrap), and emitted on the
-//! existing `admin_chat_updates` / `user_order_chat_updates` channels so the
+//! Live kind-14 traffic is routed **only** by outer author ∈ tracked `pub(K_sign)`
+//! (never by `#p` alone). GiftWrap dual-read still matches `#p` = ECDH pubkey.
+//! Hydration and last-seen cursors use `min(accepted_ts, local_now)` so a
+//! far-future timestamp cannot poison `since`.
+//!
+//! Incoming events are decrypted with the per-channel ECDH secret (`K_conv` /
+//! `K_sign` derived at unwrap), and emitted on the existing
+//! `admin_chat_updates` / `user_order_chat_updates` channels so the
 //! `apply_*_chat_updates` handlers stay unchanged.
 //!
 //! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): the task is spawned once at
@@ -25,8 +30,8 @@ use crate::models::Order;
 use crate::ui::helpers::order_chat_since_from_file;
 use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate};
 use crate::util::chat_utils::{
-    chat_keys_from_ecdh, derive_shared_key_hex, fetch_gift_wraps_for_shared_key,
-    keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
+    chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
+    fetch_chat_messages_for_shared_key, keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
 };
 
 /// Identifies which chat a shared key belongs to.
@@ -379,6 +384,7 @@ fn apply_chat_router_cmd(
                     hydrate: None,
                 };
             }
+            let since = since.map(clamp_chat_since_cursor_now);
             targets.insert(
                 target_pubkey,
                 ChatTarget {
@@ -423,7 +429,9 @@ async fn hydrate_history(
     let Some(target) = targets.get(&pending.target_pubkey) else {
         return;
     };
-    match fetch_gift_wraps_for_shared_key(client, &pending.shared_keys).await {
+    match fetch_chat_messages_for_shared_key(client, &pending.shared_keys, None, pending.since)
+        .await
+    {
         Ok(messages) => {
             let cutoff = pending.since.unwrap_or(0);
             let history: Vec<(String, i64, PublicKey)> = messages
@@ -696,5 +704,50 @@ mod tests {
         let resolved = resolve_chat_target(&targets, &event).expect("route kind14");
         assert_eq!(resolved.key_id, ChatKeyId::Order("order-1".to_string()));
         assert_eq!(resolved.sign_pubkey, event.pubkey);
+    }
+
+    #[test]
+    fn resolve_chat_target_ignores_kind14_from_unknown_author() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let _ = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: shared_hex,
+                local_trade_pubkey: None,
+                since: None,
+            },
+            &mut targets,
+        );
+        // Tag `#p` with the tracked target key so this fails if routing ever fell back
+        // to `#p`; the unknown outer author must still be rejected.
+        let target_pubkey = *targets.keys().next().expect("tracked target");
+        let junk = Keys::generate();
+        let event = EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
+            .tag(Tag::public_key(target_pubkey))
+            .sign_with_keys(&junk)
+            .expect("sign");
+
+        assert!(resolve_chat_target(&targets, &event).is_none());
+    }
+
+    #[test]
+    fn track_clamps_future_since_cursor() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let future = Timestamp::now().as_secs() as i64 + 86_400;
+        let outcome = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: shared_hex,
+                local_trade_pubkey: None,
+                since: Some(future),
+            },
+            &mut targets,
+        );
+        let hydrate = outcome.hydrate.expect("hydrate");
+        let since = hydrate.since.expect("since");
+        assert!(since <= Timestamp::now().as_secs() as i64);
+        assert!(since < future);
     }
 }
