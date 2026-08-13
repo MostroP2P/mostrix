@@ -1,4 +1,3 @@
-use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::dispute_bond_slash_popup;
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::ui::helpers::{format_user_rating, is_dispute_finalized};
+use crate::ui::helpers::{format_local_timestamp, format_user_rating, is_dispute_finalized};
 use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization popup with full dispute details and action buttons
@@ -206,14 +205,10 @@ fn render_dispute_details(
     let seller_pubkey_display = truncate_pubkey(seller_pubkey);
 
     // Format timestamps
-    let created_date = DateTime::from_timestamp(dispute.created_at, 0);
-    let created_str = created_date
-        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+    let created_str = format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M:%S")
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let taken_date = DateTime::from_timestamp(dispute.taken_at, 0);
-    let taken_str = taken_date
-        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+    let taken_str = format_local_timestamp(dispute.taken_at, "%Y-%m-%d %H:%M:%S")
         .unwrap_or_else(|| "Unknown".to_string());
 
     // Privacy indicators (Yes = private mode enabled, No = public mode)

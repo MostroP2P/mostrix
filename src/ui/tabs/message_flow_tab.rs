@@ -1,6 +1,5 @@
 //! Messages tab: order list sidebar and trade timeline detail panel.
 
-use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -401,8 +400,7 @@ fn render_header_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
         Span::styled(status_emoji.to_string(), Style::default().fg(status_color)),
     ]);
 
-    let absolute = DateTime::<Utc>::from_timestamp(msg.timestamp, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+    let absolute = helpers::format_local_timestamp(msg.timestamp, "%Y-%m-%d %H:%M")
         .unwrap_or_else(|| "unknown".to_string());
     let relative = helpers::relative_time_compact(msg.timestamp);
     let line2 = Line::from(Span::styled(

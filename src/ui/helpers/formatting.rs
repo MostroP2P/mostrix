@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Local, Utc};
 use mostro_core::prelude::UserInfo;
 use ratatui::style::Color;
 
@@ -55,6 +55,13 @@ pub fn short_order_id(order_id: Option<uuid::Uuid>) -> String {
     order_id
         .map(|id| id.to_string().chars().take(8).collect::<String>())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Formats a Unix timestamp for display in the user's local timezone.
+#[must_use]
+pub fn format_local_timestamp(timestamp: i64, format: &str) -> Option<String> {
+    DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.with_timezone(&Local).format(format).to_string())
 }
 
 /// Compact relative-time label for list rows (e.g. `"3m ago"`, `"2d ago"`), as opposed to the
@@ -139,6 +146,31 @@ mod relative_time_tests {
     #[test]
     fn future_timestamp_clamps_to_just_now() {
         assert_eq!(relative_time_compact_from(2_000, 1_000), "just now");
+    }
+}
+
+#[cfg(test)]
+mod local_timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn formats_valid_timestamp_with_requested_pattern() {
+        let timestamp = 1_700_000_000;
+        let expected = DateTime::from_timestamp(timestamp, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+
+        assert_eq!(
+            format_local_timestamp(timestamp, "%Y-%m-%d %H:%M"),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn invalid_timestamp_returns_none() {
+        assert_eq!(format_local_timestamp(i64::MAX, "%Y-%m-%d"), None);
     }
 }
 

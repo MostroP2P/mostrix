@@ -1,6 +1,5 @@
 //! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
-use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -12,8 +11,8 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::*;
 use crate::ui::helpers::{
-    build_chat_scrollview_content, count_visible_attachments, format_user_rating,
-    get_filtered_disputes, get_selected_chat_message,
+    build_chat_scrollview_content, count_visible_attachments, format_local_timestamp,
+    format_user_rating, get_filtered_disputes, get_selected_chat_message,
 };
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -204,9 +203,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         };
 
         // Header - Enhanced with more dispute information
-        let created_date = DateTime::from_timestamp(selected_dispute.created_at, 0);
-        let created_str = created_date
-            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        let created_str = format_local_timestamp(selected_dispute.created_at, "%Y-%m-%d %H:%M:%S")
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Get buyer and seller pubkeys (do not default to initiator_pubkey)
@@ -312,9 +309,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         };
 
         // Format additional timestamps for finalized disputes
-        let taken_date = DateTime::from_timestamp(selected_dispute.taken_at, 0);
-        let taken_str = taken_date
-            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        let taken_str = format_local_timestamp(selected_dispute.taken_at, "%Y-%m-%d %H:%M:%S")
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Build header lines - expand for finalized disputes

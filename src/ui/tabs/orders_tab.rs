@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::DateTime;
 use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -10,7 +9,9 @@ use ratatui::widgets::{
     ScrollbarState, Table,
 };
 
-use crate::ui::helpers::{format_premium, get_filtered_book_orders, selected_book_display_idx};
+use crate::ui::helpers::{
+    format_local_timestamp, format_premium, get_filtered_book_orders, selected_book_display_idx,
+};
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
@@ -156,12 +157,7 @@ pub fn render_orders_tab(
             let date_cell = Cell::from(
                 order
                     .created_at
-                    .and_then(|ts| DateTime::from_timestamp(ts, 0))
-                    .map(|d| {
-                        d.with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M")
-                            .to_string()
-                    })
+                    .and_then(|ts| format_local_timestamp(ts, "%Y-%m-%d %H:%M"))
                     .unwrap_or_else(|| "Invalid date".to_string()),
             );
 
