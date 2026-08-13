@@ -536,6 +536,8 @@ pub(super) fn build_order_chat_static_header(
         trade_index,
         initiator_trade_pubkey: trade_keys.public_key().to_string(),
         is_mine,
+        solver_pubkey: None,
+        dispute_id: None,
     })
 }
 

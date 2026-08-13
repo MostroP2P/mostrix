@@ -480,6 +480,8 @@ mod tests {
                     trade_index: 1,
                     initiator_trade_pubkey: "pk".to_string(),
                     is_mine: true,
+                    solver_pubkey: None,
+                    dispute_id: None,
                 },
                 action: Action::PayBondInvoice,
             },
