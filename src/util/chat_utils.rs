@@ -11,12 +11,15 @@ use nostr_sdk::nips::nip44;
 use nostr_sdk::prelude::*;
 
 use crate::models::{AdminDispute, Order};
-use crate::ui::{AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DisputeChatMessage};
+use crate::ui::{
+    AdminChatLastSeen, AdminChatUpdate, ChatParty, ChatSender, DecodedChatMessage,
+    DisputeChatMessage,
+};
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::mostro_info::MostroInstanceInfo;
 
-/// Messages grouped by (dispute_id, party); value is (content, timestamp, sender_pubkey).
-type AdminChatByKey = HashMap<(String, ChatParty), Vec<(String, i64, PublicKey)>>;
+/// Messages grouped by (dispute_id, party).
+type AdminChatByKey = HashMap<(String, ChatParty), Vec<DecodedChatMessage>>;
 
 // ---------------------------------------------------------------------------
 // Shared-key helpers (ECDH IKM + K_conv / K_sign)
@@ -171,7 +174,7 @@ pub async fn unwrap_giftwrap_with_shared_key(
     shared_keys: &Keys,
     event: &Event,
     allowed_signers: Option<&[PublicKey]>,
-) -> Result<(String, i64, PublicKey)> {
+) -> Result<DecodedChatMessage> {
     if event.kind == Kind::GiftWrap {
         let msg = unwrap_giftwrap_chat_message(shared_keys, event)
             .await
@@ -183,7 +186,12 @@ pub async fn unwrap_giftwrap_with_shared_key(
                 ));
             }
         }
-        return Ok((msg.content, msg.created_at.as_secs() as i64, msg.sender));
+        return Ok(DecodedChatMessage {
+            content: msg.content,
+            timestamp: msg.created_at.as_secs() as i64,
+            sender: msg.sender,
+            inner_event_id: msg.inner_event_id,
+        });
     }
 
     let (conv, sign) = chat_keys_from_ecdh(shared_keys)
@@ -207,7 +215,12 @@ pub async fn unwrap_giftwrap_with_shared_key(
 
     let msg = unwrap_chat_message(&conv, &sign_pk, allowed, event, now)
         .map_err(|e| anyhow::anyhow!("Failed to unwrap chat event: {e}"))?;
-    Ok((msg.content, msg.created_at.as_secs() as i64, msg.sender))
+    Ok(DecodedChatMessage {
+        content: msg.content,
+        timestamp: msg.created_at.as_secs() as i64,
+        sender: msg.sender,
+        inner_event_id: msg.inner_event_id,
+    })
 }
 
 /// Fetch recent chat events for a shared ECDH key and return decoded messages.
@@ -217,7 +230,7 @@ pub async fn unwrap_giftwrap_with_shared_key(
 pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
-) -> Result<Vec<(String, i64, PublicKey)>> {
+) -> Result<Vec<DecodedChatMessage>> {
     fetch_chat_messages_for_shared_key(client, shared_keys, None, None).await
 }
 
@@ -229,7 +242,7 @@ pub async fn fetch_chat_messages_for_shared_key(
     shared_keys: &Keys,
     allowed_signers: Option<&[PublicKey]>,
     since: Option<i64>,
-) -> Result<Vec<(String, i64, PublicKey)>> {
+) -> Result<Vec<DecodedChatMessage>> {
     let local_now = Timestamp::now().as_secs() as i64;
     let seven_days_secs: i64 = 7 * 24 * 60 * 60;
     let lookback_floor = local_now.saturating_sub(seven_days_secs);
@@ -266,15 +279,15 @@ pub async fn fetch_chat_messages_for_shared_key(
     let mut messages = Vec::new();
     for wrapped in events.iter() {
         match unwrap_giftwrap_with_shared_key(shared_keys, wrapped, allowed_signers).await {
-            Ok((content, ts, sender_pubkey)) => {
-                messages.push((content, ts, sender_pubkey));
+            Ok(msg) => {
+                messages.push(msg);
             }
             Err(e) => {
                 log::warn!("Failed to unwrap chat event {}: {}", wrapped.id, e);
             }
         }
     }
-    messages.sort_by_key(|(_, ts, _)| *ts);
+    messages.sort_by_key(|m| m.timestamp);
     Ok(messages)
 }
 
@@ -332,14 +345,14 @@ async fn fetch_party_messages(
         return;
     };
 
-    for (content, ts, sender_pubkey) in messages {
-        if ts < last_seen {
+    for msg in messages {
+        if msg.timestamp < last_seen {
             continue;
         }
         by_key
             .entry((dispute_id.to_string(), party))
             .or_default()
-            .push((content, ts, sender_pubkey));
+            .push(msg);
     }
 }
 
@@ -411,34 +424,37 @@ pub async fn fetch_observer_chat(
         role_map.insert(*apk, ChatSender::Admin);
     }
 
-    for (_, _, pk) in &raw {
-        if role_map.contains_key(pk) {
+    for msg in &raw {
+        if role_map.contains_key(&msg.sender) {
             continue;
         }
         let has_buyer = role_map.values().any(|s| *s == ChatSender::Buyer);
         let has_seller = role_map.values().any(|s| *s == ChatSender::Seller);
         if !has_buyer {
-            role_map.insert(*pk, ChatSender::Buyer);
+            role_map.insert(msg.sender, ChatSender::Buyer);
         } else if !has_seller {
-            role_map.insert(*pk, ChatSender::Seller);
+            role_map.insert(msg.sender, ChatSender::Seller);
         } else {
-            role_map.insert(*pk, ChatSender::Admin);
+            role_map.insert(msg.sender, ChatSender::Admin);
         }
     }
 
     let mut messages = Vec::with_capacity(raw.len());
-    for (content, ts, pk) in raw {
-        let sender = role_map.get(&pk).copied().unwrap_or(ChatSender::Admin);
+    for msg in raw {
+        let sender = role_map
+            .get(&msg.sender)
+            .copied()
+            .unwrap_or(ChatSender::Admin);
 
-        let (msg_content, attachment) = match try_parse_attachment_message(&content) {
+        let (msg_content, attachment) = match try_parse_attachment_message(&msg.content) {
             Some((att, display)) => (display, Some(att)),
-            None => (content, None),
+            None => (msg.content, None),
         };
 
         messages.push(DisputeChatMessage {
             sender,
             content: msg_content,
-            timestamp: ts,
+            timestamp: msg.timestamp,
             target_party: None,
             attachment,
         });
@@ -553,8 +569,8 @@ mod tests {
             .await
             .expect("unwrap succeeds");
 
-        assert_eq!(unwrapped.2, sender.public_key());
-        assert_eq!(unwrapped.0, content);
+        assert_eq!(unwrapped.sender, sender.public_key());
+        assert_eq!(unwrapped.content, content);
     }
 
     #[test]

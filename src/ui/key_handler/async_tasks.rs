@@ -27,7 +27,7 @@ use std::{
     env, fs,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
@@ -730,8 +730,8 @@ pub async fn respawn_chat_listener(
     pool: &SqlitePool,
     chat_listener_handle: &mut JoinHandle<()>,
     chat_router_cmd_tx: &mut UnboundedSender<ChatRouterCmd>,
-    admin_chat_updates_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    user_order_chat_updates_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    admin_chat_updates_tx: &Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_order_chat_updates_tx: &Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
 ) -> Result<(), String> {
     chat_listener_handle.abort();
     // Await the old task so it releases its subscription/state before the new one starts.
@@ -766,10 +766,10 @@ pub struct AppChannels {
     pub seed_words_rx: UnboundedReceiver<Result<Zeroizing<String>, String>>,
     pub message_notification_tx: UnboundedSender<MessageNotification>,
     pub message_notification_rx: UnboundedReceiver<MessageNotification>,
-    pub admin_chat_updates_tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    pub admin_chat_updates_rx: UnboundedReceiver<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    pub user_order_chat_updates_tx: UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
-    pub user_order_chat_updates_rx: UnboundedReceiver<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    pub admin_chat_updates_tx: Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    pub admin_chat_updates_rx: Receiver<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    pub user_order_chat_updates_tx: Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    pub user_order_chat_updates_rx: Receiver<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
     pub save_attachment_tx: UnboundedSender<(String, ChatAttachment)>,
     pub save_attachment_rx: UnboundedReceiver<(String, ChatAttachment)>,
     pub send_order_attachment_tx: UnboundedSender<crate::util::SendOrderAttachmentJob>,
@@ -798,9 +798,13 @@ pub fn create_app_channels() -> AppChannels {
     let (message_notification_tx, message_notification_rx) =
         tokio::sync::mpsc::unbounded_channel::<MessageNotification>();
     let (admin_chat_updates_tx, admin_chat_updates_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>();
+        tokio::sync::mpsc::channel::<Result<Vec<AdminChatUpdate>, anyhow::Error>>(
+            crate::util::chat_security::CHAT_UPDATE_CAPACITY,
+        );
     let (user_order_chat_updates_tx, user_order_chat_updates_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Vec<OrderChatUpdate>, anyhow::Error>>();
+        tokio::sync::mpsc::channel::<Result<Vec<OrderChatUpdate>, anyhow::Error>>(
+            crate::util::chat_security::CHAT_UPDATE_CAPACITY,
+        );
     let (save_attachment_tx, save_attachment_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, ChatAttachment)>();
     let (send_order_attachment_tx, send_order_attachment_rx) =
