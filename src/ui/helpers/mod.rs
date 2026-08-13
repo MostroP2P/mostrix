@@ -33,8 +33,8 @@ pub use dispute_selection::{
     get_filtered_disputes, move_dispute_selection, selected_display_idx, selected_filtered_dispute,
 };
 pub use formatting::{
-    format_order_id, format_premium, format_user_rating, is_dispute_finalized,
-    relative_time_compact, short_order_id,
+    format_local_timestamp, format_order_id, format_premium, format_user_rating,
+    is_dispute_finalized, relative_time_compact, short_order_id,
 };
 pub use layout::{
     create_centered_popup, render_help_text, render_yes_no_buttons, render_yes_no_cancel_buttons,
