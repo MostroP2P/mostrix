@@ -1,0 +1,252 @@
+// Session restore: recover orders and disputes for this identity from Mostro.
+use anyhow::Result;
+use mostro_core::prelude::*;
+use nostr_sdk::prelude::*;
+use sqlx::SqlitePool;
+use std::str::FromStr;
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::models::{Order, User};
+use crate::util::dm_utils::{
+    parse_dm_events, send_dm, wait_for_dm, OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
+};
+use crate::util::mostro_info::MostroInstanceInfo;
+use crate::util::types::get_cant_do_description;
+
+use super::helper::{fetch_small_order_by_id_from_relay, is_terminal_trade_status};
+
+/// Outcome of a session restore, for the result popup.
+#[derive(Debug, Default)]
+pub struct RestoreSummary {
+    /// Orders inserted into the local database.
+    pub restored: usize,
+    /// Orders that already existed locally (only their status was refreshed).
+    pub already_known: usize,
+    /// Restored orders whose details could not be found on the relays
+    /// (persisted with what Mostro returned: id, trade index and status).
+    pub missing_details: usize,
+    /// Orders that could not be persisted at all.
+    pub failed: usize,
+    /// Disputes reported by Mostro for this identity.
+    pub disputes: usize,
+}
+
+impl RestoreSummary {
+    pub fn to_user_message(&self) -> String {
+        let mut msg = format!(
+            "Session restored: {} order(s) recovered, {} already known, {} dispute(s).",
+            self.restored, self.already_known, self.disputes
+        );
+        if self.missing_details > 0 {
+            msg.push_str(&format!(
+                " {} order(s) had no relay details and were saved with minimal info.",
+                self.missing_details
+            ));
+        }
+        if self.failed > 0 {
+            msg.push_str(&format!(
+                " {} order(s) could not be saved — see log.",
+                self.failed
+            ));
+        }
+        msg
+    }
+}
+
+/// Ask Mostro for this identity's session state (`Action::RestoreSession`) and
+/// rebuild the local database from the answer.
+///
+/// Restore is account-scoped: Mostro indexes users by identity pubkey, so the
+/// whole exchange (send, wait, decrypt) runs on the identity keys — a trade key
+/// would look like an unknown user and recovery would return nothing. The
+/// request carries no request id (`Message::new_restore`), so the response is
+/// validated by action instead of by id.
+///
+/// For every order Mostro reports, the trade keys are re-derived from the
+/// user's mnemonic at the reported trade index, full details are fetched from
+/// the relays when available, and the row is inserted locally. Non-terminal
+/// orders are handed to the DM router (`TrackOrder`) so their messages route
+/// live without a restart. `last_trade_index` advances to the highest index
+/// seen so future trades never reuse a key.
+pub async fn execute_restore_session(
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+    dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
+) -> Result<RestoreSummary> {
+    let user = User::get(pool).await?;
+    let identity_keys = User::get_identity_keys(pool).await?;
+
+    let message = Message::new_restore(None);
+    let message_json = message
+        .as_json()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?;
+
+    let sent_message = send_dm(
+        client,
+        Some(&identity_keys),
+        &identity_keys,
+        &mostro_pubkey,
+        message_json,
+        None,
+        mostro_instance,
+    );
+
+    let recv_event = wait_for_dm(&identity_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let messages = parse_dm_events(recv_event, &identity_keys, None).await;
+
+    let Some((response_message, _, _)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    };
+    let inner = response_message.get_inner_message_kind();
+
+    if let Some(Payload::CantDo(reason)) = &inner.payload {
+        let error_msg = match reason {
+            Some(r) => get_cant_do_description(r),
+            None => "Unknown error - Mostro couldn't process your request".to_string(),
+        };
+        return Err(anyhow::anyhow!(error_msg));
+    }
+    if inner.action != Action::RestoreSession {
+        return Err(anyhow::anyhow!(
+            "Unexpected action in response: {:?}",
+            inner.action
+        ));
+    }
+    let Some(Payload::RestoreData(restore_data)) = &inner.payload else {
+        return Err(anyhow::anyhow!("No restore data payload in response"));
+    };
+
+    let mut summary = RestoreSummary {
+        disputes: restore_data.restore_disputes.len(),
+        ..Default::default()
+    };
+    let mut max_trade_index: i64 = 0;
+
+    for info in &restore_data.restore_orders {
+        max_trade_index = max_trade_index.max(info.trade_index);
+        match restore_one_order(pool, client, mostro_pubkey, &user, info).await {
+            Ok(RestoredAs::Inserted { with_details }) => {
+                summary.restored += 1;
+                if !with_details {
+                    summary.missing_details += 1;
+                }
+            }
+            Ok(RestoredAs::AlreadyKnown) => summary.already_known += 1,
+            Err(e) => {
+                // Keep going: one bad order must not abort the recovery of the rest.
+                log::error!("Restore failed for order {}: {e}", info.order_id);
+                summary.failed += 1;
+                continue;
+            }
+        }
+
+        let terminal = Status::from_str(&info.status)
+            .map(is_terminal_trade_status)
+            .unwrap_or(false);
+        if !terminal {
+            let _ = dm_subscription_tx.send(OrderDmSubscriptionCmd::TrackOrder {
+                order_id: info.order_id,
+                trade_index: info.trade_index,
+            });
+        }
+    }
+
+    // Disputed orders come back in the orders list too; here we only make sure
+    // their local status reflects the dispute. User-side solver chat is not
+    // wired yet, so initiator/solver info has nowhere to be stored.
+    for dispute in &restore_data.restore_disputes {
+        max_trade_index = max_trade_index.max(dispute.trade_index);
+        let _ = Order::update_status(pool, &dispute.order_id.to_string(), Status::Dispute).await;
+    }
+
+    if max_trade_index > user.last_trade_index.unwrap_or(0) {
+        User::update_last_trade_index(pool, max_trade_index).await?;
+    }
+
+    Ok(summary)
+}
+
+enum RestoredAs {
+    Inserted { with_details: bool },
+    AlreadyKnown,
+}
+
+async fn restore_one_order(
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    user: &User,
+    info: &RestoredOrdersInfo,
+) -> Result<RestoredAs> {
+    let id_str = info.order_id.to_string();
+
+    if Order::get_by_id(pool, &id_str).await.is_ok() {
+        if let Ok(status) = Status::from_str(&info.status) {
+            let _ = Order::update_status(pool, &id_str, status).await;
+        }
+        return Ok(RestoredAs::AlreadyKnown);
+    }
+
+    let trade_keys = user.derive_trade_keys(info.trade_index)?;
+
+    let relay_order = fetch_small_order_by_id_from_relay(client, mostro_pubkey, info.order_id)
+        .await
+        .unwrap_or_default();
+    let with_details = relay_order.is_some();
+    let mut small_order = relay_order.unwrap_or_default();
+    small_order.id = Some(info.order_id);
+    // Mostro's database is authoritative for the status; relay events may lag.
+    if let Ok(status) = Status::from_str(&info.status) {
+        small_order.status = Some(status);
+    }
+
+    // Maker vs taker is not part of the restore payload; default to taker.
+    Order::new(
+        pool,
+        small_order,
+        &trade_keys,
+        None,
+        info.trade_index,
+        false,
+    )
+    .await?;
+    Ok(RestoredAs::Inserted { with_details })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RestoreSummary;
+
+    #[test]
+    fn summary_message_covers_the_happy_path() {
+        let s = RestoreSummary {
+            restored: 3,
+            already_known: 1,
+            disputes: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            s.to_user_message(),
+            "Session restored: 3 order(s) recovered, 1 already known, 1 dispute(s)."
+        );
+    }
+
+    #[test]
+    fn summary_message_mentions_missing_details_and_failures_only_when_present() {
+        let clean = RestoreSummary::default().to_user_message();
+        assert!(!clean.contains("relay details"));
+        assert!(!clean.contains("could not be saved"));
+
+        let bumpy = RestoreSummary {
+            restored: 2,
+            missing_details: 1,
+            failed: 1,
+            ..Default::default()
+        }
+        .to_user_message();
+        assert!(bumpy.contains("1 order(s) had no relay details"));
+        assert!(bumpy.contains("1 order(s) could not be saved"));
+    }
+}
