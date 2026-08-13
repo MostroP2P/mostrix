@@ -83,6 +83,38 @@ fn can_dispute_order_status(status: Option<Status>) -> bool {
     }
 }
 
+/// Resolve what Shift+D on My Trades should do, or `None` to ignore the key.
+///
+/// The `user_my_trades_interactive()` guard is what prevents a duplicate
+/// submit: after the first confirmation, `spawn_dispute()` switches the UI
+/// into a waiting mode while the local row still reads Active/FiatSent, so
+/// without it a second Shift+D would start a second remote dispute flow.
+fn dispute_shortcut_next_mode(
+    mode: &UiMode,
+    selected: Option<(uuid::Uuid, Option<Status>)>,
+) -> Option<UiMode> {
+    if !mode.user_my_trades_interactive() {
+        return None;
+    }
+    let (order_id, status) = selected?;
+    if matches!(status, Some(Status::Dispute)) {
+        return Some(UiMode::operation_result(OperationResult::Info(
+            "This order already has an open dispute.".to_string(),
+        )));
+    }
+    if !can_dispute_order_status(status) {
+        return Some(UiMode::operation_result(OperationResult::Info(
+            crate::ui::constants::HELP_MY_TRADES_DISPUTE_UNAVAILABLE.to_string(),
+        )));
+    }
+    let view_state = build_order_action_view_state(
+        order_id,
+        Action::Dispute,
+        crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG.to_string(),
+    );
+    Some(UiMode::ViewingMessage(view_state))
+}
+
 // Re-export public functions
 pub use async_tasks::{
     apply_pending_fetch_scheduler_reload, apply_pending_key_reload, apply_pending_runtime_reloads,
@@ -1074,27 +1106,9 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if matches!(status, Some(Status::Dispute)) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "This order already has an open dispute.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        if !can_dispute_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                crate::ui::constants::HELP_MY_TRADES_DISPUTE_UNAVAILABLE
-                                    .to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::Dispute,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) = dispute_shortcut_next_mode(&app.mode, selected) {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
@@ -1433,6 +1447,49 @@ mod key_handler_tests {
     fn unknown_status_does_not_block_dispute() {
         // Local status can lag behind Mostro; let the daemon be the one to say no.
         assert!(can_dispute_order_status(None));
+    }
+
+    #[test]
+    fn dispute_shortcut_opens_the_confirmation_when_my_trades_is_interactive() {
+        let order_id = uuid::Uuid::new_v4();
+        let next = dispute_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Active))),
+        );
+        match next {
+            Some(UiMode::ViewingMessage(view_state)) => {
+                assert_eq!(view_state.order_id, Some(order_id));
+                assert_eq!(view_state.action, Action::Dispute);
+            }
+            other => panic!("expected dispute confirmation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispute_shortcut_is_ignored_while_a_dispute_request_is_pending() {
+        // Regression: after confirming a dispute, spawn_dispute() puts the UI in a
+        // waiting mode while the local row still reads Active/FiatSent. A second
+        // Shift+D must not open another confirmation and submit a second
+        // Action::Dispute.
+        let selected = Some((uuid::Uuid::new_v4(), Some(Status::Active)));
+        assert!(dispute_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::WaitingAddInvoice),
+            selected,
+        )
+        .is_none());
+
+        // Same while the first confirmation popup is still open.
+        let popup = UiMode::ViewingMessage(build_order_action_view_state(
+            uuid::Uuid::new_v4(),
+            Action::Dispute,
+            String::new(),
+        ));
+        assert!(dispute_shortcut_next_mode(&popup, selected).is_none());
+    }
+
+    #[test]
+    fn dispute_shortcut_ignores_keys_without_a_selected_order() {
+        assert!(dispute_shortcut_next_mode(&UiMode::UserMode(UserMode::Normal), None).is_none());
     }
 
     #[test]
