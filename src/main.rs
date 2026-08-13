@@ -57,6 +57,16 @@ use tokio::time::{interval, Duration};
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+/// Results that must re-run the startup DB-to-UI sync (maker book cache +
+/// order history messages) because background work changed SQLite rows the
+/// in-memory projections are built from.
+fn requires_db_projection_resync(result: &OperationResult) -> bool {
+    matches!(
+        result,
+        OperationResult::OrderHistoryDeleted { .. } | OperationResult::SessionRestored { .. }
+    )
+}
+
 async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: OperationResult) {
     let is_dispute_related = match &result {
         OperationResult::AdminDisputeDeleted { .. } => true,
@@ -66,10 +76,12 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
         }
         _ => false,
     };
-    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
+    let resync_my_trades_from_db = requires_db_projection_resync(&result);
     let refresh_maker_book_cache = matches!(
         &result,
-        OperationResult::MyTradesMakerBookChanged | OperationResult::Success(_)
+        OperationResult::MyTradesMakerBookChanged
+            | OperationResult::Success(_)
+            | OperationResult::SessionRestored { .. }
     );
 
     if refresh_maker_book_cache && app.user_role == UserRole::User {
@@ -876,5 +888,31 @@ mod paste_routing_tests {
             }
             other => panic!("unexpected mode: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod apply_order_result_tests {
+    use super::requires_db_projection_resync;
+    use crate::ui::OperationResult;
+
+    #[test]
+    fn session_restore_triggers_the_startup_db_resync() {
+        // Regression: a restore rewrites SQLite from a background task; without
+        // the resync the recovered orders stay invisible until app restart.
+        assert!(requires_db_projection_resync(
+            &OperationResult::SessionRestored {
+                message: String::new()
+            }
+        ));
+        assert!(requires_db_projection_resync(
+            &OperationResult::OrderHistoryDeleted {
+                deleted_order_ids: vec![],
+                message: String::new()
+            }
+        ));
+        assert!(!requires_db_projection_resync(&OperationResult::Info(
+            String::new()
+        )));
     }
 }

@@ -215,6 +215,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::ObserverChatLoaded { .. }
         | OperationResult::ObserverChatError { .. } => 8,
         OperationResult::Info(message) => info_popup_height(message, popup_width),
+        OperationResult::SessionRestored { message } => info_popup_height(message, popup_width),
         OperationResult::Error(message) => info_popup_height(message, popup_width),
         OperationResult::InvoiceSubmitted { .. }
         | OperationResult::TradeClosed { .. }
@@ -358,6 +359,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::Info(message)
+        | OperationResult::SessionRestored { message }
         | OperationResult::InvoiceSubmitted { message, .. }
         | OperationResult::TradeClosed { message, .. }
         | OperationResult::OrderHistoryDeleted { message, .. }
