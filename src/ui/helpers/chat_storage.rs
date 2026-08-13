@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use chrono::DateTime;
+use nostr_sdk::prelude::EventId;
 
 use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage};
 
@@ -467,6 +470,105 @@ pub(crate) fn max_party_timestamps(messages: &[DisputeChatMessage]) -> (i64, i64
     (buyer_max, seller_max)
 }
 
+fn inner_ids_file_path(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    party_suffix: Option<&str>,
+) -> Option<PathBuf> {
+    if uuid::Uuid::parse_str(chat_id).is_err() {
+        return None;
+    }
+    let home_dir = dirs::home_dir()?;
+    let name = match party_suffix {
+        Some(sfx) => format!("{chat_id}.{sfx}.inner_ids"),
+        None => format!("{chat_id}.inner_ids"),
+    };
+    Some(
+        home_dir
+            .join(".mostrix")
+            .join(kind.folder_name())
+            .join(name),
+    )
+}
+
+fn load_inner_ids_from_path(path: &PathBuf) -> HashSet<EventId> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            EventId::from_str(line).ok()
+        })
+        .collect()
+}
+
+fn remember_inner_id_at_path(path: &PathBuf, id: &EventId) -> bool {
+    let mut seen = load_inner_ids_from_path(path);
+    if !seen.insert(*id) {
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("Failed to create chat inner-id dir {:?}: {e}", parent);
+            return true; // still treat as new in-memory this session
+        }
+    }
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut file) => {
+            if let Err(e) = writeln!(file, "{}", id.to_hex()) {
+                log::warn!("Failed to append chat inner id to {:?}: {e}", path);
+            }
+        }
+        Err(e) => log::warn!("Failed to open chat inner-id file {:?}: {e}", path),
+    }
+    true
+}
+
+/// Load durable inner event ids for an order chat (replay protection).
+pub fn load_order_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
+    match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => load_inner_ids_from_path(&path),
+        None => HashSet::new(),
+    }
+}
+
+/// Persist an accepted order-chat inner id. Returns `false` if already known (replay).
+pub fn remember_order_chat_inner_id(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
+/// Load durable inner event ids for one admin↔party dispute channel.
+pub fn load_dispute_chat_inner_ids(dispute_id: &str, party: ChatParty) -> HashSet<EventId> {
+    let sfx = match party {
+        ChatParty::Buyer => "buyer",
+        ChatParty::Seller => "seller",
+    };
+    match inner_ids_file_path(ChatStorageKind::Disputes, dispute_id, Some(sfx)) {
+        Some(path) => load_inner_ids_from_path(&path),
+        None => HashSet::new(),
+    }
+}
+
+/// Persist an accepted dispute-chat inner id. Returns `false` if already known (replay).
+pub fn remember_dispute_chat_inner_id(dispute_id: &str, party: ChatParty, id: &EventId) -> bool {
+    let sfx = match party {
+        ChatParty::Buyer => "buyer",
+        ChatParty::Seller => "seller",
+    };
+    match inner_ids_file_path(ChatStorageKind::Disputes, dispute_id, Some(sfx)) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,8 +576,22 @@ mod tests {
         ChatAttachment, ChatAttachmentType, ChatSender, DisputeChatMessage, UserChatSender,
         UserOrderChatMessage,
     };
+    use nostr_sdk::prelude::EventId;
 
     use super::super::attachments::serialize_attachment_for_transcript;
+
+    #[test]
+    fn inner_id_replay_rejected_at_path() {
+        let dir = std::env::temp_dir().join(format!("mostrix-inner-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("x.inner_ids");
+        let id = EventId::from_slice(&[9u8; 32]).expect("event id");
+        assert!(remember_inner_id_at_path(&path, &id));
+        assert!(!remember_inner_id_at_path(&path, &id));
+        let loaded = load_inner_ids_from_path(&path);
+        assert!(loaded.contains(&id));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn transcript_body_roundtrip_via_message_fields() {

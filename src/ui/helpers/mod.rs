@@ -22,8 +22,10 @@ pub use chat_render::{
     ChatScrollViewContent,
 };
 pub use chat_storage::{
-    dispute_chat_since_from_file, load_chat_from_file, load_order_chat_from_file,
-    order_chat_since_from_file, save_chat_message, save_order_chat_message,
+    dispute_chat_since_from_file, load_chat_from_file, load_dispute_chat_inner_ids,
+    load_order_chat_from_file, load_order_chat_inner_ids, order_chat_since_from_file,
+    remember_dispute_chat_inner_id, remember_order_chat_inner_id, save_chat_message,
+    save_order_chat_message,
 };
 pub use chat_visibility::{
     count_order_attachments, count_visible_attachments, get_order_attachment_messages,

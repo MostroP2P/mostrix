@@ -52,10 +52,10 @@ pub struct PostTerminalStartupInput<'a> {
     pub message_notification_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::MessageNotification>,
     /// Sender used by the chat router to publish decoded admin dispute chat updates.
     pub admin_chat_updates_tx:
-        tokio::sync::mpsc::UnboundedSender<Result<Vec<crate::ui::AdminChatUpdate>, anyhow::Error>>,
+        tokio::sync::mpsc::Sender<Result<Vec<crate::ui::AdminChatUpdate>, anyhow::Error>>,
     /// Sender used by the chat router to publish decoded user order chat updates.
     pub user_order_chat_updates_tx:
-        tokio::sync::mpsc::UnboundedSender<Result<Vec<crate::ui::OrderChatUpdate>, anyhow::Error>>,
+        tokio::sync::mpsc::Sender<Result<Vec<crate::ui::OrderChatUpdate>, anyhow::Error>>,
 }
 
 pub struct StartupBootstrap {
