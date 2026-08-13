@@ -25,6 +25,9 @@ pub struct RestoreSummary {
     /// Restored orders whose details could not be found on the relays
     /// (persisted with what Mostro returned: id, trade index and status).
     pub missing_details: usize,
+    /// Restored orders whose maker/taker role could not be determined
+    /// (persisted as taker).
+    pub role_unknown: usize,
     /// Orders that could not be persisted at all.
     pub failed: usize,
     /// Disputes reported by Mostro for this identity.
@@ -41,6 +44,12 @@ impl RestoreSummary {
             msg.push_str(&format!(
                 " {} order(s) had no relay details and were saved with minimal info.",
                 self.missing_details
+            ));
+        }
+        if self.role_unknown > 0 {
+            msg.push_str(&format!(
+                " {} order(s) restored with unknown maker/taker role (shown as taker).",
+                self.role_unknown
             ));
         }
         if self.failed > 0 {
@@ -96,9 +105,18 @@ pub async fn execute_restore_session(
     let recv_event = wait_for_dm(&identity_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
     let messages = parse_dm_events(recv_event, &identity_keys, None).await;
 
-    let Some((response_message, _, _)) = messages.first() else {
+    let Some((response_message, _, sender)) = messages.first() else {
         return Err(anyhow::anyhow!("No response received from Mostro"));
     };
+    // The restore request carries no request id, so unlike the order flows the
+    // response cannot be tied back by a random id only Mostro could echo. The
+    // sender check is the only thing standing between us and a forged
+    // gift-wrapped RestoreData seeding attacker-controlled orders.
+    if sender != &mostro_pubkey {
+        return Err(anyhow::anyhow!(
+            "Restore response signed by {sender}, expected the configured Mostro instance"
+        ));
+    }
     let inner = response_message.get_inner_message_kind();
 
     if let Some(Payload::CantDo(reason)) = &inner.payload {
@@ -127,10 +145,16 @@ pub async fn execute_restore_session(
     for info in &restore_data.restore_orders {
         max_trade_index = max_trade_index.max(info.trade_index);
         match restore_one_order(pool, client, mostro_pubkey, &user, info).await {
-            Ok(RestoredAs::Inserted { with_details }) => {
+            Ok(RestoredAs::Inserted {
+                with_details,
+                role_unknown,
+            }) => {
                 summary.restored += 1;
                 if !with_details {
                     summary.missing_details += 1;
+                }
+                if role_unknown {
+                    summary.role_unknown += 1;
                 }
             }
             Ok(RestoredAs::AlreadyKnown) => summary.already_known += 1,
@@ -169,8 +193,33 @@ pub async fn execute_restore_session(
 }
 
 enum RestoredAs {
-    Inserted { with_details: bool },
+    Inserted {
+        with_details: bool,
+        role_unknown: bool,
+    },
     AlreadyKnown,
+}
+
+/// Maker/taker resolution for a restored order.
+///
+/// Neither the restore payload nor the public relay events carry the role
+/// (kind-38383 tags stop at the order terms — no buyer/seller pubkeys), so it
+/// has to be inferred where the protocol allows it:
+/// - `Pending` / `WaitingMakerBond` orders exist only for their maker; any
+///   taker interaction immediately moves the order out of those states.
+/// - Anything else is genuinely ambiguous. Those rows fall back to taker and
+///   are counted in the summary so the fallback is never silent.
+#[derive(Debug, PartialEq, Eq)]
+enum RestoredRole {
+    Maker,
+    UnknownAsTaker,
+}
+
+fn restored_order_role(status: Option<Status>) -> RestoredRole {
+    match status {
+        Some(Status::Pending) | Some(Status::WaitingMakerBond) => RestoredRole::Maker,
+        _ => RestoredRole::UnknownAsTaker,
+    }
 }
 
 async fn restore_one_order(
@@ -202,22 +251,26 @@ async fn restore_one_order(
         small_order.status = Some(status);
     }
 
-    // Maker vs taker is not part of the restore payload; default to taker.
+    let role = restored_order_role(small_order.status);
     Order::new(
         pool,
         small_order,
         &trade_keys,
         None,
         info.trade_index,
-        false,
+        matches!(role, RestoredRole::Maker),
     )
     .await?;
-    Ok(RestoredAs::Inserted { with_details })
+    Ok(RestoredAs::Inserted {
+        with_details,
+        role_unknown: matches!(role, RestoredRole::UnknownAsTaker),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RestoreSummary;
+    use super::{restored_order_role, RestoreSummary, RestoredRole};
+    use mostro_core::prelude::Status;
 
     #[test]
     fn summary_message_covers_the_happy_path() {
@@ -231,6 +284,43 @@ mod tests {
             s.to_user_message(),
             "Session restored: 3 order(s) recovered, 1 already known, 1 dispute(s)."
         );
+    }
+
+    #[test]
+    fn maker_is_inferred_only_from_maker_exclusive_statuses() {
+        // A pending / waiting-maker-bond order can only exist for its maker.
+        assert_eq!(
+            restored_order_role(Some(Status::Pending)),
+            RestoredRole::Maker
+        );
+        assert_eq!(
+            restored_order_role(Some(Status::WaitingMakerBond)),
+            RestoredRole::Maker
+        );
+        // Anything else is ambiguous: fall back to taker, but never silently.
+        assert_eq!(
+            restored_order_role(Some(Status::Active)),
+            RestoredRole::UnknownAsTaker
+        );
+        assert_eq!(
+            restored_order_role(Some(Status::FiatSent)),
+            RestoredRole::UnknownAsTaker
+        );
+        assert_eq!(restored_order_role(None), RestoredRole::UnknownAsTaker);
+    }
+
+    #[test]
+    fn summary_message_reports_unknown_roles() {
+        let s = RestoreSummary {
+            restored: 2,
+            role_unknown: 2,
+            ..Default::default()
+        }
+        .to_user_message();
+        assert!(s.contains("2 order(s) restored with unknown maker/taker role"));
+        assert!(!RestoreSummary::default()
+            .to_user_message()
+            .contains("maker/taker"));
     }
 
     #[test]
