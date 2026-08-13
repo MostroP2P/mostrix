@@ -1,6 +1,5 @@
 //! My Trades / order chat UI. Ctrl+H and Shift+H help overlays are styled in [`crate::ui::help_popup`].
 
-use chrono::DateTime;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -18,7 +17,8 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_TAB_CHAT, FOOTER_SENDING_ATTACHMENT, HELP_KEY,
 };
 use crate::ui::helpers::{
-    active_order_chat_list_snapshot, count_order_attachments, format_user_rating,
+    active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
+    format_user_rating,
 };
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UserChatChannel, UserChatSender};
@@ -119,8 +119,7 @@ fn build_order_chat_content(
         } else {
             color
         };
-        let ts = DateTime::from_timestamp(msg.timestamp, 0)
-            .map(|dt| dt.format("%d-%m-%Y %H:%M").to_string())
+        let ts = format_local_timestamp(msg.timestamp, "%d-%m-%Y %H:%M")
             .unwrap_or_else(|| "unknown time".to_string());
         let header = Span::styled(format!("{label} - {ts}"), Style::default().fg(color));
         let wrapped_lines = wrap_text_to_lines(&msg.content, max_content_width);
@@ -264,8 +263,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .unwrap_or_else(|| "Unknown".to_string());
     let created_str = static_h
         .and_then(|h| h.created_at)
-        .and_then(|ts| DateTime::from_timestamp(ts, 0))
-        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .and_then(|ts| format_local_timestamp(ts, "%Y-%m-%d %H:%M:%S"))
         .unwrap_or_else(|| "Unknown".to_string());
     let truncate_pubkey = |pubkey: &str| -> String {
         if pubkey.len() > 16 {

@@ -1,13 +1,13 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use chrono::DateTime;
 use mostro_core::prelude::*;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
+use crate::ui::helpers::format_local_timestamp;
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Render the disputes tab showing a table of active disputes
@@ -89,9 +89,8 @@ pub fn render_disputes_tab(
                 let status_str = dispute.status.clone();
                 let status_cell = Cell::from(status_str);
 
-                let date = DateTime::from_timestamp(dispute.created_at, 0);
                 let date_cell = Cell::from(
-                    date.map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M")
                         .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 

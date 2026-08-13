@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::prelude::{EventId, PublicKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChatParty {
@@ -105,13 +105,22 @@ pub struct AdminChatLastSeen {
     pub last_seen_timestamp: Option<i64>,
 }
 
+/// A decrypted peer/admin chat message ready for UI merge.
+#[derive(Clone, Debug)]
+pub struct DecodedChatMessage {
+    pub content: String,
+    pub timestamp: i64,
+    pub sender: PublicKey,
+    /// Verified inner kind-1 event id — durable replay protection.
+    pub inner_event_id: EventId,
+}
+
 /// Result of polling for admin chat messages for a single dispute/party.
 #[derive(Clone, Debug)]
 pub struct AdminChatUpdate {
     pub dispute_id: String,
     pub party: ChatParty,
-    /// (content, timestamp, sender_pubkey)
-    pub messages: Vec<(String, i64, PublicKey)>,
+    pub messages: Vec<DecodedChatMessage>,
 }
 
 /// Per-order last-seen timestamp for user order chat.
@@ -128,6 +137,5 @@ pub struct OrderChatUpdate {
     pub channel: UserChatChannel,
     /// Local trade public key for this order; used to skip relay echoes of our own sends.
     pub local_trade_pubkey: PublicKey,
-    /// (content, timestamp, sender_pubkey)
-    pub messages: Vec<(String, i64, PublicKey)>,
+    pub messages: Vec<DecodedChatMessage>,
 }

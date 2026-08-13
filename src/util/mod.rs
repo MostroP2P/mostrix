@@ -1,5 +1,6 @@
 pub mod blossom;
 pub mod chat_listener;
+pub mod chat_security;
 pub mod chat_utils;
 pub mod db_utils;
 pub mod dm_utils;

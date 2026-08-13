@@ -700,8 +700,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
 }
 
 fn bond_payout_notification_body(slashed_at: i64) -> String {
-    let anchor = chrono::DateTime::from_timestamp(slashed_at, 0)
-        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+    let anchor = crate::ui::helpers::format_local_timestamp(slashed_at, "%Y-%m-%d %H:%M")
         .unwrap_or_else(|| "unknown".to_string());
     format!("Slash recorded: {anchor}. Claim deadline = anchor + instance payout window.")
 }

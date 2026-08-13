@@ -22,12 +22,16 @@ pub use chat_render::{
     ChatScrollViewContent,
 };
 pub use chat_storage::{
-    dispute_chat_since_from_file, load_chat_from_file, load_order_chat_from_file,
-    order_chat_since_from_file, save_chat_message, save_order_chat_message,
+    dispute_chat_inner_id_known, dispute_chat_since_from_file, load_chat_from_file,
+    load_dispute_chat_inner_ids, load_order_chat_from_file, load_order_chat_inner_ids,
+    order_chat_inner_id_known, order_chat_since_from_file, remember_dispute_chat_inner_id,
+    remember_order_chat_inner_id, rewrite_dispute_chat_messages, rewrite_order_chat_messages,
+    save_chat_message, save_order_chat_message,
 };
 pub use chat_storage::{
-    load_user_dispute_chat_from_file, save_user_dispute_chat_message,
-    user_dispute_chat_since_from_file,
+    load_user_dispute_chat_from_file, load_user_dispute_chat_inner_ids,
+    remember_user_dispute_chat_inner_id, save_user_dispute_chat_message,
+    user_dispute_chat_inner_id_known, user_dispute_chat_since_from_file,
 };
 pub use chat_visibility::{
     count_order_attachments, count_visible_attachments, get_order_attachment_messages,
@@ -37,8 +41,8 @@ pub use dispute_selection::{
     get_filtered_disputes, move_dispute_selection, selected_display_idx, selected_filtered_dispute,
 };
 pub use formatting::{
-    format_order_id, format_premium, format_user_rating, is_dispute_finalized,
-    relative_time_compact, short_order_id,
+    format_local_timestamp, format_order_id, format_premium, format_user_rating,
+    is_dispute_finalized, relative_time_compact, short_order_id,
 };
 pub use layout::{
     create_centered_popup, render_help_text, render_yes_no_buttons, render_yes_no_cancel_buttons,

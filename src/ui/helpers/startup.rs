@@ -25,9 +25,13 @@ use super::attachments::{
     build_attachment_toast, legacy_placeholder_matches_filename, try_parse_attachment_message,
 };
 use super::chat_storage::{
-    load_chat_from_file, load_order_chat_from_file, load_user_dispute_chat_from_file,
-    max_party_timestamps, save_chat_message, save_order_chat_message,
-    save_user_dispute_chat_message, user_dispute_chat_since_from_file,
+    dispute_chat_inner_id_known, load_chat_from_file, load_order_chat_from_file,
+    load_user_dispute_chat_from_file, max_party_timestamps, order_chat_inner_id_known,
+    remember_dispute_chat_inner_id, remember_order_chat_inner_id,
+    remember_user_dispute_chat_inner_id, rewrite_dispute_chat_messages,
+    rewrite_order_chat_messages, save_chat_message, save_order_chat_message,
+    save_user_dispute_chat_message, user_dispute_chat_inner_id_known,
+    user_dispute_chat_since_from_file,
 };
 
 /// Parse `admin_privkey` text and store in [`AppState::admin_keys`].
@@ -425,6 +429,10 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.
+///
+/// Durable inner-event ids are recorded only after a successful transcript
+/// [`save_order_chat_message`] / [`rewrite_order_chat_messages`]. On write
+/// failure the id is left unrecorded so a later delivery can retry.
 pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui::OrderChatUpdate>) {
     for update in updates {
         let order_id = update.order_id.clone();
@@ -440,9 +448,26 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
             .get(&order_id)
             .and_then(|s| s.last_seen_timestamp)
             .unwrap_or(0);
-        for (content, ts, sender_pubkey) in update.messages {
+        for msg in update.messages {
+            let content = msg.content;
+            let ts = msg.timestamp;
+            let sender_pubkey = msg.sender;
+            let inner_id = msg.inner_event_id;
+
             // Skip relay echoes of messages we already added locally on send (mirror admin chat).
             if sender_pubkey == update.local_trade_pubkey {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                continue;
+            }
+
+            // Durable replay guard: skip if already accepted (do not write again).
+            let inner_id_known = match update.channel {
+                UserChatChannel::Peer => order_chat_inner_id_known(&order_id, &inner_id),
+                UserChatChannel::Solver => user_dispute_chat_inner_id_known(&order_id, &inner_id),
+            };
+            if inner_id_known {
                 if ts > max_ts {
                     max_ts = ts;
                 }
@@ -463,13 +488,22 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                         && m.attachment.is_none()
                         && legacy_placeholder_matches_filename(&m.content, &att.filename)
                 }) {
-                    let sender = messages_vec[idx].sender;
+                    let previous = messages_vec[idx].clone();
+                    let sender = previous.sender;
                     messages_vec[idx] = UserOrderChatMessage {
                         sender,
                         content: msg_content.clone(),
                         timestamp: ts,
                         attachment: Some(att.clone()),
                     };
+                    if !rewrite_order_chat_messages(&order_id, messages_vec) {
+                        messages_vec[idx] = previous;
+                        log::warn!(
+                            "Failed to persist order chat attachment upgrade for {order_id}; leaving inner id unrecorded"
+                        );
+                        continue;
+                    }
+                    let _ = remember_order_chat_inner_id(&order_id, &inner_id);
                     if ts > max_ts {
                         max_ts = ts;
                     }
@@ -500,6 +534,15 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 false
             });
             if is_duplicate {
+                // Content already in the transcript; still record the inner id.
+                match update.channel {
+                    UserChatChannel::Peer => {
+                        let _ = remember_order_chat_inner_id(&order_id, &inner_id);
+                    }
+                    UserChatChannel::Solver => {
+                        let _ = remember_user_dispute_chat_inner_id(&order_id, &inner_id);
+                    }
+                }
                 if ts > max_ts {
                     max_ts = ts;
                 }
@@ -516,9 +559,24 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 timestamp: ts,
                 attachment,
             };
-            match update.channel {
+            let saved = match update.channel {
                 UserChatChannel::Peer => save_order_chat_message(&order_id, &msg),
                 UserChatChannel::Solver => save_user_dispute_chat_message(&order_id, &msg),
+            };
+            if !saved {
+                log::warn!(
+                    "Failed to persist {} chat message for {order_id}; leaving inner id unrecorded",
+                    update.channel
+                );
+                continue;
+            }
+            match update.channel {
+                UserChatChannel::Peer => {
+                    let _ = remember_order_chat_inner_id(&order_id, &inner_id);
+                }
+                UserChatChannel::Solver => {
+                    let _ = remember_user_dispute_chat_inner_id(&order_id, &inner_id);
+                }
             }
             messages_vec.push(msg);
             if ts > max_ts {
@@ -536,6 +594,10 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
 
 /// Apply fetched admin chat updates back into the UI state and persist
 /// last_seen timestamps to the database.
+///
+/// Durable inner-event ids are recorded only after a successful transcript
+/// [`save_chat_message`] / [`rewrite_dispute_chat_messages`]. On write failure
+/// the id is left unrecorded so a later delivery can retry.
 pub async fn apply_admin_chat_updates(
     app: &mut AppState,
     updates: Vec<AdminChatUpdate>,
@@ -556,7 +618,12 @@ pub async fn apply_admin_chat_updates(
             .and_then(|s| s.last_seen_timestamp)
             .unwrap_or(0);
 
-        for (content, ts, sender_pubkey) in update.messages {
+        for msg in update.messages {
+            let content = msg.content;
+            let ts = msg.timestamp;
+            let sender_pubkey = msg.sender;
+            let inner_id = msg.inner_event_id;
+
             if let Some(admin_pk) = admin_chat_pubkey {
                 if &sender_pubkey == admin_pk {
                     if ts > max_ts {
@@ -564,6 +631,13 @@ pub async fn apply_admin_chat_updates(
                     }
                     continue;
                 }
+            }
+
+            if dispute_chat_inner_id_known(&dispute_key, party, &inner_id) {
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+                continue;
             }
 
             let (sender, target_party) = app
@@ -608,6 +682,7 @@ pub async fn apply_admin_chat_updates(
                         && m.attachment.is_none()
                         && legacy_placeholder_matches_filename(&m.content, &att.filename)
                 }) {
+                    let previous = messages_vec[idx].clone();
                     messages_vec[idx] = DisputeChatMessage {
                         sender,
                         content: msg_content.clone(),
@@ -615,6 +690,14 @@ pub async fn apply_admin_chat_updates(
                         target_party,
                         attachment: Some(att.clone()),
                     };
+                    if !rewrite_dispute_chat_messages(&dispute_key, messages_vec) {
+                        messages_vec[idx] = previous;
+                        log::warn!(
+                            "Failed to persist dispute chat attachment upgrade for {dispute_key}; leaving inner id unrecorded"
+                        );
+                        continue;
+                    }
+                    let _ = remember_dispute_chat_inner_id(&dispute_key, party, &inner_id);
                     if ts > max_ts {
                         max_ts = ts;
                     }
@@ -643,6 +726,7 @@ pub async fn apply_admin_chat_updates(
                 false
             });
             if is_duplicate {
+                let _ = remember_dispute_chat_inner_id(&dispute_key, party, &inner_id);
                 if ts > max_ts {
                     max_ts = ts;
                 }
@@ -667,7 +751,13 @@ pub async fn apply_admin_chat_updates(
                 target_party,
                 attachment,
             };
-            save_chat_message(&dispute_key, &msg);
+            if !save_chat_message(&dispute_key, &msg) {
+                log::warn!(
+                    "Failed to persist dispute chat message for {dispute_key}; leaving inner id unrecorded"
+                );
+                continue;
+            }
+            let _ = remember_dispute_chat_inner_id(&dispute_key, party, &inner_id);
             messages_vec.push(msg);
             if ts > max_ts {
                 max_ts = ts;

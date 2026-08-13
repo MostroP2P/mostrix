@@ -1,8 +1,12 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 
 use chrono::DateTime;
+use nostr_sdk::prelude::EventId;
 
 use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage};
 use crate::util::chat_utils::clamp_chat_since_cursor_now;
@@ -246,15 +250,18 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
 }
 
 /// Persist one user order chat message into `~/.mostrix/orders_chat/<order_id>.txt`.
-pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
-    save_user_chat_message_by_kind(ChatStorageKind::Orders, order_id, message);
+///
+/// Returns `true` when the message is durably represented on disk (newly written
+/// or already present as the last transcript block). Returns `false` on I/O failure.
+pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) -> bool {
+    save_user_chat_message_by_kind(ChatStorageKind::Orders, order_id, message)
 }
 
 fn save_user_chat_message_by_kind(
     kind: ChatStorageKind,
     chat_id: &str,
     message: &UserOrderChatMessage,
-) {
+) -> bool {
     let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
@@ -263,7 +270,7 @@ fn save_user_chat_message_by_kind(
                 kind.log_label(),
                 chat_id
             );
-            return;
+            return false;
         }
     };
     let Some(chat_dir) = file_path.parent() else {
@@ -272,7 +279,7 @@ fn save_user_chat_message_by_kind(
             kind.log_label(),
             chat_id
         );
-        return;
+        return false;
     };
     if let Err(e) = fs::create_dir_all(chat_dir) {
         log::warn!(
@@ -281,7 +288,7 @@ fn save_user_chat_message_by_kind(
             chat_dir,
             e
         );
-        return;
+        return false;
     }
 
     let content_block = transcript_body_for_order_message(message);
@@ -300,11 +307,65 @@ fn save_user_chat_message_by_kind(
                     &last_content,
                     message,
                 ) {
-                    return;
+                    return true;
                 }
             }
         }
     }
+    let formatted_message = format_order_transcript_block(message, &content_block);
+    append_transcript_block(&file_path, &formatted_message, kind.log_label())
+}
+
+/// Rewrite the full order-chat transcript (used when upgrading a placeholder in place).
+///
+/// Returns `true` on successful atomic replace; `false` on I/O failure (caller should
+/// not treat the in-memory upgrade as durable).
+pub fn rewrite_order_chat_messages(order_id: &str, messages: &[UserOrderChatMessage]) -> bool {
+    rewrite_user_chat_messages_by_kind(ChatStorageKind::Orders, order_id, messages)
+}
+
+fn rewrite_user_chat_messages_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    messages: &[UserOrderChatMessage],
+) -> bool {
+    let file_path = match chat_file_path(kind, chat_id) {
+        Some(path) => path,
+        None => {
+            log::warn!(
+                "Invalid {} id format, skipping rewrite: {}",
+                kind.log_label(),
+                chat_id
+            );
+            return false;
+        }
+    };
+    let Some(chat_dir) = file_path.parent() else {
+        log::warn!(
+            "Failed to resolve {} folder for id {}",
+            kind.log_label(),
+            chat_id
+        );
+        return false;
+    };
+    if let Err(e) = fs::create_dir_all(chat_dir) {
+        log::warn!(
+            "Failed to create {} folder {:?}: {}",
+            kind.log_label(),
+            chat_dir,
+            e
+        );
+        return false;
+    }
+    let mut body = String::new();
+    for message in messages {
+        let content_block = transcript_body_for_order_message(message);
+        body.push_str(&format_order_transcript_block(message, &content_block));
+    }
+    write_transcript_file(&file_path, &body, kind.log_label())
+}
+
+fn format_order_transcript_block(message: &UserOrderChatMessage, content_block: &str) -> String {
     let (date_str, time_str) = DateTime::from_timestamp(message.timestamp, 0)
         .map(|dt| {
             let date = dt.format("%d-%m-%Y").to_string();
@@ -316,32 +377,68 @@ fn save_user_chat_message_by_kind(
         UserChatSender::You => "You",
         UserChatSender::Peer => "Peer",
     };
-    let formatted_message = format!(
+    format!(
         "{} - {} - {}\n{}\n\n",
         sender_label, date_str, time_str, content_block
-    );
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file_path)
-    {
+    )
+}
+
+fn append_transcript_block(file_path: &Path, formatted_message: &str, label: &str) -> bool {
+    match OpenOptions::new().create(true).append(true).open(file_path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(formatted_message.as_bytes()) {
-                log::warn!(
-                    "Failed to write {} message to file: {}",
-                    kind.log_label(),
-                    e
-                );
+                log::warn!("Failed to write {label} message to file: {e}");
+                false
+            } else if let Err(e) = file.sync_all() {
+                log::warn!("Failed to sync {label} message to file: {e}");
+                false
             } else {
-                log::debug!("Saved {} message to {:?}", kind.log_label(), file_path);
+                log::debug!("Saved {label} message to {:?}", file_path);
+                true
             }
         }
-        Err(e) => log::warn!(
-            "Failed to open {} file {:?}: {}",
-            kind.log_label(),
-            file_path,
-            e
-        ),
+        Err(e) => {
+            log::warn!("Failed to open {label} file {:?}: {e}", file_path);
+            false
+        }
+    }
+}
+
+fn write_transcript_file(file_path: &Path, body: &str, label: &str) -> bool {
+    let tmp_path = file_path.with_extension("txt.tmp");
+    let write_ok = match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(body.as_bytes()) {
+                log::warn!("Failed to write {label} temp file {:?}: {e}", tmp_path);
+                false
+            } else if let Err(e) = file.sync_all() {
+                log::warn!("Failed to sync {label} temp file {:?}: {e}", tmp_path);
+                false
+            } else {
+                true
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to open {label} temp file {:?}: {e}", tmp_path);
+            return false;
+        }
+    };
+    if !write_ok {
+        let _ = fs::remove_file(&tmp_path);
+        return false;
+    }
+    if let Err(e) = fs::rename(&tmp_path, file_path) {
+        log::warn!("Failed to replace {label} file {:?}: {e}", file_path);
+        let _ = fs::remove_file(&tmp_path);
+        false
+    } else {
+        log::debug!("Rewrote {label} transcript {:?}", file_path);
+        true
     }
 }
 
@@ -351,8 +448,10 @@ pub fn load_order_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMess
 }
 
 /// Persist one user-to-solver message under the parent order id.
-pub fn save_user_dispute_chat_message(order_id: &str, message: &UserOrderChatMessage) {
-    save_user_chat_message_by_kind(ChatStorageKind::UserDisputes, order_id, message);
+///
+/// Returns `true` when the message is durably represented on disk.
+pub fn save_user_dispute_chat_message(order_id: &str, message: &UserOrderChatMessage) -> bool {
+    save_user_chat_message_by_kind(ChatStorageKind::UserDisputes, order_id, message)
 }
 
 /// Load cached user-to-solver messages for an order.
@@ -398,11 +497,53 @@ pub fn dispute_chat_since_from_file(dispute_id: &str) -> (Option<i64>, Option<i6
 }
 
 /// Saves a dispute chat message to a text file in `~/.mostrix/disputes_chat/<dispute_id>.txt`.
-pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) {
-    save_chat_message_by_kind(ChatStorageKind::Disputes, dispute_id, message);
+///
+/// Returns `true` when durably represented on disk (written or already last block).
+pub fn save_chat_message(dispute_id: &str, message: &DisputeChatMessage) -> bool {
+    save_chat_message_by_kind(ChatStorageKind::Disputes, dispute_id, message)
 }
 
-fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &DisputeChatMessage) {
+/// Rewrite the full dispute-chat transcript (placeholder-in-place upgrades).
+///
+/// Returns `true` on successful atomic replace; `false` on I/O failure (caller should
+/// not treat the in-memory upgrade as durable).
+pub fn rewrite_dispute_chat_messages(dispute_id: &str, messages: &[DisputeChatMessage]) -> bool {
+    let file_path = match chat_file_path(ChatStorageKind::Disputes, dispute_id) {
+        Some(path) => path,
+        None => {
+            log::warn!(
+                "Invalid dispute chat id format, skipping rewrite: {}",
+                dispute_id
+            );
+            return false;
+        }
+    };
+    let Some(chat_dir) = file_path.parent() else {
+        log::warn!(
+            "Failed to resolve dispute chat folder for id {}",
+            dispute_id
+        );
+        return false;
+    };
+    if let Err(e) = fs::create_dir_all(chat_dir) {
+        log::warn!("Failed to create dispute chat folder {:?}: {}", chat_dir, e);
+        return false;
+    }
+    let mut body = String::new();
+    for message in messages {
+        body.push_str(&format_dispute_transcript_block(
+            ChatStorageKind::Disputes,
+            message,
+        ));
+    }
+    write_transcript_file(&file_path, &body, "dispute chat")
+}
+
+fn save_chat_message_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    message: &DisputeChatMessage,
+) -> bool {
     let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
@@ -411,7 +552,7 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
                 kind.log_label(),
                 chat_id
             );
-            return;
+            return false;
         }
     };
     let Some(chat_dir) = file_path.parent() else {
@@ -420,7 +561,7 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
             kind.log_label(),
             chat_id
         );
-        return;
+        return false;
     };
     if let Err(e) = fs::create_dir_all(chat_dir) {
         log::warn!(
@@ -429,10 +570,8 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
             chat_dir,
             e
         );
-        return;
+        return false;
     }
-
-    let content_block = transcript_body_for_dispute_message(message);
 
     if let Ok(existing) = fs::read_to_string(&file_path) {
         if let Some((last_sender, last_target_party, last_ts, last_content)) =
@@ -445,11 +584,17 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
                 &last_content,
                 message,
             ) {
-                return;
+                return true;
             }
         }
     }
 
+    let formatted_message = format_dispute_transcript_block(kind, message);
+    append_transcript_block(&file_path, &formatted_message, kind.log_label())
+}
+
+fn format_dispute_transcript_block(kind: ChatStorageKind, message: &DisputeChatMessage) -> String {
+    let content_block = transcript_body_for_dispute_message(message);
     let (date_str, time_str) = DateTime::from_timestamp(message.timestamp, 0)
         .map(|dt| {
             let date = dt.format("%d-%m-%Y").to_string();
@@ -471,36 +616,10 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
             ChatSender::Buyer | ChatSender::Seller => "Peer",
         },
     };
-    let formatted_message = format!(
+    format!(
         "{} - {} - {}\n{}\n\n",
         sender_label, date_str, time_str, content_block
-    );
-
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file_path)
-    {
-        Ok(mut file) => {
-            if let Err(e) = file.write_all(formatted_message.as_bytes()) {
-                log::warn!(
-                    "Failed to write {} message to file: {}",
-                    kind.log_label(),
-                    e
-                );
-            } else {
-                log::debug!("Saved {} message to {:?}", kind.log_label(), file_path);
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "Failed to open {} file {:?}: {}",
-                kind.log_label(),
-                file_path,
-                e
-            );
-        }
-    }
+    )
 }
 
 pub(crate) fn max_party_timestamps(messages: &[DisputeChatMessage]) -> (i64, i64) {
@@ -519,6 +638,199 @@ pub(crate) fn max_party_timestamps(messages: &[DisputeChatMessage]) -> (i64, i64
     (buyer_max, seller_max)
 }
 
+fn inner_ids_file_path(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    party_suffix: Option<&str>,
+) -> Option<PathBuf> {
+    if uuid::Uuid::parse_str(chat_id).is_err() {
+        return None;
+    }
+    let home_dir = dirs::home_dir()?;
+    let name = match party_suffix {
+        Some(sfx) => format!("{chat_id}.{sfx}.inner_ids"),
+        None => format!("{chat_id}.inner_ids"),
+    };
+    Some(
+        home_dir
+            .join(".mostrix")
+            .join(kind.folder_name())
+            .join(name),
+    )
+}
+
+fn load_inner_ids_from_path(path: &Path) -> HashSet<EventId> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            EventId::from_str(line).ok()
+        })
+        .collect()
+}
+
+fn inner_id_cache() -> &'static Mutex<HashMap<PathBuf, HashSet<EventId>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, HashSet<EventId>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_inner_id_set<R>(path: &Path, f: impl FnOnce(&mut HashSet<EventId>) -> R) -> R {
+    let mut guard = match inner_id_cache().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let set = guard
+        .entry(path.to_path_buf())
+        .or_insert_with(|| load_inner_ids_from_path(path));
+    f(set)
+}
+
+fn inner_id_known_at_path(path: &Path, id: &EventId) -> bool {
+    with_inner_id_set(path, |set| set.contains(id))
+}
+
+/// Append `id` to the durable set. Returns `false` if already known.
+///
+/// Uses a process-wide cache so each path is fully parsed at most once; only
+/// newly accepted ids are appended. On append failure the cache insert is rolled
+/// back so a later retry can succeed.
+fn remember_inner_id_at_path(path: &Path, id: &EventId) -> bool {
+    let newly_inserted = with_inner_id_set(path, |set| set.insert(*id));
+    if !newly_inserted {
+        return false;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("Failed to create chat inner-id dir {:?}: {e}", parent);
+            with_inner_id_set(path, |set| {
+                set.remove(id);
+            });
+            return false;
+        }
+    }
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut file) => {
+            if let Err(e) = writeln!(file, "{}", id.to_hex()) {
+                log::warn!("Failed to append chat inner id to {:?}: {e}", path);
+                with_inner_id_set(path, |set| {
+                    set.remove(id);
+                });
+                return false;
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to open chat inner-id file {:?}: {e}", path);
+            with_inner_id_set(path, |set| {
+                set.remove(id);
+            });
+            return false;
+        }
+    }
+    true
+}
+
+/// Load durable inner event ids for an order chat (replay protection).
+///
+/// Reads through a process-wide per-path cache (first touch loads the `.inner_ids` file).
+pub fn load_order_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
+    match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => with_inner_id_set(&path, |set| set.clone()),
+        None => HashSet::new(),
+    }
+}
+
+/// Returns `true` if this inner id was already accepted for the order chat.
+pub fn order_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => inner_id_known_at_path(&path, id),
+        None => false,
+    }
+}
+
+/// Persist an accepted order-chat inner id.
+///
+/// Returns `false` if the id was already known, or if the durable append failed
+/// (cache insert is rolled back so a later retry can succeed). Call only after
+/// the matching transcript mutation has succeeded.
+pub fn remember_order_chat_inner_id(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
+/// Load durable inner event ids for a user-to-solver dispute chat.
+pub fn load_user_dispute_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
+        Some(path) => with_inner_id_set(&path, |set| set.clone()),
+        None => HashSet::new(),
+    }
+}
+
+/// Returns `true` if this inner id was already accepted for the solver chat.
+pub fn user_dispute_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
+        Some(path) => inner_id_known_at_path(&path, id),
+        None => false,
+    }
+}
+
+/// Persist an accepted solver-chat inner id after its transcript is durable.
+pub fn remember_user_dispute_chat_inner_id(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
+/// Load durable inner event ids for one admin↔party dispute channel.
+///
+/// Reads through a process-wide per-path cache (first touch loads the `.inner_ids` file).
+pub fn load_dispute_chat_inner_ids(dispute_id: &str, party: ChatParty) -> HashSet<EventId> {
+    let sfx = match party {
+        ChatParty::Buyer => "buyer",
+        ChatParty::Seller => "seller",
+    };
+    match inner_ids_file_path(ChatStorageKind::Disputes, dispute_id, Some(sfx)) {
+        Some(path) => with_inner_id_set(&path, |set| set.clone()),
+        None => HashSet::new(),
+    }
+}
+
+/// Returns `true` if this inner id was already accepted for the dispute party chat.
+pub fn dispute_chat_inner_id_known(dispute_id: &str, party: ChatParty, id: &EventId) -> bool {
+    let sfx = match party {
+        ChatParty::Buyer => "buyer",
+        ChatParty::Seller => "seller",
+    };
+    match inner_ids_file_path(ChatStorageKind::Disputes, dispute_id, Some(sfx)) {
+        Some(path) => inner_id_known_at_path(&path, id),
+        None => false,
+    }
+}
+
+/// Persist an accepted dispute-chat inner id.
+///
+/// Returns `false` if the id was already known, or if the durable append failed
+/// (cache insert is rolled back so a later retry can succeed). Call only after
+/// the matching transcript mutation has succeeded.
+pub fn remember_dispute_chat_inner_id(dispute_id: &str, party: ChatParty, id: &EventId) -> bool {
+    let sfx = match party {
+        ChatParty::Buyer => "buyer",
+        ChatParty::Seller => "seller",
+    };
+    match inner_ids_file_path(ChatStorageKind::Disputes, dispute_id, Some(sfx)) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,8 +838,22 @@ mod tests {
         ChatAttachment, ChatAttachmentType, ChatSender, DisputeChatMessage, UserChatSender,
         UserOrderChatMessage,
     };
+    use nostr_sdk::prelude::EventId;
 
     use super::super::attachments::serialize_attachment_for_transcript;
+
+    #[test]
+    fn inner_id_replay_rejected_at_path() {
+        let dir = std::env::temp_dir().join(format!("mostrix-inner-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("x.inner_ids");
+        let id = EventId::from_slice(&[9u8; 32]).expect("event id");
+        assert!(remember_inner_id_at_path(&path, &id));
+        assert!(!remember_inner_id_at_path(&path, &id));
+        let loaded = load_inner_ids_from_path(&path);
+        assert!(loaded.contains(&id));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn transcript_body_roundtrip_via_message_fields() {

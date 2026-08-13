@@ -19,23 +19,29 @@
 //! listener. Chat keys are tracked/untracked via the global command channel
 //! published by [`set_chat_router_cmd_tx`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use nostr_sdk::prelude::*;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender};
 use uuid::Uuid;
 
 use crate::models::Order;
-use crate::ui::helpers::order_chat_since_from_file;
-use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate, UserChatChannel};
+use crate::ui::helpers::{
+    load_dispute_chat_inner_ids, load_order_chat_inner_ids, load_user_dispute_chat_inner_ids,
+    order_chat_since_from_file,
+};
+use crate::ui::{AdminChatUpdate, ChatParty, DecodedChatMessage, OrderChatUpdate, UserChatChannel};
+use crate::util::chat_security::{
+    try_emit_chat_update, ChatRateLimiters, OuterIdLru, CHAT_SEEN_OUTER_CAP,
+};
 use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
     fetch_chat_messages_for_shared_key, keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
 };
 
 /// Identifies which chat a shared key belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChatKeyId {
     /// User P2P order chat, keyed by order id (UUID string).
     Order(String),
@@ -231,9 +237,9 @@ pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, tra
 /// (which dedupe by timestamp/last-seen) are unchanged.
 fn emit_messages(
     target: &ChatTarget,
-    messages: Vec<(String, i64, PublicKey)>,
-    admin_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    user_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    messages: Vec<DecodedChatMessage>,
+    admin_tx: &Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_tx: &Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
 ) {
     if messages.is_empty() {
         return;
@@ -244,31 +250,43 @@ fn emit_messages(
                 log::warn!("Order chat {order_id} missing local trade pubkey; skipping chat emit");
                 return;
             };
-            let _ = user_tx.send(Ok(vec![OrderChatUpdate {
-                order_id: order_id.clone(),
-                channel: UserChatChannel::Peer,
-                local_trade_pubkey,
-                messages,
-            }]));
+            let _ = try_emit_chat_update(
+                user_tx,
+                vec![OrderChatUpdate {
+                    order_id: order_id.clone(),
+                    channel: UserChatChannel::Peer,
+                    local_trade_pubkey,
+                    messages,
+                }],
+                "order-chat",
+            );
         }
         ChatKeyId::UserDispute(order_id) => {
             let Some(local_trade_pubkey) = target.local_trade_pubkey else {
                 log::warn!("User dispute chat {order_id} missing local trade pubkey");
                 return;
             };
-            let _ = user_tx.send(Ok(vec![OrderChatUpdate {
-                order_id: order_id.clone(),
-                channel: UserChatChannel::Solver,
-                local_trade_pubkey,
-                messages,
-            }]));
+            let _ = try_emit_chat_update(
+                user_tx,
+                vec![OrderChatUpdate {
+                    order_id: order_id.clone(),
+                    channel: UserChatChannel::Solver,
+                    local_trade_pubkey,
+                    messages,
+                }],
+                "solver-chat",
+            );
         }
         ChatKeyId::Dispute(dispute_id, party) => {
-            let _ = admin_tx.send(Ok(vec![AdminChatUpdate {
-                dispute_id: dispute_id.clone(),
-                party: *party,
-                messages,
-            }]));
+            let _ = try_emit_chat_update(
+                admin_tx,
+                vec![AdminChatUpdate {
+                    dispute_id: dispute_id.clone(),
+                    party: *party,
+                    messages,
+                }],
+                "admin-chat",
+            );
         }
     }
 }
@@ -384,6 +402,10 @@ struct CmdOutcome {
     needs_resubscribe: bool,
     /// A newly tracked key awaiting post-subscribe history hydration.
     hydrate: Option<PendingHydration>,
+    /// Key that was newly tracked (seed durable inner-id set).
+    tracked: Option<ChatKeyId>,
+    /// Key that was removed (drop rate-limit / in-memory inner set).
+    untracked: Option<ChatKeyId>,
 }
 
 /// Apply one track/untrack command to the tracked set.
@@ -409,6 +431,8 @@ fn apply_chat_router_cmd(
                 return CmdOutcome {
                     needs_resubscribe: false,
                     hydrate: None,
+                    tracked: None,
+                    untracked: None,
                 };
             };
             let Some((_conv, sign)) = chat_keys_from_ecdh(&shared_keys) else {
@@ -416,6 +440,8 @@ fn apply_chat_router_cmd(
                 return CmdOutcome {
                     needs_resubscribe: false,
                     hydrate: None,
+                    tracked: None,
+                    untracked: None,
                 };
             };
             let target_pubkey = shared_keys.public_key();
@@ -427,9 +453,12 @@ fn apply_chat_router_cmd(
                 return CmdOutcome {
                     needs_resubscribe: false,
                     hydrate: None,
+                    tracked: None,
+                    untracked: None,
                 };
             }
             let since = since.map(clamp_chat_since_cursor_now);
+            let tracked_id = key_id.clone();
             targets.insert(
                 target_pubkey,
                 ChatTarget {
@@ -447,30 +476,44 @@ fn apply_chat_router_cmd(
                     shared_keys,
                     since,
                 }),
+                tracked: Some(tracked_id),
+                untracked: None,
             }
         }
         ChatRouterCmd::UntrackChatKey { key_id } => {
             let before = targets.len();
             targets.retain(|_, t| t.key_id != key_id);
+            let removed = targets.len() != before;
             CmdOutcome {
-                needs_resubscribe: targets.len() != before,
+                needs_resubscribe: removed,
                 hydrate: None,
+                tracked: None,
+                untracked: removed.then_some(key_id),
             }
         }
+    }
+}
+
+fn load_inner_ids_for_key(key_id: &ChatKeyId) -> HashSet<EventId> {
+    match key_id {
+        ChatKeyId::Order(order_id) => load_order_chat_inner_ids(order_id),
+        ChatKeyId::UserDispute(order_id) => load_user_dispute_chat_inner_ids(order_id),
+        ChatKeyId::Dispute(dispute_id, party) => load_dispute_chat_inner_ids(dispute_id, *party),
     }
 }
 
 /// Backfill one newly tracked chat's history **after** the live subscription is
 /// active (relay subscriptions alone don't replay history). Because the live
 /// filter already covers this key, any message published during the fetch is also
-/// delivered live and deduped by the last-seen cursor. No-op if the key was
-/// untracked within the same command burst.
+/// delivered live and deduped by the last-seen cursor / inner-id set. No-op if
+/// the key was untracked within the same command burst.
 async fn hydrate_history(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
     pending: &PendingHydration,
-    admin_tx: &UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    user_tx: &UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    seen_inner: &mut HashMap<ChatKeyId, HashSet<EventId>>,
+    admin_tx: &Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_tx: &Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
 ) {
     let Some(target) = targets.get(&pending.target_pubkey) else {
         return;
@@ -485,9 +528,11 @@ async fn hydrate_history(
     {
         Ok(messages) => {
             let cutoff = pending.since.unwrap_or(0);
-            let history: Vec<(String, i64, PublicKey)> = messages
+            let inner = seen_inner.entry(target.key_id.clone()).or_default();
+            let history: Vec<DecodedChatMessage> = messages
                 .into_iter()
-                .filter(|(_, ts, _)| *ts >= cutoff)
+                .filter(|m| m.timestamp >= cutoff)
+                .filter(|m| inner.insert(m.inner_event_id))
                 .collect();
             emit_messages(target, history, admin_tx, user_tx);
         }
@@ -509,14 +554,17 @@ async fn hydrate_history(
 /// do not thrash unsubscribe/subscribe on every key.
 pub async fn listen_for_chat_messages(
     client: Client,
-    admin_chat_updates_tx: UnboundedSender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
-    user_order_chat_updates_tx: UnboundedSender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+    admin_chat_updates_tx: Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_order_chat_updates_tx: Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
     mut cmd_rx: mpsc::UnboundedReceiver<ChatRouterCmd>,
 ) {
     // Create the notification receiver BEFORE subscribing so no live event is missed.
     let mut notifications = client.notifications();
     let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
     let mut current_subs = LiveSubs::default();
+    let mut seen_outer = OuterIdLru::new(CHAT_SEEN_OUTER_CAP);
+    let mut rate_limiters: ChatRateLimiters<ChatKeyId> = ChatRateLimiters::default();
+    let mut seen_inner: HashMap<ChatKeyId, HashSet<EventId>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -526,17 +574,24 @@ pub async fn listen_for_chat_messages(
                     current_subs.clear(&client).await;
                     break;
                 };
-                let CmdOutcome {
-                    mut needs_resubscribe,
-                    hydrate,
-                } = apply_chat_router_cmd(cmd, &mut targets);
-                let mut pending_hydration: Vec<PendingHydration> = hydrate.into_iter().collect();
-                // Drain a burst of pending cmds (startup track set, finalize untracks, etc.)
-                // then rebuild the live filter once, and only then backfill history.
+                let mut outcomes = vec![apply_chat_router_cmd(cmd, &mut targets)];
                 while let Ok(more) = cmd_rx.try_recv() {
-                    let outcome = apply_chat_router_cmd(more, &mut targets);
+                    outcomes.push(apply_chat_router_cmd(more, &mut targets));
+                }
+                let mut needs_resubscribe = false;
+                let mut pending_hydration: Vec<PendingHydration> = Vec::new();
+                for outcome in outcomes {
                     needs_resubscribe |= outcome.needs_resubscribe;
                     pending_hydration.extend(outcome.hydrate);
+                    if let Some(key_id) = outcome.tracked {
+                        seen_inner
+                            .entry(key_id.clone())
+                            .or_insert_with(|| load_inner_ids_for_key(&key_id));
+                    }
+                    if let Some(key_id) = outcome.untracked {
+                        rate_limiters.remove(&key_id);
+                        seen_inner.remove(&key_id);
+                    }
                 }
                 if needs_resubscribe {
                     resubscribe(&client, &targets, &mut current_subs).await;
@@ -549,6 +604,7 @@ pub async fn listen_for_chat_messages(
                         &client,
                         &targets,
                         pending,
+                        &mut seen_inner,
                         &admin_chat_updates_tx,
                         &user_order_chat_updates_tx,
                     )
@@ -568,6 +624,17 @@ pub async fn listen_for_chat_messages(
                 let Some(target) = resolve_chat_target(&targets, &event) else {
                     continue;
                 };
+                // Spec order: outer-id LRU, then rate limit — both before decrypt.
+                if !seen_outer.insert(event.id) {
+                    continue;
+                }
+                if !rate_limiters.allow(&target.key_id) {
+                    log::debug!(
+                        "[chat_live] rate-limited chat event for {:?}",
+                        target.key_id
+                    );
+                    continue;
+                }
                 match unwrap_giftwrap_with_shared_key(
                     &target.shared_keys,
                     &event,
@@ -575,10 +642,14 @@ pub async fn listen_for_chat_messages(
                 )
                 .await
                 {
-                    Ok((content, ts, sender)) => {
+                    Ok(msg) => {
+                        let inner = seen_inner.entry(target.key_id.clone()).or_default();
+                        if !inner.insert(msg.inner_event_id) {
+                            continue;
+                        }
                         emit_messages(
                             target,
-                            vec![(content, ts, sender)],
+                            vec![msg],
                             &admin_chat_updates_tx,
                             &user_order_chat_updates_tx,
                         );
