@@ -1337,6 +1337,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
+                | UiMode::ConfirmRestoreSession(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO

@@ -162,7 +162,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::ConfirmDeleteHistoryOrder(_, _) | UiMode::ConfirmBulkDeleteHistory(_) => {
+        UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
+        | UiMode::ConfirmRestoreSession(_) => {
             app.mode = default_mode.clone();
             true
         }
