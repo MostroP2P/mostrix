@@ -27,10 +27,14 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::models::{Order, User};
+use crate::ui::helpers::user_dispute_chat_since_from_file;
 use crate::ui::order_message_to_notification;
 use crate::ui::orders::{merge_order_snapshots, small_order_from_payload};
 use crate::ui::{MessageNotification, OrderMessage};
-use crate::util::chat_listener::{maybe_track_order_chat, untrack_order_chat};
+use crate::util::chat_listener::{
+    maybe_track_order_chat, track_user_dispute_chat, untrack_order_chat, untrack_user_dispute_chat,
+};
+use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{
@@ -568,6 +572,7 @@ async fn drop_pre_active_taker_take(
     remove_order_from_messages(messages, order_id);
     // Row deleted: stop the P2P order chat subscription for this order.
     untrack_order_chat(order_id.to_string());
+    untrack_user_dispute_chat(order_id.to_string());
 }
 
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
@@ -683,6 +688,7 @@ async fn revert_maker_to_pending_on_book_republish(
     remove_order_from_messages(messages, order_id);
     // Back on the book as a pending maker listing (no counterparty): stop order chat subscription.
     untrack_order_chat(order_id.to_string());
+    untrack_user_dispute_chat(order_id.to_string());
     try_notify_my_trades_maker_book_changed();
 
     log::info!(
@@ -884,6 +890,54 @@ async fn handle_trade_dm_for_order(
         trade_keys,
     )
     .await;
+
+    if matches!(
+        action,
+        Action::DisputeInitiatedByYou | Action::DisputeInitiatedByPeer
+    ) {
+        if let Some(Payload::Dispute(dispute_id, _)) = inner_kind.payload.as_ref() {
+            if let Err(e) =
+                Order::update_dispute_id(pool, &order_id.to_string(), &dispute_id.to_string()).await
+            {
+                log::warn!("Failed to persist dispute id for order {order_id}: {e}");
+            }
+        }
+    }
+
+    if matches!(action, Action::AdminTookDispute) {
+        if let Some(Payload::Peer(peer)) = inner_kind.payload.as_ref() {
+            match PublicKey::parse(&peer.pubkey) {
+                Ok(solver_pubkey) => {
+                    if let Some(shared_hex) =
+                        derive_shared_key_hex(Some(trade_keys), Some(&peer.pubkey))
+                    {
+                        if let Err(e) = Order::update_solver_chat(
+                            pool,
+                            &order_id.to_string(),
+                            &peer.pubkey,
+                            &shared_hex,
+                        )
+                        .await
+                        {
+                            log::warn!("Failed to persist solver chat for order {order_id}: {e}");
+                        } else {
+                            let since = user_dispute_chat_since_from_file(&order_id.to_string());
+                            track_user_dispute_chat(
+                                order_id.to_string(),
+                                shared_hex,
+                                trade_keys.public_key(),
+                                solver_pubkey,
+                                since,
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!(
+                    "AdminTookDispute carried invalid solver pubkey for order {order_id}: {e}"
+                ),
+            }
+        }
+    }
 
     // Keep the P2P order chat subscription live once the shared key is resolvable (idempotent).
     maybe_track_order_chat(pool, order_id, trade_keys).await;
@@ -1249,6 +1303,7 @@ async fn dispatch_giftwrap_batch(
 
         if should_untrack_chat {
             untrack_order_chat(order_id.to_string());
+            untrack_user_dispute_chat(order_id.to_string());
         }
 
         if has_terminal_status {
@@ -2166,6 +2221,9 @@ mod tests {
             trade_keys: None,
             counterparty_pubkey: None,
             order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
             is_mine,
             buyer_invoice: None,
             request_id: Some(1),

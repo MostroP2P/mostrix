@@ -2,8 +2,8 @@ use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{
-    build_active_order_chat_list, save_order_chat_message, selected_filtered_book_order,
-    selected_filtered_dispute,
+    build_active_order_chat_list, save_order_chat_message, save_user_dispute_chat_message,
+    selected_filtered_book_order, selected_filtered_dispute,
 };
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, handle_enter_finalize_popup, message_counter,
@@ -20,7 +20,8 @@ use crate::ui::orders::{
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
-    TakeOrderState, ThreeState, UiMode, UserMode, UserRole, UserTab, ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserMode, UserRole, UserTab,
+    ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -59,6 +60,10 @@ use crate::ui::key_handler::validation::{
     validate_currency, validate_mostro_pubkey, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
+use crate::util::chat_utils::{
+    derive_shared_keys, fetch_observer_chat, keys_from_shared_hex,
+    send_user_order_chat_message_via_shared_key,
+};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
 use crate::util::order_utils::BondSlashChoice;
 
@@ -99,6 +104,7 @@ struct DisputeChatTarget {
 #[derive(Clone)]
 struct OrderChatTarget {
     order_id: String,
+    channel: UserChatChannel,
 }
 
 struct EnterChatSendConfig {
@@ -157,19 +163,21 @@ fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget>
         .get(app.selected_order_chat_idx)
         .map(|row| OrderChatTarget {
             order_id: row.order_id.clone(),
+            channel: app.active_user_chat_channel,
         })
 }
 
 fn spawn_user_order_chat_send_task(
     ctx: &super::EnterKeyContext<'_>,
     order_id: String,
+    channel: UserChatChannel,
     content: String,
 ) {
     let client = ctx.client.clone();
     let pool = ctx.pool.clone();
     let mostro_info = ctx.mostro_info.clone();
     tokio::spawn(async move {
-        let order = match crate::models::Order::get_by_id(&pool, &order_id).await {
+        let order = match Order::get_by_id(&pool, &order_id).await {
             Ok(o) => o,
             Err(e) => {
                 log::warn!("order chat send skipped (order not found): {}", e);
@@ -185,19 +193,30 @@ fn spawn_user_order_chat_send_task(
             None => return,
         };
         let trade_keys = Keys::new(trade_sk);
-        let shared_keys = order
-            .order_chat_shared_key_hex
-            .as_deref()
-            .and_then(crate::util::chat_utils::keys_from_shared_hex)
-            .or_else(|| {
-                let cp = order.counterparty_pubkey.as_deref()?;
-                let pk = PublicKey::parse(cp).ok()?;
-                crate::util::chat_utils::derive_shared_keys(Some(&trade_keys), Some(&pk))
-            });
+        let shared_keys = match channel {
+            UserChatChannel::Peer => order
+                .order_chat_shared_key_hex
+                .as_deref()
+                .and_then(keys_from_shared_hex)
+                .or_else(|| {
+                    let cp = order.counterparty_pubkey.as_deref()?;
+                    let pk = PublicKey::parse(cp).ok()?;
+                    derive_shared_keys(Some(&trade_keys), Some(&pk))
+                }),
+            UserChatChannel::Solver => order
+                .dispute_chat_shared_key_hex
+                .as_deref()
+                .and_then(keys_from_shared_hex)
+                .or_else(|| {
+                    let solver = order.solver_pubkey.as_deref()?;
+                    let pk = PublicKey::parse(solver).ok()?;
+                    derive_shared_keys(Some(&trade_keys), Some(&pk))
+                }),
+        };
         let Some(shared_keys) = shared_keys else {
             return;
         };
-        if let Err(e) = crate::util::chat_utils::send_user_order_chat_message_via_shared_key(
+        if let Err(e) = send_user_order_chat_message_via_shared_key(
             &client,
             &trade_keys,
             &shared_keys,
@@ -206,7 +225,7 @@ fn spawn_user_order_chat_send_task(
         )
         .await
         {
-            log::warn!("Failed to send user order chat: {}", e);
+            log::warn!("Failed to send user {channel} chat: {e}");
         }
     });
 }
@@ -353,15 +372,26 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
                 timestamp: chrono::Utc::now().timestamp(),
                 attachment: None,
             };
-            app.order_chats
-                .entry(target.order_id.clone())
-                .or_default()
-                .push(local_msg.clone());
-            save_order_chat_message(&target.order_id, &local_msg);
-            scroll_order_chat_after_send(app, &target.order_id);
+            match target.channel {
+                UserChatChannel::Peer => {
+                    app.order_chats
+                        .entry(target.order_id.clone())
+                        .or_default()
+                        .push(local_msg.clone());
+                    save_order_chat_message(&target.order_id, &local_msg);
+                }
+                UserChatChannel::Solver => {
+                    app.user_dispute_chats
+                        .entry(target.order_id.clone())
+                        .or_default()
+                        .push(local_msg.clone());
+                    save_user_dispute_chat_message(&target.order_id, &local_msg);
+                }
+            }
+            scroll_order_chat_after_send(app, &target.order_id, target.channel);
         },
         |target, content| {
-            spawn_user_order_chat_send_task(ctx, target.order_id, content);
+            spawn_user_order_chat_send_task(ctx, target.order_id, target.channel, content);
         },
         |app| {
             app.order_chat_input.clear();
@@ -1170,7 +1200,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             return;
         }
 
-        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+        if keys_from_shared_hex(&key_str).is_none() {
             let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
@@ -1191,13 +1221,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match crate::util::chat_utils::fetch_observer_chat(
-                &client,
-                &key_str,
-                admin_pubkey.as_ref(),
-            )
-            .await
-            {
+            match fetch_observer_chat(&client, &key_str, admin_pubkey.as_ref()).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
                 }

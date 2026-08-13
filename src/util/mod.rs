@@ -21,8 +21,8 @@ pub use blossom::{
 };
 pub use chat_listener::{
     listen_for_chat_messages, set_chat_router_cmd_tx, track_dispute_chat, track_order_chat,
-    untrack_dispute_chat, untrack_dispute_chat_parties, untrack_order_chat, ChatKeyId,
-    ChatRouterCmd,
+    track_user_dispute_chat, untrack_dispute_chat, untrack_dispute_chat_parties,
+    untrack_order_chat, untrack_user_dispute_chat, ChatKeyId, ChatRouterCmd,
 };
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;

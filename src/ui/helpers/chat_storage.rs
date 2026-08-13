@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use chrono::DateTime;
 
 use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage};
+use crate::util::chat_utils::clamp_chat_since_cursor_now;
 
 use super::attachments::{
     legacy_placeholder_matches_filename, message_fields_from_transcript_content,
@@ -14,11 +15,13 @@ use super::chat_render::wrap_text_to_lines;
 
 const DISPUTES_CHAT_DIR: &str = "disputes_chat";
 const ORDERS_CHAT_DIR: &str = "orders_chat";
+const USER_DISPUTES_CHAT_DIR: &str = "user_disputes_chat";
 
 #[derive(Clone, Copy)]
 enum ChatStorageKind {
     Disputes,
     Orders,
+    UserDisputes,
 }
 
 impl ChatStorageKind {
@@ -26,6 +29,7 @@ impl ChatStorageKind {
         match self {
             ChatStorageKind::Disputes => DISPUTES_CHAT_DIR,
             ChatStorageKind::Orders => ORDERS_CHAT_DIR,
+            ChatStorageKind::UserDisputes => USER_DISPUTES_CHAT_DIR,
         }
     }
 
@@ -33,6 +37,7 @@ impl ChatStorageKind {
         match self {
             ChatStorageKind::Disputes => "dispute chat",
             ChatStorageKind::Orders => "order chat",
+            ChatStorageKind::UserDisputes => "user dispute chat",
         }
     }
 }
@@ -242,19 +247,40 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
 
 /// Persist one user order chat message into `~/.mostrix/orders_chat/<order_id>.txt`.
 pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
-    let file_path = match chat_file_path(ChatStorageKind::Orders, order_id) {
+    save_user_chat_message_by_kind(ChatStorageKind::Orders, order_id, message);
+}
+
+fn save_user_chat_message_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    message: &UserOrderChatMessage,
+) {
+    let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
-            log::warn!("Invalid order chat id format, skipping save: {}", order_id);
+            log::warn!(
+                "Invalid {} id format, skipping save: {}",
+                kind.log_label(),
+                chat_id
+            );
             return;
         }
     };
     let Some(chat_dir) = file_path.parent() else {
-        log::warn!("Failed to resolve order chat folder for id {}", order_id);
+        log::warn!(
+            "Failed to resolve {} folder for id {}",
+            kind.log_label(),
+            chat_id
+        );
         return;
     };
     if let Err(e) = fs::create_dir_all(chat_dir) {
-        log::warn!("Failed to create order chat folder {:?}: {}", chat_dir, e);
+        log::warn!(
+            "Failed to create {} folder {:?}: {}",
+            kind.log_label(),
+            chat_dir,
+            e
+        );
         return;
     }
 
@@ -301,18 +327,44 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) {
     {
         Ok(mut file) => {
             if let Err(e) = file.write_all(formatted_message.as_bytes()) {
-                log::warn!("Failed to write order chat message to file: {}", e);
+                log::warn!(
+                    "Failed to write {} message to file: {}",
+                    kind.log_label(),
+                    e
+                );
             } else {
-                log::debug!("Saved order chat message to {:?}", file_path);
+                log::debug!("Saved {} message to {:?}", kind.log_label(), file_path);
             }
         }
-        Err(e) => log::warn!("Failed to open order chat file {:?}: {}", file_path, e),
+        Err(e) => log::warn!(
+            "Failed to open {} file {:?}: {}",
+            kind.log_label(),
+            file_path,
+            e
+        ),
     }
 }
 
 /// Load cached user order chat from `~/.mostrix/orders_chat/<order_id>.txt`.
 pub fn load_order_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMessage>> {
     load_order_chat_from_file_by_kind(ChatStorageKind::Orders, order_id)
+}
+
+/// Persist one user-to-solver message under the parent order id.
+pub fn save_user_dispute_chat_message(order_id: &str, message: &UserOrderChatMessage) {
+    save_user_chat_message_by_kind(ChatStorageKind::UserDisputes, order_id, message);
+}
+
+/// Load cached user-to-solver messages for an order.
+pub fn load_user_dispute_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMessage>> {
+    load_order_chat_from_file_by_kind(ChatStorageKind::UserDisputes, order_id)
+}
+
+/// Max accepted timestamp in the cached user-to-solver transcript.
+pub fn user_dispute_chat_since_from_file(order_id: &str) -> Option<i64> {
+    load_user_dispute_chat_from_file(order_id)
+        .and_then(|msgs| msgs.iter().map(|m| m.timestamp).max())
+        .map(clamp_chat_since_cursor_now)
 }
 
 /// Max message timestamp from the on-disk order chat transcript (cursor for relay hydrate).
@@ -414,7 +466,7 @@ fn save_chat_message_by_kind(kind: ChatStorageKind, chat_id: &str, message: &Dis
             (ChatSender::Buyer, _) => "Buyer",
             (ChatSender::Seller, _) => "Seller",
         },
-        ChatStorageKind::Orders => match message.sender {
+        ChatStorageKind::Orders | ChatStorageKind::UserDisputes => match message.sender {
             ChatSender::Admin => "You",
             ChatSender::Buyer | ChatSender::Seller => "Peer",
         },

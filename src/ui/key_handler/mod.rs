@@ -27,7 +27,8 @@ use crate::ui::{
     },
     AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
     InvoiceNotificationActionSelection, LnAddressVerifyResult, MostroInfoFetchResult,
-    OperationResult, Tab, TakeOrderState, UiMode, UserMode, UserTab, ViewingMessageButtonSelection,
+    OperationResult, Tab, TakeOrderState, UiMode, UserChatChannel, UserMode, UserTab,
+    ViewingMessageButtonSelection,
 };
 use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
@@ -849,7 +850,9 @@ pub fn handle_key_event(
             }
         }
         if let Tab::User(UserTab::MyTrades) = app.active_tab {
-            if app.mode.user_my_trades_interactive() {
+            if app.mode.user_my_trades_interactive()
+                && app.active_user_chat_channel == UserChatChannel::Peer
+            {
                 if let Some(row) =
                     active_order_chat_list_snapshot(app).get(app.selected_order_chat_idx)
                 {
@@ -868,7 +871,9 @@ pub fn handle_key_event(
         && matches!(code, KeyCode::Char('o') | KeyCode::Char('O'))
     {
         if let Tab::User(UserTab::MyTrades) = app.active_tab {
-            if app.mode.user_my_trades_interactive() {
+            if app.mode.user_my_trades_interactive()
+                && app.active_user_chat_channel == UserChatChannel::Peer
+            {
                 if let Some(row) =
                     active_order_chat_list_snapshot(app).get(app.selected_order_chat_idx)
                 {

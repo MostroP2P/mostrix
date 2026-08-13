@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::helpers::order_chat_since_from_file;
-use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate};
+use crate::ui::{AdminChatUpdate, ChatParty, OrderChatUpdate, UserChatChannel};
 use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
     fetch_chat_messages_for_shared_key, keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
@@ -39,6 +39,8 @@ use crate::util::chat_utils::{
 pub enum ChatKeyId {
     /// User P2P order chat, keyed by order id (UUID string).
     Order(String),
+    /// User-to-solver dispute chat, keyed by parent order id.
+    UserDispute(String),
     /// Admin dispute chat, keyed by dispute id + party (buyer/seller).
     Dispute(String, ChatParty),
 }
@@ -53,6 +55,8 @@ pub enum ChatRouterCmd {
         shared_key_hex: String,
         /// Local trade pubkey for order chats (used to skip relay echoes of our own sends).
         local_trade_pubkey: Option<PublicKey>,
+        /// Verified inner signers accepted for this conversation.
+        allowed_signers: Option<Vec<PublicKey>>,
         /// Only emit history messages at/after this unix timestamp (last-seen cursor).
         since: Option<i64>,
     },
@@ -69,6 +73,7 @@ struct ChatTarget {
     sign_pubkey: PublicKey,
     /// Order chat only; enables echo-skip in `apply_user_order_chat_updates`.
     local_trade_pubkey: Option<PublicKey>,
+    allowed_signers: Option<Vec<PublicKey>>,
 }
 
 /// Live subscription ids for the dual-read migration window.
@@ -133,6 +138,24 @@ pub fn track_order_chat(
         key_id: ChatKeyId::Order(order_id),
         shared_key_hex,
         local_trade_pubkey: Some(local_trade_pubkey),
+        allowed_signers: None,
+        since,
+    });
+}
+
+/// Track a user-to-solver dispute chat by its derived ECDH secret.
+pub fn track_user_dispute_chat(
+    order_id: String,
+    shared_key_hex: String,
+    local_trade_pubkey: PublicKey,
+    solver_pubkey: PublicKey,
+    since: Option<i64>,
+) {
+    send_chat_router_cmd(ChatRouterCmd::TrackChatKey {
+        key_id: ChatKeyId::UserDispute(order_id),
+        shared_key_hex,
+        local_trade_pubkey: Some(local_trade_pubkey),
+        allowed_signers: Some(vec![local_trade_pubkey, solver_pubkey]),
         since,
     });
 }
@@ -141,6 +164,13 @@ pub fn track_order_chat(
 pub fn untrack_order_chat(order_id: String) {
     send_chat_router_cmd(ChatRouterCmd::UntrackChatKey {
         key_id: ChatKeyId::Order(order_id),
+    });
+}
+
+/// Stop tracking a user-to-solver dispute chat for an order.
+pub fn untrack_user_dispute_chat(order_id: String) {
+    send_chat_router_cmd(ChatRouterCmd::UntrackChatKey {
+        key_id: ChatKeyId::UserDispute(order_id),
     });
 }
 
@@ -155,6 +185,7 @@ pub fn track_dispute_chat(
         key_id: ChatKeyId::Dispute(dispute_id, party),
         shared_key_hex,
         local_trade_pubkey: None,
+        allowed_signers: None,
         since,
     });
 }
@@ -215,6 +246,19 @@ fn emit_messages(
             };
             let _ = user_tx.send(Ok(vec![OrderChatUpdate {
                 order_id: order_id.clone(),
+                channel: UserChatChannel::Peer,
+                local_trade_pubkey,
+                messages,
+            }]));
+        }
+        ChatKeyId::UserDispute(order_id) => {
+            let Some(local_trade_pubkey) = target.local_trade_pubkey else {
+                log::warn!("User dispute chat {order_id} missing local trade pubkey");
+                return;
+            };
+            let _ = user_tx.send(Ok(vec![OrderChatUpdate {
+                order_id: order_id.clone(),
+                channel: UserChatChannel::Solver,
                 local_trade_pubkey,
                 messages,
             }]));
@@ -357,6 +401,7 @@ fn apply_chat_router_cmd(
             key_id,
             shared_key_hex,
             local_trade_pubkey,
+            allowed_signers,
             since,
         } => {
             let Some(shared_keys) = keys_from_shared_hex(&shared_key_hex) else {
@@ -392,6 +437,7 @@ fn apply_chat_router_cmd(
                     shared_keys: shared_keys.clone(),
                     sign_pubkey: sign.public_key(),
                     local_trade_pubkey,
+                    allowed_signers,
                 },
             );
             CmdOutcome {
@@ -429,8 +475,13 @@ async fn hydrate_history(
     let Some(target) = targets.get(&pending.target_pubkey) else {
         return;
     };
-    match fetch_chat_messages_for_shared_key(client, &pending.shared_keys, None, pending.since)
-        .await
+    match fetch_chat_messages_for_shared_key(
+        client,
+        &pending.shared_keys,
+        target.allowed_signers.as_deref(),
+        pending.since,
+    )
+    .await
     {
         Ok(messages) => {
             let cutoff = pending.since.unwrap_or(0);
@@ -517,7 +568,13 @@ pub async fn listen_for_chat_messages(
                 let Some(target) = resolve_chat_target(&targets, &event) else {
                     continue;
                 };
-                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event, None).await {
+                match unwrap_giftwrap_with_shared_key(
+                    &target.shared_keys,
+                    &event,
+                    target.allowed_signers.as_deref(),
+                )
+                .await
+                {
                     Ok((content, ts, sender)) => {
                         emit_messages(
                             target,
@@ -606,6 +663,7 @@ mod tests {
                 key_id: ChatKeyId::Order("order-1".to_string()),
                 shared_key_hex: shared_hex,
                 local_trade_pubkey: None,
+                allowed_signers: None,
                 since: Some(42),
             },
             &mut targets,
@@ -627,6 +685,7 @@ mod tests {
             key_id: ChatKeyId::Order("order-1".to_string()),
             shared_key_hex: shared_hex.clone(),
             local_trade_pubkey: None,
+            allowed_signers: None,
             since: None,
         };
 
@@ -648,6 +707,7 @@ mod tests {
                 key_id: ChatKeyId::Order("order-1".to_string()),
                 shared_key_hex: shared_hex,
                 local_trade_pubkey: None,
+                allowed_signers: None,
                 since: None,
             },
             &mut targets,
@@ -689,6 +749,7 @@ mod tests {
                 key_id: ChatKeyId::Order("order-1".to_string()),
                 shared_key_hex: shared_hex,
                 local_trade_pubkey: None,
+                allowed_signers: None,
                 since: None,
             },
             &mut targets,
@@ -715,6 +776,7 @@ mod tests {
                 key_id: ChatKeyId::Order("order-1".to_string()),
                 shared_key_hex: shared_hex,
                 local_trade_pubkey: None,
+                allowed_signers: None,
                 since: None,
             },
             &mut targets,
@@ -741,6 +803,7 @@ mod tests {
                 key_id: ChatKeyId::Order("order-1".to_string()),
                 shared_key_hex: shared_hex,
                 local_trade_pubkey: None,
+                allowed_signers: None,
                 since: Some(future),
             },
             &mut targets,

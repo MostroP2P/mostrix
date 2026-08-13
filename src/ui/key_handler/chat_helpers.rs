@@ -1,7 +1,8 @@
 use crate::ui::helpers::active_order_chat_list_snapshot;
 use crate::ui::{
-    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, MessageViewState,
-    OperationResult, RatingOrderState, UiMode, ViewingMessageButtonSelection,
+    helpers::message_visible_for_party, AdminMode, AppState, ChatParty, DisputeChatMessage,
+    MessageViewState, OperationResult, RatingOrderState, UiMode, UserChatChannel,
+    ViewingMessageButtonSelection,
 };
 use mostro_core::prelude::{Action, Status};
 use tokio::sync::mpsc::UnboundedSender;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 /// Uses the same visibility logic as the chat scrollview and get_selected_chat_message
 /// so that selection index and visible list stay in sync.
 pub fn get_visible_message_count(
-    messages: &[crate::ui::DisputeChatMessage],
+    messages: &[DisputeChatMessage],
     active_chat_party: ChatParty,
 ) -> usize {
     messages
@@ -143,10 +144,15 @@ pub fn jump_to_order_chat_bottom(app: &mut AppState) -> bool {
 }
 
 /// After sending a local message, scroll to the latest line and update the tracker.
-pub fn scroll_order_chat_after_send(app: &mut AppState, order_id: &str) {
+pub fn scroll_order_chat_after_send(app: &mut AppState, order_id: &str, channel: UserChatChannel) {
     app.order_chat_scrollview_state.scroll_to_bottom();
-    let count = app.order_chats.get(order_id).map(|m| m.len()).unwrap_or(0);
-    app.order_chat_scroll_tracker = Some((order_id.to_string(), count));
+    let count = match channel {
+        UserChatChannel::Peer => app.order_chats.get(order_id),
+        UserChatChannel::Solver => app.user_dispute_chats.get(order_id),
+    }
+    .map(|m| m.len())
+    .unwrap_or(0);
+    app.order_chat_scroll_tracker = Some((order_id.to_string(), channel, count));
 }
 
 /// Resolve the currently selected order id for the MyTrades (Order Chat) tab.

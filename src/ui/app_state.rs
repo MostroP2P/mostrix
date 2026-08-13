@@ -12,7 +12,7 @@ use crate::models::AdminDispute;
 use crate::ui::admin_state::AdminMode;
 use crate::ui::chat::{
     AdminChatLastSeen, ChatParty, DisputeChatMessage, DisputeFilter, OrderChatLastSeen,
-    UserOrderChatMessage,
+    UserChatChannel, UserOrderChatMessage,
 };
 use crate::ui::helpers::OrderChatListItem;
 use crate::ui::navigation::{Tab, UserRole};
@@ -207,11 +207,16 @@ pub struct AppState {
     /// Maker `pending` listings on the book without a trade-DM row in Messages (refreshed on events).
     pub my_trades_maker_book: Vec<OrderChatListItem>,
     pub order_chats: HashMap<String, Vec<UserOrderChatMessage>>, // Chat messages per order id
+    /// User-to-solver dispute messages per order id.
+    pub user_dispute_chats: HashMap<String, Vec<UserOrderChatMessage>>,
+    /// Active My Trades conversation for the selected order.
+    pub active_user_chat_channel: UserChatChannel,
     pub order_chat_scrollview_state: tui_scrollview::ScrollViewState,
     pub order_chat_selected_message_idx: Option<usize>,
     pub order_chat_line_starts: Vec<usize>,
-    pub order_chat_scroll_tracker: Option<(String, usize)>,
+    pub order_chat_scroll_tracker: Option<(String, UserChatChannel, usize)>,
     pub order_chat_last_seen: HashMap<String, OrderChatLastSeen>,
+    pub user_dispute_chat_last_seen: HashMap<String, OrderChatLastSeen>,
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<AdminDispute>, // Taken disputes
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
@@ -303,11 +308,14 @@ impl AppState {
             order_chat_static: HashMap::new(),
             my_trades_maker_book: Vec::new(),
             order_chats: HashMap::new(),
+            user_dispute_chats: HashMap::new(),
+            active_user_chat_channel: UserChatChannel::Peer,
             order_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
             order_chat_selected_message_idx: None,
             order_chat_line_starts: Vec::new(),
             order_chat_scroll_tracker: None,
             order_chat_last_seen: HashMap::new(),
+            user_dispute_chat_last_seen: HashMap::new(),
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view

@@ -557,6 +557,36 @@ mod tests {
         assert_eq!(unwrapped.0, content);
     }
 
+    #[tokio::test]
+    async fn user_solver_chat_roundtrip_accepts_only_conversation_parties() {
+        let user = Keys::generate();
+        let solver = Keys::generate();
+        let shared =
+            SharedKey::derive(user.secret_key(), &solver.public_key()).expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys derive");
+        let event = wrap_chat_message(&user, &conv, &sign, "evidence sent")
+            .await
+            .expect("chat wraps");
+
+        let allowed = [user.public_key(), solver.public_key()];
+        let (content, _, sender) =
+            unwrap_giftwrap_with_shared_key(shared.keys(), &event, Some(&allowed))
+                .await
+                .expect("conversation party unwraps");
+        assert_eq!(content, "evidence sent");
+        assert_eq!(sender, user.public_key());
+
+        let stranger = Keys::generate();
+        let stranger_event = wrap_chat_message(&stranger, &conv, &sign, "spoof")
+            .await
+            .expect("envelope builds");
+        assert!(
+            unwrap_giftwrap_with_shared_key(shared.keys(), &stranger_event, Some(&allowed))
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn chat_keys_from_shared_hex_matches_derive() {
         let a = Keys::generate();
