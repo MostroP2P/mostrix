@@ -345,6 +345,9 @@ fn append_transcript_block(file_path: &Path, formatted_message: &str, label: &st
             if let Err(e) = file.write_all(formatted_message.as_bytes()) {
                 log::warn!("Failed to write {label} message to file: {e}");
                 false
+            } else if let Err(e) = file.sync_all() {
+                log::warn!("Failed to sync {label} message to file: {e}");
+                false
             } else {
                 log::debug!("Saved {label} message to {:?}", file_path);
                 true
@@ -359,21 +362,39 @@ fn append_transcript_block(file_path: &Path, formatted_message: &str, label: &st
 
 fn write_transcript_file(file_path: &Path, body: &str, label: &str) -> bool {
     let tmp_path = file_path.with_extension("txt.tmp");
-    match fs::write(&tmp_path, body) {
-        Ok(()) => {
-            if let Err(e) = fs::rename(&tmp_path, file_path) {
-                log::warn!("Failed to replace {label} file {:?}: {e}", file_path);
-                let _ = fs::remove_file(&tmp_path);
+    let write_ok = match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+    {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(body.as_bytes()) {
+                log::warn!("Failed to write {label} temp file {:?}: {e}", tmp_path);
+                false
+            } else if let Err(e) = file.sync_all() {
+                log::warn!("Failed to sync {label} temp file {:?}: {e}", tmp_path);
                 false
             } else {
-                log::debug!("Rewrote {label} transcript {:?}", file_path);
                 true
             }
         }
         Err(e) => {
-            log::warn!("Failed to write {label} temp file {:?}: {e}", tmp_path);
-            false
+            log::warn!("Failed to open {label} temp file {:?}: {e}", tmp_path);
+            return false;
         }
+    };
+    if !write_ok {
+        let _ = fs::remove_file(&tmp_path);
+        return false;
+    }
+    if let Err(e) = fs::rename(&tmp_path, file_path) {
+        log::warn!("Failed to replace {label} file {:?}: {e}", file_path);
+        let _ = fs::remove_file(&tmp_path);
+        false
+    } else {
+        log::debug!("Rewrote {label} transcript {:?}", file_path);
+        true
     }
 }
 
