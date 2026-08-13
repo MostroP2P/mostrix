@@ -123,7 +123,7 @@ fn run_enter_chat_send_flow<T, ResolveTarget, ApplyLocal, SpawnRemote, ResetInpu
     reset_input: ResetInput,
 ) where
     ResolveTarget: FnOnce(&mut AppState) -> Option<T>,
-    ApplyLocal: FnOnce(&mut AppState, &T, &str),
+    ApplyLocal: FnOnce(&mut AppState, &T, &str) -> bool,
     SpawnRemote: FnOnce(T, String),
     ResetInput: FnOnce(&mut AppState),
 {
@@ -142,7 +142,9 @@ fn run_enter_chat_send_flow<T, ResolveTarget, ApplyLocal, SpawnRemote, ResetInpu
         return;
     };
 
-    apply_local(app, &target, &content);
+    if !apply_local(app, &target, &content) {
+        return;
+    }
     reset_input(app);
     app.mode = mode_after_send;
     spawn_remote(target, content);
@@ -165,6 +167,41 @@ fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget>
             order_id: row.order_id.clone(),
             channel: app.active_user_chat_channel,
         })
+}
+
+fn persist_local_user_chat_message(
+    app: &mut AppState,
+    target: &OrderChatTarget,
+    local_msg: crate::ui::UserOrderChatMessage,
+) -> bool {
+    let persisted = match target.channel {
+        UserChatChannel::Peer => save_order_chat_message(&target.order_id, &local_msg),
+        UserChatChannel::Solver => save_user_dispute_chat_message(&target.order_id, &local_msg),
+    };
+    if !persisted {
+        app.mode = UiMode::operation_result(OperationResult::Error(format!(
+            "Failed to save {channel} chat message locally. The message was not sent.",
+            channel = target.channel
+        )));
+        return false;
+    }
+
+    match target.channel {
+        UserChatChannel::Peer => {
+            app.order_chats
+                .entry(target.order_id.clone())
+                .or_default()
+                .push(local_msg);
+        }
+        UserChatChannel::Solver => {
+            app.user_dispute_chats
+                .entry(target.order_id.clone())
+                .or_default()
+                .push(local_msg);
+        }
+    }
+    scroll_order_chat_after_send(app, &target.order_id, target.channel);
+    true
 }
 
 fn spawn_user_order_chat_send_task(
@@ -335,6 +372,7 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
         |app, target, content| {
             prepare_admin_chat_message(&target.dispute_id_key, content, app);
             message_counter(app, &target.dispute_id_key);
+            true
         },
         |target, content| {
             send_admin_chat_message_via_shared_key(
@@ -372,23 +410,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
                 timestamp: chrono::Utc::now().timestamp(),
                 attachment: None,
             };
-            match target.channel {
-                UserChatChannel::Peer => {
-                    app.order_chats
-                        .entry(target.order_id.clone())
-                        .or_default()
-                        .push(local_msg.clone());
-                    save_order_chat_message(&target.order_id, &local_msg);
-                }
-                UserChatChannel::Solver => {
-                    app.user_dispute_chats
-                        .entry(target.order_id.clone())
-                        .or_default()
-                        .push(local_msg.clone());
-                    save_user_dispute_chat_message(&target.order_id, &local_msg);
-                }
-            }
-            scroll_order_chat_after_send(app, &target.order_id, target.channel);
+            persist_local_user_chat_message(app, target, local_msg)
         },
         |target, content| {
             spawn_user_order_chat_send_task(ctx, target.order_id, target.channel, content);
@@ -1280,5 +1302,74 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             None => {}
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        persist_local_user_chat_message, run_enter_chat_send_flow, EnterChatSendConfig,
+        OrderChatTarget,
+    };
+    use crate::ui::{
+        AppState, OperationResult, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage,
+        UserRole,
+    };
+    use std::cell::Cell;
+
+    #[test]
+    fn failed_user_chat_persistence_keeps_input_and_aborts_send() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = AppState::new(UserRole::User);
+            app.order_chat_input = "retry me".to_string();
+            let remote_spawned = Cell::new(false);
+            let input_reset = Cell::new(false);
+            let mode_after_send = app.mode.clone();
+
+            run_enter_chat_send_flow(
+                &mut app,
+                EnterChatSendConfig {
+                    mode_after_send,
+                    input_enabled: true,
+                    content: "retry me".to_string(),
+                },
+                |_| {
+                    Some(OrderChatTarget {
+                        order_id: "invalid-order-id".to_string(),
+                        channel,
+                    })
+                },
+                |app, target, content| {
+                    persist_local_user_chat_message(
+                        app,
+                        target,
+                        UserOrderChatMessage {
+                            sender: UserChatSender::You,
+                            content: content.to_string(),
+                            timestamp: 1,
+                            attachment: None,
+                        },
+                    )
+                },
+                |_, _| remote_spawned.set(true),
+                |app| {
+                    input_reset.set(true);
+                    app.order_chat_input.clear();
+                },
+            );
+
+            assert_eq!(app.order_chat_input, "retry me");
+            assert!(!input_reset.get());
+            assert!(!remote_spawned.get());
+            assert!(app.order_chats.is_empty());
+            assert!(app.user_dispute_chats.is_empty());
+            let UiMode::OperationResult(result) = &app.mode else {
+                panic!("storage failure should show an operation error");
+            };
+            assert!(matches!(
+                result.as_ref(),
+                OperationResult::Error(message) if message.contains("message was not sent")
+            ));
+        }
     }
 }
