@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::ui::constants::{
@@ -146,6 +147,27 @@ fn build_order_chat_content(
         )));
     }
     (lines, content_width.max(1), starts)
+}
+
+fn trailing_order_chat_input(input: &str, visible_width: u16) -> String {
+    let max_width = visible_width as usize;
+    if max_width == 0 || input.is_empty() {
+        return String::new();
+    }
+    if Span::raw(input).width() <= max_width {
+        return input.to_string();
+    }
+
+    let mut best_start = input.len();
+    for (idx, _) in input.grapheme_indices(true).rev() {
+        let tail = &input[idx..];
+        if Span::raw(tail).width() <= max_width {
+            best_start = idx;
+        } else {
+            break;
+        }
+    }
+    input[best_start..].to_string()
 }
 
 pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
@@ -484,25 +506,28 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     );
 
     let input_active = app.mode.user_my_trades_interactive() && app.order_chat_input_enabled;
+    let input_block = Block::default()
+        .title(if app.order_chat_input_enabled {
+            "Message"
+        } else {
+            "Message (disabled: Shift+I)"
+        })
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR));
+    let visible_input = trailing_order_chat_input(
+        &app.order_chat_input,
+        input_block.inner(main_chunks[2]).width,
+    );
     f.render_widget(
-        Paragraph::new(app.order_chat_input.clone())
+        Paragraph::new(visible_input)
             .wrap(Wrap { trim: false })
             .style(if input_active {
                 Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)
             })
-            .block(
-                Block::default()
-                    .title(if app.order_chat_input_enabled {
-                        "Message"
-                    } else {
-                        "Message (disabled: Shift+I)"
-                    })
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(PRIMARY_COLOR)),
-            ),
+            .block(input_block),
         main_chunks[2],
     );
 
@@ -675,4 +700,106 @@ pub fn push_local_order_chat_message(
         .or_default()
         .push(msg.clone());
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_order_in_progress, trailing_order_chat_input};
+    use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::{AppState, UiMode, UserMode, UserRole};
+    use mostro_core::prelude::Status;
+    use ratatui::backend::TestBackend;
+    use ratatui::text::Span;
+    use ratatui::Terminal;
+    use uuid::Uuid;
+
+    #[test]
+    fn trailing_input_keeps_full_text_when_it_fits() {
+        assert_eq!(
+            trailing_order_chat_input("short message", 20),
+            "short message"
+        );
+    }
+
+    #[test]
+    fn trailing_input_shows_latest_text_when_overflowing() {
+        let input = "abcdefghijklmnopqrstuvwxyz";
+
+        assert_eq!(trailing_order_chat_input(input, 10), "qrstuvwxyz");
+    }
+
+    #[test]
+    fn trailing_input_respects_unicode_display_width() {
+        let input = "abc你好def";
+        let visible = trailing_order_chat_input(input, 6);
+
+        assert_eq!(visible, "好def");
+        assert!(Span::raw(visible.as_str()).width() <= 6);
+    }
+
+    #[test]
+    fn trailing_input_keeps_decomposed_character_together() {
+        let input = "abcde\u{0301}fgh";
+        let visible = trailing_order_chat_input(input, 4);
+
+        assert_eq!(visible, "e\u{0301}fgh");
+        assert!(Span::raw(visible.as_str()).width() <= 4);
+    }
+
+    #[test]
+    fn trailing_input_keeps_zwj_emoji_sequence_together() {
+        let input = "abc👩\u{200d}💻def";
+        let visible = trailing_order_chat_input(input, 5);
+
+        assert_eq!(visible, "👩\u{200d}💻def");
+        assert!(Span::raw(visible.as_str()).width() <= 5);
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_order_input_shows_trailing_suffix_when_overflowing() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id,
+            status: Some(Status::Pending),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+        });
+        app.order_chat_input = format!(
+            "hidden-prefix-that-should-scroll-away-{}-visible-suffix",
+            "x".repeat(80)
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert!(buffer_contains(buffer, "visible-suffix"));
+        assert!(!buffer_contains(
+            buffer,
+            "hidden-prefix-that-should-scroll-away"
+        ));
+    }
 }

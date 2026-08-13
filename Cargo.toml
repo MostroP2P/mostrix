@@ -43,6 +43,7 @@ hex = "0.4"
 tui-scrollview = "0.6.7"
 ratatui-explorer = "0.3.0"
 zeroize = "1.9"
+unicode-segmentation = "1.12"
 
 [package.metadata.release]
 publish = false

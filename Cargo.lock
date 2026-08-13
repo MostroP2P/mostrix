@@ -2164,6 +2164,7 @@ dependencies = [
  "tokio",
  "toml",
  "tui-scrollview",
+ "unicode-segmentation",
  "uuid",
  "zeroize",
 ]
