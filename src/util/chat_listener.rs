@@ -719,10 +719,12 @@ mod tests {
             },
             &mut targets,
         );
-        // Junk kind-14: random author, p=pub(K_conv) would still not match by author.
+        // Tag `#p` with the tracked target key so this fails if routing ever fell back
+        // to `#p`; the unknown outer author must still be rejected.
+        let target_pubkey = *targets.keys().next().expect("tracked target");
         let junk = Keys::generate();
         let event = EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
-            .tag(Tag::public_key(Keys::generate().public_key()))
+            .tag(Tag::public_key(target_pubkey))
             .sign_with_keys(&junk)
             .expect("sign");
 

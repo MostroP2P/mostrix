@@ -87,8 +87,14 @@ fn update_last_seen_timestamp(
         .or_insert_with(|| AdminChatLastSeen {
             last_seen_timestamp: None,
         });
-    if buyer_max_timestamp > buyer_entry.last_seen_timestamp.unwrap_or(0) {
-        buyer_entry.last_seen_timestamp = Some(clamp_chat_since_cursor_now(buyer_max_timestamp));
+    // Normalize the stored cursor too so a stale future value can't outrank real messages.
+    let buyer_existing = buyer_entry
+        .last_seen_timestamp
+        .map(clamp_chat_since_cursor_now)
+        .unwrap_or(0);
+    let buyer_new = buyer_existing.max(clamp_chat_since_cursor_now(buyer_max_timestamp));
+    if buyer_new > 0 {
+        buyer_entry.last_seen_timestamp = Some(buyer_new);
     }
 
     let seller_entry = admin_chat_last_seen
@@ -96,8 +102,13 @@ fn update_last_seen_timestamp(
         .or_insert_with(|| AdminChatLastSeen {
             last_seen_timestamp: None,
         });
-    if seller_max_timestamp > seller_entry.last_seen_timestamp.unwrap_or(0) {
-        seller_entry.last_seen_timestamp = Some(clamp_chat_since_cursor_now(seller_max_timestamp));
+    let seller_existing = seller_entry
+        .last_seen_timestamp
+        .map(clamp_chat_since_cursor_now)
+        .unwrap_or(0);
+    let seller_new = seller_existing.max(clamp_chat_since_cursor_now(seller_max_timestamp));
+    if seller_new > 0 {
+        seller_entry.last_seen_timestamp = Some(seller_new);
     }
 }
 
@@ -630,15 +641,18 @@ pub async fn apply_admin_chat_updates(
                 last_seen_timestamp: None,
             });
         let clamped_max = clamp_chat_since_cursor_now(max_ts);
-        if clamped_max > entry.last_seen_timestamp.unwrap_or(0) {
-            entry.last_seen_timestamp = Some(clamped_max);
-        }
-
-        if clamped_max > 0 {
+        // Normalize the stored cursor so a stale future value can't outrank real messages.
+        let existing = entry
+            .last_seen_timestamp
+            .map(clamp_chat_since_cursor_now)
+            .unwrap_or(0);
+        let new_last_seen = existing.max(clamped_max);
+        if new_last_seen > 0 {
+            entry.last_seen_timestamp = Some(new_last_seen);
             if let Err(e) = AdminDispute::update_chat_last_seen_by_dispute_id(
                 pool,
                 &dispute_key,
-                clamped_max,
+                new_last_seen,
                 party == ChatParty::Buyer,
             )
             .await

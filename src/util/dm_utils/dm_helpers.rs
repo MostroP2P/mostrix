@@ -106,7 +106,9 @@ pub fn seed_admin_chat_last_seen(app: &mut AppState) {
             app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Buyer),
                 AdminChatLastSeen {
-                    last_seen_timestamp: dispute.buyer_chat_last_seen,
+                    last_seen_timestamp: dispute
+                        .buyer_chat_last_seen
+                        .map(crate::util::chat_utils::clamp_chat_since_cursor_now),
                 },
             );
         }
@@ -114,7 +116,9 @@ pub fn seed_admin_chat_last_seen(app: &mut AppState) {
             app.admin_chat_last_seen.insert(
                 (dispute.dispute_id.clone(), ChatParty::Seller),
                 AdminChatLastSeen {
-                    last_seen_timestamp: dispute.seller_chat_last_seen,
+                    last_seen_timestamp: dispute
+                        .seller_chat_last_seen
+                        .map(crate::util::chat_utils::clamp_chat_since_cursor_now),
                 },
             );
         }

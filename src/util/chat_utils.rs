@@ -244,8 +244,12 @@ pub async fn fetch_chat_messages_for_shared_key(
 
     let kind14_filter = chat_filter(sign.public_key()).since(since_ts).limit(100);
     // Dual-read: legacy gift wraps addressed to the ECDH pubkey (superseded p tag).
+    // Outer 1059 created_at is randomized into the past, so tightening to the cursor
+    // would drop still-new messages; keep the wide floor and let callers re-filter on
+    // the canonical inner timestamp after unwrap.
+    let giftwrap_since = Timestamp::from(lookback_floor.max(0) as u64);
     let giftwrap_filter = mostro_core::chat::giftwrap_chat_filter(shared_keys.public_key())
-        .since(since_ts)
+        .since(giftwrap_since)
         .limit(100);
 
     // Run both fetches independently so a transient failure of either query does
@@ -319,6 +323,8 @@ async fn fetch_party_messages(
     let Some(shared_keys) = keys_from_shared_hex(hex) else {
         return;
     };
+    // Normalize a possibly-future stored cursor before it gates the fetch and filter.
+    let last_seen = clamp_chat_since_cursor_now(last_seen);
 
     let Ok(messages) =
         fetch_chat_messages_for_shared_key(client, &shared_keys, None, Some(last_seen)).await
