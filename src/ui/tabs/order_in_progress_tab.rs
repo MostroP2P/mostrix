@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::ui::constants::{
@@ -158,7 +159,7 @@ fn trailing_order_chat_input(input: &str, visible_width: u16) -> String {
     }
 
     let mut best_start = input.len();
-    for (idx, _) in input.char_indices().rev() {
+    for (idx, _) in input.grapheme_indices(true).rev() {
         let tail = &input[idx..];
         if Span::raw(tail).width() <= max_width {
             best_start = idx;
@@ -703,8 +704,14 @@ pub fn push_local_order_chat_message(
 
 #[cfg(test)]
 mod tests {
-    use super::trailing_order_chat_input;
+    use super::{render_order_in_progress, trailing_order_chat_input};
+    use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::{AppState, UiMode, UserMode, UserRole};
+    use mostro_core::prelude::Status;
+    use ratatui::backend::TestBackend;
     use ratatui::text::Span;
+    use ratatui::Terminal;
+    use uuid::Uuid;
 
     #[test]
     fn trailing_input_keeps_full_text_when_it_fits() {
@@ -728,5 +735,71 @@ mod tests {
 
         assert_eq!(visible, "好def");
         assert!(Span::raw(visible.as_str()).width() <= 6);
+    }
+
+    #[test]
+    fn trailing_input_keeps_decomposed_character_together() {
+        let input = "abcde\u{0301}fgh";
+        let visible = trailing_order_chat_input(input, 4);
+
+        assert_eq!(visible, "e\u{0301}fgh");
+        assert!(Span::raw(visible.as_str()).width() <= 4);
+    }
+
+    #[test]
+    fn trailing_input_keeps_zwj_emoji_sequence_together() {
+        let input = "abc👩\u{200d}💻def";
+        let visible = trailing_order_chat_input(input, 5);
+
+        assert_eq!(visible, "👩\u{200d}💻def");
+        assert!(Span::raw(visible.as_str()).width() <= 5);
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn render_order_input_shows_trailing_suffix_when_overflowing() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id,
+            status: Some(Status::Pending),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+        });
+        app.order_chat_input = format!(
+            "hidden-prefix-that-should-scroll-away-{}-visible-suffix",
+            "x".repeat(80)
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert!(buffer_contains(buffer, "visible-suffix"));
+        assert!(!buffer_contains(
+            buffer,
+            "hidden-prefix-that-should-scroll-away"
+        ));
     }
 }
