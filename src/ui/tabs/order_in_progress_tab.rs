@@ -148,6 +148,152 @@ fn build_order_chat_content(
     (lines, content_width.max(1), starts)
 }
 
+fn order_footer_lines(
+    footer_width: u16,
+    hint_lines: u16,
+    input_enabled: bool,
+    attach_hints: &str,
+) -> Vec<String> {
+    if footer_width < 50 {
+        return vec![format!("{HELP_KEY} | Shift+C Cancel | Shift+D Dispute")];
+    }
+
+    if footer_width < 96 {
+        let input_hint = if input_enabled {
+            "Shift+I"
+        } else {
+            "Shift+I Enable"
+        };
+        if hint_lines >= 3 {
+            return vec![
+                format!("Ctrl+H | Up/Down | Enter | {input_hint}"),
+                "Shift+C Cancel | Shift+D Dispute".to_string(),
+                "Shift+F Fiat | Shift+R Release | Shift+V Rate".to_string(),
+            ];
+        }
+        if hint_lines >= 2 {
+            return vec![
+                format!("Ctrl+H | Up/Down | Enter | {input_hint}"),
+                "Shift+C Cancel | Shift+D Dispute".to_string(),
+            ];
+        }
+        return vec![format!("Ctrl+H | Shift+C Cancel | Shift+D Dispute")];
+    }
+
+    if hint_lines >= 3 {
+        if input_enabled {
+            vec![
+                format!(
+                    "{} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_ENTER_SEND,
+                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                ),
+                format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                ),
+                format!(
+                    "{} | {} | {}{}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                    attach_hints,
+                ),
+            ]
+        } else {
+            vec![
+                format!(
+                    "{} | {} | {}",
+                    HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                ),
+                format!(
+                    "{} | {} | {} | {}",
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                ),
+                format!(
+                    "{} | {} | {}{}",
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                    attach_hints,
+                ),
+            ]
+        }
+    } else if hint_lines >= 2 {
+        if input_enabled {
+            vec![
+                format!(
+                    "{} | {} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_ENTER_SEND,
+                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                ),
+                format!(
+                    "{} | {} | {} | {} | {}{}",
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    attach_hints,
+                ),
+            ]
+        } else {
+            vec![
+                format!(
+                    "{} | {} | {} | {} | {}",
+                    HELP_KEY,
+                    FOOTER_MYTRADES_SELECT_ORDER,
+                    FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                ),
+                format!(
+                    "{} | {} | {} | {} | {}{}",
+                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                    FOOTER_MYTRADES_END_BOTTOM,
+                    attach_hints,
+                ),
+            ]
+        }
+    } else if input_enabled {
+        vec![format!(
+            "{} | {} | {} | {} | {} | {}{}",
+            HELP_KEY,
+            FOOTER_MYTRADES_SELECT_ORDER,
+            FOOTER_MYTRADES_ENTER_SEND,
+            FOOTER_MYTRADES_SHIFT_I_DISABLE,
+            FOOTER_MYTRADES_SHIFT_C_CANCEL,
+            FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+            attach_hints,
+        )]
+    } else {
+        vec![format!(
+            "{} | {} | {} | {} | {}{}",
+            HELP_KEY,
+            FOOTER_MYTRADES_SELECT_ORDER,
+            FOOTER_MYTRADES_SHIFT_I_ENABLE,
+            FOOTER_MYTRADES_SHIFT_C_CANCEL,
+            FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+            attach_hints,
+        )]
+    }
+}
+
 pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let active_orders = active_order_chat_list_snapshot(app);
 
@@ -521,121 +667,17 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let has_toast = app.attachment_toast.is_some();
     let hint_lines = base_footer_lines;
 
-    let footer_body: Text<'static> = if footer_width < 50 {
-        Text::raw(format!("{HELP_KEY}{attach_hints}"))
-    } else if hint_lines >= 3 {
-        if app.order_chat_input_enabled {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_ENTER_SEND,
-                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {}{}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    attach_hints,
-                )),
-            ])
-        } else {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {}",
-                    HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {}{}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    attach_hints,
-                )),
-            ])
-        }
-    } else if hint_lines >= 2 {
-        if app.order_chat_input_enabled {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_ENTER_SEND,
-                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    attach_hints,
-                )),
-            ])
-        } else {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    attach_hints,
-                )),
-            ])
-        }
-    } else {
-        let base = if app.order_chat_input_enabled {
-            format!(
-                "{} | {} | {} | {} | {} | {}",
-                HELP_KEY,
-                FOOTER_MYTRADES_SELECT_ORDER,
-                FOOTER_MYTRADES_ENTER_SEND,
-                FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                FOOTER_MYTRADES_SHIFT_D_DISPUTE
-            )
-        } else {
-            format!(
-                "{} | {} | {} | {} | {}",
-                HELP_KEY,
-                FOOTER_MYTRADES_SELECT_ORDER,
-                FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                FOOTER_MYTRADES_SHIFT_D_DISPUTE
-            )
-        };
-        Text::raw(format!("{base}{attach_hints}"))
-    };
+    let footer_body: Text<'static> = Text::from(
+        order_footer_lines(
+            footer_width,
+            hint_lines,
+            app.order_chat_input_enabled,
+            attach_hints,
+        )
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>(),
+    );
 
     if has_toast {
         let chunks = Layout::new(
@@ -681,4 +723,36 @@ pub fn push_local_order_chat_message(
         .or_default()
         .push(msg.clone());
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_footer_lines;
+    use ratatui::text::Span;
+
+    fn assert_footer_lines_fit(width: u16, hint_lines: u16) {
+        let lines = order_footer_lines(width, hint_lines, true, "");
+        assert!(lines.len() <= hint_lines as usize);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Shift+C") && line.contains("Shift+D")));
+        for line in lines {
+            assert!(
+                Span::raw(line.as_str()).width() <= width as usize,
+                "footer line exceeds width {width}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_footer_lines_fit_narrow_terminals() {
+        assert_footer_lines_fit(50, 3);
+        assert_footer_lines_fit(60, 2);
+        assert_footer_lines_fit(80, 3);
+    }
+
+    #[test]
+    fn compact_footer_keeps_cancel_and_dispute_visible_when_short() {
+        assert_footer_lines_fit(50, 1);
+    }
 }

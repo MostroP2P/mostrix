@@ -1060,6 +1060,12 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
+                    if !matches!(
+                        app.mode,
+                        UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                    ) {
+                        return Some(true);
+                    }
                     if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
                         if is_terminal_order_status(status) {
                             app.mode = UiMode::operation_result(OperationResult::Info(

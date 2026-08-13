@@ -101,6 +101,38 @@ pub fn render_exit_tab(f: &mut ratatui::Frame, area: Rect) {
     render_centered_lines(f, inner_area, &line_refs, style_exit_logo_line);
 }
 
+fn wrapped_message_line_count(content: &str, width: u16) -> u16 {
+    let max_width = width.max(1) as usize;
+    let mut total = 0u16;
+
+    for source_line in content.lines() {
+        if source_line.is_empty() {
+            total = total.saturating_add(1);
+            continue;
+        }
+
+        let mut current_width = 0usize;
+        for word in source_line.split_whitespace() {
+            let word_width = Span::raw(word).width();
+            let space_width = usize::from(current_width > 0);
+            if current_width > 0 && current_width + space_width + word_width > max_width {
+                total = total.saturating_add(1);
+                current_width = word_width;
+            } else {
+                current_width += space_width + word_width;
+            }
+
+            while current_width > max_width {
+                total = total.saturating_add(1);
+                current_width = current_width.saturating_sub(max_width);
+            }
+        }
+        total = total.saturating_add(1);
+    }
+
+    total.max(1)
+}
+
 pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
@@ -124,12 +156,12 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             ViewingMessageButtonSelection::Three(_)
         );
 
-    // Multiline body: hold-invoice trinary, or `BuyerTookOrder` (CANCEL / NO for cooperative cancel).
-    let multiline_message_body =
-        hold_invoice_trinary || matches!(view_state.action, Action::BuyerTookOrder);
+    // Multiline body: previews with enough text to require wrapping on normal terminals.
+    let multiline_message_body = hold_invoice_trinary
+        || matches!(view_state.action, Action::BuyerTookOrder | Action::Dispute);
 
     let content_line_count = if multiline_message_body {
-        view_state.message_content.lines().count().max(1) as u16
+        wrapped_message_line_count(&view_state.message_content, popup_width.saturating_sub(4))
     } else {
         0
     };
@@ -437,4 +469,59 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
         .alignment(ratatui::layout::Alignment::Center),
         chunks[4],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_message_view;
+    use crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG;
+    use crate::ui::{MessageViewState, ViewingMessageButtonSelection};
+    use mostro_core::prelude::Action;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use uuid::Uuid;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        buffer_text(buf).contains(needle)
+    }
+
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat
+    }
+
+    #[test]
+    fn dispute_confirmation_wraps_complete_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view_state = MessageViewState {
+            message_content: HELP_MY_TRADES_DISPUTE_MSG.to_string(),
+            order_id: Some(Uuid::nil()),
+            action: Action::Dispute,
+            button_selection: ViewingMessageButtonSelection::Two { yes_selected: true },
+        };
+
+        terminal
+            .draw(|frame| render_message_view(frame, &view_state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let rendered = buffer_text(buffer);
+        assert!(
+            rendered.contains("Open a dispute for this order?"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("This sends"), "{rendered}");
+        assert!(rendered.contains("Dispute"), "{rendered}");
+        assert!(rendered.contains("message to Mostro."), "{rendered}");
+        assert!(rendered.contains("Mostro."), "{rendered}");
+        assert!(buffer_contains(buffer, "YES"));
+        assert!(buffer_contains(buffer, "NO"));
+    }
 }
