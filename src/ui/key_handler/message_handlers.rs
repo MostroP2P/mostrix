@@ -6,7 +6,8 @@ use crate::ui::{
 };
 use crate::util::db_utils::update_order_status;
 use crate::util::order_utils::{
-    execute_add_bond_invoice, execute_add_invoice, execute_rate_user, execute_send_msg,
+    execute_add_bond_invoice, execute_add_invoice, execute_dispute, execute_rate_user,
+    execute_send_msg,
 };
 use mostro_core::order::Status;
 use mostro_core::prelude::*;
@@ -175,6 +176,46 @@ fn spawn_cancel_from_notification(
     });
 }
 
+/// Send `Action::Dispute` for `order_id`, then persist the local status as `Dispute`.
+fn spawn_dispute(app: &mut AppState, ctx: &EnterKeyContext<'_>, order_id: Uuid) {
+    app.mode = role_waiting_mode(app.user_role);
+
+    let pool_clone = ctx.pool.clone();
+    let client_clone = ctx.client.clone();
+    let mostro_pubkey = ctx.mostro_pubkey;
+    let result_tx = ctx.order_result_tx.clone();
+    let mostro_info = ctx.mostro_info.clone();
+
+    tokio::spawn(async move {
+        match execute_dispute(
+            &order_id,
+            &pool_clone,
+            &client_clone,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            Ok(dispute_id) => {
+                // The dispute is already open on Mostro's side; a failed local write must not
+                // be reported as a failed dispute, or the user would try to open a second one.
+                if let Err(e) =
+                    update_order_status(&pool_clone, &order_id.to_string(), Status::Dispute).await
+                {
+                    log::warn!("Failed to save Dispute status for order {order_id}: {e}");
+                }
+                let _ = result_tx.send(OperationResult::Info(format!(
+                    "Dispute opened. Dispute id: {dispute_id} — give it to the solver."
+                )));
+            }
+            Err(e) => {
+                log::error!("Failed to open dispute for order {order_id}: {e}");
+                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
+}
+
 /// Handle Enter key when viewing a message.
 pub fn handle_enter_viewing_message(
     app: &mut AppState,
@@ -196,6 +237,20 @@ pub fn handle_enter_viewing_message(
             return;
         }
         _ => {}
+    }
+
+    // Dispute does not go through execute_send_msg: Mostro replies with a dispute id we
+    // want to keep, and the local order status has to move to Dispute.
+    if matches!(view_state.action, Action::Dispute) {
+        let Some(order_id) = view_state.order_id else {
+            let _ = ctx
+                .order_result_tx
+                .send(OperationResult::Error("No order ID in message".to_string()));
+            app.mode = default_mode;
+            return;
+        };
+        spawn_dispute(app, ctx, order_id);
+        return;
     }
 
     // Map the action from the message to the action we need to send

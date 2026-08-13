@@ -145,6 +145,68 @@ pub async fn execute_send_msg(
     }
 }
 
+/// Open a dispute for an order (`Action::Dispute`).
+///
+/// Mostro answers with `DisputeInitiatedByYou` carrying `Payload::Dispute(dispute_id, _)`;
+/// the id is returned so the caller can show it to the user (the solver asks for it).
+pub async fn execute_dispute(
+    order_id: &Uuid,
+    pool: &sqlx::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<Uuid> {
+    let order = Order::get_by_id(pool, &order_id.to_string()).await?;
+    let trade_keys = order
+        .trade_keys
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing trade keys"))?;
+    let order_trade_keys = Keys::parse(&trade_keys)?;
+    let identity_keys = User::get_identity_keys(pool).await?;
+
+    let request_id = Uuid::new_v4().as_u128() as u64;
+    let message = Message::new_order(
+        Some(*order_id),
+        Some(request_id),
+        None,
+        Action::Dispute,
+        None,
+    );
+
+    let message_json = message
+        .as_json()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?;
+
+    let sent_message = send_dm(
+        client,
+        Some(&identity_keys),
+        &order_trade_keys,
+        &mostro_pubkey,
+        message_json,
+        None,
+        mostro_instance,
+    );
+
+    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
+
+    let Some((response_message, _, _)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    };
+
+    let inner_message = handle_mostro_response(response_message, request_id)?;
+
+    match (&inner_message.action, &inner_message.payload) {
+        (Action::DisputeInitiatedByYou, Some(Payload::Dispute(dispute_id, _))) => Ok(*dispute_id),
+        // Mostro accepted the dispute but did not echo an id: surface it as an error so the
+        // caller never reports a dispute the user cannot reference later.
+        (Action::DisputeInitiatedByYou, _) => Err(anyhow::anyhow!(
+            "Dispute accepted but Mostro returned no dispute id"
+        )),
+        (action, _) => Err(anyhow::anyhow!("Unexpected action in response: {action:?}")),
+    }
+}
+
 /// Submit a counterparty rating (`RateUser` + `RatingUser`); Mostro resolves the peer from `order_id`.
 pub async fn execute_rate_user(
     order_id: &Uuid,
