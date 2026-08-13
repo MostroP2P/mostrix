@@ -129,6 +129,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         remove_many_orders_from_messages_tab(app, &deleted_order_ids);
         result = OperationResult::Info(message);
     }
+    if let OperationResult::SessionRestored { message } = result {
+        result = OperationResult::Info(message);
+    }
     if let OperationResult::InvoiceSubmitted {
         message,
         remember_buyer_saved_ln_address_for_order,

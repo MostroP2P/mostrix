@@ -179,6 +179,11 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Session restore finished: resync My Trades/Messages projections from
+    /// SQLite (same DB-to-UI sync as startup), then show `message`.
+    SessionRestored {
+        message: String,
+    },
     /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).
     OpenInvoicePopup {
         notification: MessageNotification,
