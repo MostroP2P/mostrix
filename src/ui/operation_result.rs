@@ -589,4 +589,36 @@ mod tests {
         );
         assert_eq!(height, lines.len() as u16 + 2);
     }
+
+    const RESTORE_SUMMARY: &str = "Session restored: 3 order(s) recovered, 1 already known, \
+1 dispute(s). 1 order(s) had no relay details and were saved with minimal info.";
+
+    fn render_restore_summary(width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_operation_result(
+                    f,
+                    &OperationResult::SessionRestored {
+                        message: RESTORE_SUMMARY.to_string(),
+                    },
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn restore_summary_fits_on_a_narrow_terminal() {
+        let buf = render_restore_summary(40, 24);
+        assert!(buffer_contains(&buf, "recovered,"));
+        assert!(buffer_contains(&buf, "Press ESC or ENTER to close"));
+    }
+
+    #[test]
+    fn restore_summary_keeps_counts_visible_on_a_short_terminal() {
+        let buf = render_restore_summary(40, 12);
+        assert!(buffer_contains(&buf, "Session restored:"));
+    }
 }
