@@ -395,6 +395,15 @@ No: paste BOLT11 or Lightning address manually."
             Some("Delete selected terminal order from local database history?"),
         );
     }
+    if let UiMode::ConfirmRestoreSession(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "\u{1F504} Restore Session",
+            "",
+            *selected_button,
+            Some("Ask Mostro to restore this identity's orders and disputes into the local database?"),
+        );
+    }
     if let UiMode::ConfirmBulkDeleteHistory(selected_button) = &app.mode {
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,

@@ -62,6 +62,8 @@ pub enum UiMode {
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
     ConfirmDeleteHistoryOrder(uuid::Uuid, bool), // (order_id, selected_button)
     ConfirmBulkDeleteHistory(bool), // (selected_button)
+    /// User Settings: ask Mostro to restore this identity's orders and disputes.
+    ConfirmRestoreSession(bool), // (selected_button: true=Yes, false=No)
     ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
 
     // Generate new keys flow (Settings tab)
@@ -150,6 +152,7 @@ impl Clone for UiMode {
             UiMode::ConfirmBulkDeleteHistory(selected) => {
                 UiMode::ConfirmBulkDeleteHistory(*selected)
             }
+            UiMode::ConfirmRestoreSession(selected) => UiMode::ConfirmRestoreSession(*selected),
             UiMode::ConfirmExit(selected) => UiMode::ConfirmExit(*selected),
             UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
             // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.

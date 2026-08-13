@@ -5,6 +5,7 @@ mod execute_admin_add_solver;
 mod execute_admin_cancel;
 mod execute_admin_settle;
 mod execute_finalize_dispute;
+mod execute_restore;
 mod execute_send_msg;
 mod execute_take_dispute;
 mod fetch_scheduler;
@@ -21,6 +22,7 @@ pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_admin_cancel::execute_admin_cancel;
 pub use execute_admin_settle::execute_admin_settle;
 pub use execute_finalize_dispute::execute_finalize_dispute;
+pub use execute_restore::{execute_restore_session, RestoreSummary};
 pub use execute_send_msg::{execute_dispute, execute_rate_user, execute_send_msg};
 pub use execute_take_dispute::execute_take_dispute;
 pub use fetch_scheduler::{
