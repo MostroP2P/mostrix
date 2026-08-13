@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table, TableState,
+    ScrollbarState, Table,
 };
 
 use crate::ui::helpers::{format_premium, get_filtered_book_orders, selected_book_display_idx};
@@ -22,7 +22,7 @@ pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    app: &AppState,
+    app: &mut AppState,
 ) {
     let orders_lock = match orders.lock() {
         Ok(g) => g,
@@ -222,8 +222,8 @@ pub fn render_orders_tab(
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
 
-    let mut table_state = TableState::default().with_selected(Some(display_selected_idx));
-    f.render_stateful_widget(table, area, &mut table_state);
+    app.orders_table_state.select(Some(display_selected_idx));
+    f.render_stateful_widget(table, area, &mut app.orders_table_state);
 
     // Header + borders consume 3 rows; remaining height is the scrollable body.
     let visible_rows = area.height.saturating_sub(3) as usize;
@@ -279,9 +279,9 @@ mod tests {
         let backend = TestBackend::new(width, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", premium)]));
-        let app = AppState::new(UserRole::User);
+        let mut app = AppState::new(UserRole::User);
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -322,7 +322,7 @@ mod tests {
         let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -353,7 +353,7 @@ mod tests {
         let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -400,7 +400,7 @@ mod tests {
         let backend = TestBackend::new(130, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_orders_tab(f, f.area(), &orders, &app))
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
             .unwrap();
 
         let buf = terminal.backend().buffer();

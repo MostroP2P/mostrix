@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use mostro_core::prelude::{Action, Transport};
 use zeroize::{Zeroize, Zeroizing};
+use ratatui::widgets::TableState;
 
 use crate::models::AdminDispute;
 use crate::ui::admin_state::AdminMode;
@@ -164,6 +165,8 @@ pub struct AppState {
     /// book projection (`helpers/order_selection.rs`). Not a raw index into the
     /// unfiltered in-memory order vec — highlight, ↑↓, and Enter share this id.
     pub selected_order_id: Option<uuid::Uuid>,
+    /// Persistent scroll state for the Orders tab table
+    pub orders_table_state: TableState,
     pub selected_dispute_idx: usize, // Selected dispute in Disputes Pending tab
     /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
     /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
@@ -274,6 +277,7 @@ impl AppState {
             user_role,
             active_tab: initial_tab,
             selected_order_id: None,
+            orders_table_state: TableState::default(),
             selected_dispute_idx: 0,
             selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
