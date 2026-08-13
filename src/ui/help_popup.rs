@@ -369,6 +369,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             vec![
                 HELP_MY_TRADES_NAV.to_string(),
                 HELP_MY_TRADES_ENTER_SEND.to_string(),
+                HELP_MY_TRADES_TAB_CHAT.to_string(),
                 HELP_MY_TRADES_SHIFT_I.to_string(),
                 HELP_MY_TRADES_SHIFT_C_CANCEL.to_string(),
                 HELP_MY_TRADES_SHIFT_F_FIAT_SENT.to_string(),
