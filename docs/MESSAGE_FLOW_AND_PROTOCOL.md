@@ -13,7 +13,7 @@ Mostrix uses Nostr transports for two distinct purposes:
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
 | **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385 (inbound + outbound) |
-| **P2P order chat** (My Trades) and **admin dispute chat** | NIP-59 GiftWrap via `mostro_core::chat` | Unchanged by protocol v2; shared ECDH keys |
+| **P2P order chat** (My Trades) and **admin dispute chat** | Kind 14 (`K_sign` / `K_conv`) via `mostro_core::chat`; dual-read legacy GiftWrap while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true | Unrelated to protocol v2 Mostro DMs; ECDH secret still stored, keys derived at runtime |
 
 ### Protocol v2 discovery, outbound send, and subscriptions (partial)
 
@@ -590,11 +590,11 @@ Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENE
 
 ## Admin Chat (Shared-Key Subscription Router)
 
-When the user is in **Admin** mode, the shared-key chat subscription router keeps the "Disputes in Progress" tab up to date with NIP‑59 gift-wrap messages exchanged over **per‑dispute shared keys** — live via a relay subscription, not a timer.
+When the user is in **Admin** mode, the shared-key chat subscription router keeps the "Disputes in Progress" tab up to date with kind-14 chat events (and, during the migration window, legacy NIP‑59 GiftWrap) exchanged over **per‑dispute shared keys** — live via a relay subscription, not a timer.
 
 - **Trigger**: `execute_take_dispute` calls `track_dispute_chat` for the buyer and seller when a dispute is taken; `track_startup_chats` re-tracks all `InProgress` disputes at startup and on reconnect. Untracked when the dispute leaves `InProgress`.
 - **Shared keys**: For each `AdminDispute` in `InProgress` state, the database holds `buyer_shared_key_hex` / `seller_shared_key_hex`, converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
-- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) subscribes one batched dual-read filter over all tracked shared pubkeys, hydrates history once per key on track (`fetch_gift_wraps_for_shared_key`, 7‑day window, filtered by `last_seen`, unwrapped with the party+admin allow-list), and routes live gift wraps by `p` tag / kind-14 by `pub(K_sign)`.
+- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) always subscribes kind 14 by `authors = [pub(K_sign)]`. While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true (mostrix#102 dual-read window), it also subscribes legacy GiftWrap `#p` = ECDH pubkey. Hydration (`fetch_gift_wraps_for_shared_key`, 7‑day window, `last_seen` cursor, party+admin allow-list) uses the same dual-read. Live kind 14 is routed by `pub(K_sign)`; GiftWrap by `p` tag. Outbound chat is **only** kind 14.
 - **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates`, which:
   - Drops inner signers only when they match neither the buyer key, seller key, nor admin key (not labeled Admin). Admin inner signers stay valid: they are on the unwrap allow-list, and local admin sends are echo-skipped rather than treated as unknown.
   - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.

@@ -3,7 +3,8 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use mostro_core::chat::{
-    chat_filter, unwrap_chat_message, unwrap_giftwrap_chat_message, wrap_chat_message, SharedKey,
+    chat_filter, giftwrap_chat_filter, unwrap_chat_message, unwrap_giftwrap_chat_message,
+    wrap_chat_message, SharedKey,
 };
 use mostro_core::prelude::DisputeStatus;
 use mostro_core::prelude::SmallOrder;
@@ -19,6 +20,13 @@ use crate::util::mostro_info::MostroInstanceInfo;
 
 /// Messages grouped by (dispute_id, party).
 type AdminChatByKey = HashMap<(String, ChatParty), Vec<DecodedChatMessage>>;
+
+/// Dual-read: accept legacy NIP-59 GiftWrap (kind 1059) P2P / dispute chat
+/// envelopes until a coordinated deprecation (mostrix#102).
+///
+/// Outbound chat is always kind 14 (`K_sign` / `K_conv`). Protocol DMs to Mostro
+/// are unrelated and keep their own GiftWrap vs kind-14 transport.
+pub const CHAT_ACCEPT_LEGACY_GIFTWRAP: bool = true;
 
 // ---------------------------------------------------------------------------
 // Shared-key helpers (ECDH IKM + K_conv / K_sign)
@@ -243,14 +251,31 @@ pub async fn send_admin_chat_message_via_shared_key(
 
 /// Unwrap a chat envelope addressed via the channel ECDH secret.
 ///
-/// Accepts the new kind-14 form and, during migration, legacy GiftWrap.
-/// `allowed_signers` is the inner-signer allow-list (party trade keys, plus the
-/// admin pubkey on dispute channels). An empty list is rejected so callers cannot
-/// accidentally accept an arbitrary inner signer.
+/// Accepts kind 14, and legacy GiftWrap while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`]
+/// is true. `allowed_signers` is the inner-signer allow-list (party trade keys,
+/// plus the admin pubkey on dispute channels). An empty list is rejected so
+/// callers cannot accidentally accept an arbitrary inner signer.
 pub async fn unwrap_giftwrap_with_shared_key(
     shared_keys: &Keys,
     event: &Event,
     allowed_signers: &[PublicKey],
+) -> Result<DecodedChatMessage> {
+    unwrap_chat_envelope(
+        shared_keys,
+        event,
+        allowed_signers,
+        CHAT_ACCEPT_LEGACY_GIFTWRAP,
+    )
+    .await
+}
+
+/// Like [`unwrap_giftwrap_with_shared_key`], with an explicit dual-read switch
+/// so tests can exercise the post-cutover GiftWrap rejection path.
+async fn unwrap_chat_envelope(
+    shared_keys: &Keys,
+    event: &Event,
+    allowed_signers: &[PublicKey],
+    accept_legacy: bool,
 ) -> Result<DecodedChatMessage> {
     if allowed_signers.is_empty() {
         return Err(anyhow::anyhow!(
@@ -259,6 +284,11 @@ pub async fn unwrap_giftwrap_with_shared_key(
     }
 
     if event.kind == Kind::GiftWrap {
+        if !accept_legacy {
+            return Err(anyhow::anyhow!(
+                "legacy GiftWrap chat envelopes are no longer accepted"
+            ));
+        }
         let msg = unwrap_giftwrap_chat_message(shared_keys, event)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to unwrap chat gift wrap: {e}"))?;
@@ -292,9 +322,9 @@ pub async fn unwrap_giftwrap_with_shared_key(
 
 /// Fetch recent chat events for a shared ECDH key and return decoded messages.
 ///
-/// Subscribes by `authors = [pub(K_sign)]` (kind 14). Also tries the legacy
-/// gift-wrap `#p` filter so dual-read hydration still works during migration.
-/// Inner events whose signer is not in `allowed_signers` are dropped.
+/// Subscribes by `authors = [pub(K_sign)]` (kind 14). While
+/// [`CHAT_ACCEPT_LEGACY_GIFTWRAP`] is true, also tries the legacy gift-wrap `#p`
+/// filter. Inner events whose signer is not in `allowed_signers` are dropped.
 pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
@@ -325,27 +355,29 @@ pub async fn fetch_chat_messages_for_shared_key(
         .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
 
     let kind14_filter = chat_filter(sign.public_key()).since(since_ts).limit(100);
-    // Dual-read: legacy gift wraps addressed to the ECDH pubkey (superseded p tag).
-    // Outer 1059 created_at is randomized into the past, so tightening to the cursor
-    // would drop still-new messages; keep the wide floor and let callers re-filter on
-    // the canonical inner timestamp after unwrap.
-    let giftwrap_since = Timestamp::from(lookback_floor.max(0) as u64);
-    let giftwrap_filter = mostro_core::chat::giftwrap_chat_filter(shared_keys.public_key())
-        .since(giftwrap_since)
-        .limit(100);
-
-    // Run both fetches independently so a transient failure of either query does
-    // not hide history still available on the other envelope during migration.
     let kind14_result = client
         .fetch_events(kind14_filter)
         .timeout(FETCH_EVENTS_TIMEOUT)
         .await;
-    let legacy_result = client
-        .fetch_events(giftwrap_filter)
-        .timeout(FETCH_EVENTS_TIMEOUT)
-        .await;
 
-    let events = merge_dual_read_events(kind14_result, legacy_result)?;
+    let events = if let Some(giftwrap_filter) = legacy_giftwrap_hydrate_filter(
+        shared_keys.public_key(),
+        lookback_floor,
+        CHAT_ACCEPT_LEGACY_GIFTWRAP,
+    ) {
+        // Dual-read: a transient failure of either query must not hide history
+        // still available on the other envelope during the migration window.
+        let legacy_result = client
+            .fetch_events(giftwrap_filter)
+            .timeout(FETCH_EVENTS_TIMEOUT)
+            .await;
+        merge_dual_read_events(kind14_result, legacy_result)?
+    } else {
+        kind14_result
+            .map_err(|e| anyhow::anyhow!("Failed to fetch chat events: {e}"))?
+            .into_iter()
+            .collect()
+    };
 
     let mut messages = Vec::new();
     for wrapped in events.iter() {
@@ -360,6 +392,27 @@ pub async fn fetch_chat_messages_for_shared_key(
     }
     messages.sort_by_key(|m| m.timestamp);
     Ok(messages)
+}
+
+/// Legacy GiftWrap hydrate filter, or `None` after dual-read cutover.
+///
+/// Outer 1059 `created_at` is randomized into the past, so the filter uses the
+/// wide lookback floor rather than the kind-14 `since` cursor. Callers re-filter
+/// on the canonical inner timestamp after unwrap.
+pub(crate) fn legacy_giftwrap_hydrate_filter(
+    ecdh_pubkey: PublicKey,
+    lookback_floor: i64,
+    accept_legacy: bool,
+) -> Option<Filter> {
+    if !accept_legacy {
+        return None;
+    }
+    let giftwrap_since = Timestamp::from(lookback_floor.max(0) as u64);
+    Some(
+        giftwrap_chat_filter(ecdh_pubkey)
+            .since(giftwrap_since)
+            .limit(100),
+    )
 }
 
 /// Merge kind-14 and legacy GiftWrap fetch results for dual-read hydration.
@@ -581,6 +634,7 @@ pub async fn send_user_order_chat_message_via_shared_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mostro_core::chat::wrap_giftwrap_chat_message;
 
     /// Different counterparty pubkeys must produce different shared keys (ECDH output is unique per peer).
     #[test]
@@ -668,6 +722,66 @@ mod tests {
 
         assert_eq!(unwrapped.sender, sender.public_key());
         assert_eq!(unwrapped.content, content);
+    }
+
+    #[tokio::test]
+    async fn dual_read_unwraps_giftwrap_and_kind14_fixtures() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared = SharedKey::derive(sender.secret_key(), &receiver.public_key())
+            .expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let allowed = [sender.public_key(), receiver.public_key()];
+
+        let kind14 = wrap_chat_message(&sender, &conv, &sign, "kind14 hello")
+            .await
+            .expect("wrap kind 14");
+        assert_eq!(kind14.kind, Kind::PrivateDirectMessage);
+        assert_eq!(kind14.pubkey, sign.public_key());
+
+        let giftwrap = wrap_giftwrap_chat_message(&sender, &shared.public_key(), "giftwrap hello")
+            .await
+            .expect("wrap giftwrap");
+        assert_eq!(giftwrap.kind, Kind::GiftWrap);
+
+        let from_kind14 = unwrap_giftwrap_with_shared_key(shared.keys(), &kind14, &allowed)
+            .await
+            .expect("unwrap kind 14");
+        let from_giftwrap = unwrap_giftwrap_with_shared_key(shared.keys(), &giftwrap, &allowed)
+            .await
+            .expect("unwrap giftwrap");
+
+        assert_eq!(from_kind14.sender, sender.public_key());
+        assert_eq!(from_kind14.content, "kind14 hello");
+        assert_eq!(from_giftwrap.sender, sender.public_key());
+        assert_eq!(from_giftwrap.content, "giftwrap hello");
+    }
+
+    #[tokio::test]
+    async fn unwrap_rejects_giftwrap_when_legacy_disabled() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared = SharedKey::derive(sender.secret_key(), &receiver.public_key())
+            .expect("shared key derives");
+        let allowed = [sender.public_key(), receiver.public_key()];
+        let giftwrap = wrap_giftwrap_chat_message(&sender, &shared.public_key(), "legacy leftover")
+            .await
+            .expect("wrap giftwrap");
+
+        let err = unwrap_chat_envelope(shared.keys(), &giftwrap, &allowed, false)
+            .await
+            .expect_err("GiftWrap must be rejected after cutover");
+        assert!(
+            err.to_string().contains("no longer accepted"),
+            "unexpected unwrap error: {err}"
+        );
+    }
+
+    #[test]
+    fn legacy_hydrate_filter_omitted_after_cutover() {
+        let pk = Keys::generate().public_key();
+        assert!(legacy_giftwrap_hydrate_filter(pk, 1_700_000_000, true).is_some());
+        assert!(legacy_giftwrap_hydrate_filter(pk, 1_700_000_000, false).is_none());
     }
 
     #[tokio::test]

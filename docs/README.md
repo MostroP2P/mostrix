@@ -40,11 +40,11 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Protocol v2 (NIP-44) — protocol DMs complete
 
-Mostrix supports **dual-transport** Mostro **protocol DMs** (not P2P order chat or admin dispute chat — those stay on GiftWrap).
+Mostrix supports **dual-transport** Mostro **protocol DMs**. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`) and dual-read legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (mostrix#102).
 
 | Status | What |
 |--------|------|
 | **Done** | `mostro-core` **0.13.0**; `protocol_version` on kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); **await instance info** before listener (startup + [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) on reload/reconnect); **`send_dm` → `wrap_message_with`**; **`parse_dm_events` / listener → `unwrap_incoming`**; transport-aware subscribe + event gate; [`respawn_trade_dm_listener`](../src/ui/key_handler/async_tasks.rs) on manual info refresh when transport flips; v2 **first-contact PoW** (`pow_first_contact` / [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs)) |
 
-**v2 end-to-end:** Mostrix auto-selects wire transport from instance info for both outbound and inbound protocol DMs. P2P order chat and admin dispute chat remain GiftWrap-only. Manual test checklist: [DM_LISTENER_FLOW.md — Manual verification](DM_LISTENER_FLOW.md#manual-verification-protocol-v2).
+**v2 end-to-end:** Mostrix auto-selects wire transport from instance info for both outbound and inbound protocol DMs. P2P / dispute chat is kind 14 outbound with a GiftWrap dual-read receive window (`CHAT_ACCEPT_LEGACY_GIFTWRAP`). Manual test checklist: [DM_LISTENER_FLOW.md — Manual verification](DM_LISTENER_FLOW.md#manual-verification-protocol-v2).
 

@@ -1,8 +1,8 @@
 //! Shared-key chat subscription router (P2P order chat + admin dispute chat).
 //!
-//! Long-lived dual-read subscriptions (migration window):
-//! * legacy GiftWrap (`kind: 1059`, `#p: [ECDH pubkeys]`)
-//! * gift-wrap-free kind 14 (`authors: [pub(K_sign)]`)
+//! Live kind-14 subscription (`authors: [pub(K_sign)]`). While
+//! `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true, also dual-reads legacy GiftWrap
+//! (`kind: 1059`, `#p: [ECDH pubkeys]`). Outbound chat is always kind 14.
 //!
 //! Live kind-14 traffic is routed **only** by outer author ∈ tracked `pub(K_sign)`
 //! (never by `#p` alone). GiftWrap dual-read still matches `#p` = ECDH pubkey.
@@ -39,7 +39,7 @@ use crate::util::chat_security::{
 use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
     fetch_chat_messages_for_shared_key, keys_from_shared_hex, order_chat_allowed_signers,
-    unwrap_giftwrap_with_shared_key,
+    unwrap_giftwrap_with_shared_key, CHAT_ACCEPT_LEGACY_GIFTWRAP,
 };
 use futures::StreamExt;
 
@@ -284,9 +284,10 @@ fn emit_messages(
 
 /// Rebuild live subscriptions from the current tracked set.
 ///
-/// Dual-read: GiftWrap `#p` (legacy) and kind-14 `authors = [pub(K_sign)]`.
-/// Make-before-break: only drop previous subscriptions after the replacements
-/// are live. Uses `.limit(0)` (live-only); history is hydrated separately.
+/// Kind-14 `authors = [pub(K_sign)]`, plus GiftWrap `#p` while
+/// [`CHAT_ACCEPT_LEGACY_GIFTWRAP`] is true. Make-before-break: only drop previous
+/// subscriptions after the replacements are live. Uses `.limit(0)` (live-only);
+/// history is hydrated separately.
 async fn resubscribe(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
@@ -299,68 +300,34 @@ async fn resubscribe(
 
     let ecdh_pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
     let sign_pubkeys: Vec<PublicKey> = targets.values().map(|t| t.sign_pubkey).collect();
+    let (giftwrap_filter, kind14_filter) =
+        live_chat_filters(&ecdh_pubkeys, &sign_pubkeys, CHAT_ACCEPT_LEGACY_GIFTWRAP);
 
-    let giftwrap_filter = Filter::new()
-        .kind(Kind::GiftWrap)
-        .pubkeys(ecdh_pubkeys)
-        .limit(0);
-    let kind14_filter = Filter::new()
-        .kind(Kind::PrivateDirectMessage)
-        .authors(sign_pubkeys)
-        .limit(0);
-
-    const MAX_ATTEMPTS: u32 = 3;
     let mut new_giftwrap: Option<SubscriptionId> = None;
-    let mut new_kind14: Option<SubscriptionId> = None;
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        match client.subscribe(giftwrap_filter.clone()).await {
-            Ok(output) => {
-                new_giftwrap = Some(output.value);
-                break;
-            }
-            Err(e) => {
-                if attempt == MAX_ATTEMPTS {
-                    log::error!(
-                        "[chat_live] failed to subscribe GiftWrap chats after {MAX_ATTEMPTS} attempts: {e}; keeping previous subscriptions alive"
-                    );
-                    return;
-                }
-                let delay_ms = 250u64 * (1 << (attempt - 1));
-                log::warn!(
-                    "[chat_live] GiftWrap subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
+    if let Some(filter) = giftwrap_filter {
+        match subscribe_chat_filter(client, filter, "GiftWrap").await {
+            Some(id) => new_giftwrap = Some(id),
+            None => {
+                log::error!(
+                    "[chat_live] GiftWrap subscribe failed; keeping previous subscriptions alive"
                 );
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                return;
             }
         }
     }
 
-    for attempt in 1..=MAX_ATTEMPTS {
-        match client.subscribe(kind14_filter.clone()).await {
-            Ok(output) => {
-                new_kind14 = Some(output.value);
-                break;
-            }
-            Err(e) => {
-                if attempt == MAX_ATTEMPTS {
-                    log::error!(
-                        "[chat_live] failed to subscribe kind-14 chats after {MAX_ATTEMPTS} attempts: {e}; rolling back new GiftWrap sub"
-                    );
-                    if let Some(id) = new_giftwrap.take() {
-                        if let Err(e) = client.unsubscribe(&id).await {
-                            log::debug!("unsubscribe failed: {e}");
-                        }
-                    }
-                    return;
+    let new_kind14 = match subscribe_chat_filter(client, kind14_filter, "kind-14").await {
+        Some(id) => id,
+        None => {
+            log::error!("[chat_live] kind-14 subscribe failed; rolling back new GiftWrap sub");
+            if let Some(id) = new_giftwrap.take() {
+                if let Err(e) = client.unsubscribe(&id).await {
+                    log::debug!("unsubscribe failed: {e}");
                 }
-                let delay_ms = 250u64 * (1 << (attempt - 1));
-                log::warn!(
-                    "[chat_live] kind-14 subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
+            return;
         }
-    }
+    };
 
     log::debug!(
         "[chat_live] subscribed to {} chat(s) giftwrap={:?} kind14={:?}",
@@ -369,15 +336,66 @@ async fn resubscribe(
         new_kind14
     );
 
-    if let Some(old_id) = current_subs
-        .giftwrap
-        .replace(new_giftwrap.expect("subscribed"))
-    {
-        if let Err(e) = client.unsubscribe(&old_id).await {
-            log::debug!("unsubscribe failed: {e}");
+    replace_live_sub(client, &mut current_subs.giftwrap, new_giftwrap).await;
+    replace_live_sub(client, &mut current_subs.kind14, Some(new_kind14)).await;
+}
+
+/// Live filters for the tracked set. GiftWrap is omitted after dual-read cutover.
+fn live_chat_filters(
+    ecdh_pubkeys: &[PublicKey],
+    sign_pubkeys: &[PublicKey],
+    accept_legacy: bool,
+) -> (Option<Filter>, Filter) {
+    let giftwrap = accept_legacy.then(|| {
+        Filter::new()
+            .kind(Kind::GiftWrap)
+            .pubkeys(ecdh_pubkeys.iter().copied())
+            .limit(0)
+    });
+    let kind14 = Filter::new()
+        .kind(Kind::PrivateDirectMessage)
+        .authors(sign_pubkeys.iter().copied())
+        .limit(0);
+    (giftwrap, kind14)
+}
+
+async fn subscribe_chat_filter(
+    client: &Client,
+    filter: Filter,
+    label: &str,
+) -> Option<SubscriptionId> {
+    const MAX_ATTEMPTS: u32 = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.subscribe(filter.clone()).await {
+            Ok(output) => return Some(output.value),
+            Err(e) => {
+                if attempt == MAX_ATTEMPTS {
+                    log::error!(
+                        "[chat_live] failed to subscribe {label} chats after {MAX_ATTEMPTS} attempts: {e}"
+                    );
+                    return None;
+                }
+                let delay_ms = 250u64 * (1 << (attempt - 1));
+                log::warn!(
+                    "[chat_live] {label} subscribe attempt {attempt}/{MAX_ATTEMPTS} failed: {e}; retrying in {delay_ms}ms"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
         }
     }
-    if let Some(old_id) = current_subs.kind14.replace(new_kind14.expect("subscribed")) {
+    None
+}
+
+async fn replace_live_sub(
+    client: &Client,
+    slot: &mut Option<SubscriptionId>,
+    new_id: Option<SubscriptionId>,
+) {
+    let old_id = match new_id {
+        Some(id) => slot.replace(id),
+        None => slot.take(),
+    };
+    if let Some(old_id) = old_id {
         if let Err(e) = client.unsubscribe(&old_id).await {
             log::debug!("unsubscribe failed: {e}");
         }
@@ -678,8 +696,16 @@ fn resolve_chat_target<'a>(
     targets: &'a HashMap<PublicKey, ChatTarget>,
     event: &Event,
 ) -> Option<&'a ChatTarget> {
+    resolve_chat_target_with(targets, event, CHAT_ACCEPT_LEGACY_GIFTWRAP)
+}
+
+fn resolve_chat_target_with<'a>(
+    targets: &'a HashMap<PublicKey, ChatTarget>,
+    event: &Event,
+    accept_legacy: bool,
+) -> Option<&'a ChatTarget> {
     match event.kind {
-        Kind::GiftWrap => {
+        Kind::GiftWrap if accept_legacy => {
             let target_pubkey = event.tags.public_keys().next()?;
             targets.get(&target_pubkey)
         }
@@ -826,6 +852,33 @@ mod tests {
         let resolved = resolve_chat_target(&targets, &event).expect("route kind14");
         assert_eq!(resolved.key_id, ChatKeyId::Order("order-1".to_string()));
         assert_eq!(resolved.sign_pubkey, event.pubkey);
+    }
+
+    #[test]
+    fn resolve_chat_target_routes_giftwrap_by_p_tag_while_legacy_enabled() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let shared_hex = sample_shared_hex();
+        let _ = apply_chat_router_cmd(track_order_cmd(shared_hex, None), &mut targets);
+        let target_pubkey = *targets.keys().next().expect("tracked");
+        let ephemeral = Keys::generate();
+        let event = EventBuilder::new(Kind::GiftWrap, "ciphertext")
+            .tag(Tag::public_key(target_pubkey))
+            .finalize(&ephemeral)
+            .expect("sign");
+
+        let resolved = resolve_chat_target_with(&targets, &event, true).expect("route giftwrap");
+        assert_eq!(resolved.key_id, ChatKeyId::Order("order-1".to_string()));
+        assert!(resolve_chat_target_with(&targets, &event, false).is_none());
+    }
+
+    #[test]
+    fn live_chat_filters_omit_giftwrap_after_cutover() {
+        let ecdh = vec![Keys::generate().public_key()];
+        let sign = vec![Keys::generate().public_key()];
+        let (legacy_on, _kind14) = live_chat_filters(&ecdh, &sign, true);
+        assert!(legacy_on.is_some());
+        let (legacy_off, _) = live_chat_filters(&ecdh, &sign, false);
+        assert!(legacy_off.is_none());
     }
 
     #[test]

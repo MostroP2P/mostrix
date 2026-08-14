@@ -488,7 +488,7 @@ The key handler processes input in this order:
 
 **Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
 
-#### NIP‑59 Chat Internals (Shared Key Model)
+#### Kind-14 Chat Internals (Shared Key Model)
 
 - **Shared key derivation**:
   - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
@@ -496,20 +496,19 @@ The key handler processes input in this order:
   - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key and subscribe to the same events.
 
 - **Message addressing**:
-  - Admin chat messages are addressed to the **shared key's public key** (not the counterparty's trade pubkey directly).
-  - The admin reads `admin_privkey` from `settings.toml` to sign the inner rumor; the gift wrap `p` tag targets the shared key pubkey.
+  - Outbound chat is kind 14 signed by `K_sign` with `p` = `pub(K_conv)` (derived from stored ECDH hex). The admin identity signs the inner rumor.
 
 - **Sending messages**:
   - Admin messages are sent via `send_admin_chat_message_via_shared_key` (spawned as an async task to avoid blocking the UI):
-    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
-    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and the shared key public key as the recipient.
+    - Inner event is a kind-1 text note signed by the admin key.
+    - Outer envelope is always kind 14 (`wrap_chat_message`); GiftWrap is receive-only during the dual-read window.
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched dual-read subscription; disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
+  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched subscription (kind 14 always; GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true). Disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
-    - Fetches history with two queries (7-day rolling window): legacy `kind: 1059` GiftWraps `#p`-addressed to the ECDH shared pubkey, and kind-14 events authored by `pub(K_sign)`.
+    - Fetches history with kind-14 `authors = [pub(K_sign)]`, plus a legacy `kind: 1059` `#p` query while dual-read is on (7-day rolling window; GiftWrap `created_at` is randomized so that query keeps the wide floor).
     - Decrypts each event using the shared key (`K_conv` / `K_sign`) and rejects inner signers outside the party+admin allow-list.
     - Uses `last_seen_timestamp` to skip already-processed events.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
@@ -527,7 +526,7 @@ The key handler processes input in this order:
       - Rebuilds `AppState.admin_dispute_chats` so the Disputes in Progress tab immediately shows previous messages.
       - Computes the latest timestamps per party and updates `AppState.admin_chat_last_seen`.
     - The latest buyer/seller timestamps are also persisted in the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id` so that:
-      - Background NIP‑59 fetches only request **newer** events (7-day rolling window).
+      - Background chat fetches only request **newer** events (7-day rolling window).
       - Chat resumes from where it left off without replaying the full history.
 
 #### Exit Confirmation

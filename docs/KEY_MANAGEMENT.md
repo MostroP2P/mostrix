@@ -54,8 +54,8 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 
 - **Usage**:
   - The shared keys act as **per‑(dispute, party) chat identities**:
-    - Outgoing admin chat messages are sent as NIP‑59 `GiftWrap` events addressed to the shared key’s public key.
-    - Incoming messages are fetched by querying `Kind::GiftWrap` events to that same shared key pubkey and decrypting with the shared secret.
+    - Outgoing admin chat messages are kind 14 signed by `K_sign` (`wrap_chat_message`); `p` = `pub(K_conv)`.
+    - Incoming messages are fetched by `authors = [pub(K_sign)]` (kind 14) and, while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true, also by GiftWrap `#p` = ECDH pubkey.
   - Both admin and counterparty can independently derive the same shared key, mirroring the `mostro-chat` model.
   - Per‑party last‑seen timestamps (`buyer_chat_last_seen`, `seller_chat_last_seen`) are used together with these keys to implement incremental, restart‑safe admin chat sync.
 
@@ -63,7 +63,7 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 
 ## NIP-59 Gift Wrap Structure (protocol v1)
 
-Mostrix implements NIP-59 for **protocol v1** and all P2P chat. **Protocol v2** Mostro DMs use signed kind 14 via [`wrap_message_with`](../src/util/mod.rs) — identity proof moves inside the NIP-44 ciphertext (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
+Mostrix implements NIP-59 for **protocol v1** Mostro DMs. **Protocol v2** Mostro DMs use signed kind 14 via [`wrap_message_with`](../src/util/mod.rs). **P2P / dispute chat** uses kind 14 (`K_sign` / `K_conv`) and dual-reads legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
 
 ### 1. Normal Mode (Reputation Enabled)
 In this mode, Mostro can link the trade to your identity key for reputation purposes, but other Nostr users cannot.
