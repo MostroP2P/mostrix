@@ -33,7 +33,7 @@ First-contact actions on strict v2 nodes may need higher PoW than instance `pow`
 ## Chat vs protocol PoW
 
 - **Protocol DMs toward Mostro**: instance PoW + transport from [`transport_from_instance`](../src/util/mostro_info.rs) + [`wrap_message_with`](../src/util/mod.rs).
-- **Shared-key chat** (admin dispute, user order, observer): `mostro_core::chat` GiftWrap — **no PoW**.
+- **Shared-key chat** (admin dispute, user order, observer): `mostro_core::chat` kind 14 (`K_sign` / `K_conv`) — **no PoW**. Legacy GiftWrap receive is dual-read only (`CHAT_ACCEPT_LEGACY_GIFTWRAP`).
 
 ## Call sites (high level)
 
