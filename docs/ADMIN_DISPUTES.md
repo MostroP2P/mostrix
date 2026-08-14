@@ -114,9 +114,10 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
    - Press **Enter** to:
      - Validate the shared key (non-empty, valid hex).
      - Derive `Keys` from the shared key hex (via `keys_from_shared_hex` in `chat_utils.rs`).
-     - Fetch all `Kind::GiftWrap` events addressed to the shared key's public key from the last 7 days (reuses `fetch_gift_wraps_for_shared_key`).
-     - Decrypt each event using the shared key (standard NIP-59 or simplified Mostro-chat format).
-     - Map sender public keys to roles: known admin pubkey = Admin, first unknown pubkey = Buyer, second unknown pubkey = Seller.
+     - Fetch chat events for the shared key from the last 7 days (`fetch_gift_wraps_for_shared_key`), unwrapping only inner signers in the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes).
+     - Decrypt each event using the shared key (kind 14 or legacy GiftWrap).
+     - Map sender public keys from that known-role map only; unknown inner signers are dropped (no arrival-order Buyer/Seller/Admin fallback).
+     - Fetch fails if the known-role map is empty (no admin keys and no taken-dispute party pubkeys).
      - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
    - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
 5. **Save attachments**:
@@ -143,7 +144,7 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches messages from Nostr relays using the shared key. It reuses the same gift-wrap fetch infrastructure as the admin chat system (`fetch_gift_wraps_for_shared_key` in `chat_utils.rs`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches messages from Nostr relays using the shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
 
 **Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
 
@@ -684,7 +685,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key`), then receives newer NIP‑59 events live over one batched `kind: 1059` subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
+    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched dual-read subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts

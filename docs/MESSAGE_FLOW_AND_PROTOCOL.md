@@ -594,8 +594,9 @@ When the user is in **Admin** mode, the shared-key chat subscription router keep
 
 - **Trigger**: `execute_take_dispute` calls `track_dispute_chat` for the buyer and seller when a dispute is taken; `track_startup_chats` re-tracks all `InProgress` disputes at startup and on reconnect. Untracked when the dispute leaves `InProgress`.
 - **Shared keys**: For each `AdminDispute` in `InProgress` state, the database holds `buyer_shared_key_hex` / `seller_shared_key_hex`, converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
-- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) subscribes one batched `kind: 1059` filter over all tracked shared pubkeys, hydrates history once per key on track (`fetch_gift_wraps_for_shared_key`, 7‑day window, filtered by `last_seen`), and routes live gift wraps by `p` tag.
+- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) subscribes one batched dual-read filter over all tracked shared pubkeys, hydrates history once per key on track (`fetch_gift_wraps_for_shared_key`, 7‑day window, filtered by `last_seen`, unwrapped with the party+admin allow-list), and routes live gift wraps by `p` tag / kind-14 by `pub(K_sign)`.
 - **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates`, which:
+  - Drops inner signers only when they match neither the buyer key, seller key, nor admin key (not labeled Admin). Admin inner signers stay valid: they are on the unwrap allow-list, and local admin sends are echo-skipped rather than treated as unknown.
   - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.
   - Updates in‑memory `admin_chat_last_seen` entries.
   - Persists cursors to the `admin_disputes` table (`buyer_chat_last_seen`, `seller_chat_last_seen`) via `update_chat_last_seen_by_dispute_id`.

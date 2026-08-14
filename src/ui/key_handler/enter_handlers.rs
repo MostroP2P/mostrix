@@ -59,6 +59,7 @@ use crate::ui::key_handler::validation::{
     normalize_mostro_pubkey, validate_currency, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
+use crate::util::chat_utils::{fetch_observer_chat, observer_known_signer_roles};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
 use crate::util::order_utils::BondSlashChoice;
 
@@ -1163,7 +1164,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate and trigger async fetch for observer chat via shared key
+        // Validate shared key, then fetch observer chat authenticated against
+        // known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
             let msg = "Shared key is required".to_string();
@@ -1190,16 +1192,12 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // Spawn async fetch via the order_result channel
         let client = ctx.client.clone();
         let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
+        let known_roles =
+            observer_known_signer_roles(admin_pubkey.as_ref(), &app.admin_disputes_in_progress);
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match crate::util::chat_utils::fetch_observer_chat(
-                &client,
-                &key_str,
-                admin_pubkey.as_ref(),
-            )
-            .await
-            {
+            match fetch_observer_chat(&client, &key_str, &known_roles).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
                 }

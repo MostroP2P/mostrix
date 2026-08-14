@@ -11,13 +11,15 @@ use uuid::Uuid;
 use super::order_chat_projection::order_chat_list_item_from_db_order;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, ChatSender, DisputeChatMessage,
-    OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatSender, UserOrderChatMessage,
-    UserRole,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage, OrderChatLastSeen,
+    OrderChatStaticHeader, OrderMessage, UserChatSender, UserOrderChatMessage, UserRole,
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat},
-    chat_utils::{clamp_chat_since_cursor_now, derive_shared_key_hex},
+    chat_utils::{
+        clamp_chat_since_cursor_now, derive_shared_key_hex, dispute_chat_allowed_signers,
+        dispute_chat_role_for_inner_signer, order_chat_allowed_signers, parse_chat_pubkey,
+    },
     seed_admin_chat_last_seen,
 };
 
@@ -143,7 +145,10 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
 /// - **User**: every [`Order::get_startup_active_orders`] row (active states + `success`;
 ///   excludes [`crate::models::TERMINAL_DM_STATUSES`]) with a resolvable shared key —
 ///   persisted `order_chat_shared_key_hex`, else ECDH from `trade_keys` + `counterparty_pubkey`.
-/// - **Admin**: each InProgress dispute's buyer/seller shared key.
+///   Rows without a counterparty trade pubkey are skipped (no inner-signer allow-list).
+/// - **Admin**: each InProgress dispute's buyer/seller shared key, tracked with
+///   that party's trade pubkey plus the admin pubkey when configured. Parties
+///   missing a pubkey are skipped.
 ///
 /// Commands are buffered on the router's channel until the task starts consuming them, so this
 /// is safe to call before the chat router task is spawned. History for each key is hydrated by
@@ -171,15 +176,32 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
                 let Some(shared_hex) = shared_hex else {
                     continue;
                 };
+                let Some(allowed) = order_chat_allowed_signers(
+                    trade_keys.public_key(),
+                    order.counterparty_pubkey.as_deref(),
+                ) else {
+                    log::warn!(
+                        "startup: order {} missing counterparty pubkey; not tracking chat",
+                        row.id
+                    );
+                    continue;
+                };
                 let since = app
                     .order_chat_last_seen
                     .get(&row.id)
                     .and_then(|s| s.last_seen_timestamp)
                     .map(clamp_chat_since_cursor_now);
-                track_order_chat(row.id.clone(), shared_hex, trade_keys.public_key(), since);
+                track_order_chat(
+                    row.id.clone(),
+                    shared_hex,
+                    trade_keys.public_key(),
+                    allowed,
+                    since,
+                );
             }
         }
         UserRole::Admin => {
+            let admin_pk = app.admin_keys.as_ref().map(|k| k.public_key());
             for dispute in &app.admin_disputes_in_progress {
                 let is_in_progress = dispute
                     .status
@@ -189,11 +211,27 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
                 if !is_in_progress {
                     continue;
                 }
-                for (party, hex) in [
-                    (ChatParty::Buyer, dispute.buyer_shared_key_hex.as_deref()),
-                    (ChatParty::Seller, dispute.seller_shared_key_hex.as_deref()),
+                for (party, hex, party_pk) in [
+                    (
+                        ChatParty::Buyer,
+                        dispute.buyer_shared_key_hex.as_deref(),
+                        dispute.buyer_pubkey.as_deref(),
+                    ),
+                    (
+                        ChatParty::Seller,
+                        dispute.seller_shared_key_hex.as_deref(),
+                        dispute.seller_pubkey.as_deref(),
+                    ),
                 ] {
                     let Some(hex) = hex else {
+                        continue;
+                    };
+                    let Some(allowed) = dispute_chat_allowed_signers(admin_pk.as_ref(), party_pk)
+                    else {
+                        log::warn!(
+                            "startup: dispute {} {party} missing party pubkey; not tracking chat",
+                            dispute.dispute_id
+                        );
                         continue;
                     };
                     let since = app
@@ -201,7 +239,13 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
                         .get(&(dispute.dispute_id.clone(), party))
                         .and_then(|s| s.last_seen_timestamp)
                         .map(clamp_chat_since_cursor_now);
-                    track_dispute_chat(dispute.dispute_id.clone(), party, hex.to_string(), since);
+                    track_dispute_chat(
+                        dispute.dispute_id.clone(),
+                        party,
+                        hex.to_string(),
+                        allowed,
+                        since,
+                    );
                 }
             }
         }
@@ -533,6 +577,8 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
 /// Apply fetched admin chat updates back into the UI state and persist
 /// last_seen timestamps to the database.
 ///
+/// Inner signers that match neither the buyer nor the seller trade pubkey are
+/// dropped (not labeled Admin). Admin echoes are skipped via `admin_chat_pubkey`.
 /// Durable inner-event ids are recorded only after a successful transcript
 /// [`save_chat_message`] / [`rewrite_dispute_chat_messages`]. On write failure
 /// the id is left unrecorded so a later delivery can retry.
@@ -578,34 +624,34 @@ pub async fn apply_admin_chat_updates(
                 continue;
             }
 
-            let (sender, target_party) = app
-                .admin_disputes_in_progress
-                .iter()
-                .find(|d| d.dispute_id == dispute_key)
-                .map(|dispute| {
-                    let buyer_pk = dispute
-                        .buyer_pubkey
-                        .as_deref()
-                        .and_then(|s| PublicKey::from_str(s).ok());
-                    let seller_pk = dispute
-                        .seller_pubkey
-                        .as_deref()
-                        .and_then(|s| PublicKey::from_str(s).ok());
-                    if buyer_pk.as_ref() == Some(&sender_pubkey) {
-                        (ChatSender::Buyer, None)
-                    } else if seller_pk.as_ref() == Some(&sender_pubkey) {
-                        (ChatSender::Seller, None)
-                    } else {
-                        (ChatSender::Admin, Some(party))
+            let (sender, target_party) = {
+                let dispute = app
+                    .admin_disputes_in_progress
+                    .iter()
+                    .find(|d| d.dispute_id == dispute_key);
+                let buyer_pk = dispute
+                    .and_then(|d| d.buyer_pubkey.as_deref())
+                    .and_then(parse_chat_pubkey);
+                let seller_pk = dispute
+                    .and_then(|d| d.seller_pubkey.as_deref())
+                    .and_then(parse_chat_pubkey);
+                match dispute_chat_role_for_inner_signer(
+                    &sender_pubkey,
+                    buyer_pk.as_ref(),
+                    seller_pk.as_ref(),
+                ) {
+                    Some(role) => role,
+                    None => {
+                        log::warn!(
+                            "dropping dispute {dispute_key} chat message from unknown inner signer"
+                        );
+                        if ts > max_ts {
+                            max_ts = ts;
+                        }
+                        continue;
                     }
-                })
-                .unwrap_or((
-                    match party {
-                        ChatParty::Buyer => ChatSender::Buyer,
-                        ChatParty::Seller => ChatSender::Seller,
-                    },
-                    None,
-                ));
+                }
+            };
 
             let (msg_content, attachment) = match try_parse_attachment_message(&content) {
                 Some((attachment, display)) => (display, Some(attachment)),
