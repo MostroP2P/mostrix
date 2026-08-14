@@ -222,7 +222,8 @@ use crate::ui::ui_draw;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    // Set rustls crypto provider once (required when both ring and aws-lc-rs are in the dependency tree)
+    // Install ring as the rustls crypto provider before any TLS clients are built
+    // (reqwest uses `rustls-no-provider`; without this, Client::new panics).
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("rustls default crypto provider");
