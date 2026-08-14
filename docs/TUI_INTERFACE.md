@@ -509,8 +509,8 @@ The key handler processes input in this order:
   - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched dual-read subscription; disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
-    - Fetches chat events addressed to each shared key (7-day rolling window).
-    - Decrypts each event using the shared key and rejects inner signers outside the party+admin allow-list.
+    - Fetches history with two queries (7-day rolling window): legacy `kind: 1059` GiftWraps `#p`-addressed to the ECDH shared pubkey, and kind-14 events authored by `pub(K_sign)`.
+    - Decrypts each event using the shared key (`K_conv` / `K_sign`) and rejects inner signers outside the party+admin allow-list.
     - Uses `last_seen_timestamp` to skip already-processed events.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
 
