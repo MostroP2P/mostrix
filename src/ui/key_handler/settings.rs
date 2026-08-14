@@ -35,7 +35,9 @@ pub fn try_save_admin_key_to_settings(key_string: &str) -> Result<(), String> {
     }
 }
 
-/// Save Mostro pubkey to settings file
+/// Save Mostro pubkey to settings file.
+///
+/// `key_string` should already be lowercase hex from [`super::validation::normalize_mostro_pubkey`].
 pub fn save_mostro_pubkey_to_settings(key_string: &str) {
     save_settings_with(
         |s| s.mostro_pubkey = key_string.to_string(),

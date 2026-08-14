@@ -80,20 +80,28 @@ pub fn normalize_to_nsec(input: &str) -> Result<String, String> {
     })
 }
 
-/// Validate if a string is a valid hex-encoded Mostro pubkey
-/// Example: 627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae
+/// Validate if a string is a valid Mostro pubkey (npub or hex).
+/// Prefer [`normalize_mostro_pubkey`] when saving so settings stay hex-encoded.
 pub fn validate_mostro_pubkey(pubkey_str: &str) -> Result<(), String> {
-    let key = pubkey_str.trim();
+    normalize_mostro_pubkey(pubkey_str).map(|_| ())
+}
+
+/// Normalize a Mostro pubkey to 64-char hex for settings persistence.
+/// Accepts `npub1...` (bech32) or hex. Always returns lowercase hex on success.
+pub fn normalize_mostro_pubkey(input: &str) -> Result<String, String> {
+    let key = input.trim();
     if key.is_empty() {
         return Err("Mostro pubkey cannot be empty".to_string());
     }
 
-    // Use nostr-sdk parsing to ensure it's a valid public key
-    PublicKey::from_hex(key).map_err(|_| {
-        "Invalid Mostro pubkey format, expected 64-character hex string".to_string()
-    })?;
+    if let Ok(pk) = PublicKey::from_bech32(key) {
+        return Ok(pk.to_hex());
+    }
+    if let Ok(pk) = PublicKey::from_hex(key) {
+        return Ok(pk.to_hex());
+    }
 
-    Ok(())
+    Err("Invalid Mostro pubkey: expected npub1... (bech32) or 64-char hex string".to_string())
 }
 
 /// Validate if a relay URL has a valid format (must start with wss://)
@@ -226,5 +234,31 @@ mod tests {
         let nsec = normalize_to_nsec(hex).expect("must convert");
         let sk = SecretKey::from_bech32(&nsec).expect("must decode");
         assert_eq!(sk.to_secret_hex(), hex);
+    }
+
+    #[test]
+    fn normalize_mostro_pubkey_accepts_npub_and_returns_hex() {
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae";
+        let npub = PublicKey::from_hex(hex)
+            .expect("hex must parse")
+            .to_bech32()
+            .expect("bech32");
+        let out = normalize_mostro_pubkey(&npub).expect("npub must succeed");
+        assert_eq!(out, hex);
+        assert!(validate_mostro_pubkey(&npub).is_ok());
+    }
+
+    #[test]
+    fn normalize_mostro_pubkey_accepts_hex() {
+        let hex = "627788f4ea6c308b98e5928a632e8220108fcbb7fbcc1270e67582d98eac84ae";
+        let out = normalize_mostro_pubkey(hex).expect("hex must succeed");
+        assert_eq!(out, hex);
+    }
+
+    #[test]
+    fn normalize_mostro_pubkey_rejects_invalid() {
+        assert!(normalize_mostro_pubkey("").is_err());
+        assert!(normalize_mostro_pubkey("not-a-key").is_err());
+        assert!(normalize_mostro_pubkey("npub1invalid").is_err());
     }
 }
