@@ -526,14 +526,12 @@ pub fn handle_key_event(
     }
 
     // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe).
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        if is_paste_shortcut(&key_event) {
-            if let Some(text) = read_clipboard_text_best_effort() {
-                let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
-                if !filtered.is_empty() {
-                    app.observer_active_input_mut().push_str(&filtered);
-                    return Some(true);
-                }
+    if app.observer_inputs_editable() && is_paste_shortcut(&key_event) {
+        if let Some(text) = read_clipboard_text_best_effort() {
+            let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+            if !filtered.is_empty() {
+                app.observer_active_input_mut().push_str(&filtered);
+                return Some(true);
             }
         }
     }
@@ -1173,24 +1171,22 @@ Disclose K_conv only. Never share the K_sign secret."
     }
 
     // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the focused field.
-    // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        if !matches!(app.mode, UiMode::OperationResult(_)) {
-            let is_ctrl = key_event
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL);
-            if !is_ctrl {
-                match code {
-                    KeyCode::Char(c) => {
-                        app.observer_active_input_mut().push(c);
-                        return Some(true);
-                    }
-                    KeyCode::Backspace => {
-                        app.observer_active_input_mut().pop();
-                        return Some(true);
-                    }
-                    _ => {}
+    // Skip when a modal owns input so we don't edit K_conv / pub(K_sign) behind an overlay.
+    if app.observer_inputs_editable() {
+        let is_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if !is_ctrl {
+            match code {
+                KeyCode::Char(c) => {
+                    app.observer_active_input_mut().push(c);
+                    return Some(true);
                 }
+                KeyCode::Backspace => {
+                    app.observer_active_input_mut().pop();
+                    return Some(true);
+                }
+                _ => {}
             }
         }
     }

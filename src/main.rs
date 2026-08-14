@@ -134,7 +134,7 @@ async fn drain_order_result_queue(
     }
 }
 
-use crate::ui::{AdminMode, AdminTab, AppState, ChatAttachment, Tab, UiMode, UserRole};
+use crate::ui::{AdminMode, AppState, ChatAttachment, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -210,7 +210,7 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
     }
 
     // Handle paste for the focused Observer field (`K_conv` or `pub(K_sign)`)
-    if matches!(app.active_tab, Tab::Admin(AdminTab::Observer)) {
+    if app.observer_inputs_editable() {
         let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
         app.observer_active_input_mut().push_str(&filtered_text);
     }

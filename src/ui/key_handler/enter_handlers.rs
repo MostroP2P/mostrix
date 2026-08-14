@@ -1193,15 +1193,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         };
 
-        // Clear previous results and set loading state
-        for msg in &mut app.observer_messages {
-            zeroize::Zeroize::zeroize(&mut msg.content);
-        }
-        app.observer_messages.clear();
-        app.observer_error = None;
-        app.observer_loading = true;
-
         // Spawn async fetch via the order_result channel
+        let generation = app.begin_observer_fetch();
         let client = ctx.client.clone();
         let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
         let known_roles =
@@ -1211,10 +1204,16 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         tokio::spawn(async move {
             match fetch_observer_chat(&client, &key_str, sign_pubkey, &known_roles).await {
                 Ok(messages) => {
-                    let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
+                    let _ = tx.send(OperationResult::ObserverChatLoaded {
+                        generation,
+                        messages,
+                    });
                 }
                 Err(e) => {
-                    let _ = tx.send(OperationResult::ObserverChatError(e.to_string()));
+                    let _ = tx.send(OperationResult::ObserverChatError {
+                        generation,
+                        message: e.to_string(),
+                    });
                 }
             }
         });

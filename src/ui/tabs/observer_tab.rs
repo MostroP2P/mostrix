@@ -10,64 +10,68 @@ use crate::ui::{AppState, ObserverInputField, BACKGROUND_COLOR, PRIMARY_COLOR};
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let compact = area.height < 16;
     let input_height = if compact { 5 } else { 8 };
+    // Borders consume 2 rows. Compact: 1 inner row (status/error). Full: 2 inner rows.
+    let header_height = if compact { 3 } else { 4 };
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(3), // Header / status
-            Constraint::Min(0),    // Chat messages
+            Constraint::Length(header_height),
+            Constraint::Min(0), // Chat messages
             Constraint::Length(input_height),
         ],
     )
     .split(area);
 
-    // Header / status
-    let status_lines = {
-        let mut lines = Vec::new();
-        lines.push(Line::from(vec![
+    // Header / status — keep the dynamic row visible (do not clip it behind the title).
+    let status_line = if let Some(err) = &app.observer_error {
+        Line::from(vec![
             Span::styled(
-                "Observer Mode",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
+                "Error: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  –  paste K_conv (read-only). Never paste K_sign."),
-        ]));
+            Span::styled(err.as_str(), Style::default().fg(Color::Red)),
+        ])
+    } else if !app.observer_messages.is_empty() {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("Loaded {} message(s)", app.observer_messages.len()),
+                Style::default().fg(Color::Green),
+            ),
+        ])
+    } else if app.observer_loading {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Fetching messages from relays...",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Paste K_conv and press Enter to load chat",
+                Style::default().fg(Color::Gray),
+            ),
+        ])
+    };
 
-        if let Some(err) = &app.observer_error {
-            lines.push(Line::from(vec![
+    let status_lines = if compact {
+        vec![status_line]
+    } else {
+        vec![
+            Line::from(vec![
                 Span::styled(
-                    "Error: ",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    "Observer Mode",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(err.as_str(), Style::default().fg(Color::Red)),
-            ]));
-        } else if !app.observer_messages.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    format!("Loaded {} message(s)", app.observer_messages.len()),
-                    Style::default().fg(Color::Green),
-                ),
-            ]));
-        } else if app.observer_loading {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    "Fetching messages from relays...",
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    "Paste K_conv and press Enter to load chat",
-                    Style::default().fg(Color::Gray),
-                ),
-            ]));
-        }
-
-        lines
+                Span::raw("  –  paste K_conv (read-only). Never paste K_sign."),
+            ]),
+            status_line,
+        ]
     };
 
     let header = Paragraph::new(status_lines).block(
@@ -262,6 +266,44 @@ mod tests {
         assert!(
             buffer_contains(buf, "read-only"),
             "missing read-only grant copy"
+        );
+    }
+
+    fn render_observer(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_observer_tab(f, f.area(), app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn observer_header_shows_loading_and_error_at_standard_and_compact_heights() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_loading = true;
+        let buf = render_observer(&mut app, 80, 24);
+        assert!(
+            buffer_contains(&buf, "Fetching messages"),
+            "standard height clipped loading status"
+        );
+        let buf = render_observer(&mut app, 80, 12);
+        assert!(
+            buffer_contains(&buf, "Fetching messages"),
+            "compact height clipped loading status"
+        );
+
+        app.observer_loading = false;
+        app.observer_error = Some("invalid-k-conv".to_string());
+        let buf = render_observer(&mut app, 80, 24);
+        assert!(
+            buffer_contains(&buf, "invalid-k-conv"),
+            "standard height clipped K_conv error"
+        );
+        let buf = render_observer(&mut app, 80, 12);
+        assert!(
+            buffer_contains(&buf, "invalid-k-conv"),
+            "compact height clipped K_conv error"
         );
     }
 

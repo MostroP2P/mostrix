@@ -100,7 +100,7 @@ See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workf
 
 **Status**: ✅ **Implemented – Relay-based chat inspection**
 
-The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 events from Nostr relays. A party involved in a dispute discloses **`K_conv` only** (My Trades **Shift+K**) — never `K_sign`. `K_conv` decrypts the conversation but cannot sign, so Observer access is read-only by construction.
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 events from Nostr relays. A party involved in a dispute discloses **`K_conv` only** (My Trades **Shift+K**) — never `K_sign`. `K_conv` decrypts the conversation but cannot author a valid kind-14 envelope as `pub(K_sign)`, so Observer access is read-only by construction.
 
 #### Observer Workflow
 
