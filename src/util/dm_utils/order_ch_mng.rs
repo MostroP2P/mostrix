@@ -262,6 +262,8 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             invoice: Some(invoice.clone()),
             body: None,
             maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond),
+            solver_pubkey: None,
+            dispute_id: None,
         };
 
         let invoice_state = InvoiceInputState {
