@@ -5,7 +5,10 @@ use mostro_core::prelude::*;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Table, TableState,
+};
 
 use crate::ui::helpers::format_local_timestamp;
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -82,8 +85,7 @@ pub fn render_disputes_tab(
 
         let rows: Vec<Row> = initiated_disputes
             .iter()
-            .enumerate()
-            .map(|(display_idx, dispute)| {
+            .map(|dispute| {
                 let id_cell = Cell::from(dispute.id.to_string());
 
                 let status_str = dispute.status.clone();
@@ -94,14 +96,7 @@ pub fn render_disputes_tab(
                         .unwrap_or_else(|| "Invalid date".to_string()),
                 );
 
-                let row = Row::new(vec![id_cell, status_cell, date_cell]);
-
-                if display_idx == valid_selected_idx {
-                    // Highlight the selected row
-                    row.style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
-                } else {
-                    row
-                }
+                Row::new(vec![id_cell, status_cell, date_cell])
             })
             .collect();
 
@@ -129,6 +124,101 @@ pub fn render_disputes_tab(
                 .add_modifier(Modifier::BOLD),
         );
 
-        f.render_widget(table, area);
+        // Stateful render keeps the selected row in view when the table overflows
+        // (same pattern as the Disputes In Progress sidebar).
+        let mut table_state = TableState::default().with_selected(Some(valid_selected_idx));
+        f.render_stateful_widget(table, area, &mut table_state);
+
+        // Visible rows = area minus borders (2) and header (1)
+        let visible_rows = area.height.saturating_sub(3) as usize;
+        if initiated_disputes.len() > visible_rows && visible_rows > 0 {
+            let mut scrollbar_state =
+                ScrollbarState::new(initiated_disputes.len()).position(valid_selected_idx);
+            f.render_stateful_widget(
+                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut scrollbar_state,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_disputes_tab;
+    use mostro_core::prelude::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn initiated_dispute(nibble: u8) -> Dispute {
+        let mut dispute = Dispute::new(Uuid::new_v4(), "active".to_string());
+        // Deterministic, visually distinct id prefix per row (e.g. 00000000-, 11111111-, ...)
+        dispute.id = Uuid::from_bytes([nibble * 0x11; 16]);
+        dispute
+    }
+
+    /// When more pending disputes exist than table rows, selecting a late row
+    /// must scroll the stateful table so that dispute stays visible (same
+    /// behavior as the Disputes In Progress sidebar).
+    #[test]
+    fn table_scrolls_to_keep_selected_dispute_visible() {
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let last_id = disputes[9].id.to_string();
+        let disputes = Arc::new(Mutex::new(disputes));
+
+        // 8 high: 2 borders + 1 header leave 5 visible rows for 10 disputes.
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 9))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, &last_id[..8]),
+            "selected late dispute must be visible after table scroll"
+        );
+        assert!(
+            !buffer_contains(buf, &first_id[..8]),
+            "first dispute should scroll off-screen when selecting the last"
+        );
+    }
+
+    #[test]
+    fn table_shows_first_disputes_when_selection_is_at_top() {
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let last_id = disputes[9].id.to_string();
+        let disputes = Arc::new(Mutex::new(disputes));
+
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 0))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, &first_id[..8]),
+            "first dispute must stay visible when selected"
+        );
+        assert!(
+            !buffer_contains(buf, &last_id[..8]),
+            "last dispute should not appear while scrolled to the top"
+        );
     }
 }
