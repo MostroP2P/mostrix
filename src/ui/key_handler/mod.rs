@@ -129,8 +129,8 @@ pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
 pub use validation::{
-    hex_pubkey_to_npub, hex_seckey_to_nsec, validate_currency, validate_mostro_pubkey,
-    validate_npub, validate_relay,
+    hex_pubkey_to_npub, hex_seckey_to_nsec, normalize_mostro_pubkey, validate_currency,
+    validate_mostro_pubkey, validate_npub, validate_relay,
 };
 
 /// Check if we're in admin chat input mode and handle character input

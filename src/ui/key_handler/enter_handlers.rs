@@ -56,7 +56,7 @@ use crate::ui::key_handler::settings::{
     validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
-    validate_currency, validate_mostro_pubkey, validate_relay,
+    normalize_mostro_pubkey, validate_currency, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
@@ -761,13 +761,12 @@ fn handle_enter_settings_mode(
 ) -> bool {
     match mode {
         UiMode::AddMostroPubkey(key_state) => {
-            // Validate Mostro pubkey (hex format) before proceeding to confirmation
-            match validate_mostro_pubkey(&key_state.key_input) {
-                Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::ConfirmMostroPubkey(input, true)
-                        });
+            // Accept npub or hex; normalize to hex before confirmation (settings store hex).
+            match normalize_mostro_pubkey(&key_state.key_input) {
+                Ok(normalized) => {
+                    app.mode = handle_input_to_confirmation(&normalized, default_mode, |input| {
+                        UiMode::ConfirmMostroPubkey(input, true)
+                    });
                 }
                 Err(e) => {
                     // Show error popup
