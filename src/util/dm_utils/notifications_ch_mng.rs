@@ -207,12 +207,38 @@ fn invoice_popup_mode(
     }
 }
 
+/// Remember the execute-path row so a later listener copy of the same DM does not
+/// auto-popup again (`auto_popup_shown`), and My Trades has a sidebar entry.
+fn remember_open_invoice_order_message(app: &mut AppState, order_message: &OrderMessage) {
+    let Some(order_id) = order_message.order_id else {
+        return;
+    };
+    let mut messages = match app.messages.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+            return;
+        }
+    };
+    if let Some(existing) = messages.iter_mut().find(|m| m.order_id == Some(order_id)) {
+        existing.auto_popup_shown = true;
+        return;
+    }
+    let mut stored = order_message.clone();
+    stored.auto_popup_shown = true;
+    messages.push(stored);
+    messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+}
+
 /// Apply invoice or waiting-phase popup after a synchronous protocol reply (bond payout, etc.).
 pub fn apply_open_invoice_popup_from_execute(
     app: &mut AppState,
     notification: MessageNotification,
     order_message: &OrderMessage,
 ) {
+    remember_open_invoice_order_message(app, order_message);
     let gate_action = match notification.action {
         Action::WaitingBuyerInvoice | Action::WaitingSellerToPay => Action::AddInvoice,
         ref other => other.clone(),
