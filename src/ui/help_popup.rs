@@ -7,10 +7,15 @@ use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
+// 13 shortcuts, intro, close hint, borders, and one row of margin above and below.
+const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 19;
+
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
 pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let area = f.area();
     let (title, plain_lines) = help_content(app, tab);
+    let compact_my_trades =
+        matches!(tab, Tab::User(UserTab::MyTrades)) && area.height < MY_TRADES_FULL_HELP_MIN_HEIGHT;
 
     // Match Settings Shift+H: compact rows, styled shortcut + description, full viewport height.
     let compact_chrome = matches!(
@@ -56,11 +61,15 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         let mut lines: Vec<Line<'static>> = Vec::new();
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
+        } else if compact_my_trades {
+            lines.extend(compact_my_trades_help());
         } else {
             lines.push(help_my_trades_intro());
         }
-        for s in plain_lines {
-            lines.push(help_shortcut_line(&s));
+        if !compact_my_trades {
+            for s in plain_lines {
+                lines.push(help_shortcut_line(&s));
+            }
         }
         lines.push(Line::from(Span::styled(
             HELP_CLOSE_HINT,
@@ -177,6 +186,18 @@ fn help_my_trades_intro() -> Line<'static> {
         Span::styled("Shift+H", Style::default().fg(PRIMARY_COLOR)),
         Span::styled(" for this panel.", Style::default().fg(Color::DarkGray)),
     ])
+}
+
+fn compact_my_trades_help() -> Vec<Line<'static>> {
+    [
+        "↑↓ / Enter: Select order / send message",
+        "Shift+I / Tab: Toggle input / Peer-Solver chat",
+        "Shift+C / Shift+F: Cancel order / mark fiat sent",
+        "Shift+R / Shift+D: Release sats / open dispute",
+    ]
+    .into_iter()
+    .map(help_shortcut_line)
+    .collect()
 }
 
 /// Split `Key: description` help strings into bold key + gray body (same as Settings Shift+H rows).
@@ -417,6 +438,19 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
 #[cfg(test)]
 mod help_content_tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
 
     #[test]
     fn my_trades_help_lists_the_dispute_shortcut() {
@@ -426,5 +460,33 @@ mod help_content_tests {
             lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_D_DISPUTE),
             "Shift+D missing from My Trades help: {lines:?}"
         );
+    }
+
+    #[test]
+    fn short_my_trades_help_keeps_essential_shortcuts_and_close_hint_visible() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for expected in [
+            "Enter",
+            "Shift+I",
+            "Tab",
+            "Shift+C",
+            "Shift+F",
+            "Shift+R",
+            "Shift+D",
+            HELP_CLOSE_HINT,
+        ] {
+            assert!(
+                buffer_contains(buf, expected),
+                "missing {expected:?} from compact My Trades help"
+            );
+        }
     }
 }
