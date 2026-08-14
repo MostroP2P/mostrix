@@ -62,6 +62,20 @@ impl RestoreSummary {
     }
 }
 
+/// Map the outcome of [`execute_restore_session`] to the operation result the
+/// restore task must emit. `Ok` MUST become [`OperationResult::SessionRestored`]
+/// — not a plain `Info` — because only that variant makes `apply_order_result`
+/// re-run the DB-to-UI projection sync; with `Info` the restored rows stay
+/// invisible until a later sync or restart.
+pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui::OperationResult {
+    match outcome {
+        Ok(summary) => crate::ui::OperationResult::SessionRestored {
+            message: summary.to_user_message(),
+        },
+        Err(e) => crate::ui::OperationResult::Error(format!("Restore failed: {e}")),
+    }
+}
+
 /// Ask Mostro for this identity's session state (`Action::RestoreSession`) and
 /// rebuild the local database from the answer.
 ///
@@ -269,8 +283,33 @@ async fn restore_one_order(
 
 #[cfg(test)]
 mod tests {
-    use super::{restored_order_role, RestoreSummary, RestoredRole};
+    use super::{restore_completion_result, restored_order_role, RestoreSummary, RestoredRole};
+    use crate::ui::OperationResult;
     use mostro_core::prelude::Status;
+
+    #[test]
+    fn successful_restore_emits_session_restored_not_info() {
+        // Regression (#114 review, twice): only SessionRestored makes
+        // apply_order_result re-run the DB-to-UI sync. A plain Info here means
+        // the restored rows stay invisible until restart.
+        let summary = RestoreSummary {
+            restored: 2,
+            ..Default::default()
+        };
+        let expected = summary.to_user_message();
+        match restore_completion_result(&Ok(summary)) {
+            OperationResult::SessionRestored { message } => assert_eq!(message, expected),
+            other => panic!("expected SessionRestored, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_restore_emits_an_error_result() {
+        match restore_completion_result(&Err(anyhow::anyhow!("boom"))) {
+            OperationResult::Error(message) => assert!(message.contains("boom")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn summary_message_covers_the_happy_path() {
