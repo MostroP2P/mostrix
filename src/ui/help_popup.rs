@@ -9,13 +9,16 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
 // 13 shortcuts, intro, close hint, borders, and one row of margin above and below.
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 19;
+const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
 pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let area = f.area();
     let (title, plain_lines) = help_content(app, tab);
-    let compact_my_trades =
-        matches!(tab, Tab::User(UserTab::MyTrades)) && area.height < MY_TRADES_FULL_HELP_MIN_HEIGHT;
+    let narrow_my_trades =
+        matches!(tab, Tab::User(UserTab::MyTrades)) && area.width < MY_TRADES_FULL_HELP_MIN_WIDTH;
+    let compact_my_trades = matches!(tab, Tab::User(UserTab::MyTrades))
+        && (area.height < MY_TRADES_FULL_HELP_MIN_HEIGHT || narrow_my_trades);
 
     // Match Settings Shift+H: compact rows, styled shortcut + description, full viewport height.
     let compact_chrome = matches!(
@@ -62,7 +65,7 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
         } else if compact_my_trades {
-            lines.extend(compact_my_trades_help());
+            lines.extend(compact_my_trades_help(narrow_my_trades));
         } else {
             lines.push(help_my_trades_intro());
         }
@@ -188,7 +191,20 @@ fn help_my_trades_intro() -> Line<'static> {
     ])
 }
 
-fn compact_my_trades_help() -> Vec<Line<'static>> {
+fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
+    if narrow {
+        let (title_style, _) = settings_instruction_block_style();
+        return [
+            "↑↓  Enter",
+            "Tab  Shift+I",
+            "Shift+C  Shift+F",
+            "Shift+R  Shift+D",
+        ]
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, title_style)))
+        .collect();
+    }
+
     [
         "↑↓ / Enter: Select order / send message",
         "Shift+I / Tab: Toggle input / Peer-Solver chat",
@@ -486,6 +502,35 @@ mod help_content_tests {
             assert!(
                 buffer_contains(buf, expected),
                 "missing {expected:?} from compact My Trades help"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_short_my_trades_help_keeps_shortcuts_and_close_hint_visible() {
+        let backend = TestBackend::new(20, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for expected in [
+            "Enter",
+            "Tab",
+            "Shift+I",
+            "Shift+C",
+            "Shift+F",
+            "Shift+R",
+            "Shift+D",
+            "Esc, Enter or",
+            "Ctrl+H to close",
+        ] {
+            assert!(
+                buffer_contains(buf, expected),
+                "missing {expected:?} from narrow compact My Trades help"
             );
         }
     }
