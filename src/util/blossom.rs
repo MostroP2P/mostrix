@@ -5,9 +5,10 @@
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
-use chacha20poly1305::ChaCha20Poly1305;
-use nostr_sdk::prelude::{EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
+use chacha20poly1305::aead::{Aead, Generate, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use mostro_core::prelude::SharedKey;
+use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, PublicKey, Tag, Timestamp};
 use reqwest::{header::CONTENT_LENGTH, Client};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -38,17 +39,10 @@ const BLOSSOM_UPLOAD_TIMEOUT_SECS: u64 = 300;
 /// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
 /// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
 pub fn derive_shared_key(admin_keys: &Keys, sender_pubkey: &PublicKey) -> Result<[u8; 32]> {
-    use nostr_sdk::secp256k1::ecdh::shared_secret_point;
-    use nostr_sdk::secp256k1::{Parity, PublicKey as SecpPublicKey};
-
-    let sk = admin_keys.secret_key();
-    let xonly = sender_pubkey
-        .xonly()
-        .map_err(|_| anyhow!("failed to get x-only public key for sender"))?;
-    let secp_pk = SecpPublicKey::from_x_only_public_key(xonly, Parity::Even);
-    let point = shared_secret_point(&secp_pk, sk);
+    let shared = SharedKey::derive(admin_keys.secret_key(), sender_pubkey)
+        .map_err(|e| anyhow!("shared key derivation failed: {e}"))?;
     let mut key = [0u8; 32];
-    key.copy_from_slice(&point[..32]);
+    key.copy_from_slice(shared.secret_key().as_secret_bytes());
     Ok(key)
 }
 
@@ -144,7 +138,9 @@ pub fn decrypt_blob(key: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
     }
     let (nonce_slice, ciphertext_and_tag) = blob.split_at(12);
     let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("key init: {}", e))?;
-    let nonce = chacha20poly1305::Nonce::from_slice(nonce_slice);
+    let nonce: &Nonce = nonce_slice
+        .try_into()
+        .map_err(|_| anyhow!("invalid nonce length"))?;
     let plaintext = cipher
         .decrypt(nonce, ciphertext_and_tag)
         .map_err(|e| anyhow!("decrypt failed: {}", e))?;
@@ -157,11 +153,11 @@ pub fn encrypt_blob(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         return Err(anyhow!("encrypt key must be 32 bytes, got {}", key.len()));
     }
     let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("key init: {}", e))?;
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_ref())
         .map_err(|e| anyhow!("encrypt failed: {}", e))?;
-    let mut blob = nonce.to_vec();
+    let mut blob = nonce.as_slice().to_vec();
     blob.extend_from_slice(&ciphertext);
     Ok(blob)
 }
@@ -187,9 +183,7 @@ pub(crate) fn blossom_upload_auth_header(blob_hash_hex: &str, keys: &Keys) -> Re
         Tag::parse(["expiration", expiration.as_str()])
             .map_err(|e| anyhow!("auth tag expiration: {}", e))?,
     ];
-    let signed = EventBuilder::new(BLOSSOM_AUTH_KIND, "")
-        .tags(tags)
-        .sign_with_keys(keys)
+    let signed = FinalizeEvent::finalize(EventBuilder::new(BLOSSOM_AUTH_KIND, "").tags(tags), keys)
         .map_err(|e| anyhow!("sign Blossom auth event: {}", e))?;
     let json = signed.as_json();
     Ok(format!("Nostr {}", BASE64.encode(json.as_bytes())))

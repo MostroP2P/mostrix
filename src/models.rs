@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use mostro_core::prelude::*;
-use nip06::FromMnemonic;
 use nostr_sdk::prelude::*;
 use sqlx::sqlite::SqlitePool;
 use sqlx::{QueryBuilder, Sqlite};
@@ -731,7 +730,7 @@ impl AdminDispute {
         dispute_info: SolverDisputeInfo,
         dispute_id: String,
         fiat_code_from_relay: Option<String>,
-        admin_keys: Option<&nostr_sdk::Keys>,
+        admin_keys: Option<&Keys>,
     ) -> Result<Self> {
         // Validate required fields
         if dispute_info.buyer_pubkey.is_none() || dispute_info.seller_pubkey.is_none() {

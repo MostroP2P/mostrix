@@ -56,9 +56,11 @@ pub async fn any_relay_reachable(relays: &[String]) -> bool {
 /// Some `nostr-sdk` connect paths have historically panicked in "no network" environments.
 /// This wrapper turns that into an error so the UI can keep running (offline overlay / retry).
 pub async fn connect_client_safely(client: &Client) -> Result<(), String> {
-    let result = std::panic::AssertUnwindSafe(client.connect())
-        .catch_unwind()
-        .await;
+    let result = std::panic::AssertUnwindSafe(async {
+        client.connect().await;
+    })
+    .catch_unwind()
+    .await;
     match result {
         Ok(()) => Ok(()),
         Err(_) => Err("nostr client connect panicked".to_string()),

@@ -377,9 +377,12 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::orders::OrderChatStaticHeader;
+    use crate::ui::orders::{
+        order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
+    };
     use crate::ui::{FormState, UserRole};
-    use mostro_core::prelude::{SmallOrder, Status};
+    use mostro_core::prelude::{Message, Payload, SmallOrder, Status};
+    use nostr_sdk::prelude::Keys;
 
     #[test]
     fn failed_new_order_keeps_form_draft() {
@@ -492,5 +495,72 @@ mod tests {
 
         assert!(app.order_form_draft.is_none());
         assert!(matches!(app.mode, UiMode::NewMessageNotification(_, _, _)));
+    }
+
+    #[test]
+    fn take_add_invoice_from_waiting_opens_invoice_popup_not_created_success() {
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(TakeOrderState {
+            order: SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                ..Default::default()
+            },
+            amount_input: "100".to_string(),
+            is_range_order: true,
+            validation_error: None,
+            selected_button: true,
+        }));
+
+        let sender = Keys::generate().public_key();
+        let message = Message::new_order(
+            Some(order_id),
+            Some(1),
+            Some(2),
+            Action::AddInvoice,
+            Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                ..Default::default()
+            })),
+        );
+        let order_message = OrderMessage {
+            message,
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 2,
+            sat_amount: Some(21_000),
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(false),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: None,
+            read: true,
+            auto_popup_shown: true,
+        };
+        let notification = order_message_to_notification(&order_message);
+
+        handle_operation_result(
+            OperationResult::OpenInvoicePopup {
+                notification,
+                order_message: Box::new(order_message),
+            },
+            &mut app,
+        );
+
+        match &app.mode {
+            UiMode::NewMessageNotification(n, action, _) => {
+                assert_eq!(*action, Action::AddInvoice);
+                assert_eq!(n.order_id, Some(order_id));
+            }
+            other => panic!("expected AddInvoice popup, got {other:?}"),
+        }
+        assert!(
+            !matches!(app.mode, UiMode::OperationResult(_)),
+            "take AddInvoice must not show the create-order success overlay"
+        );
     }
 }

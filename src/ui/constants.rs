@@ -180,6 +180,7 @@ pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_MYTRADES_SHIFT_I_DISABLE: &str = "Shift+I: Disable input";
 pub const FOOTER_MYTRADES_SHIFT_I_ENABLE: &str = "Shift+I: Enable input";
 pub const FOOTER_MYTRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order";
+pub const FOOTER_MYTRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Dispute";
 pub const FOOTER_MYTRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat sent";
 pub const FOOTER_MYTRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats";
 pub const FOOTER_MYTRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty";

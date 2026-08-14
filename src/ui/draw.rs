@@ -236,8 +236,8 @@ pub fn ui_draw(
         key_input_popup::render_key_input_popup(
             f,
             "🌐 Add Mostro Pubkey",
-            "Enter Mostro public key (64 hex chars):",
-            "0123... (64 hex chars)",
+            "Enter Mostro public key (npub... or hex):",
+            "npub... / hex...",
             key_state,
             false,
         );

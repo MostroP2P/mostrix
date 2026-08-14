@@ -255,7 +255,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Change Mostro Pubkey",
-            "Set the Mostro daemon hex pubkey used for subscriptions and orders.",
+            "Set the Mostro daemon pubkey (npub or hex) used for subscriptions and orders.",
         ),
         (
             "Add Nostr Relay",
@@ -294,7 +294,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Change Mostro Pubkey",
-            "Set the Mostro daemon hex pubkey used for subscriptions and orders.",
+            "Set the Mostro daemon pubkey (npub or hex) used for subscriptions and orders.",
         ),
         (
             "Add Nostr Relay",

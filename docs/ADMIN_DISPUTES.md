@@ -100,7 +100,7 @@ See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workf
 
 **Status**: ✅ **Implemented – Relay-based chat inspection**
 
-The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching NIP-59 gift-wrap messages from Nostr relays. A party involved in a dispute provides the admin with their shared key (64-char hex) out-of-band so the admin can view the full conversation and decide who is right.
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 (and, during the dual-read window, legacy NIP-59 GiftWrap) events from Nostr relays. A party involved in a dispute provides the admin with their shared key (64-char hex) out-of-band so the admin can view the full conversation and decide who is right.
 
 #### Observer Workflow
 
@@ -114,9 +114,10 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
    - Press **Enter** to:
      - Validate the shared key (non-empty, valid hex).
      - Derive `Keys` from the shared key hex (via `keys_from_shared_hex` in `chat_utils.rs`).
-     - Fetch all `Kind::GiftWrap` events addressed to the shared key's public key from the last 7 days (reuses `fetch_gift_wraps_for_shared_key`).
-     - Decrypt each event using the shared key (standard NIP-59 or simplified Mostro-chat format).
-     - Map sender public keys to roles: known admin pubkey = Admin, first unknown pubkey = Buyer, second unknown pubkey = Seller.
+     - Fetch chat events for the shared key from the last 7 days (`fetch_gift_wraps_for_shared_key`), unwrapping only inner signers in the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes).
+     - Decrypt each event using the shared key (kind 14, plus legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
+     - Map sender public keys from that known-role map only; unknown inner signers are dropped (no arrival-order Buyer/Seller/Admin fallback).
+     - Fetch fails if the known-role map is empty (no admin keys and no taken-dispute party pubkeys).
      - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
    - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
 5. **Save attachments**:
@@ -143,7 +144,7 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches messages from Nostr relays using the shared key. It reuses the same gift-wrap fetch infrastructure as the admin chat system (`fetch_gift_wraps_for_shared_key` in `chat_utils.rs`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches messages from Nostr relays using the shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
 
 **Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
 
@@ -646,7 +647,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers/attachments.rs` (parse, serialize, legacy placeholder match), `src/ui/helpers/chat_storage.rs` (JSON transcript save/load), `src/ui/helpers/chat_render.rs` (chat list/line styling).
 
-##### NIP-59 Chat Flow (Admin ↔ Parties — Shared Key Model)
+##### Kind-14 Chat Flow (Admin ↔ Parties — Shared Key Model)
 
 - **Shared key derivation**:
   - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
@@ -654,22 +655,23 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
   - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key.
 
 - **Message addressing**:
-  - Admin chat messages are addressed to the **shared key's public key** (not the counterparty's trade pubkey directly).
-  - The admin reads `admin_privkey` from `settings.toml` to sign the inner rumor; the gift wrap `p` tag targets the shared key pubkey.
+  - Outbound chat is kind 14 signed by `K_sign` with `p` = `pub(K_conv)` (derived from the stored ECDH hex). The admin identity signs the inner rumor.
   - Per-party timestamps are tracked in `AppState.admin_chat_last_seen` under `(dispute_id, ChatParty)`.
 
 - **Sending messages**:
-  - Admin chat messages are wrapped into NIP‑59 `GiftWrap` events addressed to the shared key's public key:
-    - Rumor content: Mostro protocol format `(Message::Dm(SendDm, TextMessage(...)), None)`.
-    - The gift wrap is built using `EventBuilder::gift_wrap` with the admin keys and the shared key pubkey as recipient.
+  - Admin chat messages are wrapped with `wrap_chat_message` (kind 14 only; never GiftWrap) via `send_admin_chat_message_via_shared_key`:
+    - Inner event is a kind-1 text note signed by the admin key.
+    - Outer event is signed by `K_sign` and encrypted under `K_conv`.
   - The event is then published to the relays.
 
 - **Receiving messages**:
-  - A background task periodically polls for new `GiftWrap` events addressed to each shared key's public key:
-    - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
-    - Uses `last_seen_timestamp` to only process messages created after the last processed one.
-    - Decrypts each event using the shared key (standard NIP-59 or simplified mostro-chat format).
-    - Skips messages signed by the admin identity (already added locally on send).
+  - The shared-key chat subscription router (`listen_for_chat_messages`) hydrates history once per key on track, then receives newer events live.
+  - While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true (mostrix#102 dual-read window), inbound still accepts legacy NIP-59 GiftWrap `#p`-addressed to the ECDH pubkey. Set the const to `false` to drop GiftWrap receive after coordinated deprecation.
+  - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
+  - Uses `last_seen_timestamp` to only process messages created after the last processed one.
+  - Decrypts each event using `K_conv` / `K_sign` (or the legacy shared-key GiftWrap unwrap).
+  - Skips messages signed by the admin identity (already added locally on send).
+  - Inner signers outside the party+admin allow-list are dropped.
 
 - **Behavior on restart (Chat Restore at Startup)**:
   - Admin chat has full restart-safe behavior:
@@ -684,7 +686,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key`), then receives newer NIP‑59 events live over one batched `kind: 1059` subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
+    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched dual-read subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
@@ -749,7 +751,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - `src/ui/helpers/chat_storage.rs` - Chat transcript parsing/loading/saving and idempotent append logic
 - `src/ui/helpers/attachments.rs` - Attachment parsing, placeholder text, and attachment toast helpers
 - `src/ui/helpers/chat_render.rs` / `src/ui/helpers/chat_visibility.rs` - Chat list/scrollview rendering and party visibility filtering
-- `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
+- `src/util/chat_utils.rs` - Kind-14 chat wrap/unwrap (plus dual-read GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true), HashMap-based message routing
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 

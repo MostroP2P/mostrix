@@ -10,40 +10,52 @@ description = "Mostro TUI client"
 [dependencies]
 ratatui = "0.30.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-mostro-core = "0.14.2"
-nostr-sdk = { version = "0.44.1", features = ["nip06", "nip44", "nip59"] }
+mostro-core = "0.14.3"
+nostr-sdk = { version = "0.45.1" }
+# Enable NIP features on `nostr` (re-exported via nostr-sdk::prelude). nip06 is
+# required for Keys::from_mnemonic_*; nip44/nip59 for DMs and gift wraps.
+nostr = { version = "0.45.1", default-features = false, features = [
+  "std",
+  "nip06",
+  "nip44",
+  "nip59",
+] }
 bip39 = { version = "2.1.0", features = ["rand"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls"] }
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.53.1", features = ["full"] }
 chrono = "0.4.45"
 futures = "0.3.34"
-anyhow = "1.0.98"
+anyhow = "1.0.104"
 dirs = "6.0.0"
 fern = "0.7.1"
 log = "0.4.33"
-config = { version = "0.15.22", features = ["toml"] }
+config = { version = "0.15.25", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1.4"
-base64 = "0.22.1"
+base64 = "0.23.1"
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
 lightning-invoice = { version = "0.34.1", features = ["std"] }
 lnurl-rs = { version = "0.10.0", default-features = false, features = ["ureq"] }
 arboard = { version = "3.3", features = ["wayland-data-control"] }
-libc = "0.2"
-reqwest = { version = "0.13.2", default-features = false, features = [
-  "rustls",
+libc = "0.2.189"
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "rustls-no-provider",
   "json",
   "http2",
 ] }
-rustls = { version = "0.23.37", features = ["ring"] }
-chacha20poly1305 = "0.10"
-sha2 = "0.10"
+rustls = { version = "0.23.43", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
+chacha20poly1305 = "0.11.0"
+sha2 = "0.11.0"
 hex = "0.4"
 tui-scrollview = "0.6.7"
 ratatui-explorer = "0.3.0"
 zeroize = "1.9"
-unicode-segmentation = "1.12"
+unicode-segmentation = "1.13.3"
 
 [package.metadata.release]
 publish = false

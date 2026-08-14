@@ -1620,7 +1620,7 @@ mod message_emoji_and_badge_tests {
         is_mine: Option<bool>,
         order_status: Option<Status>,
     ) -> OrderMessage {
-        let keys = nostr_sdk::Keys::generate();
+        let keys = Keys::generate();
         OrderMessage {
             message: Message::new_order(None, None, None, action, None),
             timestamp: 0,
@@ -1775,7 +1775,7 @@ mod message_emoji_and_badge_tests {
 #[cfg(test)]
 mod order_success_placeholder_tests {
     use super::*;
-    use nostr_sdk::Keys;
+    use nostr_sdk::prelude::Keys;
 
     fn sample_order_success(
         is_mine: bool,
@@ -1853,7 +1853,7 @@ mod order_success_placeholder_tests {
 #[cfg(test)]
 mod timeline_step_tests {
     use super::*;
-    use nostr_sdk::Keys;
+    use nostr_sdk::prelude::Keys;
 
     fn sample_order_message(
         action: Action,
@@ -2162,7 +2162,7 @@ mod placeholder_action_tests {
 
     #[test]
     fn placeholder_action_maker_waiting_maker_bond() {
-        let keys = nostr_sdk::Keys::generate();
+        let keys = Keys::generate();
         let order_id = uuid::Uuid::new_v4();
         let os = OrderSuccess {
             order_id: Some(order_id),
@@ -2205,7 +2205,7 @@ mod invoice_popup_role_tests {
         is_mine: Option<bool>,
         order_status: Option<Status>,
     ) -> OrderMessage {
-        let keys = nostr_sdk::Keys::generate();
+        let keys = Keys::generate();
         OrderMessage {
             message: Message::new_order(None, None, None, action, None),
             timestamp: 0,

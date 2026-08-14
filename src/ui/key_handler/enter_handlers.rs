@@ -34,9 +34,9 @@ use crate::ui::key_handler::user_handlers::{
 };
 use bip39::Mnemonic;
 use mostro_core::prelude::*;
-use nostr_sdk::nips::nip06::FromMnemonic;
+use nostr_sdk::prelude::FromMnemonic;
+use nostr_sdk::prelude::ToBech32;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
-use nostr_sdk::ToBech32;
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -57,11 +57,11 @@ use crate::ui::key_handler::settings::{
     validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
-    validate_currency, validate_mostro_pubkey, validate_relay,
+    normalize_mostro_pubkey, validate_currency, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::chat_utils::{
-    derive_shared_keys, fetch_observer_chat, keys_from_shared_hex,
+    derive_shared_keys, fetch_observer_chat, keys_from_shared_hex, observer_known_signer_roles,
     send_user_order_chat_message_via_shared_key,
 };
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
@@ -804,7 +804,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
     }
 }
 
-/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
+/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.).
+///
+/// Mostro pubkey input accepts npub or hex; [`normalize_mostro_pubkey`] converts to hex
+/// before the confirmation dialog so settings persistence stays hex-encoded.
 fn handle_enter_settings_mode(
     app: &mut AppState,
     mode: UiMode,
@@ -813,13 +816,12 @@ fn handle_enter_settings_mode(
 ) -> bool {
     match mode {
         UiMode::AddMostroPubkey(key_state) => {
-            // Validate Mostro pubkey (hex format) before proceeding to confirmation
-            match validate_mostro_pubkey(&key_state.key_input) {
-                Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::ConfirmMostroPubkey(input, true)
-                        });
+            // Accept npub or hex; normalize to hex before confirmation (settings store hex).
+            match normalize_mostro_pubkey(&key_state.key_input) {
+                Ok(normalized) => {
+                    app.mode = handle_input_to_confirmation(&normalized, default_mode, |input| {
+                        UiMode::ConfirmMostroPubkey(input, true)
+                    });
                 }
                 Err(e) => {
                     // Show error popup
@@ -1213,7 +1215,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate and trigger async fetch for observer chat via shared key
+        // Validate shared key, then fetch observer chat authenticated against
+        // known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
             let msg = "Shared key is required".to_string();
@@ -1240,10 +1243,12 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // Spawn async fetch via the order_result channel
         let client = ctx.client.clone();
         let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
+        let known_roles =
+            observer_known_signer_roles(admin_pubkey.as_ref(), &app.admin_disputes_in_progress);
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match fetch_observer_chat(&client, &key_str, admin_pubkey.as_ref()).await {
+            match fetch_observer_chat(&client, &key_str, &known_roles).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
                 }

@@ -280,12 +280,13 @@ pub async fn fetch_mostro_instance_info(
 ) -> Result<Option<MostroInstanceInfo>> {
     let filter = Filter::new()
         .author(mostro_pubkey)
-        .kind(nostr_sdk::Kind::Custom(MOSTRO_INSTANCE_INFO_KIND))
+        .kind(nostr_sdk::prelude::Kind::Custom(MOSTRO_INSTANCE_INFO_KIND))
         .identifier(mostro_pubkey.to_string())
         .limit(1);
 
     let events = client
-        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .fetch_events(filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch Mostro instance info from relays: {}", e))?;
 

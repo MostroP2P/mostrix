@@ -22,7 +22,7 @@ use crate::ui::orders::{
 };
 use crate::ui::user_state::UserMode;
 use crate::util::{transport_from_instance, MostroInstanceInfo};
-use nostr_sdk::Keys;
+use nostr_sdk::prelude::Keys;
 
 #[derive(Debug)]
 pub enum UiMode {
@@ -44,8 +44,10 @@ pub enum UiMode {
     UserSaveAttachmentPopup(String, usize),
     /// User order chat send attachment file picker: pinned order id (Ctrl+O on My Trades tab).
     UserSendAttachmentPicker(String),
+    /// Settings: enter Mostro pubkey (`npub` or hex).
     AddMostroPubkey(KeyInputState),
-    ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    /// Settings: confirm Mostro pubkey (hex string, Yes/No).
+    ConfirmMostroPubkey(String, bool),
     AddRelay(KeyInputState),
     ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
     /// User-mode Settings: buyer Lightning address (`user@domain.com`).

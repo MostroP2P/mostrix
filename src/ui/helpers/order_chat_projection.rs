@@ -244,7 +244,7 @@ mod tests {
     use super::{active_order_chat_list_snapshot, build_active_order_chat_list};
     use crate::ui::{AppState, OrderChatStaticHeader, OrderMessage, UserRole};
     use mostro_core::prelude::{Action, Kind, Message, Payload, Status};
-    use nostr_sdk::Keys;
+    use nostr_sdk::prelude::Keys;
     use uuid::Uuid;
 
     #[test]

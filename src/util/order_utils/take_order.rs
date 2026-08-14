@@ -4,12 +4,11 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 
 use crate::models::User;
+use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::helper::{
-    create_order_result_success, handle_mostro_response, payment_request_operation_result,
-};
+use crate::util::order_utils::helper::{handle_mostro_response, payment_request_operation_result};
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -47,7 +46,7 @@ pub async fn take_order(
     invoice: Option<String>,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
     mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<crate::ui::OperationResult, anyhow::Error> {
+) -> Result<OperationResult, anyhow::Error> {
     // Determine action based on order kind
     let action = match order.kind {
         Some(mostro_core::order::Kind::Buy) => {
@@ -136,101 +135,301 @@ pub async fn take_order(
     // Parse DM events
     let messages = parse_dm_events(recv_event, &trade_keys, None).await;
 
-    if let Some((response_message, _, _)) = messages.first() {
+    if let Some((response_message, timestamp, sender)) = messages.first() {
         let inner_message = handle_mostro_response(response_message, request_id)?;
 
         match inner_message.request_id {
-            Some(id) => {
-                if request_id == id {
-                    // Request ID matches, process the response
-                    match &inner_message.payload {
-                        Some(Payload::Order(returned_order)) => {
-                            let mut normalized_order = returned_order.clone();
-                            if normalized_order.id.is_none() {
-                                log::warn!(
-                                    "[take_order] Mostro response Order payload missing id; falling back to requested order_id={}",
-                                    order_id
-                                );
-                                normalized_order.id = Some(order_id);
-                            }
-                            let effective_order_id = normalized_order.id.unwrap_or(order_id);
-                            log::info!(
-                                "[take_order] Action::Order response mapped to effective_order_id={}, trade_index={}",
-                                effective_order_id,
-                                next_idx
-                            );
-
-                            // Save order to database
-                            if let Err(e) = save_order(
-                                normalized_order.clone(),
-                                &trade_keys,
-                                request_id,
-                                next_idx,
-                                pool,
-                                false,
-                            )
-                            .await
-                            {
-                                log::error!("Failed to save order to database: {}", e);
-                            }
-                            if let Some(tx) = dm_subscription_tx {
-                                // Post-persistence `TrackOrder` confirmation: re-send after
-                                // `save_order(normalized_order, ...)` so the listener tracks
-                                // `effective_order_id` from `normalized_order` (may differ from
-                                // the early send if Mostro filled `id`) and state stays aligned
-                                // with DB even when `save_order` fails. Pairs with
-                                // `create_order_result_success(&normalized_order, next_idx)`.
-                                log::info!(
-                                    "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
-                                    effective_order_id,
-                                    next_idx
-                                );
-                                let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-                                    order_id: effective_order_id,
-                                    trade_index: next_idx,
-                                });
-                            }
-                            Ok(create_order_result_success(
-                                &normalized_order,
-                                next_idx,
-                                &trade_keys,
-                                false,
-                            ))
-                        }
-                        Some(Payload::PaymentRequest(opt_order, invoice_string, opt_amount)) => {
-                            payment_request_operation_result(
-                                inner_message.action.clone(),
-                                opt_order.clone(),
-                                invoice_string.clone(),
-                                *opt_amount,
-                                Some(order_id),
-                                request_id,
-                                next_idx,
-                                pool,
-                                &trade_keys,
-                                false,
-                                dm_subscription_tx,
-                                "take_order",
-                            )
-                            .await
-                        }
-                        _ => {
-                            log::warn!(
-                                "Received response without order details or payment request"
-                            );
-                            Err(anyhow::anyhow!(
-                                "Response without order details or payment request"
-                            ))
-                        }
-                    }
-                } else {
-                    Err(anyhow::anyhow!("Mismatched request_id"))
-                }
+            Some(id) if request_id == id => {
+                process_take_order_reply(
+                    inner_message,
+                    response_message,
+                    *timestamp,
+                    *sender,
+                    order_id,
+                    request_id,
+                    next_idx,
+                    pool,
+                    &trade_keys,
+                    dm_subscription_tx,
+                )
+                .await
             }
+            Some(_) => Err(anyhow::anyhow!("Mismatched request_id")),
             None => Err(anyhow::anyhow!("Response with null request_id")),
         }
     } else {
         log::error!("No response received from Mostro");
         Err(anyhow::anyhow!("No response received from Mostro"))
+    }
+}
+
+/// Dispatch a take-order Mostro reply by **action** (not payload alone).
+///
+/// Take-sell without a buyer invoice is `AddInvoice` + `Payload::Order`; treating that as
+/// create-order `Success` showed "Order Created Successfully".
+#[allow(clippy::too_many_arguments)]
+async fn process_take_order_reply(
+    inner_message: &mostro_core::message::MessageKind,
+    response_message: &Message,
+    timestamp: i64,
+    sender: PublicKey,
+    fallback_order_id: uuid::Uuid,
+    request_id: u64,
+    next_idx: i64,
+    pool: &sqlx::sqlite::SqlitePool,
+    trade_keys: &Keys,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
+) -> Result<OperationResult> {
+    match map_take_reply(&inner_message.action, &inner_message.payload)? {
+        MappedTakeReply::AddInvoice(returned_order) => {
+            let normalized = persist_taken_order(
+                returned_order,
+                fallback_order_id,
+                request_id,
+                next_idx,
+                pool,
+                trade_keys,
+                dm_subscription_tx,
+            )
+            .await;
+            Ok(take_add_invoice_operation_result(
+                response_message,
+                &normalized,
+                timestamp,
+                sender,
+                next_idx,
+            ))
+        }
+        MappedTakeReply::PaymentRequest {
+            action,
+            order,
+            invoice,
+            amount,
+        } => {
+            payment_request_operation_result(
+                action,
+                order,
+                invoice,
+                amount,
+                Some(fallback_order_id),
+                request_id,
+                next_idx,
+                pool,
+                trade_keys,
+                false,
+                dm_subscription_tx,
+                "take_order",
+            )
+            .await
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MappedTakeReply {
+    AddInvoice(SmallOrder),
+    PaymentRequest {
+        action: Action,
+        order: Option<SmallOrder>,
+        invoice: String,
+        amount: Option<i64>,
+    },
+}
+
+fn map_take_reply(action: &Action, payload: &Option<Payload>) -> Result<MappedTakeReply> {
+    match (action, payload) {
+        (Action::AddInvoice, Some(Payload::Order(order))) => {
+            Ok(MappedTakeReply::AddInvoice(order.clone()))
+        }
+        (Action::AddInvoice, _) => Err(anyhow::anyhow!(
+            "Mostro replied with AddInvoice but no Order payload was provided"
+        )),
+        (
+            Action::PayInvoice | Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(opt_order, invoice, opt_amount)),
+        ) => Ok(MappedTakeReply::PaymentRequest {
+            action: action.clone(),
+            order: opt_order.clone(),
+            invoice: invoice.clone(),
+            amount: *opt_amount,
+        }),
+        (Action::PayInvoice | Action::PayBondInvoice, _) => Err(anyhow::anyhow!(
+            "Mostro replied with {:?} but no PaymentRequest payload was provided",
+            action
+        )),
+        (other, _) => {
+            log::warn!("Received unexpected take-order action: {other:?}");
+            Err(anyhow::anyhow!("Unexpected take-order action: {other:?}"))
+        }
+    }
+}
+
+fn normalize_taken_order(mut order: SmallOrder, fallback_order_id: uuid::Uuid) -> SmallOrder {
+    if order.id.is_none() {
+        log::warn!(
+            "[take_order] Mostro response Order payload missing id; falling back to requested order_id={}",
+            fallback_order_id
+        );
+        order.id = Some(fallback_order_id);
+    }
+    order
+}
+
+async fn persist_taken_order(
+    returned_order: SmallOrder,
+    fallback_order_id: uuid::Uuid,
+    request_id: u64,
+    next_idx: i64,
+    pool: &sqlx::sqlite::SqlitePool,
+    trade_keys: &Keys,
+    dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
+) -> SmallOrder {
+    let normalized = normalize_taken_order(returned_order, fallback_order_id);
+    let effective_order_id = normalized.id.unwrap_or(fallback_order_id);
+    log::info!(
+        "[take_order] Action::AddInvoice mapped to effective_order_id={}, trade_index={}",
+        effective_order_id,
+        next_idx
+    );
+
+    if let Err(e) = save_order(
+        normalized.clone(),
+        trade_keys,
+        request_id,
+        next_idx,
+        pool,
+        false,
+    )
+    .await
+    {
+        log::error!("Failed to save order to database: {}", e);
+    }
+    if let Some(tx) = dm_subscription_tx {
+        log::info!(
+            "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
+            effective_order_id,
+            next_idx
+        );
+        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
+            order_id: effective_order_id,
+            trade_index: next_idx,
+        });
+    }
+    normalized
+}
+
+/// Open the Add Invoice UI for a take-sell reply (`AddInvoice` + `Payload::Order`).
+///
+/// `auto_popup_shown` is set so a later copy of the same DM from the trade-key listener
+/// does not open a second popup.
+fn take_add_invoice_operation_result(
+    response_message: &Message,
+    order: &SmallOrder,
+    timestamp: i64,
+    sender: PublicKey,
+    trade_index: i64,
+) -> OperationResult {
+    let order_id = order.id;
+    let order_status = order
+        .status
+        .or(Some(mostro_core::order::Status::WaitingBuyerInvoice));
+    let order_message = OrderMessage {
+        message: response_message.clone(),
+        timestamp,
+        sender,
+        order_id,
+        trade_index,
+        sat_amount: Some(order.amount),
+        buyer_invoice: None,
+        order_kind: order.kind,
+        is_mine: Some(false),
+        order_status,
+        order_snapshot: Some(order.clone()),
+        read: true,
+        auto_popup_shown: true,
+    };
+    let notification = order_message_to_notification(&order_message);
+    OperationResult::OpenInvoicePopup {
+        notification,
+        order_message: Box::new(order_message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mostro_core::prelude::{Action, Payload, Status};
+
+    fn sample_small_order(id: uuid::Uuid) -> SmallOrder {
+        SmallOrder {
+            id: Some(id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: 21_000,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn map_take_reply_add_invoice_order_is_not_success() {
+        let order = sample_small_order(uuid::Uuid::new_v4());
+        let mapped = map_take_reply(&Action::AddInvoice, &Some(Payload::Order(order.clone())))
+            .expect("AddInvoice+Order must map");
+        match mapped {
+            MappedTakeReply::AddInvoice(o) => assert_eq!(o.id, order.id),
+            MappedTakeReply::PaymentRequest { .. } => panic!("must not treat AddInvoice as pay"),
+        }
+    }
+
+    #[test]
+    fn map_take_reply_rejects_new_order_as_take_success() {
+        let order = sample_small_order(uuid::Uuid::new_v4());
+        let err = map_take_reply(&Action::NewOrder, &Some(Payload::Order(order)))
+            .expect_err("NewOrder must not be a take success");
+        assert!(err.to_string().contains("Unexpected take-order action"));
+    }
+
+    #[test]
+    fn map_take_reply_pay_invoice_requires_payment_request() {
+        let err = map_take_reply(
+            &Action::PayInvoice,
+            &Some(Payload::Order(sample_small_order(uuid::Uuid::new_v4()))),
+        )
+        .expect_err("PayInvoice with Order payload is invalid");
+        assert!(err.to_string().contains("PaymentRequest"));
+    }
+
+    #[test]
+    fn take_add_invoice_opens_invoice_popup_not_created_success() {
+        let order_id = uuid::Uuid::new_v4();
+        let order = sample_small_order(order_id);
+        let message = Message::new_order(
+            Some(order_id),
+            Some(1),
+            Some(2),
+            Action::AddInvoice,
+            Some(Payload::Order(order.clone())),
+        );
+        let sender = Keys::generate().public_key();
+        let result = take_add_invoice_operation_result(&message, &order, 1, sender, 2);
+        match result {
+            OperationResult::OpenInvoicePopup {
+                notification,
+                order_message,
+            } => {
+                assert_eq!(notification.action, Action::AddInvoice);
+                assert_eq!(notification.order_id, Some(order_id));
+                assert_eq!(
+                    order_message.message.get_inner_message_kind().action,
+                    Action::AddInvoice
+                );
+                assert_eq!(order_message.is_mine, Some(false));
+                assert!(order_message.auto_popup_shown);
+            }
+            other => panic!("expected OpenInvoicePopup, got {other:?}"),
+        }
     }
 }

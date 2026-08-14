@@ -9,7 +9,7 @@ use crate::models::AdminDispute;
 use crate::ui::helpers::dispute_chat_since_from_file;
 use crate::ui::ChatParty;
 use crate::util::chat_listener::track_dispute_chat;
-use crate::util::chat_utils::derive_shared_key_hex;
+use crate::util::chat_utils::{derive_shared_key_hex, dispute_chat_allowed_signers};
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
@@ -144,6 +144,7 @@ pub async fn execute_take_dispute(
 
                 // Start live shared-key chat subscriptions for both parties of this dispute.
                 // Prefer on-disk transcript cursors when present (e.g. retake / restart edge cases).
+                // Each channel is tracked with an inner-signer allow-list (party trade key + admin).
                 let (buyer_since, seller_since) =
                     dispute_chat_since_from_file(&dispute_id.to_string());
                 for (party, cp_pubkey, since) in [
@@ -159,7 +160,15 @@ pub async fn execute_take_dispute(
                     ),
                 ] {
                     if let Some(hex) = derive_shared_key_hex(Some(admin_keys), cp_pubkey) {
-                        track_dispute_chat(dispute_id.to_string(), party, hex, since);
+                        let Some(allowed) =
+                            dispute_chat_allowed_signers(Some(&admin_keys.public_key()), cp_pubkey)
+                        else {
+                            log::warn!(
+                                "dispute {dispute_id} {party}: missing party pubkey; not tracking chat"
+                            );
+                            continue;
+                        };
+                        track_dispute_chat(dispute_id.to_string(), party, hex, allowed, since);
                     }
                 }
 

@@ -13,7 +13,11 @@ use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind};
 use crate::util::OrderDmSubscriptionCmd;
 use sqlx::SqlitePool;
+use std::collections::BTreeSet;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Nostr events from relays (distinct from [`Event`] in `util::types`).
+type NostrEvents = BTreeSet<nostr_sdk::prelude::Event>;
 
 /// Parse order from nostr tags
 pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
@@ -269,7 +273,7 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
 ///
 /// Uses a HashMap keyed by dispute id to keep only the latest dispute per id,
 /// mirroring the strategy used in `parse_orders_events` for orders.
-pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
+pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
     let mut latest_by_id: HashMap<Uuid, Dispute> = HashMap::new();
 
     // Scan events to extract all disputes
@@ -304,7 +308,7 @@ pub fn parse_disputes_events(events: Events) -> Vec<Dispute> {
 /// Latest [`SmallOrder`] per order id from Mostro nostr order events (newest event wins).
 ///
 /// Does not apply currency, status, or kind filters — use [`parse_orders_events`] for that.
-pub fn aggregate_latest_orders_by_id(events: &Events) -> HashMap<Uuid, SmallOrder> {
+pub fn aggregate_latest_orders_by_id(events: &NostrEvents) -> HashMap<Uuid, SmallOrder> {
     let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
 
     for event in events.iter() {
@@ -344,7 +348,7 @@ pub fn aggregate_latest_orders_by_id(events: &Events) -> HashMap<Uuid, SmallOrde
 
 /// Parse orders from events
 pub fn parse_orders_events(
-    events: Events,
+    events: NostrEvents,
     currencies: Option<Vec<String>>,
     status: Option<Status>,
     kind: Option<mostro_core::order::Kind>,
@@ -380,9 +384,12 @@ pub fn parse_orders_events(
 pub async fn fetch_mostro_order_events(
     client: &Client,
     mostro_pubkey: PublicKey,
-) -> Result<Events> {
+) -> Result<NostrEvents> {
     let filters = create_filter(ListKind::Orders, mostro_pubkey, None)?;
-    Ok(client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?)
+    Ok(client
+        .fetch_events(filters)
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await?)
 }
 
 /// Pending listings for the public order book from an aggregated relay snapshot.
@@ -426,7 +433,10 @@ pub async fn fetch_events_list(
         }
         ListKind::Disputes => {
             let filters = create_filter(list_kind, mostro_pubkey, None)?;
-            let fetched_events = client.fetch_events(filters, FETCH_EVENTS_TIMEOUT).await?;
+            let fetched_events = client
+                .fetch_events(filters)
+                .timeout(FETCH_EVENTS_TIMEOUT)
+                .await?;
             let disputes = parse_disputes_events(fetched_events);
             Ok(disputes.into_iter().map(Event::Dispute).collect())
         }
@@ -490,11 +500,12 @@ pub async fn fetch_small_order_by_id_from_relay(
 ) -> Result<Option<SmallOrder>> {
     let filter = Filter::new()
         .author(mostro_pubkey)
-        .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+        .kind(nostr_sdk::prelude::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
         .identifier(order_id.to_string())
         .limit(10);
     let events = client
-        .fetch_events(filter, FETCH_EVENTS_TIMEOUT)
+        .fetch_events(filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay by id: {}", e))?;
     let Some(best) = events.iter().max_by_key(|e| e.created_at) else {

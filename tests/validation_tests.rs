@@ -47,14 +47,13 @@ fn test_validate_mostro_pubkey_empty() {
 }
 
 #[test]
-fn test_validate_mostro_pubkey_invalid() {
-    // npub should NOT be valid for Mostro pubkey
+fn test_validate_mostro_pubkey_accepts_npub_and_rejects_invalid() {
     let keys = Keys::generate();
     let npub = keys.public_key().to_bech32().unwrap();
 
+    assert!(validate_mostro_pubkey(&npub).is_ok());
     assert!(validate_mostro_pubkey("not_hex").is_err());
     assert!(validate_mostro_pubkey("1234").is_err());
-    assert!(validate_mostro_pubkey(&npub).is_err());
 }
 
 #[test]

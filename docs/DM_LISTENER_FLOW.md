@@ -349,6 +349,6 @@ Use this checklist when validating dual-transport behavior against live nodes:
 1. **v1 node** (`protocol_version: "1"`) — create order, take, pay invoice, release; flows unchanged (GiftWrap filters).
 2. **v2 node** (`protocol_version: "2"`) — same flows over kind-14 subscribe + `unwrap_incoming`.
 3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the active transport filter.
-4. **P2P order chat** — still GiftWrap (`chat_utils.rs`); unaffected by protocol v2 cutover.
+4. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol v2 Mostro DM cutover.
 5. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
 
