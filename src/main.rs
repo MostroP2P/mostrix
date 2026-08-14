@@ -209,10 +209,10 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         }
     }
 
-    // Handle paste for observer shared key input
+    // Handle paste for the focused Observer field (`K_conv` or `pub(K_sign)`)
     if matches!(app.active_tab, Tab::Admin(AdminTab::Observer)) {
         let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
-        app.observer_shared_key_input.push_str(&filtered_text);
+        app.observer_active_input_mut().push_str(&filtered_text);
     }
 }
 

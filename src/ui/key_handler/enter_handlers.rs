@@ -1164,22 +1164,34 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate shared key, then fetch observer chat authenticated against
+        // Validate K_conv, then fetch observer chat authenticated against
         // known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
-            let msg = "Shared key is required".to_string();
+            let msg = "K_conv is required".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
         if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
-            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+            let msg = "K_conv must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
+
+        let sign_pubkey = match crate::util::chat_utils::parse_optional_sign_pubkey(
+            &app.observer_sign_pubkey_input,
+        ) {
+            Ok(pk) => pk,
+            Err(e) => {
+                let msg = e.to_string();
+                app.observer_error = Some(msg.clone());
+                app.mode = UiMode::operation_result(OperationResult::Error(msg));
+                return;
+            }
+        };
 
         // Clear previous results and set loading state
         for msg in &mut app.observer_messages {
@@ -1197,7 +1209,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match fetch_observer_chat(&client, &key_str, &known_roles).await {
+            match fetch_observer_chat(&client, &key_str, sign_pubkey, &known_roles).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
                 }

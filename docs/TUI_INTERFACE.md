@@ -97,13 +97,13 @@ Focused on dispute resolution and protocol management.
   - **Scrollable sidebar list** (`List` + `ListState`): ↑↓ keeps the selected dispute in view when many disputes overflow the sidebar; scrollbar when the list is taller than the panel
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
-- **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a shared key:
-  - Single shared-key input (64-char hex secret, paste-friendly)
-  - Fetches kind-14 chat events from relays for the last 7 days (`authors = [pub(K_sign)]`); also reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true
+- **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via disclosed **`K_conv`**:
+  - `K_conv` input (64-char hex secret, paste-friendly) plus optional `pub(K_sign)` locator
+  - Fetches kind-14 chat events from relays for the last 7 days (`authors` when locator present, else `#p = pub(K_conv)`)
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
   - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
-  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
+  - Keyboard hints: `Tab` switches `K_conv` / `pub(K_sign)`, `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Generate New Keys (rotates the Admin keypair)
@@ -148,7 +148,7 @@ The primary shared popup is the **operation result** modal, used for:
 - Order creation / take-order flows
 - Settings validation errors (invalid pubkey, relay, currency, Lightning address format, LNURL verification failure, etc.)
 - Admin actions (add solver, finalize disputes)
-- Blossom attachment downloads and Observer-mode shared-key errors
+- Blossom attachment downloads and Observer-mode `K_conv` errors
 
 When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress** tab, the app stays on that tab and returns to **ManagingDispute** mode (it does not switch to the first tab).
 
@@ -186,7 +186,7 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Shift+K** (reveal `K_conv` for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, Tab switches `K_conv` / `pub(K_sign)` (Left/Right still change tabs).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -388,6 +388,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+F** mark fiat sent (YES/NO popup).
   - **Shift+R** release sats (YES/NO popup).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
+  - **Shift+K** reveal `K_conv` (read-only grant for solvers; never the `K_sign` secret).
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
   - **Ctrl+O** send attachment (file picker); **Ctrl+Shift+O** retry DM when a prepared send is pending.

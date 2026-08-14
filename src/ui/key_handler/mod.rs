@@ -531,7 +531,7 @@ pub fn handle_key_event(
             if let Some(text) = read_clipboard_text_best_effort() {
                 let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !filtered.is_empty() {
-                    app.observer_shared_key_input.push_str(&filtered);
+                    app.observer_active_input_mut().push_str(&filtered);
                     return Some(true);
                 }
             }
@@ -766,10 +766,8 @@ pub fn handle_key_event(
                             app.observer_shared_key_input.chars().take(8).collect();
                         let id = format!("observer_{}", key_prefix);
 
-                        // For Observer mode (pure P2P chats), attachment JSON often omits a `key`
-                        // and expects decryption using the same shared key used for messages.
-                        // If no explicit decryption_key was provided, derive it from the pasted
-                        // shared key hex so the saved file is decrypted instead of left encrypted.
+                        // Observer holds K_conv only; use it as the ChaCha key when the
+                        // attachment JSON omitted an inline key.
                         let mut att_clone = (*att).clone();
                         if att_clone.decryption_key.is_none() {
                             if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
@@ -1112,6 +1110,53 @@ pub fn handle_key_event(
                         return Some(true);
                     }
                 }
+                KeyCode::Char('k') | KeyCode::Char('K') => {
+                    if !app.mode.user_my_trades_interactive() {
+                        return Some(true);
+                    }
+                    let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
+                        app.mode = UiMode::operation_result(OperationResult::Info(
+                            "Select an order to reveal K_conv.".to_string(),
+                        ));
+                        return Some(true);
+                    };
+                    let pool = pool.clone();
+                    let tx = order_result_tx.clone();
+                    tokio::spawn(async move {
+                        let result = match crate::models::Order::get_by_id(
+                            &pool,
+                            &order_id.to_string(),
+                        )
+                        .await
+                        {
+                            Ok(order) => {
+                                let trade_keys = order
+                                    .trade_keys
+                                    .as_deref()
+                                    .and_then(|h| Keys::parse(h).ok());
+                                match crate::util::chat_utils::conversation_disclosure_from_order(
+                                    order.order_chat_shared_key_hex.as_deref(),
+                                    trade_keys.as_ref(),
+                                    order.counterparty_pubkey.as_deref(),
+                                ) {
+                                    Some((conv, sign_pk)) => OperationResult::Info(format!(
+                                        "K_conv (read-only grant for solvers):\n{conv}\n\n\
+pub(K_sign) optional locator:\n{sign_pk}\n\n\
+Disclose K_conv only. Never share the K_sign secret."
+                                    )),
+                                    None => OperationResult::Error(
+                                        "No conversation key for this order yet.".to_string(),
+                                    ),
+                                }
+                            }
+                            Err(e) => OperationResult::Error(format!(
+                                "Could not load order for K_conv: {e}"
+                            )),
+                        };
+                        let _ = tx.send(result);
+                    });
+                    return Some(true);
+                }
                 _ => {}
             }
         }
@@ -1127,7 +1172,7 @@ pub fn handle_key_event(
         return Some(result);
     }
 
-    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the shared key input.
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the focused field.
     // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
     if let Tab::Admin(AdminTab::Observer) = app.active_tab {
         if !matches!(app.mode, UiMode::OperationResult(_)) {
@@ -1137,11 +1182,11 @@ pub fn handle_key_event(
             if !is_ctrl {
                 match code {
                     KeyCode::Char(c) => {
-                        app.observer_shared_key_input.push(c);
+                        app.observer_active_input_mut().push(c);
                         return Some(true);
                     }
                     KeyCode::Backspace => {
-                        app.observer_shared_key_input.pop();
+                        app.observer_active_input_mut().pop();
                         return Some(true);
                     }
                     _ => {}
@@ -1426,7 +1471,9 @@ pub fn handle_key_event(
 #[cfg(test)]
 mod key_handler_tests {
     use super::*;
-    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crate::ui::{
+        InvoiceInputState, InvoiceNotificationActionSelection, ObserverInputField, UserRole,
+    };
     use crossterm::event::KeyModifiers;
 
     #[test]
@@ -1499,6 +1546,17 @@ mod key_handler_tests {
 
         let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert!(is_paste_shortcut(&ctrl_v));
+    }
+
+    #[test]
+    fn observer_tab_toggles_k_conv_and_sign_locator_focus() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.observer_input_focus, ObserverInputField::SignAuthor);
+        handle_tab_navigation(KeyCode::BackTab, &mut app);
+        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
     }
 
     #[test]
