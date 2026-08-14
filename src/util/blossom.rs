@@ -5,8 +5,8 @@
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
-use chacha20poly1305::ChaCha20Poly1305;
+use chacha20poly1305::aead::{Aead, Generate, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use mostro_core::prelude::SharedKey;
 use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, PublicKey, Tag, Timestamp};
 use reqwest::{header::CONTENT_LENGTH, Client};
@@ -138,7 +138,9 @@ pub fn decrypt_blob(key: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
     }
     let (nonce_slice, ciphertext_and_tag) = blob.split_at(12);
     let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("key init: {}", e))?;
-    let nonce = chacha20poly1305::Nonce::from_slice(nonce_slice);
+    let nonce: &Nonce = nonce_slice
+        .try_into()
+        .map_err(|_| anyhow!("invalid nonce length"))?;
     let plaintext = cipher
         .decrypt(nonce, ciphertext_and_tag)
         .map_err(|e| anyhow!("decrypt failed: {}", e))?;
@@ -151,11 +153,11 @@ pub fn encrypt_blob(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         return Err(anyhow!("encrypt key must be 32 bytes, got {}", key.len()));
     }
     let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("key init: {}", e))?;
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_ref())
         .map_err(|e| anyhow!("encrypt failed: {}", e))?;
-    let mut blob = nonce.to_vec();
+    let mut blob = nonce.as_slice().to_vec();
     blob.extend_from_slice(&ciphertext);
     Ok(blob)
 }
