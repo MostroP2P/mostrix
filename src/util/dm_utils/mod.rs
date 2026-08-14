@@ -40,6 +40,8 @@ use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
     should_strictly_advance_status,
 };
+use futures::StreamExt;
+use std::collections::BTreeSet;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -66,7 +68,7 @@ fn is_own_signed_v2_outbound(
     trade_keys: &Keys,
     unwrapped: &UnwrappedMessage,
 ) -> bool {
-    event.kind == nostr_sdk::Kind::PrivateDirectMessage
+    event.kind == nostr_sdk::prelude::Kind::PrivateDirectMessage
         && event.pubkey == trade_keys.public_key()
         && unwrapped.signature.is_some()
 }
@@ -117,7 +119,9 @@ pub async fn unsubscribe_dm_listener_subscriptions(client: &Client) {
         .map(|mut guard| std::mem::take(&mut *guard))
         .unwrap_or_default();
     for id in ids {
-        client.unsubscribe(&id).await;
+        if let Err(e) = client.unsubscribe(&id).await {
+            log::debug!("unsubscribe failed: {e}");
+        }
     }
 }
 
@@ -269,64 +273,6 @@ fn trade_message_is_terminal(message: &Message) -> bool {
     message_has_terminal_order_status(message)
 }
 
-/// NIP-44 protocol wrap that keeps a self `#p` tag when author == receiver.
-///
-/// nostr-sdk [`EventBuilder`] strips `p` tags matching the author unless
-/// [`EventBuilder::allow_self_tagging`] is set. Mostro subscribes on `#p`, so
-/// admin DMs that reuse the Mostro key would otherwise never be delivered.
-fn wrap_message_nip44_allow_self_p(
-    message: &Message,
-    identity_keys: &Keys,
-    trade_keys: &Keys,
-    receiver: PublicKey,
-    opts: WrapOptions,
-) -> Result<Event> {
-    let message_json = message
-        .as_json()
-        .map_err(|e| anyhow::anyhow!("Failed to serialize message for nip44 wrap: {e:?}"))?;
-
-    let trade_sig = opts
-        .signed
-        .then(|| Message::sign(message_json.clone(), trade_keys).to_string());
-
-    let identity_proof = (identity_keys.public_key() != trade_keys.public_key()).then(|| {
-        let payload = format!(
-            "mostro-transport-v2-identity:{}:{}",
-            trade_keys.public_key().to_hex(),
-            message_json
-        );
-        (
-            identity_keys.public_key().to_hex(),
-            Message::sign(payload, identity_keys).to_string(),
-        )
-    });
-
-    let tuple: (&Message, Option<String>, Option<(String, String)>) =
-        (message, trade_sig, identity_proof);
-    let content = serde_json::to_string(&tuple)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize nip44 tuple: {e}"))?;
-
-    let encrypted = nip44::encrypt(
-        trade_keys.secret_key(),
-        &receiver,
-        content,
-        nip44::Version::default(),
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to nip44-encrypt protocol message: {e}"))?;
-
-    let mut tags: Vec<Tag> = vec![Tag::public_key(receiver)];
-    if let Some(exp) = opts.expiration {
-        tags.push(Tag::expiration(exp));
-    }
-
-    EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, encrypted)
-        .tags(tags)
-        .allow_self_tagging()
-        .pow(opts.pow)
-        .sign_with_keys(trade_keys)
-        .map_err(|e| anyhow::anyhow!("Failed to sign nip44 protocol event: {e}"))
-}
-
 /// Send a direct message to a receiver
 pub async fn send_dm(
     client: &Client,
@@ -352,29 +298,18 @@ pub async fn send_dm(
         expiration,
         signed: true,
     };
-    // Self-addressed v2 DMs must keep `#p` (Mostro filters on it). nostr-sdk strips
-    // self `p` tags unless allow_self_tagging is set — mostro-core's wrap does not.
-    let event =
-        if transport == Transport::Nip44Direct && trade_keys.public_key() == *receiver_pubkey {
-            wrap_message_nip44_allow_self_p(
-                &message,
-                identity_keys,
-                trade_keys,
-                *receiver_pubkey,
-                wrap_opts,
-            )?
-        } else {
-            wrap_message_with(
-                transport,
-                &message,
-                identity_keys,
-                trade_keys,
-                *receiver_pubkey,
-                wrap_opts,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?
-        };
+    // nostr 0.45 no longer strips self `#p` tags from EventBuilder, so the
+    // core `wrap_message_nip44` path is correct for admin self-addressed DMs.
+    let event = wrap_message_with(
+        transport,
+        &message,
+        identity_keys,
+        trade_keys,
+        *receiver_pubkey,
+        wrap_opts,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to wrap protocol message: {e}"))?;
 
     client.send_event(&event).await?;
     Ok(())
@@ -386,7 +321,7 @@ pub async fn wait_for_dm<F>(
     trade_keys: &Keys,
     timeout: std::time::Duration,
     sent_message: F,
-) -> Result<Events>
+) -> Result<BTreeSet<Event>>
 where
     F: std::future::Future<Output = Result<()>> + Send,
 {
@@ -419,14 +354,14 @@ where
         .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
         .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
 
-    let mut events = Events::default();
+    let mut events = BTreeSet::new();
     events.insert(event);
     Ok(events)
 }
 
 /// Parse DM events to extract Messages (v1 GiftWrap and v2 kind 14 via [`unwrap_incoming`]).
 pub async fn parse_dm_events(
-    events: Events,
+    events: BTreeSet<Event>,
     pubkey: &Keys,
     since: Option<&i64>,
 ) -> Vec<(Message, i64, PublicKey)> {
@@ -476,7 +411,7 @@ async fn parse_dm_events_single(
     if let Some(u) = pre_unwrapped {
         return vec![(u.message, u.created_at.as_secs() as i64, u.sender)];
     }
-    let mut batch = Events::default();
+    let mut batch = BTreeSet::new();
     batch.insert(event.clone());
     parse_dm_events(batch, trade_keys, None).await
 }
@@ -1278,7 +1213,9 @@ async fn dispatch_giftwrap_batch(
                     }
                     subscription_to_order.remove(subscription_id);
                     unregister_dm_listener_subscription(subscription_id);
-                    client.unsubscribe(subscription_id).await;
+                    if let Err(e) = client.unsubscribe(subscription_id).await {
+                        log::debug!("unsubscribe failed: {e}");
+                    }
                     break;
                 }
                 GiftWrapTerminalPolicy::UntrackedFallback => {
@@ -1393,7 +1330,11 @@ async fn fetch_and_replay_startup_trade_dms(
             .since(Timestamp::from(since_ts))
             .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
 
-        let events = match client.fetch_events(filter, FETCH_EVENTS_TIMEOUT).await {
+        let events = match client
+            .fetch_events(filter)
+            .timeout(FETCH_EVENTS_TIMEOUT)
+            .await
+        {
             Ok(e) => e,
             Err(e) => {
                 log::warn!(
@@ -1817,13 +1758,13 @@ pub async fn listen_for_order_messages(
                                 waiter_pubkey,
                             )
                             .limit(0);
-                            match client.subscribe(filter, None).await {
+                            match client.subscribe(filter).await {
                                 Ok(output) => {
                                     // Remember the subscription id so a later TrackOrder can
                                     // rebind this pubkey to a concrete order_id without requiring
                                     // a second relay subscription.
-                                    register_dm_listener_subscription(output.val.clone());
-                                    pubkey_to_subscription.insert(waiter_pubkey, output.val);
+                                    register_dm_listener_subscription(output.value.clone());
+                                    pubkey_to_subscription.insert(waiter_pubkey, output.value);
                                 }
                                 Err(e) => {
                                     subscribed_pubkeys.remove(&waiter_pubkey);
@@ -1851,16 +1792,13 @@ pub async fn listen_for_order_messages(
                     }
                 }
             }
-            notification = notifications.recv() => {
-                let notification = match notification {
-                    Ok(n) => n,
-                    Err(e) => {
-                        log::warn!("Error receiving relay notification: {:?}", e);
-                        continue;
-                    }
+            notification = notifications.next() => {
+                let Some(notification) = notification else {
+                    log::warn!("DM notification stream ended");
+                    break;
                 };
 
-                if let RelayPoolNotification::Event {
+                if let ClientNotification::Event {
                     subscription_id,
                     event,
                     ..
@@ -2053,15 +1991,14 @@ mod tests {
     };
     use crate::models::Order;
     use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
-    use nostr_sdk::prelude::{EventBuilder, Keys, Tag, Timestamp};
+    use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
 
     #[test]
     fn own_signed_v2_outbound_is_skipped_by_waiter_guard() {
         let keys = Keys::generate();
-        let event = EventBuilder::new(nostr_sdk::Kind::PrivateDirectMessage, "ciphertext")
+        let event = EventBuilder::new(nostr_sdk::prelude::Kind::PrivateDirectMessage, "ciphertext")
             .tags([Tag::public_key(keys.public_key())])
-            .allow_self_tagging()
-            .sign_with_keys(&keys)
+            .finalize(&keys)
             .expect("sign kind-14");
         let message = Message::new_dispute(None, None, None, Action::AdminTakeDispute, None);
         let sig = Message::sign(message.as_json().expect("json"), &keys);

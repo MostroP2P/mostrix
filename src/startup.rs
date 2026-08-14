@@ -88,7 +88,9 @@ pub async fn run_post_terminal_startup(
         .nsec_privkey
         .parse::<Keys>()
         .map_err(|e| anyhow::anyhow!("Invalid NSEC privkey: {}", e))?;
-    let client = Client::new(my_keys);
+    let client = Client::builder()
+        .authenticator(SignerAuthenticator::new(my_keys.clone()))
+        .build();
 
     for relay in &input.configured_relays {
         client.add_relay(relay).await?;

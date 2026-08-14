@@ -38,6 +38,7 @@ use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
     fetch_chat_messages_for_shared_key, keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
 };
+use futures::StreamExt;
 
 /// Identifies which chat a shared key belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -86,10 +87,14 @@ struct LiveSubs {
 impl LiveSubs {
     async fn clear(&mut self, client: &Client) {
         if let Some(id) = self.giftwrap.take() {
-            client.unsubscribe(&id).await;
+            if let Err(e) = client.unsubscribe(&id).await {
+                log::debug!("unsubscribe failed: {e}");
+            }
         }
         if let Some(id) = self.kind14.take() {
-            client.unsubscribe(&id).await;
+            if let Err(e) = client.unsubscribe(&id).await {
+                log::debug!("unsubscribe failed: {e}");
+            }
         }
     }
 }
@@ -274,9 +279,9 @@ async fn resubscribe(
     let mut new_kind14: Option<SubscriptionId> = None;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match client.subscribe(giftwrap_filter.clone(), None).await {
+        match client.subscribe(giftwrap_filter.clone()).await {
             Ok(output) => {
-                new_giftwrap = Some(output.val);
+                new_giftwrap = Some(output.value);
                 break;
             }
             Err(e) => {
@@ -296,9 +301,9 @@ async fn resubscribe(
     }
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match client.subscribe(kind14_filter.clone(), None).await {
+        match client.subscribe(kind14_filter.clone()).await {
             Ok(output) => {
-                new_kind14 = Some(output.val);
+                new_kind14 = Some(output.value);
                 break;
             }
             Err(e) => {
@@ -307,7 +312,9 @@ async fn resubscribe(
                         "[chat_live] failed to subscribe kind-14 chats after {MAX_ATTEMPTS} attempts: {e}; rolling back new GiftWrap sub"
                     );
                     if let Some(id) = new_giftwrap.take() {
-                        client.unsubscribe(&id).await;
+                        if let Err(e) = client.unsubscribe(&id).await {
+                            log::debug!("unsubscribe failed: {e}");
+                        }
                     }
                     return;
                 }
@@ -331,10 +338,14 @@ async fn resubscribe(
         .giftwrap
         .replace(new_giftwrap.expect("subscribed"))
     {
-        client.unsubscribe(&old_id).await;
+        if let Err(e) = client.unsubscribe(&old_id).await {
+            log::debug!("unsubscribe failed: {e}");
+        }
     }
     if let Some(old_id) = current_subs.kind14.replace(new_kind14.expect("subscribed")) {
-        client.unsubscribe(&old_id).await;
+        if let Err(e) = client.unsubscribe(&old_id).await {
+            log::debug!("unsubscribe failed: {e}");
+        }
     }
 }
 
@@ -554,16 +565,15 @@ pub async fn listen_for_chat_messages(
                     .await;
                 }
             }
-            notification = notifications.recv() => {
-                let event = match notification {
-                    Ok(RelayPoolNotification::Event { event, .. }) => *event,
-                    Ok(_) => continue,
-                    // Lagged/closed broadcast: log and keep going (not fatal), like the order/dispute loops.
-                    Err(e) => {
-                        log::debug!("[chat_live] notification channel: {e}");
-                        continue;
-                    }
+            notification = notifications.next() => {
+                let Some(notification) = notification else {
+                    log::debug!("[chat_live] notification stream ended");
+                    break;
                 };
+                let ClientNotification::Event { event, .. } = notification else {
+                    continue;
+                };
+                let event = *event;
                 let Some(target) = resolve_chat_target(&targets, &event) else {
                     continue;
                 };
@@ -608,7 +618,7 @@ fn resolve_chat_target<'a>(
 ) -> Option<&'a ChatTarget> {
     match event.kind {
         Kind::GiftWrap => {
-            let target_pubkey = event.tags.public_keys().next().copied()?;
+            let target_pubkey = event.tags.public_keys().next()?;
             targets.get(&target_pubkey)
         }
         Kind::PrivateDirectMessage => targets.values().find(|t| t.sign_pubkey == event.pubkey),
@@ -763,7 +773,7 @@ mod tests {
         // Outer kind-14 authored by K_sign
         let event = EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
             .tag(Tag::public_key(Keys::generate().public_key()))
-            .sign_with_keys(&sign)
+            .finalize(&sign)
             .expect("sign");
 
         let resolved = resolve_chat_target(&targets, &event).expect("route kind14");
@@ -790,7 +800,7 @@ mod tests {
         let junk = Keys::generate();
         let event = EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
             .tag(Tag::public_key(target_pubkey))
-            .sign_with_keys(&junk)
+            .finalize(&junk)
             .expect("sign");
 
         assert!(resolve_chat_target(&targets, &event).is_none());

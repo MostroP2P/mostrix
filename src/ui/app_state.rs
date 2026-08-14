@@ -22,7 +22,7 @@ use crate::ui::orders::{
 };
 use crate::ui::user_state::UserMode;
 use crate::util::{transport_from_instance, MostroInstanceInfo};
-use nostr_sdk::Keys;
+use nostr_sdk::prelude::Keys;
 
 #[derive(Debug)]
 pub enum UiMode {

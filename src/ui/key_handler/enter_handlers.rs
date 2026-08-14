@@ -33,9 +33,9 @@ use crate::ui::key_handler::user_handlers::{
 };
 use bip39::Mnemonic;
 use mostro_core::prelude::*;
-use nostr_sdk::nips::nip06::FromMnemonic;
+use nostr_sdk::prelude::FromMnemonic;
+use nostr_sdk::prelude::ToBech32;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
-use nostr_sdk::ToBech32;
 use std::collections::HashSet;
 use std::str::FromStr;
 

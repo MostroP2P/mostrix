@@ -440,7 +440,7 @@ pub fn handle_key_event(
     seed_words_tx: &UnboundedSender<Result<Zeroizing<String>, String>>,
     mostro_info_tx: &UnboundedSender<MostroInfoFetchResult>,
     validate_range_amount: &dyn Fn(&mut TakeOrderState),
-    admin_chat_keys: Option<&nostr_sdk::Keys>,
+    admin_chat_keys: Option<&Keys>,
     save_attachment_tx: Option<&UnboundedSender<(String, ChatAttachment)>>,
     send_order_attachment_tx: Option<&UnboundedSender<SendOrderAttachmentJob>>,
     dm_subscription_tx: &UnboundedSender<OrderDmSubscriptionCmd>,

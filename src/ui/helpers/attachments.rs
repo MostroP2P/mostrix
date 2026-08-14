@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use nostr_sdk::serde_json::{from_str as json_from_str, to_string as json_to_string, Value};
+use serde_json::{from_str as json_from_str, to_string as json_to_string, Value};
 
 use crate::ui::{AppState, ChatAttachment, ChatAttachmentType};
 
