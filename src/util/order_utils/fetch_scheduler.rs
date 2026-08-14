@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use futures::StreamExt;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use tokio::task::JoinHandle;
@@ -183,13 +185,13 @@ pub fn spawn_fetch_scheduler_loops(
             };
             let order_filter = Filter::new()
                 .author(mostro_pubkey_for_order_subscribe)
-                .kind(nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
+                .kind(nostr_sdk::prelude::Kind::Custom(NOSTR_ORDER_EVENT_KIND))
                 .since(Timestamp::now());
-            match client_for_orders.subscribe(order_filter, None).await {
+            match client_for_orders.subscribe(order_filter).await {
                 Ok(output) => {
                     log::debug!(
                         "[orders_live] subscribed to order updates subscription_id={}",
-                        output.val
+                        output.value
                     );
                 }
                 Err(e) => {
@@ -280,15 +282,15 @@ pub fn spawn_fetch_scheduler_loops(
                             );
                         }
                     }
-                    notification = notifications.recv() => {
-                        let Ok(RelayPoolNotification::Event { event, .. }) = notification else {
+                    notification = notifications.next() => {
+                        let Some(ClientNotification::Event { event, .. }) = notification else {
                             continue;
                         };
                         let event = *event;
-                        if event.kind != nostr_sdk::Kind::Custom(NOSTR_ORDER_EVENT_KIND) {
+                        if event.kind != nostr_sdk::prelude::Kind::Custom(NOSTR_ORDER_EVENT_KIND) {
                             continue;
                         }
-                        let mut one = Events::default();
+                        let mut one = BTreeSet::new();
                         one.insert(event);
                         let latest_live = aggregate_latest_orders_by_id(&one);
                         for relay_order in latest_live.values() {
@@ -330,13 +332,13 @@ pub fn spawn_fetch_scheduler_loops(
                 };
             let dispute_filter = Filter::new()
                 .author(mostro_pubkey_for_dispute_subscribe)
-                .kind(nostr_sdk::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND))
+                .kind(nostr_sdk::prelude::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND))
                 .since(Timestamp::now());
-            match client_for_disputes.subscribe(dispute_filter, None).await {
+            match client_for_disputes.subscribe(dispute_filter).await {
                 Ok(output) => {
                     log::debug!(
                         "[disputes_live] subscribed to dispute updates subscription_id={}",
-                        output.val
+                        output.value
                     );
                 }
                 Err(e) => {
@@ -382,15 +384,15 @@ pub fn spawn_fetch_scheduler_loops(
                             );
                         }
                     }
-                    notification = notifications.recv() => {
-                        let Ok(RelayPoolNotification::Event { event, .. }) = notification else {
+                    notification = notifications.next() => {
+                        let Some(ClientNotification::Event { event, .. }) = notification else {
                             continue;
                         };
                         let event = *event;
-                        if event.kind != nostr_sdk::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND) {
+                        if event.kind != nostr_sdk::prelude::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND) {
                             continue;
                         }
-                        let mut one = Events::default();
+                        let mut one = BTreeSet::new();
                         one.insert(event);
                         let mut parsed = super::parse_disputes_events(one);
                         log::debug!(

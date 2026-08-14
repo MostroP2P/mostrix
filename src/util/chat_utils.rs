@@ -7,7 +7,7 @@ use mostro_core::chat::{
 };
 use mostro_core::prelude::DisputeStatus;
 use mostro_core::prelude::SmallOrder;
-use nostr_sdk::nips::nip44;
+use nostr_sdk::prelude::nip44;
 use nostr_sdk::prelude::*;
 
 use crate::models::{AdminDispute, Order};
@@ -268,10 +268,12 @@ pub async fn fetch_chat_messages_for_shared_key(
     // Run both fetches independently so a transient failure of either query does
     // not hide history still available on the other envelope during migration.
     let kind14_result = client
-        .fetch_events(kind14_filter, FETCH_EVENTS_TIMEOUT)
+        .fetch_events(kind14_filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
         .await;
     let legacy_result = client
-        .fetch_events(giftwrap_filter, FETCH_EVENTS_TIMEOUT)
+        .fetch_events(giftwrap_filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
         .await;
 
     let events = merge_dual_read_events(kind14_result, legacy_result)?;
@@ -588,8 +590,8 @@ mod tests {
     }
 
     fn sample_text_event(keys: &Keys, content: &str) -> Event {
-        EventBuilder::text_note(content)
-            .sign_with_keys(keys)
+        EventBuilder::new(Kind::TextNote, content)
+            .finalize(keys)
             .expect("sign event")
     }
 

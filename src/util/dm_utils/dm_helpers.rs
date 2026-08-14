@@ -66,9 +66,9 @@ pub(crate) async fn ensure_order_dm_subscription(
         DmSubscriptionMode::LiveOnly => base.limit(0),
     };
 
-    match client.subscribe(filter, None).await {
+    match client.subscribe(filter).await {
         Ok(output) => {
-            let sub_id = output.val;
+            let sub_id = output.value;
             if let Some(label) = options.info_label {
                 log::info!(
                     "{} subscription_id={}, order_id={}, trade_index={}",

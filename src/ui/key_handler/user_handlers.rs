@@ -1,6 +1,7 @@
 use crate::ui::key_handler::async_tasks::spawn_take_order_task;
 use crate::ui::{AppState, FormState, Tab, TakeOrderState, UiMode, UserMode, UserRole, UserTab};
-use nostr_sdk::Client;
+use nostr_sdk::prelude::Client;
+use nostr_sdk::prelude::PublicKey;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -56,7 +57,7 @@ pub(crate) fn execute_take_order_action(
     take_state: TakeOrderState,
     pool: &SqlitePool,
     client: &Client,
-    mostro_pubkey: nostr_sdk::PublicKey,
+    mostro_pubkey: PublicKey,
     order_result_tx: &UnboundedSender<crate::ui::OperationResult>,
     dm_subscription_tx: &UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
     mostro_info: Option<crate::util::MostroInstanceInfo>,

@@ -8,7 +8,9 @@ use crate::util::types::ListKind;
 /// GiftWrap events (NIP-59) addressed to `pubkey` as recipient (`p` tag target).
 /// Chain `.since()`, `.limit()`, etc. for subscriptions or `fetch_events`.
 pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
-    Filter::new().pubkey(pubkey).kind(nostr_sdk::Kind::GiftWrap)
+    Filter::new()
+        .pubkey(pubkey)
+        .kind(nostr_sdk::prelude::Kind::GiftWrap)
 }
 
 /// Protocol DM filter for inbound Mostro → client traffic on the active wire transport.
@@ -16,9 +18,9 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
 /// v1: GiftWrap addressed to the trade key (`p` tag).
 /// v2: signed kind-14 from Mostro with trade key in `#p`.
 ///
-/// When `mostro_pubkey == trade_pubkey` on v2 (admin using the Mostro nsec), nostr-sdk's
-/// [`EventBuilder`] strips self `#p` tags unless `allow_self_tagging` is set. Mostro replies
-/// may therefore have **no** `#p`, so this path subscribes by author+kind only.
+/// When `mostro_pubkey == trade_pubkey` on v2 (admin using the Mostro nsec), the
+/// daemon may omit `#p` on self-addressed replies, so this path subscribes by
+/// author+kind only.
 ///
 /// That broader filter can also match the client's own outbound request. `wait_for_dm`
 /// waiters ignore signed self-authored kind-14 events (`is_own_signed_v2_outbound`) so the
@@ -33,15 +35,15 @@ pub fn filter_protocol_dm_from_mostro(
         Transport::GiftWrap => filter_giftwrap_to_recipient(trade_pubkey),
         Transport::Nip44Direct if mostro_pubkey == trade_pubkey => Filter::new()
             .author(mostro_pubkey)
-            .kind(nostr_sdk::Kind::PrivateDirectMessage),
+            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage),
         Transport::Nip44Direct => Filter::new()
             .author(mostro_pubkey)
             .pubkey(trade_pubkey)
-            .kind(nostr_sdk::Kind::PrivateDirectMessage),
+            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage),
     }
 }
 
-/// Relay fetch cap for Mostro-published [`Kind::Custom`] order/dispute list snapshots.
+/// Relay fetch cap for Mostro-published [`nostr_sdk::prelude::Kind::Custom`] order/dispute list snapshots.
 pub const MOSTRO_LIST_FETCH_EVENT_LIMIT: usize = 500;
 
 /// Build a fetch filter for Mostro list snapshots: events authored by `pubkey`, a given custom
@@ -52,7 +54,7 @@ pub fn create_mostro_list_fetch_filter(kind: u16, pubkey: PublicKey) -> Result<F
     Ok(Filter::new()
         .author(pubkey)
         .limit(MOSTRO_LIST_FETCH_EVENT_LIMIT)
-        .kind(nostr_sdk::Kind::Custom(kind)))
+        .kind(nostr_sdk::prelude::Kind::Custom(kind)))
 }
 
 /// Create a filter based on list kind

@@ -19,7 +19,7 @@ use crate::util::{
     OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
-use nostr_sdk::prelude::{Client, Keys, PublicKey};
+use nostr_sdk::prelude::{Client, Keys, PublicKey, SignerAuthenticator};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -253,7 +253,9 @@ pub async fn apply_pending_key_reload(
     match load_settings_from_disk() {
         Ok(latest_settings) => match latest_settings.nsec_privkey.parse::<Keys>() {
             Ok(new_identity_keys) => {
-                let new_client = Client::new(new_identity_keys);
+                let new_client = Client::builder()
+                    .authenticator(SignerAuthenticator::new(new_identity_keys.clone()))
+                    .build();
                 let mut reload_error: Option<String> = None;
                 for relay in &latest_settings.relays {
                     let relay = relay.trim();
@@ -444,7 +446,9 @@ pub async fn apply_pending_fetch_scheduler_reload(
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
-    client.unsubscribe_all().await;
+    if let Err(e) = client.unsubscribe_all().await {
+        log::debug!("unsubscribe failed: {e}");
+    }
 
     connect_client_safely(client)
         .await
@@ -619,7 +623,9 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.message_listener_handle.abort();
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
-    ctx.client.unsubscribe_all().await;
+    if let Err(e) = ctx.client.unsubscribe_all().await {
+        log::debug!("unsubscribe failed: {e}");
+    }
 
     connect_client_safely(ctx.client)
         .await
