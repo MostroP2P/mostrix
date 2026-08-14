@@ -752,7 +752,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
     }
 }
 
-/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.)
+/// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.).
+///
+/// Mostro pubkey input accepts npub or hex; [`normalize_mostro_pubkey`] converts to hex
+/// before the confirmation dialog so settings persistence stays hex-encoded.
 fn handle_enter_settings_mode(
     app: &mut AppState,
     mode: UiMode,

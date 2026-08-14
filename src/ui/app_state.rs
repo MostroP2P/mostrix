@@ -44,8 +44,10 @@ pub enum UiMode {
     UserSaveAttachmentPopup(String, usize),
     /// User order chat send attachment file picker: pinned order id (Ctrl+O on My Trades tab).
     UserSendAttachmentPicker(String),
+    /// Settings: enter Mostro pubkey (`npub` or hex).
     AddMostroPubkey(KeyInputState),
-    ConfirmMostroPubkey(String, bool), // (key_string, selected_button: true=Yes, false=No)
+    /// Settings: confirm Mostro pubkey (hex string, Yes/No).
+    ConfirmMostroPubkey(String, bool),
     AddRelay(KeyInputState),
     ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
     /// User-mode Settings: buyer Lightning address (`user@domain.com`).
