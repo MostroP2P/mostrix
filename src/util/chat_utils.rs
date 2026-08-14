@@ -7,7 +7,6 @@ use mostro_core::chat::{
 };
 use mostro_core::prelude::DisputeStatus;
 use mostro_core::prelude::SmallOrder;
-use nostr_sdk::prelude::nip44;
 use nostr_sdk::prelude::*;
 
 use crate::models::{AdminDispute, Order};
@@ -90,6 +89,83 @@ pub fn chat_keys_from_shared_hex(hex: &str) -> Option<(Keys, Keys)> {
     SharedKey::from_hex(hex).ok()?.chat_keys().ok()
 }
 
+/// Parse a hex or bech32 Nostr pubkey used as a chat inner signer.
+pub fn parse_chat_pubkey(s: &str) -> Option<PublicKey> {
+    PublicKey::parse(s).ok()
+}
+
+/// Inner signers for user P2P order chat: local trade key and counterparty trade key.
+///
+/// Returns `None` when the counterparty is missing or equal to the local key.
+pub fn order_chat_allowed_signers(
+    local_trade_pubkey: PublicKey,
+    counterparty_pubkey: Option<&str>,
+) -> Option<Vec<PublicKey>> {
+    let counterparty = parse_chat_pubkey(counterparty_pubkey?)?;
+    if counterparty == local_trade_pubkey {
+        return None;
+    }
+    Some(vec![local_trade_pubkey, counterparty])
+}
+
+/// Inner signers for one admin↔party dispute channel.
+///
+/// Always includes the party trade key; includes the admin pubkey when known.
+/// Returns `None` when the party pubkey is missing.
+pub fn dispute_chat_allowed_signers(
+    admin_pubkey: Option<&PublicKey>,
+    party_pubkey: Option<&str>,
+) -> Option<Vec<PublicKey>> {
+    let party = parse_chat_pubkey(party_pubkey?)?;
+    let mut allowed = vec![party];
+    if let Some(admin) = admin_pubkey {
+        if *admin != party {
+            allowed.push(*admin);
+        }
+    }
+    Some(allowed)
+}
+
+/// Role map for observer chat: admin key plus buyer/seller trade keys from taken disputes.
+///
+/// Unknown inner signers must not be guessed (no arrival-order / Admin fallback).
+pub fn observer_known_signer_roles(
+    admin_pubkey: Option<&PublicKey>,
+    disputes: &[AdminDispute],
+) -> HashMap<PublicKey, ChatSender> {
+    let mut roles = HashMap::new();
+    if let Some(admin) = admin_pubkey {
+        roles.insert(*admin, ChatSender::Admin);
+    }
+    for dispute in disputes {
+        if let Some(pk) = dispute.buyer_pubkey.as_deref().and_then(parse_chat_pubkey) {
+            roles.entry(pk).or_insert(ChatSender::Buyer);
+        }
+        if let Some(pk) = dispute.seller_pubkey.as_deref().and_then(parse_chat_pubkey) {
+            roles.entry(pk).or_insert(ChatSender::Seller);
+        }
+    }
+    roles
+}
+
+/// Map a verified inner signer to a dispute-chat role.
+///
+/// Returns `None` for an unknown signer so callers fail closed instead of
+/// labeling the message as Admin.
+pub fn dispute_chat_role_for_inner_signer(
+    sender: &PublicKey,
+    buyer: Option<&PublicKey>,
+    seller: Option<&PublicKey>,
+) -> Option<(ChatSender, Option<ChatParty>)> {
+    if buyer == Some(sender) {
+        Some((ChatSender::Buyer, None))
+    } else if seller == Some(sender) {
+        Some((ChatSender::Seller, None))
+    } else {
+        None
+    }
+}
+
 /// 32-byte ChaCha20 key for decrypting order-chat attachments (shared ECDH secret).
 pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
     if let Some(hex) = order.order_chat_shared_key_hex.as_deref() {
@@ -168,23 +244,28 @@ pub async fn send_admin_chat_message_via_shared_key(
 /// Unwrap a chat envelope addressed via the channel ECDH secret.
 ///
 /// Accepts the new kind-14 form and, during migration, legacy GiftWrap.
-/// When `allowed_signers` is `None`, any verified inner signer is accepted
-/// (observer / hydration paths that do not yet know both party pubkeys).
+/// `allowed_signers` is the inner-signer allow-list (party trade keys, plus the
+/// admin pubkey on dispute channels). An empty list is rejected so callers cannot
+/// accidentally accept an arbitrary inner signer.
 pub async fn unwrap_giftwrap_with_shared_key(
     shared_keys: &Keys,
     event: &Event,
-    allowed_signers: Option<&[PublicKey]>,
+    allowed_signers: &[PublicKey],
 ) -> Result<DecodedChatMessage> {
+    if allowed_signers.is_empty() {
+        return Err(anyhow::anyhow!(
+            "chat unwrap requires a non-empty inner-signer allow-list"
+        ));
+    }
+
     if event.kind == Kind::GiftWrap {
         let msg = unwrap_giftwrap_chat_message(shared_keys, event)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to unwrap chat gift wrap: {e}"))?;
-        if let Some(allowed) = allowed_signers {
-            if !allowed.contains(&msg.sender) {
-                return Err(anyhow::anyhow!(
-                    "inner gift-wrap signer is not a party to this conversation"
-                ));
-            }
+        if !allowed_signers.contains(&msg.sender) {
+            return Err(anyhow::anyhow!(
+                "inner gift-wrap signer is not a party to this conversation"
+            ));
         }
         return Ok(DecodedChatMessage {
             content: msg.content,
@@ -199,21 +280,7 @@ pub async fn unwrap_giftwrap_with_shared_key(
     let sign_pk = sign.public_key();
     let now = Timestamp::now();
 
-    let allowed_owned: Vec<PublicKey>;
-    let allowed: &[PublicKey] = match allowed_signers {
-        Some(s) => s,
-        None => {
-            // Learn the inner signer cheaply, then run the full normative unwrap.
-            let decrypted = nip44::decrypt(conv.secret_key(), &conv.public_key(), &event.content)
-                .map_err(|e| anyhow::anyhow!("K_conv decrypt failed: {e}"))?;
-            let inner = Event::from_json(&decrypted)
-                .map_err(|e| anyhow::anyhow!("malformed inner chat event: {e}"))?;
-            allowed_owned = vec![inner.pubkey];
-            &allowed_owned
-        }
-    };
-
-    let msg = unwrap_chat_message(&conv, &sign_pk, allowed, event, now)
+    let msg = unwrap_chat_message(&conv, &sign_pk, allowed_signers, event, now)
         .map_err(|e| anyhow::anyhow!("Failed to unwrap chat event: {e}"))?;
     Ok(DecodedChatMessage {
         content: msg.content,
@@ -227,20 +294,22 @@ pub async fn unwrap_giftwrap_with_shared_key(
 ///
 /// Subscribes by `authors = [pub(K_sign)]` (kind 14). Also tries the legacy
 /// gift-wrap `#p` filter so dual-read hydration still works during migration.
+/// Inner events whose signer is not in `allowed_signers` are dropped.
 pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
+    allowed_signers: &[PublicKey],
 ) -> Result<Vec<DecodedChatMessage>> {
-    fetch_chat_messages_for_shared_key(client, shared_keys, None, None).await
+    fetch_chat_messages_for_shared_key(client, shared_keys, allowed_signers, None).await
 }
 
-/// Like [`fetch_gift_wraps_for_shared_key`], with optional inner-signer allow-list
-/// and optional last-seen `since` cursor (clamped to local now; lookback capped
-/// at seven days when the cursor is older or absent).
+/// Like [`fetch_gift_wraps_for_shared_key`], with a last-seen `since` cursor
+/// (clamped to local now; lookback capped at seven days when the cursor is older
+/// or absent). Inner events whose signer is not in `allowed_signers` are dropped.
 pub async fn fetch_chat_messages_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
-    allowed_signers: Option<&[PublicKey]>,
+    allowed_signers: &[PublicKey],
     since: Option<i64>,
 ) -> Result<Vec<DecodedChatMessage>> {
     let local_now = Timestamp::now().as_secs() as i64;
@@ -326,15 +395,23 @@ pub(crate) fn merge_dual_read_events(
 }
 
 /// Fetch and collect new messages for a single (dispute, party) shared key.
+/// Skips the fetch when `allowed_signers` is empty.
 async fn fetch_party_messages(
     client: &Client,
     dispute_id: &str,
     party: ChatParty,
     shared_key_hex: Option<&str>,
+    allowed_signers: &[PublicKey],
     last_seen: i64,
     by_key: &mut AdminChatByKey,
 ) {
     let Some(hex) = shared_key_hex else { return };
+    if allowed_signers.is_empty() {
+        log::warn!(
+            "skipping dispute {dispute_id} {party} chat fetch: empty inner-signer allow-list"
+        );
+        return;
+    }
     let Some(shared_keys) = keys_from_shared_hex(hex) else {
         return;
     };
@@ -342,7 +419,8 @@ async fn fetch_party_messages(
     let last_seen = clamp_chat_since_cursor_now(last_seen);
 
     let Ok(messages) =
-        fetch_chat_messages_for_shared_key(client, &shared_keys, None, Some(last_seen)).await
+        fetch_chat_messages_for_shared_key(client, &shared_keys, allowed_signers, Some(last_seen))
+            .await
     else {
         return;
     };
@@ -359,10 +437,15 @@ async fn fetch_party_messages(
 }
 
 /// Fetch admin chat updates for all active disputes using per-dispute shared keys.
+///
+/// Each party channel is unwrapped with [`dispute_chat_allowed_signers`] (party
+/// trade key plus `admin_pubkey` when present). Channels whose party pubkey is
+/// missing are skipped.
 pub async fn fetch_admin_chat_updates(
     client: &Client,
     disputes: &[AdminDispute],
     admin_chat_last_seen: &HashMap<(String, ChatParty), AdminChatLastSeen>,
+    admin_pubkey: Option<&PublicKey>,
 ) -> Result<Vec<AdminChatUpdate>, anyhow::Error> {
     let mut by_key: AdminChatByKey = HashMap::new();
 
@@ -376,16 +459,40 @@ pub async fn fetch_admin_chat_updates(
             continue;
         }
 
-        for (party, hex) in [
-            (ChatParty::Buyer, d.buyer_shared_key_hex.as_deref()),
-            (ChatParty::Seller, d.seller_shared_key_hex.as_deref()),
+        for (party, hex, party_pk) in [
+            (
+                ChatParty::Buyer,
+                d.buyer_shared_key_hex.as_deref(),
+                d.buyer_pubkey.as_deref(),
+            ),
+            (
+                ChatParty::Seller,
+                d.seller_shared_key_hex.as_deref(),
+                d.seller_pubkey.as_deref(),
+            ),
         ] {
             let last_seen = admin_chat_last_seen
                 .get(&(d.dispute_id.clone(), party))
                 .and_then(|s| s.last_seen_timestamp)
                 .unwrap_or(0);
+            let Some(allowed) = dispute_chat_allowed_signers(admin_pubkey, party_pk) else {
+                log::warn!(
+                    "skipping dispute {} {party} chat fetch: missing party pubkey",
+                    d.dispute_id
+                );
+                continue;
+            };
 
-            fetch_party_messages(client, &d.dispute_id, party, hex, last_seen, &mut by_key).await;
+            fetch_party_messages(
+                client,
+                &d.dispute_id,
+                party,
+                hex,
+                &allowed,
+                last_seen,
+                &mut by_key,
+            )
+            .await;
         }
     }
 
@@ -407,46 +514,34 @@ pub async fn fetch_admin_chat_updates(
 /// Derives `K_conv` / `K_sign` for fetch/decrypt. Observer UX that accepts
 /// `K_conv`-only disclosure is Step 6; this path still expects the ECDH secret
 /// Mostrix stores today (which can derive both keys).
+///
+/// Inner signers not present in `known_roles` are rejected (no arrival-order or
+/// Admin fallback). `known_roles` must be non-empty.
 pub async fn fetch_observer_chat(
     client: &Client,
     shared_key_hex: &str,
-    admin_pubkey: Option<&PublicKey>,
+    known_roles: &HashMap<PublicKey, ChatSender>,
 ) -> Result<Vec<DisputeChatMessage>> {
-    use std::collections::HashMap;
-
     use crate::ui::helpers::try_parse_attachment_message;
+
+    if known_roles.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Cannot verify observer chat signers without admin keys or taken-dispute party pubkeys"
+        ));
+    }
 
     let shared_keys = keys_from_shared_hex(shared_key_hex)
         .ok_or_else(|| anyhow::anyhow!("Invalid shared key hex"))?;
+    let allowed: Vec<PublicKey> = known_roles.keys().copied().collect();
 
-    let raw = fetch_gift_wraps_for_shared_key(client, &shared_keys).await?;
-
-    let mut role_map: HashMap<PublicKey, ChatSender> = HashMap::new();
-    if let Some(apk) = admin_pubkey {
-        role_map.insert(*apk, ChatSender::Admin);
-    }
-
-    for msg in &raw {
-        if role_map.contains_key(&msg.sender) {
-            continue;
-        }
-        let has_buyer = role_map.values().any(|s| *s == ChatSender::Buyer);
-        let has_seller = role_map.values().any(|s| *s == ChatSender::Seller);
-        if !has_buyer {
-            role_map.insert(msg.sender, ChatSender::Buyer);
-        } else if !has_seller {
-            role_map.insert(msg.sender, ChatSender::Seller);
-        } else {
-            role_map.insert(msg.sender, ChatSender::Admin);
-        }
-    }
+    let raw = fetch_gift_wraps_for_shared_key(client, &shared_keys, &allowed).await?;
 
     let mut messages = Vec::with_capacity(raw.len());
     for msg in raw {
-        let sender = role_map
-            .get(&msg.sender)
-            .copied()
-            .unwrap_or(ChatSender::Admin);
+        let Some(sender) = known_roles.get(&msg.sender).copied() else {
+            log::warn!("observer: dropping chat message from unknown inner signer");
+            continue;
+        };
 
         let (msg_content, attachment) = match try_parse_attachment_message(&msg.content) {
             Some((att, display)) => (display, Some(att)),
@@ -567,12 +662,126 @@ mod tests {
         assert_eq!(wrapped.pubkey, sign.public_key());
 
         let allowed = [sender.public_key(), receiver.public_key()];
-        let unwrapped = unwrap_giftwrap_with_shared_key(shared.keys(), &wrapped, Some(&allowed))
+        let unwrapped = unwrap_giftwrap_with_shared_key(shared.keys(), &wrapped, &allowed)
             .await
             .expect("unwrap succeeds");
 
         assert_eq!(unwrapped.sender, sender.public_key());
         assert_eq!(unwrapped.content, content);
+    }
+
+    #[tokio::test]
+    async fn unwrap_rejects_inner_signer_outside_allow_list() {
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let imposter = Keys::generate();
+        let shared = SharedKey::derive(buyer.secret_key(), &seller.public_key())
+            .expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+
+        let wrapped = wrap_chat_message(&imposter, &conv, &sign, "forged admin statement")
+            .await
+            .expect("wrap with shared K_sign succeeds for any inner key");
+
+        let allowed = [buyer.public_key(), seller.public_key()];
+        let err = unwrap_giftwrap_with_shared_key(shared.keys(), &wrapped, &allowed)
+            .await
+            .expect_err("arbitrary inner signer must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a party") || msg.contains("inner event is signed"),
+            "unexpected unwrap error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unwrap_rejects_empty_allow_list() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared = SharedKey::derive(sender.secret_key(), &receiver.public_key())
+            .expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let wrapped = wrap_chat_message(&sender, &conv, &sign, "hello")
+            .await
+            .expect("wrap");
+
+        let err = unwrap_giftwrap_with_shared_key(shared.keys(), &wrapped, &[])
+            .await
+            .expect_err("empty allow-list must fail closed");
+        assert!(err
+            .to_string()
+            .contains("non-empty inner-signer allow-list"));
+    }
+
+    #[test]
+    fn order_chat_allowed_signers_requires_distinct_counterparty() {
+        let local = Keys::generate();
+        let peer = Keys::generate();
+        let allowed =
+            order_chat_allowed_signers(local.public_key(), Some(&peer.public_key().to_string()))
+                .expect("counterparty present");
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&local.public_key()));
+        assert!(allowed.contains(&peer.public_key()));
+        assert!(order_chat_allowed_signers(local.public_key(), None).is_none());
+        assert!(order_chat_allowed_signers(
+            local.public_key(),
+            Some(&local.public_key().to_string())
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn dispute_chat_allowed_signers_includes_admin_and_party() {
+        let admin = Keys::generate();
+        let party = Keys::generate();
+        let allowed = dispute_chat_allowed_signers(
+            Some(&admin.public_key()),
+            Some(&party.public_key().to_string()),
+        )
+        .expect("party present");
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&admin.public_key()));
+        assert!(allowed.contains(&party.public_key()));
+        assert!(dispute_chat_allowed_signers(Some(&admin.public_key()), None).is_none());
+        let party_only =
+            dispute_chat_allowed_signers(None, Some(&party.public_key().to_string())).expect("ok");
+        assert_eq!(party_only, vec![party.public_key()]);
+    }
+
+    #[test]
+    fn dispute_chat_role_for_inner_signer_fails_closed_on_unknown() {
+        let buyer = Keys::generate().public_key();
+        let seller = Keys::generate().public_key();
+        let unknown = Keys::generate().public_key();
+        assert_eq!(
+            dispute_chat_role_for_inner_signer(&buyer, Some(&buyer), Some(&seller)),
+            Some((ChatSender::Buyer, None))
+        );
+        assert_eq!(
+            dispute_chat_role_for_inner_signer(&seller, Some(&buyer), Some(&seller)),
+            Some((ChatSender::Seller, None))
+        );
+        assert!(
+            dispute_chat_role_for_inner_signer(&unknown, Some(&buyer), Some(&seller)).is_none()
+        );
+    }
+
+    #[test]
+    fn observer_known_signer_roles_does_not_guess_unknown_keys() {
+        let admin = Keys::generate().public_key();
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let dispute = AdminDispute {
+            buyer_pubkey: Some(buyer.public_key().to_string()),
+            seller_pubkey: Some(seller.public_key().to_string()),
+            ..Default::default()
+        };
+        let roles = observer_known_signer_roles(Some(&admin), &[dispute]);
+        assert_eq!(roles.get(&admin), Some(&ChatSender::Admin));
+        assert_eq!(roles.get(&buyer.public_key()), Some(&ChatSender::Buyer));
+        assert_eq!(roles.get(&seller.public_key()), Some(&ChatSender::Seller));
+        assert!(!roles.contains_key(&Keys::generate().public_key()));
     }
 
     #[test]

@@ -10,9 +10,11 @@
 //! far-future timestamp cannot poison `since`.
 //!
 //! Incoming events are decrypted with the per-channel ECDH secret (`K_conv` /
-//! `K_sign` derived at unwrap), and emitted on the existing
-//! `admin_chat_updates` / `user_order_chat_updates` channels so the
-//! `apply_*_chat_updates` handlers stay unchanged.
+//! `K_sign` derived at unwrap). Unwrap requires a non-empty inner-signer
+//! allow-list on [`ChatRouterCmd::TrackChatKey`]; messages whose inner event is
+//! not signed by an allowed trade/admin key are dropped. Decoded messages are
+//! emitted on the existing `admin_chat_updates` / `user_order_chat_updates`
+//! channels.
 //!
 //! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): the task is spawned once at
 //! startup and respawned on client reload/reconnect, exactly like the trade DM
@@ -36,7 +38,8 @@ use crate::util::chat_security::{
 };
 use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
-    fetch_chat_messages_for_shared_key, keys_from_shared_hex, unwrap_giftwrap_with_shared_key,
+    fetch_chat_messages_for_shared_key, keys_from_shared_hex, order_chat_allowed_signers,
+    unwrap_giftwrap_with_shared_key,
 };
 use futures::StreamExt;
 
@@ -52,13 +55,16 @@ pub enum ChatKeyId {
 /// Commands consumed by [`listen_for_chat_messages`].
 pub enum ChatRouterCmd {
     /// Start tracking a shared-key chat: hydrate history once, then include the
-    /// key's pubkey in the batched live subscription.
+    /// key's pubkey in the batched live subscription. `allowed_signers` must be
+    /// non-empty (empty lists are ignored and the key is not tracked).
     TrackChatKey {
         key_id: ChatKeyId,
         /// Hex of the ECDH shared secret (round-trips via [`keys_from_shared_hex`]).
         shared_key_hex: String,
         /// Local trade pubkey for order chats (used to skip relay echoes of our own sends).
         local_trade_pubkey: Option<PublicKey>,
+        /// Inner-signer allow-list (party trade keys, plus admin on dispute channels).
+        allowed_signers: Vec<PublicKey>,
         /// Only emit history messages at/after this unix timestamp (last-seen cursor).
         since: Option<i64>,
     },
@@ -75,6 +81,8 @@ struct ChatTarget {
     sign_pubkey: PublicKey,
     /// Order chat only; enables echo-skip in `apply_user_order_chat_updates`.
     local_trade_pubkey: Option<PublicKey>,
+    /// Accepted inner signers for unwrap (must be non-empty).
+    allowed_signers: Vec<PublicKey>,
 }
 
 /// Live subscription ids for the dual-read migration window.
@@ -133,16 +141,21 @@ fn send_chat_router_cmd(cmd: ChatRouterCmd) {
 }
 
 /// Track a user P2P order chat by its shared key.
+///
+/// `allowed_signers` must be the local trade pubkey and the counterparty trade
+/// pubkey (see [`order_chat_allowed_signers`]). An empty list is not tracked.
 pub fn track_order_chat(
     order_id: String,
     shared_key_hex: String,
     local_trade_pubkey: PublicKey,
+    allowed_signers: Vec<PublicKey>,
     since: Option<i64>,
 ) {
     send_chat_router_cmd(ChatRouterCmd::TrackChatKey {
         key_id: ChatKeyId::Order(order_id),
         shared_key_hex,
         local_trade_pubkey: Some(local_trade_pubkey),
+        allowed_signers,
         since,
     });
 }
@@ -155,16 +168,22 @@ pub fn untrack_order_chat(order_id: String) {
 }
 
 /// Track an admin dispute chat party by its shared key.
+///
+/// `allowed_signers` must include that party's trade pubkey and, when known,
+/// the admin pubkey (see [`crate::util::chat_utils::dispute_chat_allowed_signers`]).
+/// An empty list is not tracked.
 pub fn track_dispute_chat(
     dispute_id: String,
     party: ChatParty,
     shared_key_hex: String,
+    allowed_signers: Vec<PublicKey>,
     since: Option<i64>,
 ) {
     send_chat_router_cmd(ChatRouterCmd::TrackChatKey {
         key_id: ChatKeyId::Dispute(dispute_id, party),
         shared_key_hex,
         local_trade_pubkey: None,
+        allowed_signers,
         since,
     });
 }
@@ -187,6 +206,7 @@ pub fn untrack_dispute_chat_parties(dispute_id: &str) {
 /// Loads the order, resolves the shared key (persisted `order_chat_shared_key_hex`, else ECDH
 /// from `trade_keys` + `counterparty_pubkey`), and emits a track command. Hydrate cutoff comes
 /// from the on-disk transcript max timestamp when present (same cursor idea as startup).
+/// Skips tracking when the counterparty trade pubkey is missing (no inner-signer allow-list).
 /// Idempotent at the router level: re-tracking an already-tracked key is a cheap no-op.
 pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, trade_keys: &Keys) {
     let order = match Order::get_by_id(pool, &order_id.to_string()).await {
@@ -197,9 +217,24 @@ pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, tra
         .order_chat_shared_key_hex
         .clone()
         .or_else(|| derive_shared_key_hex(Some(trade_keys), order.counterparty_pubkey.as_deref()));
+    let Some(allowed) = order_chat_allowed_signers(
+        trade_keys.public_key(),
+        order.counterparty_pubkey.as_deref(),
+    ) else {
+        log::warn!(
+            "order chat {order_id}: missing counterparty pubkey; not tracking shared-key chat"
+        );
+        return;
+    };
     if let Some(hex) = shared_hex {
         let since = order_chat_since_from_file(&order_id.to_string());
-        track_order_chat(order_id.to_string(), hex, trade_keys.public_key(), since);
+        track_order_chat(
+            order_id.to_string(),
+            hex,
+            trade_keys.public_key(),
+            allowed,
+            since,
+        );
     }
 }
 
@@ -374,8 +409,9 @@ struct CmdOutcome {
 ///
 /// This only mutates `targets`; history hydration is deferred to the caller and
 /// runs **after** [`resubscribe`] so the live filter already covers the new key
-/// (see [`PendingHydration`]). Returns whether the live subscription must be
-/// rebuilt and, for a new track, the hydration job to run afterwards.
+/// (see [`PendingHydration`]). An empty `allowed_signers` list is a no-op (the
+/// key is not tracked). Returns whether the live subscription must be rebuilt
+/// and, for a new track, the hydration job to run afterwards.
 fn apply_chat_router_cmd(
     cmd: ChatRouterCmd,
     targets: &mut HashMap<PublicKey, ChatTarget>,
@@ -385,8 +421,20 @@ fn apply_chat_router_cmd(
             key_id,
             shared_key_hex,
             local_trade_pubkey,
+            allowed_signers,
             since,
         } => {
+            if allowed_signers.is_empty() {
+                log::warn!(
+                    "[chat_live] empty inner-signer allow-list for {key_id:?}; not tracking"
+                );
+                return CmdOutcome {
+                    needs_resubscribe: false,
+                    hydrate: None,
+                    tracked: None,
+                    untracked: None,
+                };
+            }
             let Some(shared_keys) = keys_from_shared_hex(&shared_key_hex) else {
                 log::warn!("[chat_live] invalid shared key hex for {key_id:?}; not tracking");
                 return CmdOutcome {
@@ -427,6 +475,7 @@ fn apply_chat_router_cmd(
                     shared_keys: shared_keys.clone(),
                     sign_pubkey: sign.public_key(),
                     local_trade_pubkey,
+                    allowed_signers,
                 },
             );
             CmdOutcome {
@@ -462,10 +511,11 @@ fn load_inner_ids_for_key(key_id: &ChatKeyId) -> HashSet<EventId> {
 }
 
 /// Backfill one newly tracked chat's history **after** the live subscription is
-/// active (relay subscriptions alone don't replay history). Because the live
-/// filter already covers this key, any message published during the fetch is also
-/// delivered live and deduped by the last-seen cursor / inner-id set. No-op if
-/// the key was untracked within the same command burst.
+/// active (relay subscriptions alone don't replay history). Unwrap uses the
+/// target's inner-signer allow-list. Because the live filter already covers this
+/// key, any message published during the fetch is also delivered live and
+/// deduped by the last-seen cursor / inner-id set. No-op if the key was
+/// untracked within the same command burst.
 async fn hydrate_history(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
@@ -477,8 +527,13 @@ async fn hydrate_history(
     let Some(target) = targets.get(&pending.target_pubkey) else {
         return;
     };
-    match fetch_chat_messages_for_shared_key(client, &pending.shared_keys, None, pending.since)
-        .await
+    match fetch_chat_messages_for_shared_key(
+        client,
+        &pending.shared_keys,
+        &target.allowed_signers,
+        pending.since,
+    )
+    .await
     {
         Ok(messages) => {
             let cutoff = pending.since.unwrap_or(0);
@@ -502,6 +557,8 @@ async fn hydrate_history(
 /// Spawned once at startup and respawned on client reload/reconnect (mirrors
 /// `listen_for_order_messages`). Consumes [`ChatRouterCmd`] for track/untrack and
 /// routes live GiftWrap (`#p`) and kind-14 (`authors = pub(K_sign)`) events.
+/// Live unwrap and hydration require the per-key inner-signer allow-list from
+/// [`ChatRouterCmd::TrackChatKey`].
 ///
 /// Multiple buffered track/untrack commands are drained and applied before a single
 /// [`resubscribe`], so startup bursts (e.g. [`crate::ui::helpers::track_startup_chats`])
@@ -588,7 +645,12 @@ pub async fn listen_for_chat_messages(
                     );
                     continue;
                 }
-                match unwrap_giftwrap_with_shared_key(&target.shared_keys, &event, None).await {
+                match unwrap_giftwrap_with_shared_key(
+                    &target.shared_keys,
+                    &event,
+                    &target.allowed_signers,
+                )
+                .await {
                     Ok(msg) => {
                         let inner = seen_inner.entry(target.key_id.clone()).or_default();
                         if !inner.insert(msg.inner_event_id) {
@@ -667,6 +729,20 @@ mod tests {
             .to_hex()
     }
 
+    fn sample_allowed_signers() -> Vec<PublicKey> {
+        vec![Keys::generate().public_key(), Keys::generate().public_key()]
+    }
+
+    fn track_order_cmd(shared_hex: String, since: Option<i64>) -> ChatRouterCmd {
+        ChatRouterCmd::TrackChatKey {
+            key_id: ChatKeyId::Order("order-1".to_string()),
+            shared_key_hex: shared_hex,
+            local_trade_pubkey: None,
+            allowed_signers: sample_allowed_signers(),
+            since,
+        }
+    }
+
     /// Tracking a new key must defer history hydration (return a `PendingHydration`)
     /// and request a resubscribe, so the live filter is rebuilt *before* the backfill
     /// runs — closing the miss window flagged in review.
@@ -676,15 +752,7 @@ mod tests {
         let shared_hex = sample_shared_hex();
         let expected_pubkey = keys_from_shared_hex(&shared_hex).unwrap().public_key();
 
-        let outcome = apply_chat_router_cmd(
-            ChatRouterCmd::TrackChatKey {
-                key_id: ChatKeyId::Order("order-1".to_string()),
-                shared_key_hex: shared_hex,
-                local_trade_pubkey: None,
-                since: Some(42),
-            },
-            &mut targets,
-        );
+        let outcome = apply_chat_router_cmd(track_order_cmd(shared_hex, Some(42)), &mut targets);
 
         assert!(outcome.needs_resubscribe);
         let hydrate = outcome.hydrate.expect("track must schedule hydration");
@@ -698,12 +766,7 @@ mod tests {
     fn retrack_existing_key_is_noop() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
-        let track = || ChatRouterCmd::TrackChatKey {
-            key_id: ChatKeyId::Order("order-1".to_string()),
-            shared_key_hex: shared_hex.clone(),
-            local_trade_pubkey: None,
-            since: None,
-        };
+        let track = || track_order_cmd(shared_hex.clone(), None);
 
         let _ = apply_chat_router_cmd(track(), &mut targets);
         let outcome = apply_chat_router_cmd(track(), &mut targets);
@@ -718,15 +781,7 @@ mod tests {
     fn untrack_removes_key_without_hydration() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
-        let _ = apply_chat_router_cmd(
-            ChatRouterCmd::TrackChatKey {
-                key_id: ChatKeyId::Order("order-1".to_string()),
-                shared_key_hex: shared_hex,
-                local_trade_pubkey: None,
-                since: None,
-            },
-            &mut targets,
-        );
+        let _ = apply_chat_router_cmd(track_order_cmd(shared_hex, None), &mut targets);
 
         let outcome = apply_chat_router_cmd(
             ChatRouterCmd::UntrackChatKey {
@@ -759,15 +814,7 @@ mod tests {
     fn resolve_chat_target_routes_kind14_by_sign_author() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
-        let _ = apply_chat_router_cmd(
-            ChatRouterCmd::TrackChatKey {
-                key_id: ChatKeyId::Order("order-1".to_string()),
-                shared_key_hex: shared_hex,
-                local_trade_pubkey: None,
-                since: None,
-            },
-            &mut targets,
-        );
+        let _ = apply_chat_router_cmd(track_order_cmd(shared_hex, None), &mut targets);
         let target = targets.values().next().expect("tracked");
         let (_conv, sign) = chat_keys_from_ecdh(&target.shared_keys).expect("chat keys");
         // Outer kind-14 authored by K_sign
@@ -785,15 +832,7 @@ mod tests {
     fn resolve_chat_target_ignores_kind14_from_unknown_author() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
-        let _ = apply_chat_router_cmd(
-            ChatRouterCmd::TrackChatKey {
-                key_id: ChatKeyId::Order("order-1".to_string()),
-                shared_key_hex: shared_hex,
-                local_trade_pubkey: None,
-                since: None,
-            },
-            &mut targets,
-        );
+        let _ = apply_chat_router_cmd(track_order_cmd(shared_hex, None), &mut targets);
         // Tag `#p` with the tracked target key so this fails if routing ever fell back
         // to `#p`; the unknown outer author must still be rejected.
         let target_pubkey = *targets.keys().next().expect("tracked target");
@@ -811,18 +850,29 @@ mod tests {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
         let future = Timestamp::now().as_secs() as i64 + 86_400;
-        let outcome = apply_chat_router_cmd(
-            ChatRouterCmd::TrackChatKey {
-                key_id: ChatKeyId::Order("order-1".to_string()),
-                shared_key_hex: shared_hex,
-                local_trade_pubkey: None,
-                since: Some(future),
-            },
-            &mut targets,
-        );
+        let outcome =
+            apply_chat_router_cmd(track_order_cmd(shared_hex, Some(future)), &mut targets);
         let hydrate = outcome.hydrate.expect("hydrate");
         let since = hydrate.since.expect("since");
         assert!(since <= Timestamp::now().as_secs() as i64);
         assert!(since < future);
+    }
+
+    #[test]
+    fn track_rejects_empty_allow_list() {
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let outcome = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order("order-1".to_string()),
+                shared_key_hex: sample_shared_hex(),
+                local_trade_pubkey: None,
+                allowed_signers: Vec::new(),
+                since: None,
+            },
+            &mut targets,
+        );
+        assert!(!outcome.needs_resubscribe);
+        assert!(outcome.hydrate.is_none());
+        assert!(targets.is_empty());
     }
 }

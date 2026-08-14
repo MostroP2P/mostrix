@@ -506,11 +506,11 @@ The key handler processes input in this order:
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over one batched `kind: 1059` subscription; disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
+  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched dual-read subscription; disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
-    - Fetches `GiftWrap` events addressed to each shared key's public key (7-day rolling window).
-    - Decrypts each event using the shared key (standard NIP-59 or simplified mostro-chat format).
+    - Fetches chat events addressed to each shared key (7-day rolling window).
+    - Decrypts each event using the shared key and rejects inner signers outside the party+admin allow-list.
     - Uses `last_seen_timestamp` to skip already-processed events.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.
 
