@@ -67,7 +67,9 @@ use crate::util::chat_utils::{
     send_user_order_chat_message_via_shared_key,
 };
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
-use crate::util::order_utils::{execute_restore_session, BondSlashChoice};
+use crate::util::order_utils::{
+    execute_restore_session, restore_completion_result, BondSlashChoice,
+};
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
@@ -650,25 +652,18 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 let result_tx = ctx.order_result_tx.clone();
                 let dm_subscription_tx = ctx.dm_subscription_tx.clone();
                 tokio::spawn(async move {
-                    match execute_restore_session(
+                    let outcome = execute_restore_session(
                         &pool,
                         &client,
                         mostro_pubkey,
                         mostro_info.as_ref(),
                         dm_subscription_tx,
                     )
-                    .await
-                    {
-                        Ok(summary) => {
-                            let _ =
-                                result_tx.send(OperationResult::Info(summary.to_user_message()));
-                        }
-                        Err(e) => {
-                            log::error!("Session restore failed: {e}");
-                            let _ = result_tx
-                                .send(OperationResult::Error(format!("Restore failed: {e}")));
-                        }
+                    .await;
+                    if let Err(e) = &outcome {
+                        log::error!("Session restore failed: {e}");
                     }
+                    let _ = result_tx.send(restore_completion_result(&outcome));
                 });
             } else {
                 app.mode = default_mode;
