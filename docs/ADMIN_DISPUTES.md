@@ -647,7 +647,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers/attachments.rs` (parse, serialize, legacy placeholder match), `src/ui/helpers/chat_storage.rs` (JSON transcript save/load), `src/ui/helpers/chat_render.rs` (chat list/line styling).
 
-##### NIP-59 Chat Flow (Admin ↔ Parties — Shared Key Model)
+##### Kind-14 Chat Flow (Admin ↔ Parties — Shared Key Model)
 
 - **Shared key derivation**:
   - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
@@ -751,7 +751,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - `src/ui/helpers/chat_storage.rs` - Chat transcript parsing/loading/saving and idempotent append logic
 - `src/ui/helpers/attachments.rs` - Attachment parsing, placeholder text, and attachment toast helpers
 - `src/ui/helpers/chat_render.rs` / `src/ui/helpers/chat_visibility.rs` - Chat list/scrollview rendering and party visibility filtering
-- `src/util/chat_utils.rs` - NIP-59 gift wrap fetch/send, HashMap-based message routing
+- `src/util/chat_utils.rs` - Kind-14 chat wrap/unwrap (plus dual-read GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true), HashMap-based message routing
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 

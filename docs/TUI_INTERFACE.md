@@ -99,7 +99,7 @@ Focused on dispute resolution and protocol management.
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a shared key:
   - Single shared-key input (64-char hex secret, paste-friendly)
-  - Fetches NIP-59 gift-wrap messages from relays for the last 7 days using the shared key's public key
+  - Fetches kind-14 chat events from relays for the last 7 days (`authors = [pub(K_sign)]`); also reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
   - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
@@ -489,6 +489,8 @@ The key handler processes input in this order:
 **Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
 
 #### Kind-14 Chat Internals (Shared Key Model)
+
+Active admin-chat transport is kind 14 (`K_sign` / `K_conv`). GiftWrap is inbound-only during the `CHAT_ACCEPT_LEGACY_GIFTWRAP` dual-read window, not the send path.
 
 - **Shared key derivation**:
   - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
