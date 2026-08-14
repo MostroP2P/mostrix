@@ -20,8 +20,8 @@ use crate::ui::orders::{
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
     InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
-    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserMode, UserRole, UserTab,
-    ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserChatSender, UserMode,
+    UserOrderChatMessage, UserRole, UserTab, ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -172,7 +172,7 @@ fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget>
 fn persist_local_user_chat_message(
     app: &mut AppState,
     target: &OrderChatTarget,
-    local_msg: crate::ui::UserOrderChatMessage,
+    local_msg: UserOrderChatMessage,
 ) -> bool {
     let persisted = match target.channel {
         UserChatChannel::Peer => save_order_chat_message(&target.order_id, &local_msg),
@@ -404,8 +404,8 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
         },
         |app| resolve_selected_order_chat_target(app),
         |app, target, content| {
-            let local_msg = crate::ui::UserOrderChatMessage {
-                sender: crate::ui::UserChatSender::You,
+            let local_msg = UserOrderChatMessage {
+                sender: UserChatSender::You,
                 content: content.to_string(),
                 timestamp: chrono::Utc::now().timestamp(),
                 attachment: None,
