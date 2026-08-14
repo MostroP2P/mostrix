@@ -283,7 +283,11 @@ pub fn spawn_fetch_scheduler_loops(
                         }
                     }
                     notification = notifications.next() => {
-                        let Some(ClientNotification::Event { event, .. }) = notification else {
+                        let Some(notification) = notification else {
+                            log::warn!("[orders_live] notification stream ended");
+                            break;
+                        };
+                        let ClientNotification::Event { event, .. } = notification else {
                             continue;
                         };
                         let event = *event;
@@ -385,7 +389,11 @@ pub fn spawn_fetch_scheduler_loops(
                         }
                     }
                     notification = notifications.next() => {
-                        let Some(ClientNotification::Event { event, .. }) = notification else {
+                        let Some(notification) = notification else {
+                            log::warn!("[disputes_live] notification stream ended");
+                            break;
+                        };
+                        let ClientNotification::Event { event, .. } = notification else {
                             continue;
                         };
                         let event = *event;

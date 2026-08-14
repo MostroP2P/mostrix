@@ -446,8 +446,24 @@ pub async fn apply_pending_fetch_scheduler_reload(
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
-    if let Err(e) = client.unsubscribe_all().await {
-        log::debug!("unsubscribe failed: {e}");
+    match client.unsubscribe_all().await {
+        Ok(output) if !output.failed.is_empty() => {
+            let failed: Vec<String> = output
+                .failed
+                .iter()
+                .map(|(url, err)| format!("{url}: {err}"))
+                .collect();
+            return Err(format!(
+                "Fetch scheduler reload: unsubscribe_all failed on relays: {}",
+                failed.join("; ")
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!(
+                "Fetch scheduler reload: unsubscribe_all failed: {e}"
+            ));
+        }
     }
 
     connect_client_safely(client)
@@ -623,8 +639,22 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.message_listener_handle.abort();
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
-    if let Err(e) = ctx.client.unsubscribe_all().await {
-        log::debug!("unsubscribe failed: {e}");
+    match ctx.client.unsubscribe_all().await {
+        Ok(output) if !output.failed.is_empty() => {
+            let failed: Vec<String> = output
+                .failed
+                .iter()
+                .map(|(url, err)| format!("{url}: {err}"))
+                .collect();
+            return Err(format!(
+                "Reconnect: unsubscribe_all failed on relays: {}",
+                failed.join("; ")
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!("Reconnect: unsubscribe_all failed: {e}"));
+        }
     }
 
     connect_client_safely(ctx.client)
