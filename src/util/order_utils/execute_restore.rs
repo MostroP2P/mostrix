@@ -32,6 +32,9 @@ pub struct RestoreSummary {
     pub failed: usize,
     /// Disputes reported by Mostro for this identity.
     pub disputes: usize,
+    /// Disputes whose local order could not be moved to `Dispute` (row missing
+    /// or write failed) — the dispute is still real on Mostro's side.
+    pub dispute_status_failed: usize,
 }
 
 impl RestoreSummary {
@@ -56,6 +59,12 @@ impl RestoreSummary {
             msg.push_str(&format!(
                 " {} order(s) could not be saved — see log.",
                 self.failed
+            ));
+        }
+        if self.dispute_status_failed > 0 {
+            msg.push_str(&format!(
+                " {} dispute(s) could not be marked locally — see log.",
+                self.dispute_status_failed
             ));
         }
         msg
@@ -154,10 +163,24 @@ pub async fn execute_restore_session(
         disputes: restore_data.restore_disputes.len(),
         ..Default::default()
     };
-    let mut max_trade_index: i64 = 0;
+
+    // Advance last_trade_index BEFORE writing any order row. Mostro's index is
+    // authoritative, and this ordering guarantees the failure mode is always
+    // "index bumped, some rows missing" (a re-run repairs it) and never "rows
+    // with restored trade keys present, index stale" (a later order would reuse
+    // a restored key). If this write fails nothing else has been touched.
+    let max_trade_index = restore_data
+        .restore_orders
+        .iter()
+        .map(|o| o.trade_index)
+        .chain(restore_data.restore_disputes.iter().map(|d| d.trade_index))
+        .max()
+        .unwrap_or(0);
+    if max_trade_index > user.last_trade_index.unwrap_or(0) {
+        User::update_last_trade_index(pool, max_trade_index).await?;
+    }
 
     for info in &restore_data.restore_orders {
-        max_trade_index = max_trade_index.max(info.trade_index);
         match restore_one_order(pool, client, mostro_pubkey, &user, info).await {
             Ok(RestoredAs::Inserted {
                 with_details,
@@ -195,12 +218,23 @@ pub async fn execute_restore_session(
     // their local status reflects the dispute. User-side solver chat is not
     // wired yet, so initiator/solver info has nowhere to be stored.
     for dispute in &restore_data.restore_disputes {
-        max_trade_index = max_trade_index.max(dispute.trade_index);
-        let _ = Order::update_status(pool, &dispute.order_id.to_string(), Status::Dispute).await;
-    }
-
-    if max_trade_index > user.last_trade_index.unwrap_or(0) {
-        User::update_last_trade_index(pool, max_trade_index).await?;
+        let id_str = dispute.order_id.to_string();
+        // UPDATE on a missing row is a silent no-op, so check presence first:
+        // a dispute whose order failed to restore must not be reported as applied.
+        let applied = match Order::get_by_id(pool, &id_str).await {
+            Ok(_) => Order::update_status(pool, &id_str, Status::Dispute)
+                .await
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(format!("order row not present: {e}")),
+        };
+        if let Err(e) = applied {
+            log::error!(
+                "Restore: could not mark order {} as disputed (dispute {}): {e}",
+                dispute.order_id,
+                dispute.dispute_id
+            );
+            summary.dispute_status_failed += 1;
+        }
     }
 
     Ok(summary)
@@ -229,6 +263,12 @@ enum RestoredRole {
     UnknownAsTaker,
 }
 
+/// A row persisted without relay details: `Order::new` from a default
+/// `SmallOrder` leaves `fiat_code` empty, which no real order has.
+fn is_minimal_placeholder(order: &Order) -> bool {
+    order.fiat_code.trim().is_empty()
+}
+
 fn restored_order_role(status: Option<Status>) -> RestoredRole {
     match status {
         Some(Status::Pending) | Some(Status::WaitingMakerBond) => RestoredRole::Maker,
@@ -245,18 +285,34 @@ async fn restore_one_order(
 ) -> Result<RestoredAs> {
     let id_str = info.order_id.to_string();
 
-    if Order::get_by_id(pool, &id_str).await.is_ok() {
-        if let Ok(status) = Status::from_str(&info.status) {
-            let _ = Order::update_status(pool, &id_str, status).await;
+    // A row from an earlier restore that never got relay details (empty fiat
+    // code is impossible for a real order) is treated as absent so this run
+    // retries the relay lookup and rehydrates it, instead of freezing the
+    // minimal placeholder forever.
+    if let Ok(existing) = Order::get_by_id(pool, &id_str).await {
+        if !is_minimal_placeholder(&existing) {
+            if let Ok(status) = Status::from_str(&info.status) {
+                Order::update_status(pool, &id_str, status).await?;
+            }
+            return Ok(RestoredAs::AlreadyKnown);
         }
-        return Ok(RestoredAs::AlreadyKnown);
     }
 
     let trade_keys = user.derive_trade_keys(info.trade_index)?;
 
-    let relay_order = fetch_small_order_by_id_from_relay(client, mostro_pubkey, info.order_id)
-        .await
-        .unwrap_or_default();
+    // A relay lookup *error* is not "not found": log it so a flaky relay is
+    // visible, but still persist the minimal row so the trade key is not lost.
+    let relay_order =
+        match fetch_small_order_by_id_from_relay(client, mostro_pubkey, info.order_id).await {
+            Ok(found) => found,
+            Err(e) => {
+                log::warn!(
+                    "Restore: relay lookup failed for order {} (saving minimal row): {e}",
+                    info.order_id
+                );
+                None
+            }
+        };
     let with_details = relay_order.is_some();
     let mut small_order = relay_order.unwrap_or_default();
     small_order.id = Some(info.order_id);
@@ -283,7 +339,10 @@ async fn restore_one_order(
 
 #[cfg(test)]
 mod tests {
-    use super::{restore_completion_result, restored_order_role, RestoreSummary, RestoredRole};
+    use super::{
+        is_minimal_placeholder, restore_completion_result, restored_order_role, RestoreSummary,
+        RestoredRole,
+    };
     use crate::ui::OperationResult;
     use mostro_core::prelude::Status;
 
@@ -346,6 +405,51 @@ mod tests {
             RestoredRole::UnknownAsTaker
         );
         assert_eq!(restored_order_role(None), RestoredRole::UnknownAsTaker);
+    }
+
+    #[test]
+    fn placeholder_rows_are_detected_by_their_empty_fiat_code() {
+        // Regression: a row saved without relay details must be re-hydrated on
+        // the next restore instead of being frozen as AlreadyKnown forever.
+        let mut order = crate::models::Order {
+            id: Some("x".into()),
+            kind: None,
+            status: None,
+            amount: 0,
+            fiat_code: String::new(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 0,
+            payment_method: String::new(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(1),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        };
+        assert!(is_minimal_placeholder(&order));
+        order.fiat_code = "EUR".into();
+        assert!(!is_minimal_placeholder(&order));
+    }
+
+    #[test]
+    fn summary_message_reports_dispute_status_failures() {
+        let s = RestoreSummary {
+            disputes: 2,
+            dispute_status_failed: 1,
+            ..Default::default()
+        }
+        .to_user_message();
+        assert!(s.contains("1 dispute(s) could not be marked locally"));
+        assert!(!RestoreSummary::default()
+            .to_user_message()
+            .contains("could not be marked"));
     }
 
     #[test]
