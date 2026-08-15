@@ -232,6 +232,11 @@ fn handle_clipboard_copy(invoice: String) -> bool {
         // Some clipboard backends can emit warnings to stderr; silence stderr during the call
         // to avoid corrupting the TUI.
         std::thread::spawn(move || {
+            // Needed for `SetExtLinux::wait`. It keeps this thread alive serving the selection
+            // until another app takes the clipboard ownership; otherwhise the copied text is lost
+            // as soon as the thread exists. See the documentation of `SetExtLinux::wait` for
+            // details.
+            use arboard::SetExtLinux;
             let copy_result = {
                 #[cfg(unix)]
                 {
@@ -247,7 +252,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                     }
 
                     let r = match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
                         Err(e) => Err(e),
                     };
 
@@ -262,7 +267,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                 #[cfg(not(unix))]
                 {
                     match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
                         Err(e) => Err(e),
                     }
                 }
