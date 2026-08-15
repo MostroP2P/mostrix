@@ -115,6 +115,11 @@ pub async fn execute_restore_session(
         .as_json()
         .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?;
 
+    log::info!(
+        "Restore: requesting session state from {mostro_pubkey} as {}",
+        identity_keys.public_key()
+    );
+
     let sent_message = send_dm(
         client,
         Some(&identity_keys),
@@ -236,6 +241,10 @@ pub async fn execute_restore_session(
             summary.dispute_status_failed += 1;
         }
     }
+
+    // A successful restore used to leave no trace at all in the log, which made
+    // "did it run and find nothing?" indistinguishable from "did it run?".
+    log::info!("Restore: {}", summary.to_user_message());
 
     Ok(summary)
 }
