@@ -1246,4 +1246,54 @@ mod tests {
         unwrap_observer_chat_event(&conv, Some(&sign.public_key()), &forged, &allowed)
             .expect_err("K_conv cannot produce a valid K_sign author");
     }
+
+    /// #102: published kind-14 chat must not expose either trade pubkey as outer
+    /// author or as the sole `#p` address — only `pub(K_sign)` / `pub(K_conv)`.
+    #[tokio::test]
+    async fn acceptance_kind14_wire_hides_trade_pubkeys() {
+        let alice = Keys::generate();
+        let bob = Keys::generate();
+        let shared = SharedKey::derive(alice.secret_key(), &bob.public_key()).expect("shared");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let wrapped = wrap_chat_message(&alice, &conv, &sign, "acceptance")
+            .await
+            .expect("wrap");
+
+        assert_eq!(wrapped.kind, Kind::PrivateDirectMessage);
+        assert_eq!(wrapped.pubkey, sign.public_key());
+        assert_ne!(wrapped.pubkey, alice.public_key());
+        assert_ne!(wrapped.pubkey, bob.public_key());
+        assert_ne!(wrapped.pubkey, shared.public_key());
+
+        let p_tags: Vec<PublicKey> = wrapped.tags.public_keys().collect();
+        assert_eq!(p_tags, vec![conv.public_key()]);
+        assert!(!p_tags.contains(&alice.public_key()));
+        assert!(!p_tags.contains(&bob.public_key()));
+        assert!(!p_tags.contains(&shared.public_key()));
+    }
+
+    /// #102: live subscribe shape is `authors = [pub(K_sign)]` (not trade keys).
+    #[test]
+    fn acceptance_chat_filter_authors_are_k_sign_only() {
+        let a = Keys::generate();
+        let b = Keys::generate();
+        let shared = SharedKey::derive(a.secret_key(), &b.public_key()).expect("shared");
+        let (_conv, sign) = shared.chat_keys().expect("chat keys");
+        let filter = chat_filter(sign.public_key());
+        let json = serde_json::to_value(&filter).expect("filter json");
+        let authors = json.get("authors").expect("authors");
+        assert!(authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(&sign.public_key().to_hex())));
+        assert!(json.get("#p").is_none());
+        for trade in [a.public_key(), b.public_key()] {
+            assert!(authors
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v.as_str() != Some(&trade.to_hex())));
+        }
+    }
 }
