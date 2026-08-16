@@ -15,7 +15,7 @@ use crate::ui::chat::{
     UserOrderChatMessage,
 };
 use crate::ui::helpers::OrderChatListItem;
-use crate::ui::navigation::{Tab, UserRole};
+use crate::ui::navigation::{AdminTab, Tab, UserRole};
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
@@ -23,6 +23,23 @@ use crate::ui::orders::{
 use crate::ui::user_state::UserMode;
 use crate::util::{transport_from_instance, MostroInstanceInfo};
 use nostr_sdk::prelude::Keys;
+
+/// Which Observer input has keyboard / paste focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObserverInputField {
+    #[default]
+    ConvKey,
+    SignAuthor,
+}
+
+impl ObserverInputField {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::ConvKey => Self::SignAuthor,
+            Self::SignAuthor => Self::ConvKey,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum UiMode {
@@ -226,9 +243,13 @@ pub struct AppState {
     pub user_send_attachment_explorer: Option<ratatui_explorer::FileExplorer>,
     /// Order id with an outbound attachment send in progress (blocks duplicate Ctrl+O).
     pub sending_attachment_order_id: Option<String>,
-    /// Observer mode: shared key as 64-char hex string (32 bytes).
+    /// Observer mode: disclosed `K_conv` as 64-char hex (read-only grant).
     pub observer_shared_key_input: String,
-    /// Observer mode: chat messages fetched from relays for the pasted shared key.
+    /// Observer mode: optional `pub(K_sign)` locator (hex or npub) for `authors` filter.
+    pub observer_sign_pubkey_input: String,
+    /// Observer mode: which input receives typing and paste.
+    pub observer_input_focus: ObserverInputField,
+    /// Observer mode: chat messages fetched from relays for the pasted `K_conv`.
     pub observer_messages: Vec<DisputeChatMessage>,
     /// Observer mode: scroll state for chat messages.
     pub observer_scrollview_state: tui_scrollview::ScrollViewState,
@@ -238,6 +259,11 @@ pub struct AppState {
     pub observer_loading: bool,
     /// Observer mode: last error message (if any).
     pub observer_error: Option<String>,
+    /// Bumped on each Observer fetch and on [`Self::clear_observer_secrets`].
+    /// Async `ObserverChatLoaded` / `ObserverChatError` results with an older
+    /// generation are ignored so a slow relay reply cannot overwrite a newer
+    /// transcript or restored-empty state.
+    pub observer_fetch_generation: u64,
     /// Parsed `admin_privkey` from settings (dispute chat, classification). Updated on save / reload.
     pub admin_keys: Option<Keys>,
     /// After switching to admin mode (Settings → Switch Mode) or saving admin key: reload disputes from DB in main.
@@ -318,11 +344,14 @@ impl AppState {
             user_send_attachment_explorer: None,
             sending_attachment_order_id: None,
             observer_shared_key_input: String::new(),
+            observer_sign_pubkey_input: String::new(),
+            observer_input_focus: ObserverInputField::ConvKey,
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
             observer_scroll_tracker: None,
             observer_loading: false,
             observer_error: None,
+            observer_fetch_generation: 0,
             admin_keys: None,
             pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
@@ -344,12 +373,51 @@ impl AppState {
         self.mostro_info = info;
     }
 
+    pub fn observer_active_input_mut(&mut self) -> &mut String {
+        match self.observer_input_focus {
+            ObserverInputField::ConvKey => &mut self.observer_shared_key_input,
+            ObserverInputField::SignAuthor => &mut self.observer_sign_pubkey_input,
+        }
+    }
+
+    /// True when Observer `K_conv` / `pub(K_sign)` fields should accept typing and paste.
+    ///
+    /// False while a modal (`HelpPopup`, `OperationResult`, save-attachment, …) owns input.
+    pub fn observer_inputs_editable(&self) -> bool {
+        matches!(self.active_tab, Tab::Admin(AdminTab::Observer))
+            && matches!(
+                self.mode,
+                UiMode::Normal | UiMode::AdminMode(AdminMode::Normal)
+            )
+    }
+
+    fn bump_observer_fetch_generation(&mut self) -> u64 {
+        self.observer_fetch_generation = self.observer_fetch_generation.saturating_add(1);
+        self.observer_fetch_generation
+    }
+
+    /// Invalidate in-flight Observer fetches, then mark a new fetch as current.
+    pub fn begin_observer_fetch(&mut self) -> u64 {
+        let generation = self.bump_observer_fetch_generation();
+        for msg in &mut self.observer_messages {
+            msg.content.zeroize();
+        }
+        self.observer_messages.clear();
+        self.observer_error = None;
+        self.observer_loading = true;
+        generation
+    }
+
     /// Securely wipe all observer inputs and fetched content.
     /// Uses `zeroize` to overwrite strings before clearing them, then
     /// resets error state to safe defaults.
     pub fn clear_observer_secrets(&mut self) {
+        self.bump_observer_fetch_generation();
         self.observer_shared_key_input.zeroize();
         self.observer_shared_key_input.clear();
+        self.observer_sign_pubkey_input.zeroize();
+        self.observer_sign_pubkey_input.clear();
+        self.observer_input_focus = ObserverInputField::ConvKey;
 
         for msg in &mut self.observer_messages {
             msg.content.zeroize();
@@ -380,5 +448,52 @@ impl AppState {
         // admin_disputes_in_progress, admin_chat_scrollview_state, admin_chat_selected_message_idx,
         // admin_chat_line_starts, admin_chat_scroll_tracker, and dispute_filter across role switches
         // so that admin context is not lost when temporarily viewing user mode.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::chat::{ChatSender, DisputeChatMessage};
+
+    fn dummy_observer_message(content: &str) -> DisputeChatMessage {
+        DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: content.to_string(),
+            timestamp: 1,
+            target_party: None,
+            attachment: None,
+        }
+    }
+
+    #[test]
+    fn observer_inputs_editable_only_in_plain_observer_mode() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        assert!(app.observer_inputs_editable());
+
+        app.mode = UiMode::HelpPopup(
+            app.active_tab,
+            Box::new(UiMode::AdminMode(AdminMode::Normal)),
+        );
+        assert!(!app.observer_inputs_editable());
+
+        app.mode = UiMode::operation_result(crate::ui::OperationResult::Error("x".into()));
+        assert!(!app.observer_inputs_editable());
+
+        app.mode = UiMode::ObserverSaveAttachmentPopup(0);
+        assert!(!app.observer_inputs_editable());
+    }
+
+    #[test]
+    fn clear_observer_secrets_invalidates_in_flight_fetch_generation() {
+        let mut app = AppState::new(UserRole::Admin);
+        let gen = app.begin_observer_fetch();
+        app.observer_messages.push(dummy_observer_message("from-a"));
+        app.clear_observer_secrets();
+        assert_ne!(app.observer_fetch_generation, gen);
+        assert!(app.observer_messages.is_empty());
+        assert!(!app.observer_loading);
     }
 }

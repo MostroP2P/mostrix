@@ -5,67 +5,73 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::helpers::build_observer_scrollview_content;
-use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{AppState, ObserverInputField, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    let compact = area.height < 16;
+    let input_height = if compact { 5 } else { 8 };
+    // Borders consume 2 rows. Compact: 1 inner row (status/error). Full: 2 inner rows.
+    let header_height = if compact { 3 } else { 4 };
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(3), // Header / status
-            Constraint::Min(0),    // Chat messages
-            Constraint::Length(6), // Input + footer
+            Constraint::Length(header_height),
+            Constraint::Min(0), // Chat messages
+            Constraint::Length(input_height),
         ],
     )
     .split(area);
 
-    // Header / status
-    let status_lines = {
-        let mut lines = Vec::new();
-        lines.push(Line::from(vec![
+    // Header / status — keep the dynamic row visible (do not clip it behind the title).
+    let status_line = if let Some(err) = &app.observer_error {
+        Line::from(vec![
             Span::styled(
-                "Observer Mode",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
+                "Error: ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  –  paste a shared key to fetch and view chat messages"),
-        ]));
+            Span::styled(err.as_str(), Style::default().fg(Color::Red)),
+        ])
+    } else if !app.observer_messages.is_empty() {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("Loaded {} message(s)", app.observer_messages.len()),
+                Style::default().fg(Color::Green),
+            ),
+        ])
+    } else if app.observer_loading {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Fetching messages from relays...",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Paste K_conv and press Enter to load chat",
+                Style::default().fg(Color::Gray),
+            ),
+        ])
+    };
 
-        if let Some(err) = &app.observer_error {
-            lines.push(Line::from(vec![
+    let status_lines = if compact {
+        vec![status_line]
+    } else {
+        vec![
+            Line::from(vec![
                 Span::styled(
-                    "Error: ",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    "Observer Mode",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(err.as_str(), Style::default().fg(Color::Red)),
-            ]));
-        } else if !app.observer_messages.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    format!("Loaded {} message(s)", app.observer_messages.len()),
-                    Style::default().fg(Color::Green),
-                ),
-            ]));
-        } else if app.observer_loading {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    "Fetching messages from relays...",
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    "Paste shared key and press Enter to load chat",
-                    Style::default().fg(Color::Gray),
-                ),
-            ]));
-        }
-
-        lines
+                Span::raw("  –  paste K_conv (read-only). Never paste K_sign."),
+            ]),
+            status_line,
+        ]
     };
 
     let header = Paragraph::new(status_lines).block(
@@ -98,7 +104,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         let hint = if app.observer_loading {
             "Fetching messages..."
         } else {
-            "No messages yet. Paste a shared key and press Enter to load."
+            "No messages yet. Paste K_conv and press Enter to load."
         };
         let paragraph = Paragraph::new(Line::from(Span::styled(
             hint,
@@ -146,29 +152,72 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         f.render_stateful_widget(scroll_view, inner_area, &mut app.observer_scrollview_state);
     }
 
-    // Shared key input + footer
-    let input_chunks = Layout::new(
-        Direction::Vertical,
-        [Constraint::Length(4), Constraint::Length(2)],
-    )
-    .split(chunks[2]);
+    // K_conv / optional pub(K_sign) inputs + footer
+    let show_both_fields = !compact;
+    let input_chunks = if show_both_fields {
+        Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(2),
+            ],
+        )
+        .split(chunks[2])
+    } else {
+        Layout::new(
+            Direction::Vertical,
+            [Constraint::Length(3), Constraint::Length(2)],
+        )
+        .split(chunks[2])
+    };
 
-    let key_border = Style::default()
+    let focused_border = Style::default()
         .fg(PRIMARY_COLOR)
         .add_modifier(Modifier::BOLD);
-    let key_title_style = Style::default()
+    let idle_border = Style::default().fg(Color::Gray);
+    let title_style = Style::default()
         .fg(PRIMARY_COLOR)
         .add_modifier(Modifier::BOLD);
 
-    let key_title = Span::styled("Shared key (64-char hex)", key_title_style);
-    let key_input = Paragraph::new(app.observer_shared_key_input.as_str()).block(
+    let conv_focused = app.observer_input_focus == ObserverInputField::ConvKey;
+    let conv_input = Paragraph::new(app.observer_shared_key_input.as_str()).block(
         Block::default()
-            .title(key_title)
+            .title(Span::styled(
+                "K_conv (64-char hex, read-only grant)",
+                title_style,
+            ))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(key_border),
+            .border_style(if conv_focused {
+                focused_border
+            } else {
+                idle_border
+            }),
     );
-    f.render_widget(key_input, input_chunks[0]);
+    let sign_input = Paragraph::new(app.observer_sign_pubkey_input.as_str()).block(
+        Block::default()
+            .title(Span::styled(
+                "pub(K_sign) optional locator (hex/npub)",
+                title_style,
+            ))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if !conv_focused {
+                focused_border
+            } else {
+                idle_border
+            }),
+    );
+
+    if show_both_fields {
+        f.render_widget(conv_input, input_chunks[0]);
+        f.render_widget(sign_input, input_chunks[1]);
+    } else if conv_focused {
+        f.render_widget(conv_input, input_chunks[0]);
+    } else {
+        f.render_widget(sign_input, input_chunks[0]);
+    }
 
     let paste_hint = if cfg!(windows) {
         "Shift+Insert / Ctrl+V / Ctrl+Shift+V / right-click"
@@ -176,8 +225,100 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         "Ctrl+V / Ctrl+Shift+V / middle-click"
     };
     let footer = Paragraph::new(format!(
-        "Ctrl+H: Help | Tab/Shift+Tab: Switch focus | Paste shared key ({paste_hint})\n\
+        "Ctrl+H: Help | Tab: Switch K_conv / pub(K_sign) | Paste ({paste_hint})\n\
 Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
     ));
-    f.render_widget(footer, input_chunks[1]);
+    let footer_idx = if show_both_fields { 2 } else { 1 };
+    f.render_widget(footer, input_chunks[footer_idx]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_observer_tab;
+    use crate::ui::{AppState, UserRole};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut hay = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                hay.push_str(buf[(x, y)].symbol());
+            }
+        }
+        hay.contains(needle)
+    }
+
+    #[test]
+    fn observer_tab_prompts_for_k_conv_not_ecdh() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(UserRole::Admin);
+        terminal
+            .draw(|f| render_observer_tab(f, f.area(), &mut app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "K_conv"), "missing K_conv field");
+        assert!(
+            buffer_contains(buf, "Never paste K_sign") || buffer_contains(buf, "K_sign"),
+            "missing K_sign warning"
+        );
+        assert!(
+            buffer_contains(buf, "read-only"),
+            "missing read-only grant copy"
+        );
+    }
+
+    fn render_observer(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_observer_tab(f, f.area(), app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn observer_header_shows_loading_and_error_at_standard_and_compact_heights() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_loading = true;
+        let buf = render_observer(&mut app, 80, 24);
+        assert!(
+            buffer_contains(&buf, "Fetching messages"),
+            "standard height clipped loading status"
+        );
+        let buf = render_observer(&mut app, 80, 12);
+        assert!(
+            buffer_contains(&buf, "Fetching messages"),
+            "compact height clipped loading status"
+        );
+
+        app.observer_loading = false;
+        app.observer_error = Some("invalid-k-conv".to_string());
+        let buf = render_observer(&mut app, 80, 24);
+        assert!(
+            buffer_contains(&buf, "invalid-k-conv"),
+            "standard height clipped K_conv error"
+        );
+        let buf = render_observer(&mut app, 80, 12);
+        assert!(
+            buffer_contains(&buf, "invalid-k-conv"),
+            "compact height clipped K_conv error"
+        );
+    }
+
+    #[test]
+    fn observer_tab_compact_height_keeps_k_conv_field() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(UserRole::Admin);
+        terminal
+            .draw(|f| render_observer_tab(f, f.area(), &mut app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "K_conv"),
+            "compact layout dropped K_conv"
+        );
+    }
 }

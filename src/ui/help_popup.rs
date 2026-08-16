@@ -336,6 +336,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
+                HELP_OBS_TAB_FOCUS.to_string(),
                 HELP_OBS_PASTE_SHARED_KEY.to_string(),
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
@@ -375,6 +376,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
                 HELP_MY_TRADES_SHIFT_V_RATE.to_string(),
                 HELP_MY_TRADES_SHIFT_D_DISPUTE.to_string(),
+                HELP_MY_TRADES_SHIFT_K_KCONV.to_string(),
                 HELP_MY_TRADES_CTRL_S_ATTACH.to_string(),
                 HELP_MY_TRADES_CTRL_O_SEND.to_string(),
                 HELP_MY_TRADES_CTRL_SHIFT_O_RETRY.to_string(),
@@ -424,6 +426,24 @@ mod help_content_tests {
         assert!(
             lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_D_DISPUTE),
             "Shift+D missing from My Trades help: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_K_KCONV),
+            "Shift+K missing from My Trades help: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn observer_help_lists_k_conv_load_and_tab_focus() {
+        let app = AppState::new(UserRole::Admin);
+        let (_, lines) = help_content(&app, Tab::Admin(AdminTab::Observer));
+        assert!(
+            lines.iter().any(|l| l == HELP_OBS_ENTER_LOAD),
+            "K_conv load missing from Observer help: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == HELP_OBS_TAB_FOCUS),
+            "Tab focus missing from Observer help: {lines:?}"
         );
     }
 }

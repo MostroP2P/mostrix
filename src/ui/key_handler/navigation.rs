@@ -569,6 +569,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.next(form.use_range);
             }
@@ -582,6 +584,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.prev(form.use_range);
             }

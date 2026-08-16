@@ -154,9 +154,15 @@ pub enum OperationResult {
     },
     Error(String),
     /// Observer chat loaded successfully from relays.
-    ObserverChatLoaded(Vec<crate::ui::chat::DisputeChatMessage>),
+    ObserverChatLoaded {
+        generation: u64,
+        messages: Vec<crate::ui::chat::DisputeChatMessage>,
+    },
     /// Observer chat fetch failed.
-    ObserverChatError(String),
+    ObserverChatError {
+        generation: u64,
+        message: String,
+    },
     /// Trade ended (e.g. cooperative cancel confirmed); remove order from Messages and show `message`.
     TradeClosed {
         order_id: uuid::Uuid,

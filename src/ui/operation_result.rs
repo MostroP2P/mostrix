@@ -50,8 +50,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
     let popup_height = match result {
         OperationResult::Success(_) => 18,
         OperationResult::PaymentRequestRequired { .. }
-        | OperationResult::ObserverChatLoaded(_)
-        | OperationResult::ObserverChatError(_) => 8,
+        | OperationResult::ObserverChatLoaded { .. }
+        | OperationResult::ObserverChatError { .. } => 8,
         OperationResult::Info(message) => info_popup_height(message, popup_width),
         OperationResult::Error(_)
         | OperationResult::InvoiceSubmitted { .. }
@@ -225,7 +225,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(paragraph, inner);
         }
-        OperationResult::ObserverChatLoaded(_) | OperationResult::ObserverChatError(_) => {
+        OperationResult::ObserverChatLoaded { .. } | OperationResult::ObserverChatError { .. } => {
             // Handled directly in handle_operation_result, should not reach render
         }
         OperationResult::PaymentRequestRequired { .. } => {
