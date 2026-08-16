@@ -25,7 +25,7 @@ The admin interface provides dedicated tabs for dispute management:
 
 Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `get_initiated_disputes`). Admins can:
 
-- **View dispute details**: Dispute ID, status, created time (Created column drops on narrow terminals)
+- **View dispute details**: Dispute ID, status, and **Created** time — the kind-38386 `created_at` **tag** (SQLite dispute open time from Mostro; see [mostro#878](https://github.com/MostroP2P/mostro/pull/878)). Falls back to Nostr `event.created_at` (last publish) only for older events without the tag. The Created column drops on narrow terminals.
 - **Take a dispute**: Select a dispute and press Enter to take ownership
 - **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
 - **Scrolling**: persistent `disputes_table_state` + `render_table_list_scrollbar` (same offset/track pattern as the Orders tab)
