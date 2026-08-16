@@ -68,27 +68,37 @@ pub fn render_disputes_tab(
         return;
     }
 
-    // Compact layouts for small areas: drop the Created column when the
-    // full 40/20/25 layout (87 cols with spacing) cannot fit inside the
-    // borders, and drop the header when it would leave no room for data.
+    // Compact layouts for small areas:
+    // - full 40/20/25 when inner width ≥ 87
+    // - id + status columns when 43 ≤ inner < 87
+    // - single combined cell (short id + status) when inner < 43
+    // Drop the header when height < 4 so a data row remains.
     let inner_width = area.width.saturating_sub(2);
     let show_created = inner_width >= 87;
+    let ultra_compact = inner_width < 43;
     let show_header = area.height >= 4;
 
     let rows: Vec<Row> = initiated
         .iter()
         .map(|(_orig, dispute)| {
-            let mut cells = vec![
-                Cell::from(dispute.id.to_string()),
-                Cell::from(dispute.status.clone()),
-            ];
-            if show_created {
-                cells.push(Cell::from(
-                    format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M")
-                        .unwrap_or_else(|| "Invalid date".to_string()),
-                ));
+            if ultra_compact {
+                // One cell: shortened UUID prefix + status (fits ~40-col bodies).
+                let id = dispute.id.to_string();
+                let short_id: String = id.chars().take(8).collect();
+                Row::new(vec![Cell::from(format!("{short_id} {}", dispute.status))])
+            } else {
+                let mut cells = vec![
+                    Cell::from(dispute.id.to_string()),
+                    Cell::from(dispute.status.clone()),
+                ];
+                if show_created {
+                    cells.push(Cell::from(
+                        format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M")
+                            .unwrap_or_else(|| "Invalid date".to_string()),
+                    ));
+                }
+                Row::new(cells)
             }
-            Row::new(cells)
         })
         .collect();
 
@@ -98,6 +108,8 @@ pub fn render_disputes_tab(
             Constraint::Length(20),
             Constraint::Length(25),
         ]
+    } else if ultra_compact {
+        vec![Constraint::Min(1)]
     } else {
         // Narrow: dispute id takes the remaining width, status stays visible
         vec![Constraint::Min(20), Constraint::Length(20)]
@@ -120,15 +132,20 @@ pub fn render_disputes_tab(
         );
 
     if show_header {
-        let mut header_cells = vec![
-            Cell::from("🆔 Dispute ID").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("📊 Status").style(Style::default().add_modifier(Modifier::BOLD)),
-        ];
-        if show_created {
-            header_cells.push(
-                Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
-            );
-        }
+        let header_cells = if ultra_compact {
+            vec![Cell::from("🆔 Dispute").style(Style::default().add_modifier(Modifier::BOLD))]
+        } else {
+            let mut cells = vec![
+                Cell::from("🆔 Dispute ID").style(Style::default().add_modifier(Modifier::BOLD)),
+                Cell::from("📊 Status").style(Style::default().add_modifier(Modifier::BOLD)),
+            ];
+            if show_created {
+                cells.push(
+                    Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
+                );
+            }
+            cells
+        };
         table = table.header(Row::new(header_cells));
     }
 
@@ -235,6 +252,44 @@ mod tests {
         assert!(
             !buffer_contains(buf, "Created"),
             "Created column should be dropped when the area is narrow"
+        );
+    }
+
+    /// Below 43 cols (inner width < 43) the two-column Min(20)+Length(20) layout
+    /// cannot fit; a single cell with shortened id + status keeps both visible.
+    #[test]
+    fn ultra_narrow_area_uses_single_column_short_id_and_status() {
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let short_id = &first_id[..8];
+        let first_uuid = disputes[0].id;
+        let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(first_uuid);
+
+        // area width 42 → inner 40 < 43 → ultra-compact single column
+        let backend = TestBackend::new(42, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, short_id),
+            "shortened dispute id must stay visible under 43 cols"
+        );
+        assert!(
+            buffer_contains(buf, "initiated"),
+            "status must stay visible under 43 cols"
+        );
+        assert!(
+            !buffer_contains(buf, "Created"),
+            "Created column must not appear in ultra-compact layout"
+        );
+        assert!(
+            !buffer_contains(buf, "Dispute ID"),
+            "full Dispute ID header should yield to compact Dispute header"
         );
     }
 
