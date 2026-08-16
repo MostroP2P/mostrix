@@ -1,25 +1,28 @@
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table, TableState,
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+
+use crate::ui::helpers::{
+    format_local_timestamp, get_initiated_disputes, render_table_list_scrollbar,
+    selected_pending_display_idx,
 };
+use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-use crate::ui::helpers::format_local_timestamp;
-use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
-
-/// Render the disputes tab showing a table of active disputes
-/// This tab is only visible in admin mode
+/// Render the Disputes Pending table (admin mode only).
+///
+/// Uses a persistent [`TableState`] (`app.disputes_table_state`) so ↑↓ keeps the
+/// selected row in view without resetting the viewport each frame. Selection is
+/// resolved by dispute UUID against the initiated-status projection
+/// (`helpers/dispute_selection.rs`). Scrollbar via [`render_table_list_scrollbar`].
 pub fn render_disputes_tab(
     f: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
-    selected_dispute_idx: usize,
+    app: &mut AppState,
 ) {
     let disputes_lock = match disputes.lock() {
         Ok(g) => g,
@@ -44,24 +47,11 @@ pub fn render_disputes_tab(
         }
     };
 
-    // Filter to only show disputes with "initiated" status
-    let initiated_disputes: Vec<&Dispute> = disputes_lock
-        .iter()
-        .filter(|dispute| {
-            DisputeStatus::from_str(dispute.status.as_str())
-                .map(|s| s == DisputeStatus::Initiated)
-                .unwrap_or(false)
-        })
-        .collect();
+    let initiated = get_initiated_disputes(&disputes_lock);
+    let valid_selected_idx =
+        selected_pending_display_idx(app.selected_pending_dispute_id, &initiated).unwrap_or(0);
 
-    // Ensure selected index is within bounds of filtered list
-    let valid_selected_idx = if initiated_disputes.is_empty() {
-        0
-    } else {
-        selected_dispute_idx.min(initiated_disputes.len().saturating_sub(1))
-    };
-
-    if initiated_disputes.is_empty() {
+    if initiated.is_empty() {
         let paragraph = Paragraph::new(Span::styled(
             "📭 No disputes found",
             Style::default().fg(Color::Yellow),
@@ -75,104 +65,93 @@ pub fn render_disputes_tab(
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
         f.render_widget(paragraph, area);
-    } else {
-        // Compact layouts for small areas: drop the Created column when the
-        // full 40/20/25 layout (87 cols with spacing) cannot fit inside the
-        // borders, and drop the header when it would leave no room for data.
-        let inner_width = area.width.saturating_sub(2);
-        let show_created = inner_width >= 87;
-        let show_header = area.height >= 4;
+        return;
+    }
 
-        let rows: Vec<Row> = initiated_disputes
-            .iter()
-            .map(|dispute| {
-                let mut cells = vec![
-                    Cell::from(dispute.id.to_string()),
-                    Cell::from(dispute.status.clone()),
-                ];
-                if show_created {
-                    cells.push(Cell::from(
-                        format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M")
-                            .unwrap_or_else(|| "Invalid date".to_string()),
-                    ));
-                }
-                Row::new(cells)
-            })
-            .collect();
+    // Compact layouts for small areas: drop the Created column when the
+    // full 40/20/25 layout (87 cols with spacing) cannot fit inside the
+    // borders, and drop the header when it would leave no room for data.
+    let inner_width = area.width.saturating_sub(2);
+    let show_created = inner_width >= 87;
+    let show_header = area.height >= 4;
 
-        let constraints: Vec<Constraint> = if show_created {
-            vec![
-                Constraint::Length(40),
-                Constraint::Length(20),
-                Constraint::Length(25),
-            ]
-        } else {
-            // Narrow: dispute id takes the remaining width, status stays visible
-            vec![Constraint::Min(20), Constraint::Length(20)]
-        };
-
-        let mut table = Table::new(rows, constraints)
-            .block(
-                Block::default()
-                    .title("Disputes Pending")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(PRIMARY_COLOR))
-                    .style(Style::default().bg(BACKGROUND_COLOR)),
-            )
-            .row_highlight_style(
-                Style::default()
-                    .bg(PRIMARY_COLOR)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        if show_header {
-            let mut header_cells = vec![
-                Cell::from("🆔 Dispute ID").style(Style::default().add_modifier(Modifier::BOLD)),
-                Cell::from("📊 Status").style(Style::default().add_modifier(Modifier::BOLD)),
+    let rows: Vec<Row> = initiated
+        .iter()
+        .map(|(_orig, dispute)| {
+            let mut cells = vec![
+                Cell::from(dispute.id.to_string()),
+                Cell::from(dispute.status.clone()),
             ];
             if show_created {
-                header_cells.push(
-                    Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
-                );
+                cells.push(Cell::from(
+                    format_local_timestamp(dispute.created_at, "%Y-%m-%d %H:%M")
+                        .unwrap_or_else(|| "Invalid date".to_string()),
+                ));
             }
-            table = table.header(Row::new(header_cells));
-        }
+            Row::new(cells)
+        })
+        .collect();
 
-        // Stateful render keeps the selected row in view when the table overflows
-        // (same pattern as the Disputes In Progress sidebar).
-        let mut table_state = TableState::default().with_selected(Some(valid_selected_idx));
-        f.render_stateful_widget(table, area, &mut table_state);
+    let constraints: Vec<Constraint> = if show_created {
+        vec![
+            Constraint::Length(40),
+            Constraint::Length(20),
+            Constraint::Length(25),
+        ]
+    } else {
+        // Narrow: dispute id takes the remaining width, status stays visible
+        vec![Constraint::Min(20), Constraint::Length(20)]
+    };
 
-        // Visible rows = area minus borders (2) and header (1 when shown)
-        let header_rows = u16::from(show_header);
-        let visible_rows = area.height.saturating_sub(2 + header_rows) as usize;
-        if initiated_disputes.len() > visible_rows && visible_rows > 0 {
-            // Track the real viewport: position comes from the offset the
-            // stateful render just computed, and the scrollbar is confined to
-            // the data rows so it does not overwrite the borders or header.
-            let track = Rect {
-                x: area.x,
-                y: area.y + 1 + header_rows,
-                width: area.width,
-                height: visible_rows as u16,
-            };
-            let mut scrollbar_state = ScrollbarState::new(initiated_disputes.len())
-                .viewport_content_length(visible_rows)
-                .position(table_state.offset());
-            f.render_stateful_widget(
-                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
-                track,
-                &mut scrollbar_state,
+    let mut table = Table::new(rows, constraints)
+        .block(
+            Block::default()
+                .title("Disputes Pending")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(PRIMARY_COLOR)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    if show_header {
+        let mut header_cells = vec![
+            Cell::from("🆔 Dispute ID").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("📊 Status").style(Style::default().add_modifier(Modifier::BOLD)),
+        ];
+        if show_created {
+            header_cells.push(
+                Cell::from("📅 Created").style(Style::default().add_modifier(Modifier::BOLD)),
             );
         }
+        table = table.header(Row::new(header_cells));
     }
+
+    // Persistent TableState keeps ↑ scroll smooth (same as Orders tab).
+    app.disputes_table_state.select(Some(valid_selected_idx));
+    f.render_stateful_widget(table, area, &mut app.disputes_table_state);
+
+    let header_rows = u16::from(show_header);
+    let visible_rows = area.height.saturating_sub(2 + header_rows) as usize;
+    render_table_list_scrollbar(
+        f,
+        area,
+        initiated.len(),
+        visible_rows,
+        header_rows,
+        app.disputes_table_state.offset(),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::render_disputes_tab;
+    use crate::ui::{AppState, UserRole};
     use mostro_core::prelude::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -198,20 +177,22 @@ mod tests {
     }
 
     /// When more pending disputes exist than table rows, selecting a late row
-    /// must scroll the stateful table so that dispute stays visible (same
-    /// behavior as the Disputes In Progress sidebar).
+    /// must scroll the stateful table so that dispute stays visible.
     #[test]
     fn table_scrolls_to_keep_selected_dispute_visible() {
         let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
         let first_id = disputes[0].id.to_string();
         let last_id = disputes[9].id.to_string();
+        let last_uuid = disputes[9].id;
         let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(last_uuid);
 
         // 8 high: 2 borders + 1 header leave 5 visible rows for 10 disputes.
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 9))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -231,12 +212,15 @@ mod tests {
     fn narrow_area_drops_created_column_but_keeps_id_and_status() {
         let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
         let first_id = disputes[0].id.to_string();
+        let first_uuid = disputes[0].id;
         let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(first_uuid);
 
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 0))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -260,12 +244,15 @@ mod tests {
     fn short_area_drops_header_but_shows_selected_row() {
         let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
         let second_id = disputes[1].id.to_string();
+        let second_uuid = disputes[1].id;
         let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(second_uuid);
 
         let backend = TestBackend::new(100, 3);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 1))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -284,13 +271,16 @@ mod tests {
     #[test]
     fn scrollbar_preserves_borders_and_header_when_scrolled() {
         let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
         let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(last_uuid);
 
         // Selected row 9 with 5 visible rows → table offset (5) != selected index (9)
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 9))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -317,12 +307,15 @@ mod tests {
         let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
         let first_id = disputes[0].id.to_string();
         let last_id = disputes[9].id.to_string();
+        let first_uuid = disputes[0].id;
         let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(first_uuid);
 
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, 0))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -333,6 +326,44 @@ mod tests {
         assert!(
             !buffer_contains(buf, &last_id[..8]),
             "last dispute should not appear while scrolled to the top"
+        );
+    }
+
+    /// Persisted TableState keeps the viewport offset when moving selection up
+    /// one row after scrolling to the bottom (Orders-tab alignment).
+    #[test]
+    fn persisted_table_state_keeps_viewport_when_moving_up() {
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
+        let eighth_uuid = disputes[8].id;
+        let first_id = disputes[0].id.to_string();
+        let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(last_uuid);
+
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .expect("draw bottom");
+
+        let offset_at_bottom = app.disputes_table_state.offset();
+        assert!(offset_at_bottom > 0, "must have scrolled for last row");
+
+        app.selected_pending_dispute_id = Some(eighth_uuid);
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .expect("draw up one");
+
+        assert_eq!(
+            app.disputes_table_state.offset(),
+            offset_at_bottom,
+            "moving up one row should not reset viewport to top"
+        );
+        let buf = terminal.backend().buffer();
+        assert!(
+            !buffer_contains(buf, &first_id[..8]),
+            "first row must stay scrolled off after ↑ from bottom"
         );
     }
 }

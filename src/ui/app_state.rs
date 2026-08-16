@@ -169,7 +169,11 @@ pub struct AppState {
     pub selected_order_id: Option<uuid::Uuid>,
     /// Persistent scroll state for the Orders tab table
     pub orders_table_state: TableState,
-    pub selected_dispute_idx: usize, // Selected dispute in Disputes Pending tab
+    /// Disputes Pending selection by **dispute UUID**, resolved against the
+    /// initiated-status projection (`helpers/dispute_selection.rs`).
+    pub selected_pending_dispute_id: Option<uuid::Uuid>,
+    /// Persistent scroll state for the Disputes Pending table
+    pub disputes_table_state: TableState,
     /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
     /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
     pub selected_dispute_id: Option<String>, // Selected dispute (by dispute id) in Disputes in Progress tab
@@ -280,7 +284,8 @@ impl AppState {
             active_tab: initial_tab,
             selected_order_id: None,
             orders_table_state: TableState::default(),
-            selected_dispute_idx: 0,
+            selected_pending_dispute_id: None,
+            disputes_table_state: TableState::default(),
             selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
@@ -367,9 +372,11 @@ impl AppState {
         self.user_role = new_role;
         self.active_tab = Tab::first(new_role);
         self.mode = UiMode::default_for_role(new_role);
-        self.selected_dispute_idx = 0;
+        self.selected_pending_dispute_id = None;
+        self.disputes_table_state = TableState::default();
         self.selected_settings_option = 0;
         self.selected_order_id = None;
+        self.orders_table_state = TableState::default();
         self.selected_dispute_id = None;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();

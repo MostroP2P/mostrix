@@ -1,11 +1,96 @@
-//! Admin dispute selection helpers shared by rendering and key handling.
+//! Dispute selection helpers shared by rendering and key handling.
+//!
+//! Covers both admin surfaces that pick a dispute from a filtered list:
+//! - **Disputes Pending** — `mostro_core::Dispute` rows with `Initiated` status,
+//!   selected by UUID (`selected_pending_dispute_id`)
+//! - **Disputes In Progress / Finalized** — local `AdminDispute` rows, selected by
+//!   dispute-id string (`selected_dispute_id`)
 
 use std::str::FromStr;
 
-use mostro_core::prelude::DisputeStatus;
+use mostro_core::prelude::{Dispute, DisputeStatus};
+use uuid::Uuid;
 
 use crate::models::AdminDispute;
 use crate::ui::{AppState, DisputeFilter};
+
+/// Pending (initiated) disputes as `(original_index, dispute)` pairs.
+pub fn get_initiated_disputes(disputes: &[Dispute]) -> Vec<(usize, Dispute)> {
+    disputes
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| {
+            DisputeStatus::from_str(d.status.as_str())
+                .map(|s| s == DisputeStatus::Initiated)
+                .unwrap_or(false)
+        })
+        .map(|(i, d)| (i, d.clone()))
+        .collect()
+}
+
+/// Display row of the Pending-tab selection inside `initiated`.
+///
+/// Falls back to the first row when nothing is selected or the id is no longer
+/// in the initiated list. Returns `None` only when `initiated` is empty.
+pub fn selected_pending_display_idx(
+    selected_pending_dispute_id: Option<Uuid>,
+    initiated: &[(usize, Dispute)],
+) -> Option<usize> {
+    if initiated.is_empty() {
+        return None;
+    }
+    Some(
+        selected_pending_dispute_id
+            .and_then(|id| initiated.iter().position(|(_, d)| d.id == id))
+            .unwrap_or(0),
+    )
+}
+
+/// The dispute the Pending table currently shows as selected.
+///
+/// Resolves `selected_pending_dispute_id` against the initiated-status projection
+/// so Enter / take always acts on the highlighted row — never on a non-initiated
+/// dispute still present in the raw vec.
+pub fn selected_pending_dispute(app: &AppState, disputes: &[Dispute]) -> Option<Dispute> {
+    let mut initiated = get_initiated_disputes(disputes);
+    let idx = selected_pending_display_idx(app.selected_pending_dispute_id, &initiated)?;
+    Some(initiated.swap_remove(idx).1)
+}
+
+/// Move Pending-tab selection `delta` rows within initiated disputes, clamping
+/// at both ends, and store the landing dispute's id.
+pub fn move_pending_dispute_selection(app: &mut AppState, disputes: &[Dispute], delta: isize) {
+    let initiated = get_initiated_disputes(disputes);
+    let Some(idx) = selected_pending_display_idx(app.selected_pending_dispute_id, &initiated)
+    else {
+        app.selected_pending_dispute_id = None;
+        return;
+    };
+    let new_idx = idx
+        .saturating_add_signed(delta)
+        .min(initiated.len().saturating_sub(1));
+    app.selected_pending_dispute_id = Some(initiated[new_idx].1.id);
+}
+
+/// Clamp / clear Pending selection when the initiated list shrinks or empties.
+///
+/// Keeps a still-valid id unchanged; clears when nothing is initiated; otherwise
+/// repairs a missing/stale id to the first initiated dispute (used from the main
+/// loop when the dispute list refreshes).
+pub fn clamp_pending_dispute_selection(app: &mut AppState, disputes: &[Dispute]) {
+    let initiated = get_initiated_disputes(disputes);
+    if initiated.is_empty() {
+        app.selected_pending_dispute_id = None;
+        return;
+    }
+    if let Some(id) = app.selected_pending_dispute_id {
+        if initiated.iter().any(|(_, d)| d.id == id) {
+            return;
+        }
+    }
+    // Missing or stale id → first visible initiated dispute.
+    app.selected_pending_dispute_id = Some(initiated[0].1.id);
+}
 
 /// Filter disputes based on the current filter state.
 /// Returns owned data so the caller can mutate app (e.g. scroll state) in the same block.
@@ -229,5 +314,64 @@ mod tests {
 
         move_dispute_selection(&mut app, 1);
         assert_eq!(app.selected_dispute_id, None, "navigation stays a no-op");
+    }
+
+    fn pending_dispute(nibble: u8) -> Dispute {
+        let mut d = Dispute::new(Uuid::from_bytes([nibble * 0x11; 16]), "active".to_string());
+        d.id = Uuid::from_bytes([nibble * 0x11; 16]);
+        d
+    }
+
+    #[test]
+    fn pending_selection_by_id_survives_list_reorder() {
+        let keep = Uuid::from_bytes([0x22; 16]);
+        let other = Uuid::from_bytes([0x11; 16]);
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(keep);
+
+        let reordered = vec![pending_dispute(1), pending_dispute(2)];
+        assert_eq!(reordered[1].id, keep);
+        assert_eq!(reordered[0].id, other);
+
+        let selected = selected_pending_dispute(&app, &reordered).expect("selection");
+        assert_eq!(selected.id, keep);
+    }
+
+    #[test]
+    fn pending_hidden_selection_falls_back_to_first_initiated() {
+        let initiated = Uuid::from_bytes([0x11; 16]);
+        let taken = Uuid::from_bytes([0x22; 16]);
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(taken);
+
+        let mut disputes = vec![pending_dispute(1), pending_dispute(2)];
+        disputes[1].status = "in-progress".to_string();
+
+        let selected = selected_pending_dispute(&app, &disputes).expect("fallback");
+        assert_eq!(selected.id, initiated);
+
+        move_pending_dispute_selection(&mut app, &disputes, 1);
+        assert_eq!(
+            app.selected_pending_dispute_id,
+            Some(initiated),
+            "only one initiated row — clamp stays put"
+        );
+    }
+
+    #[test]
+    fn clamp_pending_clears_when_empty_and_repairs_stale_id() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(Uuid::from_bytes([0x99; 16]));
+
+        clamp_pending_dispute_selection(&mut app, &[]);
+        assert_eq!(app.selected_pending_dispute_id, None);
+
+        let disputes = vec![pending_dispute(1)];
+        clamp_pending_dispute_selection(&mut app, &disputes);
+        assert_eq!(
+            app.selected_pending_dispute_id,
+            Some(disputes[0].id),
+            "stale id repaired to first initiated"
+        );
     }
 }

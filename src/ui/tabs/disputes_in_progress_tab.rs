@@ -4,8 +4,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, Scrollbar,
-    ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph,
 };
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
@@ -13,6 +12,7 @@ use crate::ui::constants::*;
 use crate::ui::helpers::{
     build_chat_scrollview_content, count_visible_attachments, format_local_timestamp,
     format_user_rating, get_filtered_disputes, get_selected_chat_message,
+    render_table_list_scrollbar,
 };
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -89,7 +89,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         f.render_widget(empty_paragraph, sidebar_area);
     } else {
         // Stateful List keeps the selected row in view when the sidebar overflows
-        // (same pattern as Messages tab). Highlight is applied by ListState.
+        // (same pattern as Orders / Disputes Pending tables). Scrollbar uses the
+        // shared data-row track helper after ListState computes its offset.
         let items: Vec<ListItem> = filtered_disputes
             .iter()
             .map(|(_original_idx, d)| {
@@ -111,15 +112,14 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         f.render_stateful_widget(list, sidebar_area, &mut list_state);
 
         let visible_rows = sidebar_area.height.saturating_sub(2) as usize;
-        if filtered_disputes.len() > visible_rows && visible_rows > 0 {
-            let mut scrollbar_state =
-                ScrollbarState::new(filtered_disputes.len()).position(valid_selected_idx);
-            f.render_stateful_widget(
-                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
-                sidebar_area,
-                &mut scrollbar_state,
-            );
-        }
+        render_table_list_scrollbar(
+            f,
+            sidebar_area,
+            filtered_disputes.len(),
+            visible_rows,
+            0,
+            list_state.offset(),
+        );
     }
 
     // 2. Main Area

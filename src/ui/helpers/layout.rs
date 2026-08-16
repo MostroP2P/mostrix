@@ -1,9 +1,43 @@
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Borders, Paragraph};
+use ratatui::widgets::{Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::PRIMARY_COLOR;
+
+/// Vertical scrollbar for a bordered table/list whose selection scrolls with
+/// [`ratatui::widgets::TableState`] / [`ratatui::widgets::ListState`].
+///
+/// Draws only when `content_len` exceeds the visible body. The track is confined
+/// to data rows (skipping the top border and optional header) so the thumb does
+/// not overwrite corner glyphs. Thumb position is the viewport **offset** after
+/// a stateful render, not the selected index.
+pub fn render_table_list_scrollbar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    content_len: usize,
+    visible_rows: usize,
+    header_rows: u16,
+    viewport_offset: usize,
+) {
+    if content_len <= visible_rows || visible_rows == 0 {
+        return;
+    }
+    let track = Rect {
+        x: area.x,
+        y: area.y + 1 + header_rows,
+        width: area.width,
+        height: visible_rows as u16,
+    };
+    let mut scrollbar_state = ScrollbarState::new(content_len)
+        .viewport_content_length(visible_rows)
+        .position(viewport_offset);
+    f.render_stateful_widget(
+        Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+        track,
+        &mut scrollbar_state,
+    );
+}
 
 /// Creates a centered popup area within the given area.
 pub fn create_centered_popup(area: Rect, width: u16, height: u16) -> Rect {

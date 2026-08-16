@@ -103,12 +103,7 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::DisputesPending), UserRole::Admin) => {
-            tabs::disputes_tab::render_disputes_tab(
-                f,
-                content_area,
-                disputes,
-                app.selected_dispute_idx,
-            )
+            tabs::disputes_tab::render_disputes_tab(f, content_area, disputes, app)
         }
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
             tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
