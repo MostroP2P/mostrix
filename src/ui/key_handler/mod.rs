@@ -83,6 +83,44 @@ fn can_dispute_order_status(status: Option<Status>) -> bool {
     }
 }
 
+/// Resolve what a Shift+C/F/R order-action shortcut on My Trades should do,
+/// or `None` to ignore the key.
+///
+/// Same duplicate-submit guard as [`dispute_shortcut_next_mode`]: after a
+/// confirmation, the send task switches the UI into a waiting mode while the
+/// selected row still shows an actionable status, so without the
+/// `user_my_trades_interactive()` check a second press could open another
+/// confirmation and submit the action to Mostro twice.
+fn trade_action_shortcut_next_mode(
+    mode: &UiMode,
+    selected: Option<(uuid::Uuid, Option<Status>)>,
+    action: Action,
+) -> Option<UiMode> {
+    if !mode.user_my_trades_interactive() {
+        return None;
+    }
+    let (order_id, status) = selected?;
+    let (label, confirm_msg) = match action {
+        Action::Cancel => ("Cancel", crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG),
+        Action::FiatSent => (
+            "FiatSent",
+            crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG,
+        ),
+        Action::Release => ("Release", crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG),
+        _ => return None,
+    };
+    if is_terminal_order_status(status) {
+        return Some(UiMode::operation_result(OperationResult::Info(format!(
+            "{label} is disabled for terminal orders."
+        ))));
+    }
+    Some(UiMode::ViewingMessage(build_order_action_view_state(
+        order_id,
+        action,
+        confirm_msg.to_string(),
+    )))
+}
+
 /// Resolve what Shift+D on My Trades should do, or `None` to ignore the key.
 ///
 /// The `user_my_trades_interactive()` guard is what prevents a duplicate
@@ -1047,56 +1085,29 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "Cancel is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::Cancel,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::Cancel)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "FiatSent is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::FiatSent,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::FiatSent)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "Release is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::Release,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::Release)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
@@ -1495,6 +1506,61 @@ mod key_handler_tests {
     fn unknown_status_does_not_block_dispute() {
         // Local status can lag behind Mostro; let the daemon be the one to say no.
         assert!(can_dispute_order_status(None));
+    }
+
+    #[test]
+    fn trade_action_shortcuts_are_ignored_while_a_request_is_pending() {
+        // Regression (offered follow-up from #106): Shift+C/F/R shared the
+        // Shift+D double-submit window — after a confirmation the UI sits in a
+        // waiting mode while the row still shows an actionable status.
+        let selected = Some((uuid::Uuid::new_v4(), Some(Status::Active)));
+        for action in [Action::Cancel, Action::FiatSent, Action::Release] {
+            assert!(
+                trade_action_shortcut_next_mode(
+                    &UiMode::UserMode(UserMode::WaitingAddInvoice),
+                    selected,
+                    action.clone(),
+                )
+                .is_none(),
+                "{action:?} must be ignored while waiting"
+            );
+        }
+    }
+
+    #[test]
+    fn trade_action_shortcuts_open_the_right_confirmation_when_interactive() {
+        let order_id = uuid::Uuid::new_v4();
+        for action in [Action::Cancel, Action::FiatSent, Action::Release] {
+            match trade_action_shortcut_next_mode(
+                &UiMode::UserMode(UserMode::Normal),
+                Some((order_id, Some(Status::Active))),
+                action.clone(),
+            ) {
+                Some(UiMode::ViewingMessage(view_state)) => {
+                    assert_eq!(view_state.order_id, Some(order_id));
+                    assert_eq!(view_state.action, action);
+                }
+                other => panic!("expected confirmation for {action:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn trade_action_shortcuts_stay_disabled_for_terminal_orders() {
+        let next = trade_action_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((uuid::Uuid::new_v4(), Some(Status::Success))),
+            Action::Release,
+        );
+        match next {
+            Some(UiMode::OperationResult(result)) => match *result {
+                OperationResult::Info(msg) => {
+                    assert_eq!(msg, "Release is disabled for terminal orders.")
+                }
+                other => panic!("expected Info, got {other:?}"),
+            },
+            other => panic!("expected terminal-order notice, got {other:?}"),
+        }
     }
 
     #[test]
