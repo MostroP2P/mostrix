@@ -84,6 +84,44 @@ fn can_dispute_order_status(status: Option<Status>) -> bool {
     }
 }
 
+/// Resolve what a Shift+C/F/R order-action shortcut on My Trades should do,
+/// or `None` to ignore the key.
+///
+/// Same duplicate-submit guard as [`dispute_shortcut_next_mode`]: after a
+/// confirmation, the send task switches the UI into a waiting mode while the
+/// selected row still shows an actionable status, so without the
+/// `user_my_trades_interactive()` check a second press could open another
+/// confirmation and submit the action to Mostro twice.
+fn trade_action_shortcut_next_mode(
+    mode: &UiMode,
+    selected: Option<(uuid::Uuid, Option<Status>)>,
+    action: Action,
+) -> Option<UiMode> {
+    if !mode.user_my_trades_interactive() {
+        return None;
+    }
+    let (order_id, status) = selected?;
+    let (label, confirm_msg) = match action {
+        Action::Cancel => ("Cancel", crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG),
+        Action::FiatSent => (
+            "FiatSent",
+            crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG,
+        ),
+        Action::Release => ("Release", crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG),
+        _ => return None,
+    };
+    if is_terminal_order_status(status) {
+        return Some(UiMode::operation_result(OperationResult::Info(format!(
+            "{label} is disabled for terminal orders."
+        ))));
+    }
+    Some(UiMode::ViewingMessage(build_order_action_view_state(
+        order_id,
+        action,
+        confirm_msg.to_string(),
+    )))
+}
+
 /// Resolve what Shift+D on My Trades should do, or `None` to ignore the key.
 ///
 /// The `user_my_trades_interactive()` guard is what prevents a duplicate
@@ -233,6 +271,11 @@ fn handle_clipboard_copy(invoice: String) -> bool {
         // Some clipboard backends can emit warnings to stderr; silence stderr during the call
         // to avoid corrupting the TUI.
         std::thread::spawn(move || {
+            // Needed for `SetExtLinux::wait`. It keeps this thread alive serving the selection
+            // until another app takes the clipboard ownership; otherwhise the copied text is lost
+            // as soon as the thread exists. See the documentation of `SetExtLinux::wait` for
+            // details.
+            use arboard::SetExtLinux;
             let copy_result = {
                 #[cfg(unix)]
                 {
@@ -248,7 +291,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                     }
 
                     let r = match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
                         Err(e) => Err(e),
                     };
 
@@ -263,7 +306,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                 #[cfg(not(unix))]
                 {
                     match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set_text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
                         Err(e) => Err(e),
                     }
                 }
@@ -527,14 +570,12 @@ pub fn handle_key_event(
     }
 
     // Observer tab paste fallback for terminals without bracketed paste (notably cmd.exe).
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        if is_paste_shortcut(&key_event) {
-            if let Some(text) = read_clipboard_text_best_effort() {
-                let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
-                if !filtered.is_empty() {
-                    app.observer_shared_key_input.push_str(&filtered);
-                    return Some(true);
-                }
+    if app.observer_inputs_editable() && is_paste_shortcut(&key_event) {
+        if let Some(text) = read_clipboard_text_best_effort() {
+            let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+            if !filtered.is_empty() {
+                app.observer_active_input_mut().push_str(&filtered);
+                return Some(true);
             }
         }
     }
@@ -767,10 +808,8 @@ pub fn handle_key_event(
                             app.observer_shared_key_input.chars().take(8).collect();
                         let id = format!("observer_{}", key_prefix);
 
-                        // For Observer mode (pure P2P chats), attachment JSON often omits a `key`
-                        // and expects decryption using the same shared key used for messages.
-                        // If no explicit decryption_key was provided, derive it from the pasted
-                        // shared key hex so the saved file is decrypted instead of left encrypted.
+                        // Observer holds K_conv only; use it as the ChaCha key when the
+                        // attachment JSON omitted an inline key.
                         let mut att_clone = (*att).clone();
                         if att_clone.decryption_key.is_none() {
                             if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
@@ -1051,56 +1090,29 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "Cancel is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_CANCEL_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::Cancel,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::Cancel)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "FiatSent is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_FIAT_SENT_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::FiatSent,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::FiatSent)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    if let Some((order_id, status)) = resolve_selected_mytrades_order_status(app) {
-                        if is_terminal_order_status(status) {
-                            app.mode = UiMode::operation_result(OperationResult::Info(
-                                "Release is disabled for terminal orders.".to_string(),
-                            ));
-                            return Some(true);
-                        }
-                        let msg = crate::ui::constants::HELP_MY_TRADES_RELEASE_MSG;
-                        let view_state = build_order_action_view_state(
-                            order_id,
-                            Action::Release,
-                            msg.to_string(),
-                        );
-                        app.mode = UiMode::ViewingMessage(view_state);
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) =
+                        trade_action_shortcut_next_mode(&app.mode, selected, Action::Release)
+                    {
+                        app.mode = next_mode;
                         return Some(true);
                     }
                 }
@@ -1117,6 +1129,53 @@ pub fn handle_key_event(
                         return Some(true);
                     }
                 }
+                KeyCode::Char('k') | KeyCode::Char('K') => {
+                    if !app.mode.user_my_trades_interactive() {
+                        return Some(true);
+                    }
+                    let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
+                        app.mode = UiMode::operation_result(OperationResult::Info(
+                            "Select an order to reveal K_conv.".to_string(),
+                        ));
+                        return Some(true);
+                    };
+                    let pool = pool.clone();
+                    let tx = order_result_tx.clone();
+                    tokio::spawn(async move {
+                        let result = match crate::models::Order::get_by_id(
+                            &pool,
+                            &order_id.to_string(),
+                        )
+                        .await
+                        {
+                            Ok(order) => {
+                                let trade_keys = order
+                                    .trade_keys
+                                    .as_deref()
+                                    .and_then(|h| Keys::parse(h).ok());
+                                match crate::util::chat_utils::conversation_disclosure_from_order(
+                                    order.order_chat_shared_key_hex.as_deref(),
+                                    trade_keys.as_ref(),
+                                    order.counterparty_pubkey.as_deref(),
+                                ) {
+                                    Some((conv, sign_pk)) => OperationResult::Info(format!(
+                                        "K_conv (read-only grant for solvers):\n{conv}\n\n\
+pub(K_sign) optional locator:\n{sign_pk}\n\n\
+Disclose K_conv only. Never share the K_sign secret."
+                                    )),
+                                    None => OperationResult::Error(
+                                        "No conversation key for this order yet.".to_string(),
+                                    ),
+                                }
+                            }
+                            Err(e) => OperationResult::Error(format!(
+                                "Could not load order for K_conv: {e}"
+                            )),
+                        };
+                        let _ = tx.send(result);
+                    });
+                    return Some(true);
+                }
                 _ => {}
             }
         }
@@ -1132,25 +1191,23 @@ pub fn handle_key_event(
         return Some(result);
     }
 
-    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the shared key input.
-    // Skip when a modal result popup is active so we don't edit inputs behind the overlay.
-    if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        if !matches!(app.mode, UiMode::OperationResult(_)) {
-            let is_ctrl = key_event
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL);
-            if !is_ctrl {
-                match code {
-                    KeyCode::Char(c) => {
-                        app.observer_shared_key_input.push(c);
-                        return Some(true);
-                    }
-                    KeyCode::Backspace => {
-                        app.observer_shared_key_input.pop();
-                        return Some(true);
-                    }
-                    _ => {}
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the focused field.
+    // Skip when a modal owns input so we don't edit K_conv / pub(K_sign) behind an overlay.
+    if app.observer_inputs_editable() {
+        let is_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if !is_ctrl {
+            match code {
+                KeyCode::Char(c) => {
+                    app.observer_active_input_mut().push(c);
+                    return Some(true);
                 }
+                KeyCode::Backspace => {
+                    app.observer_active_input_mut().pop();
+                    return Some(true);
+                }
+                _ => {}
             }
         }
     }
@@ -1431,7 +1488,9 @@ pub fn handle_key_event(
 #[cfg(test)]
 mod key_handler_tests {
     use super::*;
-    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crate::ui::{
+        InvoiceInputState, InvoiceNotificationActionSelection, ObserverInputField, UserRole,
+    };
     use crossterm::event::KeyModifiers;
 
     #[test]
@@ -1452,6 +1511,61 @@ mod key_handler_tests {
     fn unknown_status_does_not_block_dispute() {
         // Local status can lag behind Mostro; let the daemon be the one to say no.
         assert!(can_dispute_order_status(None));
+    }
+
+    #[test]
+    fn trade_action_shortcuts_are_ignored_while_a_request_is_pending() {
+        // Regression (offered follow-up from #106): Shift+C/F/R shared the
+        // Shift+D double-submit window — after a confirmation the UI sits in a
+        // waiting mode while the row still shows an actionable status.
+        let selected = Some((uuid::Uuid::new_v4(), Some(Status::Active)));
+        for action in [Action::Cancel, Action::FiatSent, Action::Release] {
+            assert!(
+                trade_action_shortcut_next_mode(
+                    &UiMode::UserMode(UserMode::WaitingAddInvoice),
+                    selected,
+                    action.clone(),
+                )
+                .is_none(),
+                "{action:?} must be ignored while waiting"
+            );
+        }
+    }
+
+    #[test]
+    fn trade_action_shortcuts_open_the_right_confirmation_when_interactive() {
+        let order_id = uuid::Uuid::new_v4();
+        for action in [Action::Cancel, Action::FiatSent, Action::Release] {
+            match trade_action_shortcut_next_mode(
+                &UiMode::UserMode(UserMode::Normal),
+                Some((order_id, Some(Status::Active))),
+                action.clone(),
+            ) {
+                Some(UiMode::ViewingMessage(view_state)) => {
+                    assert_eq!(view_state.order_id, Some(order_id));
+                    assert_eq!(view_state.action, action);
+                }
+                other => panic!("expected confirmation for {action:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn trade_action_shortcuts_stay_disabled_for_terminal_orders() {
+        let next = trade_action_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((uuid::Uuid::new_v4(), Some(Status::Success))),
+            Action::Release,
+        );
+        match next {
+            Some(UiMode::OperationResult(result)) => match *result {
+                OperationResult::Info(msg) => {
+                    assert_eq!(msg, "Release is disabled for terminal orders.")
+                }
+                other => panic!("expected Info, got {other:?}"),
+            },
+            other => panic!("expected terminal-order notice, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1504,6 +1618,17 @@ mod key_handler_tests {
 
         let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert!(is_paste_shortcut(&ctrl_v));
+    }
+
+    #[test]
+    fn observer_tab_toggles_k_conv_and_sign_locator_focus() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.observer_input_focus, ObserverInputField::SignAuthor);
+        handle_tab_navigation(KeyCode::BackTab, &mut app);
+        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
     }
 
     #[test]

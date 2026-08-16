@@ -1,6 +1,6 @@
 use crate::ui::helpers::{
-    active_order_chat_list_len, active_order_chat_list_snapshot, move_book_order_selection,
-    move_dispute_selection,
+    active_order_chat_list_len, move_book_order_selection, move_dispute_selection,
+    move_pending_dispute_selection,
 };
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
@@ -191,9 +191,6 @@ fn handle_up_key(
                 };
                 move_book_order_selection(app, &orders_lock, -1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                // Only count disputes with "initiated" status
-                use mostro_core::prelude::*;
-                use std::str::FromStr;
                 let disputes_lock = match disputes.lock() {
                     Ok(g) => g,
                     Err(e) => {
@@ -203,28 +200,7 @@ fn handle_up_key(
                         return;
                     }
                 };
-                let initiated_count = disputes_lock
-                    .iter()
-                    .filter(|d| {
-                        DisputeStatus::from_str(d.status.as_str())
-                            .map(|s| s == DisputeStatus::Initiated)
-                            .unwrap_or(false)
-                    })
-                    .count();
-                if initiated_count == 0 {
-                    app.selected_dispute_idx = 0;
-                } else {
-                    // Ensure index doesn't go below 0
-                    if app.selected_dispute_idx > 0 {
-                        app.selected_dispute_idx -= 1;
-                    } else {
-                        app.selected_dispute_idx = 0;
-                    }
-                    // Clamp to valid range
-                    app.selected_dispute_idx = app
-                        .selected_dispute_idx
-                        .min(initiated_count.saturating_sub(1));
-                }
+                move_pending_dispute_selection(app, &disputes_lock, -1);
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 move_dispute_selection(app, -1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
@@ -337,9 +313,6 @@ fn handle_down_key(
                 };
                 move_book_order_selection(app, &orders_lock, 1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                // Only count disputes with "initiated" status
-                use mostro_core::prelude::*;
-                use std::str::FromStr;
                 let disputes_lock = match disputes.lock() {
                     Ok(g) => g,
                     Err(e) => {
@@ -349,28 +322,7 @@ fn handle_down_key(
                         return;
                     }
                 };
-                let initiated_count = disputes_lock
-                    .iter()
-                    .filter(|d| {
-                        DisputeStatus::from_str(d.status.as_str())
-                            .map(|s| s == DisputeStatus::Initiated)
-                            .unwrap_or(false)
-                    })
-                    .count();
-                if initiated_count == 0 {
-                    app.selected_dispute_idx = 0;
-                } else {
-                    // Ensure index doesn't exceed bounds
-                    if app.selected_dispute_idx < initiated_count.saturating_sub(1) {
-                        app.selected_dispute_idx += 1;
-                    } else {
-                        app.selected_dispute_idx = initiated_count.saturating_sub(1);
-                    }
-                    // Clamp to valid range
-                    app.selected_dispute_idx = app
-                        .selected_dispute_idx
-                        .min(initiated_count.saturating_sub(1));
-                }
+                move_pending_dispute_selection(app, &disputes_lock, 1);
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 move_dispute_selection(app, 1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
@@ -570,27 +522,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
-            } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
-                let rows = active_order_chat_list_snapshot(app);
-                let solver_available = rows
-                    .get(app.selected_order_chat_idx)
-                    .is_some_and(|row| row.solver_pubkey.is_some())
-                    || rows.get(app.selected_order_chat_idx).is_some_and(|row| {
-                        uuid::Uuid::parse_str(&row.order_id)
-                            .ok()
-                            .and_then(|id| app.order_chat_static.get(&id))
-                            .and_then(|header| header.solver_pubkey.as_ref())
-                            .is_some()
-                    });
-                if solver_available {
-                    app.active_user_chat_channel = match app.active_user_chat_channel {
-                        UserChatChannel::Peer => UserChatChannel::Solver,
-                        UserChatChannel::Solver => UserChatChannel::Peer,
-                    };
-                    app.order_chat_input.clear();
-                    app.order_chat_selected_message_idx = None;
-                    app.order_chat_scroll_tracker = None;
-                }
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.next(form.use_range);
             }
@@ -604,8 +537,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
-            } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
-                handle_tab_navigation(KeyCode::Tab, app);
+            } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
+                app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
                 form.focused = form.focused.prev(form.use_range);
             }

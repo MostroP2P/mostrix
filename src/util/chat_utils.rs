@@ -80,11 +80,65 @@ pub fn derive_shared_key_hex(
         .map(|shared| shared.to_hex())
 }
 
-/// Rebuild ECDH `Keys` from a stored shared-key hex string.
+/// Rebuild `Keys` from a 32-byte secret hex (ECDH IKM **or** disclosed `K_conv`).
 pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
     SharedKey::from_hex(hex)
         .ok()
         .map(|shared| shared.keys().clone())
+}
+
+/// Parse optional Observer `pub(K_sign)` locator (hex or bech32). Empty → `None`.
+pub fn parse_optional_sign_pubkey(s: &str) -> Result<Option<PublicKey>, anyhow::Error> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    parse_chat_pubkey(s)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("pub(K_sign) must be a valid hex or npub pubkey"))
+}
+
+/// Kind-14 Observer fetch filter: `authors = [pub(K_sign)]` when known, else `#p = pub(K_conv)`.
+pub(crate) fn observer_kind14_filter(
+    conv_pubkey: PublicKey,
+    sign_pubkey: Option<PublicKey>,
+    since: Timestamp,
+) -> Filter {
+    match sign_pubkey {
+        Some(author) => chat_filter(author).since(since).limit(100),
+        None => Filter::new()
+            .kind(Kind::PrivateDirectMessage)
+            .pubkey(conv_pubkey)
+            .since(since)
+            .limit(100),
+    }
+}
+
+/// Read-only disclosure for a solver: `K_conv` secret hex and `pub(K_sign)`.
+///
+/// Never returns the `K_sign` secret. `K_conv` decrypts; it cannot author kind 14.
+pub fn conversation_disclosure_from_ecdh(ecdh_keys: &Keys) -> Option<(String, String)> {
+    let (conv, sign) = chat_keys_from_ecdh(ecdh_keys)?;
+    Some((
+        conv.secret_key().to_secret_hex(),
+        sign.public_key().to_hex(),
+    ))
+}
+
+/// Observer disclosure from a stored order (ECDH hex or trade-key ECDH).
+pub fn conversation_disclosure_from_order(
+    order_chat_shared_key_hex: Option<&str>,
+    trade_keys: Option<&Keys>,
+    counterparty_pubkey: Option<&str>,
+) -> Option<(String, String)> {
+    let ecdh = order_chat_shared_key_hex
+        .and_then(keys_from_shared_hex)
+        .or_else(|| {
+            let trade = trade_keys?;
+            let pk = parse_chat_pubkey(counterparty_pubkey?)?;
+            derive_shared_keys(Some(trade), Some(&pk))
+        })?;
+    conversation_disclosure_from_ecdh(&ecdh)
 }
 
 /// Derive `(K_conv, K_sign)` from ECDH keys rebuilt via [`keys_from_shared_hex`].
@@ -562,17 +616,49 @@ pub async fn fetch_admin_chat_updates(
     Ok(updates)
 }
 
-/// Fetch chat messages for the Observer tab using a pasted ECDH shared key hex.
+/// Unwrap a kind-14 Observer event using disclosed `K_conv`.
 ///
-/// Derives `K_conv` / `K_sign` for fetch/decrypt. Observer UX that accepts
-/// `K_conv`-only disclosure is Step 6; this path still expects the ECDH secret
-/// Mostrix stores today (which can derive both keys).
+/// When `sign_pubkey` is `Some`, the outer author must match `pub(K_sign)`.
+/// When `None`, junk authors are accepted at the filter (`#p`) and dropped when
+/// decrypt fails — same as mostro-chat `-k` without `-a`.
+pub(crate) fn unwrap_observer_chat_event(
+    conv: &Keys,
+    sign_pubkey: Option<&PublicKey>,
+    event: &Event,
+    allowed_signers: &[PublicKey],
+) -> Result<DecodedChatMessage> {
+    if allowed_signers.is_empty() {
+        return Err(anyhow::anyhow!(
+            "chat unwrap requires a non-empty inner-signer allow-list"
+        ));
+    }
+    if event.kind == Kind::GiftWrap {
+        return Err(anyhow::anyhow!(
+            "Observer K_conv cannot unwrap legacy GiftWrap (disclose K_conv from a kind-14 chat)"
+        ));
+    }
+    let expected = sign_pubkey.copied().unwrap_or(event.pubkey);
+    let msg = unwrap_chat_message(conv, &expected, allowed_signers, event, Timestamp::now())
+        .map_err(|e| anyhow::anyhow!("Failed to unwrap observer chat event: {e}"))?;
+    Ok(DecodedChatMessage {
+        content: msg.content,
+        timestamp: msg.created_at.as_secs() as i64,
+        sender: msg.sender,
+        inner_event_id: msg.inner_event_id,
+    })
+}
+
+/// Fetch chat messages for the Observer tab using disclosed `K_conv` hex.
 ///
-/// Inner signers not present in `known_roles` are rejected (no arrival-order or
-/// Admin fallback). `known_roles` must be non-empty.
+/// Optional `sign_pubkey` (`pub(K_sign)`) uses an `authors` filter; without it
+/// the query is `#p = pub(K_conv)` (junk arrives; decrypt fails).
+///
+/// Inner signers not present in `known_roles` are rejected. `known_roles` must
+/// be non-empty.
 pub async fn fetch_observer_chat(
     client: &Client,
-    shared_key_hex: &str,
+    conv_key_hex: &str,
+    sign_pubkey: Option<PublicKey>,
     known_roles: &HashMap<PublicKey, ChatSender>,
 ) -> Result<Vec<DisputeChatMessage>> {
     use crate::ui::helpers::try_parse_attachment_message;
@@ -583,33 +669,50 @@ pub async fn fetch_observer_chat(
         ));
     }
 
-    let shared_keys = keys_from_shared_hex(shared_key_hex)
-        .ok_or_else(|| anyhow::anyhow!("Invalid shared key hex"))?;
+    let conv =
+        keys_from_shared_hex(conv_key_hex).ok_or_else(|| anyhow::anyhow!("Invalid K_conv hex"))?;
     let allowed: Vec<PublicKey> = known_roles.keys().copied().collect();
 
-    let raw = fetch_gift_wraps_for_shared_key(client, &shared_keys, &allowed).await?;
+    let local_now = Timestamp::now().as_secs() as i64;
+    let seven_days_secs: i64 = 7 * 24 * 60 * 60;
+    let lookback_floor = local_now.saturating_sub(seven_days_secs);
+    let since = Timestamp::from(lookback_floor.max(0) as u64);
+    let filter = observer_kind14_filter(conv.public_key(), sign_pubkey, since);
 
-    let mut messages = Vec::with_capacity(raw.len());
-    for msg in raw {
-        let Some(sender) = known_roles.get(&msg.sender).copied() else {
-            log::warn!("observer: dropping chat message from unknown inner signer");
-            continue;
-        };
+    let events = client
+        .fetch_events(filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch observer chat events: {e}"))?;
 
-        let (msg_content, attachment) = match try_parse_attachment_message(&msg.content) {
-            Some((att, display)) => (display, Some(att)),
-            None => (msg.content, None),
-        };
+    let mut messages = Vec::new();
+    for wrapped in events.iter() {
+        match unwrap_observer_chat_event(&conv, sign_pubkey.as_ref(), wrapped, &allowed) {
+            Ok(msg) => {
+                let Some(sender) = known_roles.get(&msg.sender).copied() else {
+                    log::warn!("observer: dropping chat message from unknown inner signer");
+                    continue;
+                };
 
-        messages.push(DisputeChatMessage {
-            sender,
-            content: msg_content,
-            timestamp: msg.timestamp,
-            target_party: None,
-            attachment,
-        });
+                let (msg_content, attachment) = match try_parse_attachment_message(&msg.content) {
+                    Some((att, display)) => (display, Some(att)),
+                    None => (msg.content, None),
+                };
+
+                messages.push(DisputeChatMessage {
+                    sender,
+                    content: msg_content,
+                    timestamp: msg.timestamp,
+                    target_party: None,
+                    attachment,
+                });
+            }
+            Err(e) => {
+                log::debug!("observer: skipped event {}: {e}", wrapped.id);
+            }
+        }
     }
-
+    messages.sort_by_key(|m| m.timestamp);
     Ok(messages)
 }
 
@@ -1006,5 +1109,140 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].id, shared.id);
         assert_eq!(merged[1].id, other.id);
+    }
+
+    #[test]
+    fn parse_optional_sign_pubkey_empty_is_none() {
+        assert!(parse_optional_sign_pubkey("").unwrap().is_none());
+        assert!(parse_optional_sign_pubkey("  ").unwrap().is_none());
+        assert!(parse_optional_sign_pubkey("not-a-key").is_err());
+        let pk = Keys::generate().public_key();
+        assert_eq!(parse_optional_sign_pubkey(&pk.to_hex()).unwrap(), Some(pk));
+    }
+
+    #[test]
+    fn observer_kind14_filter_authors_when_locator_present() {
+        let conv = Keys::generate().public_key();
+        let sign = Keys::generate().public_key();
+        let since = Timestamp::from(1_700_000_000u64);
+        let with_author = observer_kind14_filter(conv, Some(sign), since);
+        let json = serde_json::to_value(&with_author).expect("filter json");
+        let authors = json.get("authors").expect("authors");
+        assert!(authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(&sign.to_hex())));
+        assert!(json.get("#p").is_none());
+
+        let p_only = observer_kind14_filter(conv, None, since);
+        let json = serde_json::to_value(&p_only).expect("filter json");
+        assert!(json.get("authors").is_none());
+        let p = json.get("#p").expect("#p");
+        assert!(p
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(&conv.to_hex())));
+    }
+
+    #[test]
+    fn conversation_disclosure_is_k_conv_not_k_sign_secret() {
+        let a = Keys::generate();
+        let b = Keys::generate();
+        let ecdh = derive_shared_keys(Some(&a), Some(&b.public_key())).expect("ecdh");
+        let (conv_hex, sign_pk_hex) = conversation_disclosure_from_ecdh(&ecdh).expect("disclosure");
+        let (conv, sign) = chat_keys_from_ecdh(&ecdh).expect("keys");
+        assert_eq!(conv_hex, conv.secret_key().to_secret_hex());
+        assert_eq!(sign_pk_hex, sign.public_key().to_hex());
+        assert_ne!(conv_hex, sign.secret_key().to_secret_hex());
+        let via_order = conversation_disclosure_from_order(
+            Some(
+                &derive_shared_key_hex(Some(&a), Some(b.public_key().to_string().as_str()))
+                    .unwrap(),
+            ),
+            None,
+            None,
+        )
+        .expect("from stored hex");
+        assert_eq!(via_order.0, conv_hex);
+        assert_eq!(via_order.1, sign_pk_hex);
+    }
+
+    #[tokio::test]
+    async fn observer_k_conv_only_unwraps_kind14() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared = SharedKey::derive(sender.secret_key(), &receiver.public_key())
+            .expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let wrapped = wrap_chat_message(&sender, &conv, &sign, "evidence")
+            .await
+            .expect("wrap");
+        let observer_conv =
+            keys_from_shared_hex(&conv.secret_key().to_secret_hex()).expect("observer conv");
+        let allowed = [sender.public_key(), receiver.public_key()];
+        let msg = unwrap_observer_chat_event(&observer_conv, None, &wrapped, &allowed)
+            .expect("observer decrypt");
+        assert_eq!(msg.content, "evidence");
+        assert_eq!(msg.sender, sender.public_key());
+
+        let with_locator = unwrap_observer_chat_event(
+            &observer_conv,
+            Some(&sign.public_key()),
+            &wrapped,
+            &allowed,
+        )
+        .expect("locator unwrap");
+        assert_eq!(with_locator.content, "evidence");
+    }
+
+    #[tokio::test]
+    async fn observer_cannot_unwrap_legacy_giftwrap_with_k_conv() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared =
+            SharedKey::derive(sender.secret_key(), &receiver.public_key()).expect("shared");
+        let (conv, _sign) = shared.chat_keys().expect("chat keys");
+        let giftwrap = wrap_giftwrap_chat_message(&sender, &shared.public_key(), "legacy")
+            .await
+            .expect("wrap giftwrap");
+        let allowed = [sender.public_key(), receiver.public_key()];
+        let err = unwrap_observer_chat_event(&conv, None, &giftwrap, &allowed)
+            .expect_err("GiftWrap needs ECDH not K_conv");
+        assert!(err.to_string().contains("GiftWrap"));
+    }
+
+    #[tokio::test]
+    async fn observer_wrong_locator_is_rejected() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared =
+            SharedKey::derive(sender.secret_key(), &receiver.public_key()).expect("shared");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let wrapped = wrap_chat_message(&sender, &conv, &sign, "evidence")
+            .await
+            .expect("wrap");
+        let allowed = [sender.public_key(), receiver.public_key()];
+        let wrong = Keys::generate().public_key();
+        unwrap_observer_chat_event(&conv, Some(&wrong), &wrapped, &allowed)
+            .expect_err("locator must match pub(K_sign)");
+    }
+
+    #[tokio::test]
+    async fn observer_k_conv_cannot_author_kind14() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let shared =
+            SharedKey::derive(sender.secret_key(), &receiver.public_key()).expect("shared");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        // Observer only holds K_conv; using it as K_sign authors pub(K_conv), not pub(K_sign).
+        let forged = wrap_chat_message(&sender, &conv, &conv, "inject")
+            .await
+            .expect("wrap with conv as sign");
+        assert_eq!(forged.pubkey, conv.public_key());
+        let allowed = [sender.public_key(), receiver.public_key()];
+        unwrap_observer_chat_event(&conv, Some(&sign.public_key()), &forged, &allowed)
+            .expect_err("K_conv cannot produce a valid K_sign author");
     }
 }

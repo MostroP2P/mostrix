@@ -311,13 +311,25 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 
     // Handle observer chat results directly (don't show popup)
     match result {
-        OperationResult::ObserverChatLoaded(messages) => {
+        OperationResult::ObserverChatLoaded {
+            generation,
+            messages,
+        } => {
+            if generation != app.observer_fetch_generation {
+                return;
+            }
             app.observer_loading = false;
             app.observer_error = None;
             app.observer_messages = messages;
             return;
         }
-        OperationResult::ObserverChatError(msg) => {
+        OperationResult::ObserverChatError {
+            generation,
+            message: msg,
+        } => {
+            if generation != app.observer_fetch_generation {
+                return;
+            }
             app.observer_loading = false;
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
@@ -562,5 +574,74 @@ mod tests {
             !matches!(app.mode, UiMode::OperationResult(_)),
             "take AddInvoice must not show the create-order success overlay"
         );
+    }
+
+    #[test]
+    fn stale_observer_chat_loaded_does_not_replace_newer_or_cleared_state() {
+        use crate::ui::chat::{ChatSender, DisputeChatMessage};
+
+        let dummy = |content: &str| DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: content.to_string(),
+            timestamp: 1,
+            target_party: None,
+            attachment: None,
+        };
+
+        let mut app = AppState::new(UserRole::Admin);
+        let gen_a = app.begin_observer_fetch();
+        app.clear_observer_secrets();
+        handle_operation_result(
+            OperationResult::ObserverChatLoaded {
+                generation: gen_a,
+                messages: vec![dummy("from-a")],
+            },
+            &mut app,
+        );
+        assert!(
+            app.observer_messages.is_empty(),
+            "cleared Observer must ignore the late fetch for the previous K_conv"
+        );
+
+        let gen_b = app.begin_observer_fetch();
+        handle_operation_result(
+            OperationResult::ObserverChatLoaded {
+                generation: gen_a,
+                messages: vec![dummy("from-a")],
+            },
+            &mut app,
+        );
+        assert!(
+            app.observer_messages.is_empty(),
+            "in-flight B must not be overwritten by late A"
+        );
+        assert!(app.observer_loading);
+
+        handle_operation_result(
+            OperationResult::ObserverChatLoaded {
+                generation: gen_b,
+                messages: vec![dummy("from-b")],
+            },
+            &mut app,
+        );
+        assert_eq!(app.observer_messages.len(), 1);
+        assert_eq!(app.observer_messages[0].content, "from-b");
+        assert!(!app.observer_loading);
+    }
+
+    #[test]
+    fn stale_observer_chat_error_does_not_raise_popup() {
+        let mut app = AppState::new(UserRole::Admin);
+        let gen_a = app.begin_observer_fetch();
+        app.clear_observer_secrets();
+        handle_operation_result(
+            OperationResult::ObserverChatError {
+                generation: gen_a,
+                message: "relay timeout".into(),
+            },
+            &mut app,
+        );
+        assert!(app.observer_error.is_none());
+        assert!(!matches!(app.mode, UiMode::OperationResult(_)));
     }
 }

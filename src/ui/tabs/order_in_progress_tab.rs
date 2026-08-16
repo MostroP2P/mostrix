@@ -13,8 +13,8 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
     FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_D_DISPUTE,
     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_I_DISABLE,
-    FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_V_RATE,
-    FOOTER_MYTRADES_TAB_CHAT, FOOTER_SENDING_ATTACHMENT, HELP_KEY,
+    FOOTER_MYTRADES_SHIFT_I_ENABLE, FOOTER_MYTRADES_SHIFT_K_KCONV, FOOTER_MYTRADES_SHIFT_R_RELEASE,
+    FOOTER_MYTRADES_SHIFT_V_RATE, FOOTER_SENDING_ATTACHMENT, HELP_KEY,
 };
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
@@ -610,10 +610,11 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}{}",
+                    "{} | {} | {} | {}{}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_SHIFT_K_KCONV,
                     attach_hints,
                 )),
             ])
@@ -631,10 +632,11 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     FOOTER_MYTRADES_SHIFT_R_RELEASE,
                 )),
                 Line::from(format!(
-                    "{} | {} | {}{}",
+                    "{} | {} | {} | {}{}",
                     FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                     FOOTER_MYTRADES_END_BOTTOM,
                     FOOTER_MYTRADES_SHIFT_V_RATE,
+                    FOOTER_MYTRADES_SHIFT_K_KCONV,
                     attach_hints,
                 )),
             ])

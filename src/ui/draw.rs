@@ -12,6 +12,46 @@ use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 use crate::util::fatal::request_fatal_restart;
 
+/// Preferred content height so bordered tab panels can still show one data row
+/// (top border + row + bottom border) after the panel drops its own header.
+const MIN_SHELL_CONTENT_HEIGHT: u16 = 3;
+const FULL_TAB_BAR_HEIGHT: u16 = 3;
+const FULL_STATUS_BAR_HEIGHT: u16 = 3;
+
+/// Tab-bar and status-bar heights for the main shell.
+///
+/// On short terminals, shrink the status bar first, then the tab bar, so the
+/// active tab keeps at least [`MIN_SHELL_CONTENT_HEIGHT`] rows whenever the
+/// terminal is tall enough to allow it.
+fn shell_chrome_heights(total_height: u16, show_status: bool) -> (u16, u16) {
+    let status_full = if show_status {
+        FULL_STATUS_BAR_HEIGHT
+    } else {
+        0
+    };
+    if total_height >= FULL_TAB_BAR_HEIGHT + status_full + MIN_SHELL_CONTENT_HEIGHT {
+        return (FULL_TAB_BAR_HEIGHT, status_full);
+    }
+
+    let mut tabs = FULL_TAB_BAR_HEIGHT.min(total_height);
+    let mut status = status_full.min(total_height.saturating_sub(tabs));
+    let mut content = total_height.saturating_sub(tabs).saturating_sub(status);
+
+    if content < MIN_SHELL_CONTENT_HEIGHT {
+        let need = MIN_SHELL_CONTENT_HEIGHT - content;
+        let take_status = status.min(need);
+        status -= take_status;
+        content += take_status;
+    }
+    if content < MIN_SHELL_CONTENT_HEIGHT {
+        let need = MIN_SHELL_CONTENT_HEIGHT - content;
+        let take_tabs = tabs.min(need);
+        tabs -= take_tabs;
+    }
+
+    (tabs, status)
+}
+
 /// Main UI draw function, extracted from `ui::mod`.
 pub fn ui_draw(
     f: &mut ratatui::Frame,
@@ -20,19 +60,20 @@ pub fn ui_draw(
     disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
     status_line: Option<&[String]>,
 ) {
-    // Create layout: one row for tabs, content area, and status bar (3 lines for status)
+    let (tab_h, status_h) = shell_chrome_heights(f.area().height, status_line.is_some());
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(3),
+            Constraint::Length(tab_h),
             Constraint::Min(0),
-            Constraint::Length(3), // Status bar with 3 lines
+            Constraint::Length(status_h),
         ],
     )
     .split(f.area());
 
-    // Render tabs
-    tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
+    if tab_h > 0 {
+        tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
+    }
 
     // Fatal restart prompt: render only the popup overlay (no additional locks).
     if app.fatal_exit_on_close {
@@ -103,12 +144,7 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::DisputesPending), UserRole::Admin) => {
-            tabs::disputes_tab::render_disputes_tab(
-                f,
-                content_area,
-                disputes,
-                app.selected_dispute_idx,
-            )
+            tabs::disputes_tab::render_disputes_tab(f, content_area, disputes, app)
         }
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
             tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
@@ -137,18 +173,20 @@ pub fn ui_draw(
         }
     }
 
-    // Bottom status bar
-    if let Some(lines) = status_line {
-        let pending_count = match app.pending_notifications.lock() {
-            Ok(g) => *g,
-            Err(e) => {
-                request_fatal_restart(format!(
-                    "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
-                ));
-                0
-            }
-        };
-        status::render_status_bar(f, chunks[2], lines, pending_count);
+    // Bottom status bar (omitted when shell chrome shrinks it to height 0)
+    if status_h > 0 {
+        if let Some(lines) = status_line {
+            let pending_count = match app.pending_notifications.lock() {
+                Ok(g) => *g,
+                Err(e) => {
+                    request_fatal_restart(format!(
+                        "Mostrix encountered an internal error (poisoned pending notifications lock: {e}). Please restart the app."
+                    ));
+                    0
+                }
+            };
+            status::render_status_bar(f, chunks[2], lines, pending_count);
+        }
     }
 
     // Confirmation popup overlay (user mode only)
@@ -604,4 +642,90 @@ fn render_add_solver_popup(f: &mut ratatui::Frame, add_solver_state: &AddSolverS
     );
 
     crate::ui::helpers::render_help_text(f, chunks[7], "Press ", "Esc", " to cancel");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shell_chrome_heights, ui_draw, FULL_STATUS_BAR_HEIGHT, FULL_TAB_BAR_HEIGHT};
+    use crate::ui::{AppState, UserRole};
+    use mostro_core::prelude::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn initiated_dispute(nibble: u8) -> Dispute {
+        let mut dispute = Dispute::new(Uuid::new_v4(), "active".to_string());
+        dispute.id = Uuid::from_bytes([nibble * 0x11; 16]);
+        dispute
+    }
+
+    #[test]
+    fn shell_chrome_keeps_full_bars_when_tall_enough() {
+        assert_eq!(
+            shell_chrome_heights(9, true),
+            (FULL_TAB_BAR_HEIGHT, FULL_STATUS_BAR_HEIGHT)
+        );
+        assert_eq!(shell_chrome_heights(8, false), (FULL_TAB_BAR_HEIGHT, 0));
+    }
+
+    #[test]
+    fn shell_chrome_shrinks_status_before_tabs_on_short_terminals() {
+        // 8 rows: free 1 from status → tabs stay bordered (3), content gets 3.
+        assert_eq!(shell_chrome_heights(8, true), (3, 2));
+        assert_eq!(shell_chrome_heights(7, true), (3, 1));
+        assert_eq!(shell_chrome_heights(6, true), (3, 0));
+        // Below that, tabs shrink too so content still reaches 3 when possible.
+        assert_eq!(shell_chrome_heights(5, true), (2, 0));
+        assert_eq!(shell_chrome_heights(4, true), (1, 0));
+        assert_eq!(shell_chrome_heights(3, true), (0, 0));
+    }
+
+    /// Regression (Hermeme on #125): fixed 3+3 shell chrome left only 2 content
+    /// rows on an 8-row terminal, so Disputes Pending showed borders and no data.
+    #[test]
+    fn ui_draw_keeps_pending_dispute_visible_on_8_row_terminal() {
+        let dispute = initiated_dispute(1);
+        assert!(
+            dispute.id.to_string().starts_with("11111111"),
+            "fixture must use the 11111111- id prefix"
+        );
+        let dispute_id = dispute.id;
+        let disputes = Arc::new(Mutex::new(vec![dispute]));
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(dispute_id);
+        let status = [
+            "status line 1".to_string(),
+            "status line 2".to_string(),
+            "status line 3".to_string(),
+        ];
+
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status)))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "11111111"),
+            "pending dispute id must stay visible through ui_draw at 8 rows"
+        );
+        assert!(
+            buffer_contains(buf, "initiated"),
+            "pending dispute status must stay visible through ui_draw at 8 rows"
+        );
+    }
 }

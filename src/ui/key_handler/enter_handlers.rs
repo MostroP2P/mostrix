@@ -2,8 +2,8 @@ use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{
-    build_active_order_chat_list, save_order_chat_message, save_user_dispute_chat_message,
-    selected_filtered_book_order, selected_filtered_dispute,
+    build_active_order_chat_list, save_order_chat_message, selected_filtered_book_order,
+    selected_filtered_dispute, selected_pending_dispute,
 };
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, handle_enter_finalize_popup, message_counter,
@@ -1071,20 +1071,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 return;
             }
         };
-        // Filter to only get "initiated" disputes
-        let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
-            .iter()
-            .enumerate()
-            .filter(|(_, dispute)| {
-                DisputeStatus::from_str(dispute.status.as_str())
-                    .map(|s| s == DisputeStatus::Initiated)
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        if let Some((_original_idx, dispute)) = initiated_disputes.get(app.selected_dispute_idx) {
-            // Only allow taking disputes with "Initiated" status
-            // (We already filtered, so this should always be true)
+        if let Some(dispute) = selected_pending_dispute(app, &disputes_lock) {
             app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
             // Default to YES
         }
@@ -1215,32 +1202,37 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate shared key, then fetch observer chat authenticated against
+        // Validate K_conv, then fetch observer chat authenticated against
         // known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
-            let msg = "Shared key is required".to_string();
+            let msg = "K_conv is required".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
-        if keys_from_shared_hex(&key_str).is_none() {
-            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
+        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+            let msg = "K_conv must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
-        // Clear previous results and set loading state
-        for msg in &mut app.observer_messages {
-            zeroize::Zeroize::zeroize(&mut msg.content);
-        }
-        app.observer_messages.clear();
-        app.observer_error = None;
-        app.observer_loading = true;
+        let sign_pubkey = match crate::util::chat_utils::parse_optional_sign_pubkey(
+            &app.observer_sign_pubkey_input,
+        ) {
+            Ok(pk) => pk,
+            Err(e) => {
+                let msg = e.to_string();
+                app.observer_error = Some(msg.clone());
+                app.mode = UiMode::operation_result(OperationResult::Error(msg));
+                return;
+            }
+        };
 
         // Spawn async fetch via the order_result channel
+        let generation = app.begin_observer_fetch();
         let client = ctx.client.clone();
         let admin_pubkey = ctx.admin_chat_keys.map(|k| k.public_key());
         let known_roles =
@@ -1248,12 +1240,18 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match fetch_observer_chat(&client, &key_str, &known_roles).await {
+            match fetch_observer_chat(&client, &key_str, sign_pubkey, &known_roles).await {
                 Ok(messages) => {
-                    let _ = tx.send(OperationResult::ObserverChatLoaded(messages));
+                    let _ = tx.send(OperationResult::ObserverChatLoaded {
+                        generation,
+                        messages,
+                    });
                 }
                 Err(e) => {
-                    let _ = tx.send(OperationResult::ObserverChatError(e.to_string()));
+                    let _ = tx.send(OperationResult::ObserverChatError {
+                        generation,
+                        message: e.to_string(),
+                    });
                 }
             }
         });

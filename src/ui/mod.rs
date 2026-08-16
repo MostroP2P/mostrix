@@ -45,9 +45,9 @@ pub use state::{
     AppState, BuyerInvoicePreference, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender,
     DecodedChatMessage, DisputeChatMessage, DisputeFilter, FormState, InvoiceInputState,
     InvoiceNotificationActionSelection, KeyInputState, LnAddressVerifyResult, MessageNotification,
-    MessageViewState, MostroInfoFetchResult, OperationResult, OrderChatLastSeen,
-    OrderChatStaticHeader, OrderChatUpdate, OrderMessage, RatingOrderState, Tab, TakeOrderState,
-    ThreeState, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage, UserRole, UserTab,
+    MessageViewState, MostroInfoFetchResult, ObserverInputField, OperationResult,
+    OrderChatLastSeen, OrderChatStaticHeader, OrderChatUpdate, OrderMessage, RatingOrderState, Tab,
+    TakeOrderState, ThreeState, UiMode, UserChatSender, UserOrderChatMessage, UserRole, UserTab,
     ViewingMessageButtonSelection,
 };
 pub use user_state::UserMode;

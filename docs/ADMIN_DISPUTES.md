@@ -23,12 +23,12 @@ The admin interface provides dedicated tabs for dispute management:
 
 ### 1. Disputes Pending Tab
 
-Lists all pending disputes on the Mostro network (state: `Initiated`). Admins can:
+Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `get_initiated_disputes`). Admins can:
 
-- **View dispute details**: Order ID, parties involved, status
+- **View dispute details**: Dispute ID, status, created time (Created column drops on narrow terminals)
 - **Take a dispute**: Select a dispute and press Enter to take ownership
-- **Navigate**: Use arrow keys to browse the dispute list
-- **Color coding**: Disputes are color-coded by status (Yellow for pending)
+- **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
+- **Scrolling**: persistent `disputes_table_state` + `render_table_list_scrollbar` (same offset/track pattern as the Orders tab)
 
 ### 2. Disputes in Progress Tab
 
@@ -43,7 +43,7 @@ The interface is divided into three main sections:
 1. **Left Sidebar (20%)**: List of disputes in progress (or finalized when Shift+C filter is active)
    - Shows truncated dispute IDs (safely handles short IDs without panicking)
    - **Selection by dispute id** (`AppState.selected_dispute_id`), resolved through `get_filtered_disputes` / `selected_filtered_dispute` / `move_dispute_selection` in `src/ui/helpers/dispute_selection.rs` — Up/Down and all chat/finalize/attachment actions use the **visible** filtered list, never a raw index into mixed open+closed rows
-   - **Scrollable list**: stateful `List` + `ListState` keeps the highlighted row in view when disputes overflow the sidebar; vertical scrollbar when the list is taller than the panel
+   - **Scrollable list**: stateful `List` + `ListState` keeps the highlighted row in view when disputes overflow the sidebar; vertical scrollbar via shared `render_table_list_scrollbar` (viewport offset, data-row track)
    - Highlighted selection with Up/Down arrow keys (skips disputes hidden by the current filter)
    - Updates main area when selection changes
    - Shows "No disputes in progress" / "No finalized disputes" when empty
@@ -100,23 +100,22 @@ See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workf
 
 **Status**: ✅ **Implemented – Relay-based chat inspection**
 
-The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 (and, during the dual-read window, legacy NIP-59 GiftWrap) events from Nostr relays. A party involved in a dispute provides the admin with their shared key (64-char hex) out-of-band so the admin can view the full conversation and decide who is right.
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 events from Nostr relays. A party involved in a dispute discloses **`K_conv` only** (My Trades **Shift+K**) — never `K_sign`. `K_conv` decrypts the conversation but cannot author a valid kind-14 envelope as `pub(K_sign)`, so Observer access is read-only by construction.
 
 #### Observer Workflow
 
-1. **Acquire the shared key**:
-   - During a dispute, one of the parties provides the admin with their **shared key** as a 64-character hex string (32-byte ECDH secret derived between the two trade pubkeys).
+1. **Acquire `K_conv`**:
+   - During a dispute, one of the parties discloses **`K_conv`** (64-character hex). In Mostrix this is **Shift+K** on My Trades. They may also share **`pub(K_sign)`** as an optional locator for an `authors` filter. Never accept or ask for the `K_sign` secret.
 2. **Open Observer tab**:
    - Switch to Admin mode and navigate to the **Observer** tab.
-3. **Paste shared key**:
-   - In the "Shared key (64-char hex)" input, paste the key provided by the user. The input supports bracketed paste mode for seamless pasting.
+3. **Paste keys**:
+   - In the **K_conv** field, paste the 64-char hex grant. Optionally paste **`pub(K_sign)`** (hex or npub) in the second field. **Tab** switches focus. Paste supports bracketed paste into the focused field.
 4. **Fetch and view chat**:
    - Press **Enter** to:
-     - Validate the shared key (non-empty, valid hex).
-     - Derive `Keys` from the shared key hex (via `keys_from_shared_hex` in `chat_utils.rs`).
-     - Fetch chat events for the shared key from the last 7 days (`fetch_gift_wraps_for_shared_key`), unwrapping only inner signers in the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes).
-     - Decrypt each event using the shared key (kind 14, plus legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
-     - Map sender public keys from that known-role map only; unknown inner signers are dropped (no arrival-order Buyer/Seller/Admin fallback).
+     - Validate `K_conv` (non-empty, valid hex secret).
+     - Parse optional `pub(K_sign)`; invalid locators fail closed.
+     - Fetch kind-14 events for the last 7 days: `authors = [pub(K_sign)]` when the locator is present, otherwise `#p = pub(K_conv)` (junk may arrive; decrypt fails).
+     - Unwrap with `K_conv` against the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes). Unknown inner signers are dropped.
      - Fetch fails if the known-role map is empty (no admin keys and no taken-dispute party pubkeys).
      - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
    - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
@@ -125,8 +124,9 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 
 #### Observer Keyboard Shortcuts
 
-- **Enter**: Fetch chat from relays using the current shared key.
-- **Ctrl+C**: Clear shared key input, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
+- **Enter**: Fetch chat from relays using `K_conv` (and optional `pub(K_sign)`).
+- **Tab / Shift+Tab**: Switch focus between `K_conv` and `pub(K_sign)`.
+- **Ctrl+C**: Clear inputs, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
 
@@ -134,7 +134,9 @@ When validation or fetching fails (empty key, invalid hex, no messages found, de
 
 #### Observer State (AppState)
 
-- `observer_shared_key_input: String` -- current shared key input.
+- `observer_shared_key_input: String` -- disclosed `K_conv` hex.
+- `observer_sign_pubkey_input: String` -- optional `pub(K_sign)` locator.
+- `observer_input_focus` -- which field receives typing/paste.
 - `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages.
 - `observer_loading: bool` -- indicates an async fetch is in progress.
 - `observer_error: Option<String>` -- inline error message.
@@ -144,7 +146,7 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches messages from Nostr relays using the shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). Sensitive data (shared key, message contents) is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches kind-14 messages using disclosed `K_conv` and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from `K_conv` alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
 
 **Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
 
