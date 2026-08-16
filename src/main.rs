@@ -329,7 +329,7 @@ async fn main() -> Result<(), anyhow::Error> {
             dm_subscription_rx,
             chat_router_cmd_rx,
             mostro_info_tx: mostro_info_tx.clone(),
-            network_status_tx,
+            network_status_tx: network_status_tx.clone(),
             message_notification_tx: message_notification_tx.clone(),
             admin_chat_updates_tx: admin_chat_updates_tx.clone(),
             user_order_chat_updates_tx: user_order_chat_updates_tx.clone(),
@@ -363,6 +363,9 @@ async fn main() -> Result<(), anyhow::Error> {
                             ));
                         }
                         crate::ui::NetworkStatus::Online(_msg) => {
+                            // Reachability is back: never keep the offline overlay while TCP works.
+                            // (Reconnect may still fail; we retry below without claiming "offline".)
+                            app.offline_overlay_message = None;
                             // Attempt reconnect + full runtime reload (mirrors key reload path).
                             let latest_settings = crate::settings::load_settings_from_disk()
                                 .unwrap_or_else(|_| settings.clone());
@@ -386,7 +389,6 @@ async fn main() -> Result<(), anyhow::Error> {
                             .await
                             {
                                 Ok(()) => {
-                                    app.offline_overlay_message = None;
                                     // Reconnect ran `unsubscribe_all`; rebuild the chat subscription.
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
@@ -405,9 +407,19 @@ async fn main() -> Result<(), anyhow::Error> {
                                     }
                                 }
                                 Err(e) => {
-                                    app.offline_overlay_message = Some(format!(
-                                        "Reconnect failed: {e}. Retrying every 5 seconds."
-                                    ));
+                                    // Monitor only emits Online on reachability *transitions*, so a
+                                    // failed reconnect while still reachable would never retry and
+                                    // would leave a sticky overlay if we set one here.
+                                    log::error!(
+                                        "Reconnect after network restore failed: {e}. Retrying in 5s."
+                                    );
+                                    let retry_tx = network_status_tx.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                        let _ = retry_tx.send(crate::ui::NetworkStatus::Online(
+                                            "Retrying reconnect".to_string(),
+                                        ));
+                                    });
                                 }
                             }
                         }

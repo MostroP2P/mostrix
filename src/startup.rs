@@ -153,6 +153,7 @@ pub async fn run_post_terminal_startup(
     spawn_network_status_monitor(
         input.configured_relays.clone(),
         input.network_status_tx.clone(),
+        relays_reachable,
     );
 
     set_startup_phase(phase_tx, "Restoring chats…");

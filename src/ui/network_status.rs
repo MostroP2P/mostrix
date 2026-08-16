@@ -11,13 +11,18 @@ pub enum NetworkStatus {
 
 /// Spawn a background task that periodically checks relay reachability and
 /// sends `NetworkStatus` transitions over the provided channel.
+///
+/// `initial_reachable` must match the startup check that may have set the offline
+/// overlay. Seeding avoids a spurious `Online` on the first tick (tokio intervals
+/// fire immediately) which would force a reconnect while already healthy.
 pub fn spawn_network_status_monitor(
     initial_relays: Vec<String>,
     network_status_tx: UnboundedSender<NetworkStatus>,
+    initial_reachable: bool,
 ) {
     tokio::spawn(async move {
         catch_unwind_request_fatal_restart("network status monitor", async move {
-            let mut last_reachable: Option<bool> = None;
+            let mut last_reachable = Some(initial_reachable);
             let mut ticker = interval(Duration::from_secs(5));
             loop {
                 ticker.tick().await;
