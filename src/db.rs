@@ -47,6 +47,9 @@ pub async fn init_db() -> Result<SqlitePool> {
                 trade_keys TEXT,
                 counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT,
+                dispute_id TEXT,
+                solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
                 buyer_invoice TEXT,
                 request_id INTEGER,
@@ -167,6 +170,10 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_last_seen_dm_ts = check_column_exists(pool, "orders", "last_seen_dm_ts").await?;
     let has_order_chat_shared_key_hex =
         check_column_exists(pool, "orders", "order_chat_shared_key_hex").await?;
+    let has_order_dispute_id = check_column_exists(pool, "orders", "dispute_id").await?;
+    let has_solver_pubkey = check_column_exists(pool, "orders", "solver_pubkey").await?;
+    let has_dispute_chat_shared_key_hex =
+        check_column_exists(pool, "orders", "dispute_chat_shared_key_hex").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -181,8 +188,11 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_trade_index
         || !has_last_seen_dm_ts
         || !has_order_chat_shared_key_hex
+        || !has_order_dispute_id
+        || !has_solver_pubkey
+        || !has_dispute_chat_shared_key_hex
     {
-        log::info!("Running migration: Adding missing columns to admin_disputes table");
+        log::info!("Running migration: adding missing database columns");
 
         // Wrap all ALTER TABLE statements in a transaction for atomicity
         let mut tx = pool.begin().await?;
@@ -317,6 +327,24 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
             .await?;
         }
 
+        if !has_order_dispute_id {
+            sqlx::query("ALTER TABLE orders ADD COLUMN dispute_id TEXT")
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        if !has_solver_pubkey {
+            sqlx::query("ALTER TABLE orders ADD COLUMN solver_pubkey TEXT")
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        if !has_dispute_chat_shared_key_hex {
+            sqlx::query("ALTER TABLE orders ADD COLUMN dispute_chat_shared_key_hex TEXT")
+                .execute(&mut *tx)
+                .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
     }
@@ -377,6 +405,9 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             trade_keys TEXT,
             counterparty_pubkey TEXT,
             order_chat_shared_key_hex TEXT,
+            dispute_id TEXT,
+            solver_pubkey TEXT,
+            dispute_chat_shared_key_hex TEXT,
             is_mine INTEGER NOT NULL,
             buyer_invoice TEXT,
             request_id INTEGER,
@@ -393,12 +424,14 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
         r#"
         INSERT INTO orders_new (
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
-            payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex, is_mine, buyer_invoice,
+            payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
             request_id, trade_index, created_at, expires_at, last_seen_dm_ts
         )
         SELECT
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
-            payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex, is_mine, buyer_invoice,
+            payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
             request_id, trade_index, created_at, expires_at, last_seen_dm_ts
         FROM orders;
         "#,

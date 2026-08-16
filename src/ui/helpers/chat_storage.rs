@@ -9,6 +9,7 @@ use chrono::DateTime;
 use nostr_sdk::prelude::EventId;
 
 use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, UserChatSender, UserOrderChatMessage};
+use crate::util::chat_utils::clamp_chat_since_cursor_now;
 
 use super::attachments::{
     legacy_placeholder_matches_filename, message_fields_from_transcript_content,
@@ -18,11 +19,13 @@ use super::chat_render::wrap_text_to_lines;
 
 const DISPUTES_CHAT_DIR: &str = "disputes_chat";
 const ORDERS_CHAT_DIR: &str = "orders_chat";
+const USER_DISPUTES_CHAT_DIR: &str = "user_disputes_chat";
 
 #[derive(Clone, Copy)]
 enum ChatStorageKind {
     Disputes,
     Orders,
+    UserDisputes,
 }
 
 impl ChatStorageKind {
@@ -30,6 +33,7 @@ impl ChatStorageKind {
         match self {
             ChatStorageKind::Disputes => DISPUTES_CHAT_DIR,
             ChatStorageKind::Orders => ORDERS_CHAT_DIR,
+            ChatStorageKind::UserDisputes => USER_DISPUTES_CHAT_DIR,
         }
     }
 
@@ -37,6 +41,7 @@ impl ChatStorageKind {
         match self {
             ChatStorageKind::Disputes => "dispute chat",
             ChatStorageKind::Orders => "order chat",
+            ChatStorageKind::UserDisputes => "user dispute chat",
         }
     }
 }
@@ -249,19 +254,40 @@ pub fn load_chat_from_file(dispute_id: &str) -> Option<Vec<DisputeChatMessage>> 
 /// Returns `true` when the message is durably represented on disk (newly written
 /// or already present as the last transcript block). Returns `false` on I/O failure.
 pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) -> bool {
-    let file_path = match chat_file_path(ChatStorageKind::Orders, order_id) {
+    save_user_chat_message_by_kind(ChatStorageKind::Orders, order_id, message)
+}
+
+fn save_user_chat_message_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    message: &UserOrderChatMessage,
+) -> bool {
+    let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
-            log::warn!("Invalid order chat id format, skipping save: {}", order_id);
+            log::warn!(
+                "Invalid {} id format, skipping save: {}",
+                kind.log_label(),
+                chat_id
+            );
             return false;
         }
     };
     let Some(chat_dir) = file_path.parent() else {
-        log::warn!("Failed to resolve order chat folder for id {}", order_id);
+        log::warn!(
+            "Failed to resolve {} folder for id {}",
+            kind.log_label(),
+            chat_id
+        );
         return false;
     };
     if let Err(e) = fs::create_dir_all(chat_dir) {
-        log::warn!("Failed to create order chat folder {:?}: {}", chat_dir, e);
+        log::warn!(
+            "Failed to create {} folder {:?}: {}",
+            kind.log_label(),
+            chat_dir,
+            e
+        );
         return false;
     }
 
@@ -287,7 +313,7 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) -
         }
     }
     let formatted_message = format_order_transcript_block(message, &content_block);
-    append_transcript_block(&file_path, &formatted_message, "order chat")
+    append_transcript_block(&file_path, &formatted_message, kind.log_label())
 }
 
 /// Rewrite the full order-chat transcript (used when upgrading a placeholder in place).
@@ -295,22 +321,40 @@ pub fn save_order_chat_message(order_id: &str, message: &UserOrderChatMessage) -
 /// Returns `true` on successful atomic replace; `false` on I/O failure (caller should
 /// not treat the in-memory upgrade as durable).
 pub fn rewrite_order_chat_messages(order_id: &str, messages: &[UserOrderChatMessage]) -> bool {
-    let file_path = match chat_file_path(ChatStorageKind::Orders, order_id) {
+    rewrite_user_chat_messages_by_kind(ChatStorageKind::Orders, order_id, messages)
+}
+
+fn rewrite_user_chat_messages_by_kind(
+    kind: ChatStorageKind,
+    chat_id: &str,
+    messages: &[UserOrderChatMessage],
+) -> bool {
+    let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
             log::warn!(
-                "Invalid order chat id format, skipping rewrite: {}",
-                order_id
+                "Invalid {} id format, skipping rewrite: {}",
+                kind.log_label(),
+                chat_id
             );
             return false;
         }
     };
     let Some(chat_dir) = file_path.parent() else {
-        log::warn!("Failed to resolve order chat folder for id {}", order_id);
+        log::warn!(
+            "Failed to resolve {} folder for id {}",
+            kind.log_label(),
+            chat_id
+        );
         return false;
     };
     if let Err(e) = fs::create_dir_all(chat_dir) {
-        log::warn!("Failed to create order chat folder {:?}: {}", chat_dir, e);
+        log::warn!(
+            "Failed to create {} folder {:?}: {}",
+            kind.log_label(),
+            chat_dir,
+            e
+        );
         return false;
     }
     let mut body = String::new();
@@ -318,7 +362,7 @@ pub fn rewrite_order_chat_messages(order_id: &str, messages: &[UserOrderChatMess
         let content_block = transcript_body_for_order_message(message);
         body.push_str(&format_order_transcript_block(message, &content_block));
     }
-    write_transcript_file(&file_path, &body, "order chat")
+    write_transcript_file(&file_path, &body, kind.log_label())
 }
 
 fn format_order_transcript_block(message: &UserOrderChatMessage, content_block: &str) -> String {
@@ -401,6 +445,25 @@ fn write_transcript_file(file_path: &Path, body: &str, label: &str) -> bool {
 /// Load cached user order chat from `~/.mostrix/orders_chat/<order_id>.txt`.
 pub fn load_order_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMessage>> {
     load_order_chat_from_file_by_kind(ChatStorageKind::Orders, order_id)
+}
+
+/// Persist one user-to-solver message under the parent order id.
+///
+/// Returns `true` when the message is durably represented on disk.
+pub fn save_user_dispute_chat_message(order_id: &str, message: &UserOrderChatMessage) -> bool {
+    save_user_chat_message_by_kind(ChatStorageKind::UserDisputes, order_id, message)
+}
+
+/// Load cached user-to-solver messages for an order.
+pub fn load_user_dispute_chat_from_file(order_id: &str) -> Option<Vec<UserOrderChatMessage>> {
+    load_order_chat_from_file_by_kind(ChatStorageKind::UserDisputes, order_id)
+}
+
+/// Max accepted timestamp in the cached user-to-solver transcript.
+pub fn user_dispute_chat_since_from_file(order_id: &str) -> Option<i64> {
+    load_user_dispute_chat_from_file(order_id)
+        .and_then(|msgs| msgs.iter().map(|m| m.timestamp).max())
+        .map(clamp_chat_since_cursor_now)
 }
 
 /// Max message timestamp from the on-disk order chat transcript (cursor for relay hydrate).
@@ -548,7 +611,7 @@ fn format_dispute_transcript_block(kind: ChatStorageKind, message: &DisputeChatM
             (ChatSender::Buyer, _) => "Buyer",
             (ChatSender::Seller, _) => "Seller",
         },
-        ChatStorageKind::Orders => match message.sender {
+        ChatStorageKind::Orders | ChatStorageKind::UserDisputes => match message.sender {
             ChatSender::Admin => "You",
             ChatSender::Buyer | ChatSender::Seller => "Peer",
         },
@@ -697,6 +760,30 @@ pub fn order_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
 /// the matching transcript mutation has succeeded.
 pub fn remember_order_chat_inner_id(order_id: &str, id: &EventId) -> bool {
     match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
+        Some(path) => remember_inner_id_at_path(&path, id),
+        None => true,
+    }
+}
+
+/// Load durable inner event ids for a user-to-solver dispute chat.
+pub fn load_user_dispute_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
+        Some(path) => with_inner_id_set(&path, |set| set.clone()),
+        None => HashSet::new(),
+    }
+}
+
+/// Returns `true` if this inner id was already accepted for the solver chat.
+pub fn user_dispute_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
+        Some(path) => inner_id_known_at_path(&path, id),
+        None => false,
+    }
+}
+
+/// Persist an accepted solver-chat inner id after its transcript is durable.
+pub fn remember_user_dispute_chat_inner_id(order_id: &str, id: &EventId) -> bool {
+    match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
         Some(path) => remember_inner_id_at_path(&path, id),
         None => true,
     }

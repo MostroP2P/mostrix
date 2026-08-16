@@ -164,6 +164,12 @@ pub struct Order {
     pub counterparty_pubkey: Option<String>,
     /// ECDH shared secret for P2P order chat (hex), derived once when both trade pubkeys are known.
     pub order_chat_shared_key_hex: Option<String>,
+    /// Dispute UUID assigned by Mostro for this order.
+    pub dispute_id: Option<String>,
+    /// Trade pubkey of the solver that took the dispute.
+    pub solver_pubkey: Option<String>,
+    /// ECDH shared secret for the user-to-solver dispute chat.
+    pub dispute_chat_shared_key_hex: Option<String>,
     /// Maker (`true`) vs taker (`false`). Matches `orders.is_mine` INTEGER NOT NULL (0/1).
     pub is_mine: bool,
     pub buyer_invoice: Option<String>,
@@ -261,6 +267,9 @@ impl Order {
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey: None,
             order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
@@ -298,8 +307,10 @@ impl Order {
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
             fiat_code, fiat_amount, payment_method, premium, is_mine,
-            trade_keys, counterparty_pubkey, order_chat_shared_key_hex, buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex,
+            buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -316,6 +327,9 @@ impl Order {
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
+        .bind(&self.dispute_id)
+        .bind(&self.solver_pubkey)
+        .bind(&self.dispute_chat_shared_key_hex)
         .bind(&self.buyer_invoice)
         .bind(self.request_id)
         .bind(self.trade_index)
@@ -333,7 +347,8 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?, buyer_invoice = ?,
+                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ?
             "#,
@@ -351,6 +366,9 @@ impl Order {
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
+        .bind(&self.dispute_id)
+        .bind(&self.solver_pubkey)
+        .bind(&self.dispute_chat_shared_key_hex)
         .bind(&self.buyer_invoice)
         .bind(self.request_id)
         .bind(self.trade_index)
@@ -397,6 +415,10 @@ impl Order {
             trade_keys: Some(trade_keys_hex),
             counterparty_pubkey,
             order_chat_shared_key_hex,
+            dispute_id: existing.and_then(|e| e.dispute_id.clone()),
+            solver_pubkey: existing.and_then(|e| e.solver_pubkey.clone()),
+            dispute_chat_shared_key_hex: existing
+                .and_then(|e| e.dispute_chat_shared_key_hex.clone()),
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
@@ -528,6 +550,38 @@ impl Order {
         )
         .bind(ts)
         .bind(ts)
+        .bind(order_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist the dispute id announced by Mostro for a user order.
+    pub async fn update_dispute_id(
+        pool: &SqlitePool,
+        order_id: &str,
+        dispute_id: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE orders SET dispute_id = ? WHERE id = ?")
+            .bind(dispute_id)
+            .bind(order_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Persist the assigned solver and the derived user-to-solver chat secret.
+    pub async fn update_solver_chat(
+        pool: &SqlitePool,
+        order_id: &str,
+        solver_pubkey: &str,
+        shared_key_hex: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE orders SET solver_pubkey = ?, dispute_chat_shared_key_hex = ? WHERE id = ?",
+        )
+        .bind(solver_pubkey)
+        .bind(shared_key_hex)
         .bind(order_id)
         .execute(pool)
         .await?;

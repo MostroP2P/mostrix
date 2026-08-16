@@ -39,6 +39,25 @@ pub enum UserChatSender {
     Peer,
 }
 
+/// User-facing chat channel selected in My Trades.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum UserChatChannel {
+    /// Chat with the order counterparty.
+    #[default]
+    Peer,
+    /// Chat with the solver assigned to the dispute.
+    Solver,
+}
+
+impl Display for UserChatChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Peer => write!(f, "Peer"),
+            Self::Solver => write!(f, "Solver"),
+        }
+    }
+}
+
 /// Type of file attachment (Mostro Mobile image_encrypted / file_encrypted).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatAttachmentType {
@@ -114,6 +133,8 @@ pub struct OrderChatLastSeen {
 #[derive(Clone, Debug)]
 pub struct OrderChatUpdate {
     pub order_id: String,
+    /// Conversation that should receive this batch.
+    pub channel: UserChatChannel,
     /// Local trade public key for this order; used to skip relay echoes of our own sends.
     pub local_trade_pubkey: PublicKey,
     pub messages: Vec<DecodedChatMessage>,

@@ -28,6 +28,11 @@ pub use chat_storage::{
     remember_order_chat_inner_id, rewrite_dispute_chat_messages, rewrite_order_chat_messages,
     save_chat_message, save_order_chat_message,
 };
+pub use chat_storage::{
+    load_user_dispute_chat_from_file, load_user_dispute_chat_inner_ids,
+    remember_user_dispute_chat_inner_id, save_user_dispute_chat_message,
+    user_dispute_chat_inner_id_known, user_dispute_chat_since_from_file,
+};
 pub use chat_visibility::{
     count_order_attachments, count_visible_attachments, get_order_attachment_messages,
     get_selected_chat_message, get_visible_attachment_messages, message_visible_for_party,

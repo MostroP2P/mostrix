@@ -4,8 +4,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
-    AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserMode, UserRole, UserTab,
-    ViewingMessageButtonSelection,
+    AdminMode, AdminTab, AppState, FormState, Tab, UiMode, UserChatChannel, UserMode, UserRole,
+    UserTab, ViewingMessageButtonSelection,
 };
 use crossterm::event::KeyCode;
 use mostro_core::prelude::*;

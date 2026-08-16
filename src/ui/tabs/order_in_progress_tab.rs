@@ -21,7 +21,7 @@ use crate::ui::helpers::{
     format_user_rating,
 };
 use crate::ui::UserOrderChatMessage;
-use crate::ui::{AppState, UserChatSender};
+use crate::ui::{AppState, UserChatChannel, UserChatSender};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// `Order ID: …` for the sidebar — same style as disputes; shows the full id when it fits the column.
@@ -45,6 +45,7 @@ fn sidebar_order_list_label(order_id: &str, inner_width: u16) -> String {
 fn build_order_chat_content(
     messages: &[UserOrderChatMessage],
     content_width: u16,
+    channel: UserChatChannel,
 ) -> (Vec<Line<'static>>, u16, Vec<usize>) {
     fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
         if max_width == 0 {
@@ -104,7 +105,10 @@ fn build_order_chat_content(
         let sender = msg.sender;
         let label = match sender {
             UserChatSender::You => "You",
-            UserChatSender::Peer => "Peer",
+            UserChatSender::Peer => match channel {
+                UserChatChannel::Peer => "Peer",
+                UserChatChannel::Solver => "Solver",
+            },
         };
         let color = match sender {
             UserChatSender::You => Color::Cyan,
@@ -246,6 +250,14 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let static_h = Uuid::parse_str(&selected.order_id)
         .ok()
         .and_then(|id| app.order_chat_static.get(&id));
+    let solver_available = selected.solver_pubkey.is_some()
+        || static_h
+            .and_then(|header| header.solver_pubkey.as_ref())
+            .is_some();
+    if !solver_available {
+        app.active_user_chat_channel = UserChatChannel::Peer;
+    }
+    let active_channel = app.active_user_chat_channel;
     let order_kind = static_h
         .and_then(|h| h.kind.map(|k| k.to_string()))
         .unwrap_or_else(|| "Unknown".to_string());
@@ -292,6 +304,32 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let order_id_display = static_h
         .map(|h| h.order_id.to_string())
         .unwrap_or_else(|| selected.order_id.clone());
+    let dispute_id = selected
+        .dispute_id
+        .as_deref()
+        .or_else(|| static_h.and_then(|header| header.dispute_id.as_deref()));
+    let context_line = if let Some(dispute_id) = dispute_id {
+        Line::from(vec![
+            Span::styled("Dispute ID: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                dispute_id.to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!("Initiator: {initiator_role} "),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(initiator_pubkey_display, Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("Created: ", Style::default().fg(Color::Gray)),
+            Span::styled(created_str, Style::default().fg(Color::Yellow)),
+        ])
+    };
     let mut header_lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
@@ -321,16 +359,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
             Span::styled(status_label, Style::default().add_modifier(Modifier::BOLD)),
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("Initiator: {initiator_role} "),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(initiator_pubkey_display, Style::default().fg(Color::Cyan)),
-            Span::raw("  "),
-            Span::styled("Created: ", Style::default().fg(Color::Gray)),
-            Span::styled(created_str, Style::default().fg(Color::Yellow)),
-        ]),
+        context_line,
         Line::from(vec![
             Span::styled("Amount: ", Style::default().fg(Color::Gray)),
             Span::styled(
@@ -395,19 +424,34 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let footer_height =
         footer_height.saturating_add(if app.attachment_toast.is_some() { 1 } else { 0 });
 
-    let file_count = count_order_attachments(app, &selected.order_id);
-    let mut attach_hints = FOOTER_CTRL_O_SEND_FILE.to_string();
+    let file_count = if active_channel == UserChatChannel::Peer {
+        count_order_attachments(app, &selected.order_id)
+    } else {
+        0
+    };
+    let mut attach_hints = if active_channel == UserChatChannel::Peer {
+        FOOTER_CTRL_O_SEND_FILE.to_string()
+    } else {
+        String::new()
+    };
     if file_count > 0 {
         attach_hints.push_str(FOOTER_CTRL_S_SAVE_FILE);
     }
-    if app
-        .pending_order_attachment_sends
-        .contains_key(&selected.order_id)
+    if active_channel == UserChatChannel::Peer
+        && app
+            .pending_order_attachment_sends
+            .contains_key(&selected.order_id)
     {
         attach_hints.push_str(FOOTER_CTRL_SHIFT_O_RETRY);
     }
-    if app.sending_attachment_order_id.as_deref() == Some(selected.order_id.as_str()) {
+    if active_channel == UserChatChannel::Peer
+        && app.sending_attachment_order_id.as_deref() == Some(selected.order_id.as_str())
+    {
         attach_hints.push_str(FOOTER_SENDING_ATTACHMENT);
+    }
+    if solver_available {
+        attach_hints.push_str(" | ");
+        attach_hints.push_str(FOOTER_MYTRADES_TAB_CHAT);
     }
     let attach_hints = attach_hints.as_str();
 
@@ -438,23 +482,24 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[0],
     );
 
-    let chat_messages = app
-        .order_chats
-        .get(&selected.order_id)
-        .cloned()
-        .unwrap_or_default();
+    let chat_messages = match active_channel {
+        UserChatChannel::Peer => app.order_chats.get(&selected.order_id),
+        UserChatChannel::Solver => app.user_dispute_chats.get(&selected.order_id),
+    }
+    .cloned()
+    .unwrap_or_default();
     let message_count = chat_messages.len();
     let chat_title = if message_count > 0 {
         if file_count > 0 {
             format!(
-                "Order Chat ({} messages, {} file(s))",
-                message_count, file_count
+                "{} Chat ({} messages, {} file(s))",
+                active_channel, message_count, file_count
             )
         } else {
-            format!("Order Chat ({} messages)", message_count)
+            format!("{} Chat ({} messages)", active_channel, message_count)
         }
     } else {
-        "Order Chat (no messages)".to_string()
+        format!("{} Chat (no messages)", active_channel)
     };
     let chat_area = main_chunks[1];
     let chat_block = Block::default()
@@ -468,14 +513,15 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
 
     // Match disputes/observer chat: content width reserves one column for the vertical scrollbar.
     let content_width = chat_inner.width.saturating_sub(1).max(1);
-    let (chat_lines, _, line_starts) = build_order_chat_content(&chat_messages, content_width);
+    let (chat_lines, _, line_starts) =
+        build_order_chat_content(&chat_messages, content_width, active_channel);
     app.order_chat_line_starts = line_starts;
     let content_height = chat_lines.len().min(u16::MAX as usize) as u16;
 
     if message_count > 0 {
         let order_id_key = selected.order_id.clone();
-        if let Some((ref prev_id, last_count)) = app.order_chat_scroll_tracker {
-            if *prev_id == order_id_key {
+        if let Some((ref prev_id, prev_channel, last_count)) = app.order_chat_scroll_tracker {
+            if *prev_id == order_id_key && prev_channel == active_channel {
                 if message_count > last_count {
                     app.order_chat_scrollview_state.scroll_to_bottom();
                 }
@@ -485,9 +531,9 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         } else {
             app.order_chat_scrollview_state.scroll_to_bottom();
         }
-        app.order_chat_scroll_tracker = Some((order_id_key, message_count));
+        app.order_chat_scroll_tracker = Some((order_id_key, active_channel, message_count));
     } else {
-        app.order_chat_scroll_tracker = Some((selected.order_id.clone(), 0));
+        app.order_chat_scroll_tracker = Some((selected.order_id.clone(), active_channel, 0));
     }
 
     let mut scroll_view = ScrollView::new(Size::new(content_width, content_height.max(1)))
@@ -709,7 +755,12 @@ pub fn push_local_order_chat_message(
 mod tests {
     use super::{render_order_in_progress, trailing_order_chat_input};
     use crate::ui::helpers::OrderChatListItem;
-    use crate::ui::{AppState, UiMode, UserMode, UserRole};
+    use crate::ui::key_handler::handle_tab_navigation;
+    use crate::ui::{
+        AppState, OrderChatStaticHeader, Tab, UiMode, UserChatChannel, UserChatSender, UserMode,
+        UserOrderChatMessage, UserRole, UserTab,
+    };
+    use crossterm::event::KeyCode;
     use mostro_core::prelude::Status;
     use ratatui::backend::TestBackend;
     use ratatui::text::Span;
@@ -786,13 +837,16 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
         });
         app.order_chat_input = format!(
             "hidden-prefix-that-should-scroll-away-{}-visible-suffix",
             "x".repeat(80)
         );
 
-        let backend = TestBackend::new(80, 24);
+        // Keep the message input usable on a terminal that is both narrow and short.
+        let backend = TestBackend::new(60, 15);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
@@ -804,6 +858,64 @@ mod tests {
             buffer,
             "hidden-prefix-that-should-scroll-away"
         ));
+    }
+
+    #[test]
+    fn render_solver_chat_keeps_solver_messages_visible() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.active_user_chat_channel = UserChatChannel::Solver;
+        app.order_chat_static.insert(
+            Uuid::nil(),
+            OrderChatStaticHeader {
+                order_id: Uuid::nil(),
+                kind: None,
+                created_at: Some(1),
+                trade_index: 1,
+                initiator_trade_pubkey: "trade-pubkey".to_string(),
+                is_mine: false,
+                solver_pubkey: Some("solver-pubkey".to_string()),
+                dispute_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            },
+        );
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: order_id.clone(),
+            status: Some(Status::Dispute),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: Some("solver-pubkey".to_string()),
+            dispute_id: None,
+        });
+        app.user_dispute_chats.insert(
+            order_id,
+            vec![UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: "Please send the payment receipt".to_string(),
+                timestamp: 1,
+                attachment: None,
+            }],
+        );
+
+        let backend = TestBackend::new(60, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert!(buffer_contains(buffer, "Solver Chat (1 messages)"));
+        assert!(buffer_contains(buffer, "Dispute ID:"));
+        assert!(buffer_contains(buffer, "Please send the"));
+        assert!(buffer_contains(buffer, "payment receipt"));
+        assert!(!buffer_contains(buffer, "Ctrl+O: Send file"));
     }
 
     #[test]
@@ -823,6 +935,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
         });
 
         let backend = TestBackend::new(120, 24);
@@ -836,5 +950,35 @@ mod tests {
             buffer,
             "Shift+C: Cancel order | Shift+D: Dispute"
         ));
+    }
+
+    #[test]
+    fn tab_switches_to_solver_chat_only_after_assignment() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: Uuid::nil().to_string(),
+            status: Some(Status::Dispute),
+            amount: None,
+            fiat: None,
+            trade_index: Some(1),
+            payment_method: None,
+            premium: None,
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.active_user_chat_channel, UserChatChannel::Peer);
+
+        app.my_trades_maker_book[0].solver_pubkey = Some("solver".to_string());
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.active_user_chat_channel, UserChatChannel::Solver);
+        handle_tab_navigation(KeyCode::BackTab, &mut app);
+        assert_eq!(app.active_user_chat_channel, UserChatChannel::Peer);
     }
 }

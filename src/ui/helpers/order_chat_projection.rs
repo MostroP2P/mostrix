@@ -2,7 +2,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use mostro_core::prelude::{Payload, Peer, SmallOrder, Status, UserInfo};
+use mostro_core::prelude::{Action, Payload, Peer, SmallOrder, Status, UserInfo};
+use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::{AppState, OrderMessage};
@@ -24,6 +25,10 @@ pub struct OrderChatListItem {
     /// Reputation for the buyer/seller trade pubkey when the daemon sent `Payload::Peer` with matching pubkey.
     pub buyer_reputation: Option<UserInfo>,
     pub seller_reputation: Option<UserInfo>,
+    /// Solver pubkey announced by `AdminTookDispute`.
+    pub solver_pubkey: Option<String>,
+    /// Dispute UUID announced by Mostro for this order.
+    pub dispute_id: Option<String>,
 }
 
 /// Maker listings back on the book (`pending`) with no active trade-DM row in Messages.
@@ -52,6 +57,8 @@ pub fn order_chat_list_item_from_db_order(order: &Order) -> Option<OrderChatList
         seller_trade_pubkey: None,
         buyer_reputation: None,
         seller_reputation: None,
+        solver_pubkey: order.solver_pubkey.clone(),
+        dispute_id: order.dispute_id.clone(),
     })
 }
 
@@ -91,7 +98,16 @@ fn merge_message_into_entry(entry: &mut OrderChatListItem, msg: &OrderMessage) {
     };
     match payload {
         Payload::Order(order) => merge_order_fields(entry, order, msg),
-        Payload::Peer(peer) => merge_peer_fields(entry, peer),
+        Payload::Peer(peer) => {
+            if msg.message.get_inner_message_kind().action == Action::AdminTookDispute {
+                entry.solver_pubkey = Some(peer.pubkey.clone());
+            } else {
+                merge_peer_fields(entry, peer);
+            }
+        }
+        Payload::Dispute(dispute_id, _) => {
+            entry.dispute_id = Some(dispute_id.to_string());
+        }
         _ => {}
     }
 }
@@ -135,6 +151,8 @@ fn build_order_chat_list_from_messages(messages: &[OrderMessage]) -> Vec<OrderCh
                     seller_trade_pubkey: None,
                     buyer_reputation: None,
                     seller_reputation: None,
+                    solver_pubkey: None,
+                    dispute_id: None,
                 };
                 merge_message_into_entry(&mut entry, msg);
                 entry
@@ -198,11 +216,110 @@ pub fn active_order_chat_list_snapshot(app: &AppState) -> Vec<OrderChatListItem>
     match app.messages.lock() {
         Ok(guard) => {
             let messages = guard.clone();
-            build_active_order_chat_list(&messages, &app.my_trades_maker_book)
+            let mut rows = build_active_order_chat_list(&messages, &app.my_trades_maker_book);
+            for row in &mut rows {
+                let Some(header) = Uuid::parse_str(&row.order_id)
+                    .ok()
+                    .and_then(|id| app.order_chat_static.get(&id))
+                else {
+                    continue;
+                };
+                row.solver_pubkey = row
+                    .solver_pubkey
+                    .clone()
+                    .or_else(|| header.solver_pubkey.clone());
+                row.dispute_id = row.dispute_id.clone().or_else(|| header.dispute_id.clone());
+            }
+            rows
         }
         Err(e) => {
             fatal_on_poisoned_messages_lock(e);
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_order_chat_list_snapshot, build_active_order_chat_list};
+    use crate::ui::{AppState, OrderChatStaticHeader, OrderMessage, UserRole};
+    use mostro_core::prelude::{Action, Kind, Message, Payload, Status};
+    use nostr_sdk::prelude::Keys;
+    use uuid::Uuid;
+
+    #[test]
+    fn dispute_payload_populates_dispute_id() {
+        let order_id = Uuid::new_v4();
+        let dispute_id = Uuid::new_v4();
+        let message = OrderMessage {
+            message: Message::new_dispute(
+                Some(order_id),
+                None,
+                Some(1),
+                Action::DisputeInitiatedByYou,
+                Some(Payload::Dispute(dispute_id, None)),
+            ),
+            timestamp: 1,
+            sender: Keys::generate().public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: None,
+            is_mine: Some(false),
+            order_status: Some(Status::Dispute),
+            order_snapshot: None,
+            read: true,
+            auto_popup_shown: true,
+        };
+
+        let rows = build_active_order_chat_list(&[message], &[]);
+
+        assert_eq!(
+            rows[0].dispute_id.as_deref(),
+            Some(dispute_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn static_dispute_metadata_survives_replaced_order_message() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.order_chat_static.insert(
+            order_id,
+            OrderChatStaticHeader {
+                order_id,
+                kind: Some(Kind::Buy),
+                created_at: None,
+                trade_index: 1,
+                initiator_trade_pubkey: "initiator".to_string(),
+                is_mine: false,
+                solver_pubkey: Some("solver-pubkey".to_string()),
+                dispute_id: Some("dispute-id".to_string()),
+            },
+        );
+        app.messages
+            .lock()
+            .expect("messages lock")
+            .push(OrderMessage {
+                message: Message::new_order(Some(order_id), None, Some(1), Action::FiatSent, None),
+                timestamp: 2,
+                sender: Keys::generate().public_key(),
+                order_id: Some(order_id),
+                trade_index: 1,
+                sat_amount: None,
+                buyer_invoice: None,
+                order_kind: Some(Kind::Buy),
+                is_mine: Some(false),
+                order_status: Some(Status::Dispute),
+                order_snapshot: None,
+                read: true,
+                auto_popup_shown: true,
+            });
+
+        let rows = active_order_chat_list_snapshot(&app);
+
+        assert_eq!(rows[0].solver_pubkey.as_deref(), Some("solver-pubkey"));
+        assert_eq!(rows[0].dispute_id.as_deref(), Some("dispute-id"));
     }
 }

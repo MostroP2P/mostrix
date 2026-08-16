@@ -24,6 +24,10 @@ pub struct OrderChatStaticHeader {
     pub initiator_trade_pubkey: String,
     /// `true` = we are maker, `false` = taker.
     pub is_mine: bool,
+    /// Assigned solver trade pubkey, when available.
+    pub solver_pubkey: Option<String>,
+    /// Dispute UUID persisted for this order, when available.
+    pub dispute_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -378,6 +382,10 @@ pub struct MessageNotification {
     pub body: Option<String>,
     /// Maker bond (Phase 5): pay before the order is published to the book.
     pub maker_bond_publish: bool,
+    /// Solver announced by an `AdminTookDispute` DM, when present.
+    pub solver_pubkey: Option<String>,
+    /// Dispute UUID announced by a dispute DM, when present.
+    pub dispute_id: Option<String>,
 }
 
 /// Whether an invoice modal is appropriate for the current trade phase.
@@ -671,6 +679,7 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::AdminCanceled => "Order canceled by admin",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::DisputeInitiatedByPeer => "Your counterpart opened a dispute",
+        Action::AdminTookDispute => "A solver joined the dispute",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived | Action::PurchaseCompleted => "Rate Counterparty completed",
         Action::Release | Action::Released => "Release",
@@ -687,6 +696,14 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
     } else {
         None
     };
+    let solver_pubkey = match (&action, inner_message_kind.payload.as_ref()) {
+        (Action::AdminTookDispute, Some(Payload::Peer(peer))) => Some(peer.pubkey.clone()),
+        _ => None,
+    };
+    let dispute_id = match inner_message_kind.payload.as_ref() {
+        Some(Payload::Dispute(dispute_id, _)) => Some(dispute_id.to_string()),
+        _ => None,
+    };
 
     MessageNotification {
         order_id: msg.order_id,
@@ -697,6 +714,8 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         invoice: msg.buyer_invoice.clone(),
         body,
         maker_bond_publish: msg.order_status == Some(Status::WaitingMakerBond),
+        solver_pubkey,
+        dispute_id,
     }
 }
 
@@ -722,6 +741,8 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::Release | Action::Released => "Release sats",
         Action::Dispute | Action::DisputeInitiatedByYou => "Dispute",
         Action::DisputeInitiatedByPeer => "Dispute by Peer",
+        Action::AdminTookDispute => "Solver Joined Dispute",
+        Action::CantDo => "Action Rejected",
         Action::Canceled => "Canceled",
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
@@ -744,6 +765,7 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
         Some(Status::Canceled) => "Canceled",
         Some(Status::CanceledByAdmin) => "Admin Canceled",
         Some(Status::CooperativelyCanceled) => "Cooperatively Canceled",
+        Some(Status::Dispute) => "Trade in Dispute",
         Some(Status::WaitingBuyerInvoice) => "Waiting Buyer Invoice",
         Some(Status::WaitingPayment) => "Waiting Seller Payment",
         Some(Status::Expired) => "Expired",
@@ -1464,6 +1486,67 @@ mod message_emoji_and_badge_tests {
     }
 
     #[test]
+    fn solver_assignment_has_a_readable_label() {
+        assert_eq!(
+            message_action_compact_label(&Action::AdminTookDispute),
+            "Solver Joined Dispute"
+        );
+    }
+
+    #[test]
+    fn cant_do_has_a_readable_label() {
+        assert_eq!(
+            message_action_compact_label(&Action::CantDo),
+            "Action Rejected"
+        );
+    }
+
+    #[test]
+    fn notifications_carry_dispute_metadata() {
+        let order_id = uuid::Uuid::new_v4();
+        let dispute_id = uuid::Uuid::new_v4();
+        let mut solver_msg = sample_msg(Action::AdminTookDispute, None, None, None);
+        solver_msg.order_id = Some(order_id);
+        solver_msg.message = Message::new_order(
+            Some(order_id),
+            None,
+            None,
+            Action::AdminTookDispute,
+            Some(Payload::Peer(Peer::new("solver-pubkey".to_string(), None))),
+        );
+        let solver_notification = order_message_to_notification(&solver_msg);
+        assert_eq!(
+            solver_notification.solver_pubkey.as_deref(),
+            Some("solver-pubkey")
+        );
+
+        let mut dispute_msg = sample_msg(Action::DisputeInitiatedByYou, None, None, None);
+        dispute_msg.order_id = Some(order_id);
+        dispute_msg.message = Message::new_dispute(
+            Some(order_id),
+            None,
+            None,
+            Action::DisputeInitiatedByYou,
+            Some(Payload::Dispute(dispute_id, None)),
+        );
+        let dispute_notification = order_message_to_notification(&dispute_msg);
+        assert_eq!(
+            dispute_notification.dispute_id.as_deref(),
+            Some(dispute_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn dispute_status_does_not_fall_back_to_unknown_action() {
+        let msg = sample_msg(Action::Orders, None, None, Some(Status::Dispute));
+
+        assert_eq!(
+            message_action_compact_label_for_message(&msg),
+            "Trade in Dispute"
+        );
+    }
+
+    #[test]
     fn peer_initiated_dispute_warns_in_the_timeline() {
         assert_eq!(
             message_timeline_warning(&Action::DisputeInitiatedByPeer),
@@ -1726,6 +1809,8 @@ mod order_success_placeholder_tests {
                 trade_index: 1,
                 initiator_trade_pubkey: keys.public_key().to_string(),
                 is_mine,
+                solver_pubkey: None,
+                dispute_id: None,
             }),
         }
     }
@@ -2104,6 +2189,8 @@ mod placeholder_action_tests {
                 trade_index: 2,
                 initiator_trade_pubkey: keys.public_key().to_string(),
                 is_mine: true,
+                solver_pubkey: None,
+                dispute_id: None,
             }),
         };
         let msg = try_placeholder_order_message_from_success(&os).expect("placeholder");

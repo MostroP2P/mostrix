@@ -27,10 +27,14 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::models::{Order, User};
+use crate::ui::helpers::user_dispute_chat_since_from_file;
 use crate::ui::order_message_to_notification;
 use crate::ui::orders::{merge_order_snapshots, small_order_from_payload};
 use crate::ui::{MessageNotification, OrderMessage};
-use crate::util::chat_listener::{maybe_track_order_chat, untrack_order_chat};
+use crate::util::chat_listener::{
+    maybe_track_order_chat, track_user_dispute_chat, untrack_order_chat, untrack_user_dispute_chat,
+};
+use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{
@@ -503,6 +507,7 @@ async fn drop_pre_active_taker_take(
     remove_order_from_messages(messages, order_id);
     // Row deleted: stop the P2P order chat subscription for this order.
     untrack_order_chat(order_id.to_string());
+    untrack_user_dispute_chat(order_id.to_string());
 }
 
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
@@ -618,6 +623,7 @@ async fn revert_maker_to_pending_on_book_republish(
     remove_order_from_messages(messages, order_id);
     // Back on the book as a pending maker listing (no counterparty): stop order chat subscription.
     untrack_order_chat(order_id.to_string());
+    untrack_user_dispute_chat(order_id.to_string());
     try_notify_my_trades_maker_book_changed();
 
     log::info!(
@@ -768,9 +774,6 @@ async fn handle_trade_dm_for_order(
 ) {
     let inner_kind = message.get_inner_message_kind();
     let action = inner_kind.action.clone();
-    if matches!(action, Action::CantDo) {
-        return;
-    }
     // Trade-DM `NewOrder` special cases only (create-order `NewOrder` uses the waiter path).
     // Unhandled shapes fall through to generic hydration with `new_order_would_regress_messages_row`.
     if matches!(action, Action::NewOrder) {
@@ -798,7 +801,13 @@ async fn handle_trade_dm_for_order(
     let had_local_row_before_upsert = db_order.is_some();
     let status_from_db = db_order.as_ref().and_then(order_status_from_row);
 
-    let status_candidate = resolved_status_candidate(&action, &inner_kind.payload);
+    // `CantDo` reports that a requested action was rejected; surface it without
+    // applying any status carried by its payload to the local order.
+    let status_candidate = if matches!(action, Action::CantDo) {
+        None
+    } else {
+        resolved_status_candidate(&action, &inner_kind.payload)
+    };
 
     // Taker pre-Active cancel returns the order to the book; drop stale local row instead of
     // keeping it as terminal trade state.
@@ -810,15 +819,65 @@ async fn handle_trade_dm_for_order(
         return;
     }
 
-    upsert_order_from_trade_dm(
-        pool,
-        order_id,
-        &action,
-        &inner_kind.payload,
-        inner_kind.request_id,
-        trade_keys,
-    )
-    .await;
+    if !matches!(action, Action::CantDo) {
+        upsert_order_from_trade_dm(
+            pool,
+            order_id,
+            &action,
+            &inner_kind.payload,
+            inner_kind.request_id,
+            trade_keys,
+        )
+        .await;
+    }
+
+    if matches!(
+        action,
+        Action::DisputeInitiatedByYou | Action::DisputeInitiatedByPeer
+    ) {
+        if let Some(Payload::Dispute(dispute_id, _)) = inner_kind.payload.as_ref() {
+            if let Err(e) =
+                Order::update_dispute_id(pool, &order_id.to_string(), &dispute_id.to_string()).await
+            {
+                log::warn!("Failed to persist dispute id for order {order_id}: {e}");
+            }
+        }
+    }
+
+    if matches!(action, Action::AdminTookDispute) {
+        if let Some(Payload::Peer(peer)) = inner_kind.payload.as_ref() {
+            match PublicKey::parse(&peer.pubkey) {
+                Ok(solver_pubkey) => {
+                    if let Some(shared_hex) =
+                        derive_shared_key_hex(Some(trade_keys), Some(&peer.pubkey))
+                    {
+                        if let Err(e) = Order::update_solver_chat(
+                            pool,
+                            &order_id.to_string(),
+                            &peer.pubkey,
+                            &shared_hex,
+                        )
+                        .await
+                        {
+                            log::warn!("Failed to persist solver chat for order {order_id}: {e}");
+                        } else {
+                            let since = user_dispute_chat_since_from_file(&order_id.to_string());
+                            track_user_dispute_chat(
+                                order_id.to_string(),
+                                shared_hex,
+                                trade_keys.public_key(),
+                                solver_pubkey,
+                                since,
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!(
+                    "AdminTookDispute carried invalid solver pubkey for order {order_id}: {e}"
+                ),
+            }
+        }
+    }
 
     // Keep the P2P order chat subscription live once the shared key is resolvable (idempotent).
     maybe_track_order_chat(pool, order_id, trade_keys).await;
@@ -1184,6 +1243,7 @@ async fn dispatch_giftwrap_batch(
 
         if should_untrack_chat {
             untrack_order_chat(order_id.to_string());
+            untrack_user_dispute_chat(order_id.to_string());
         }
 
         if has_terminal_status {
@@ -1984,14 +2044,95 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_dm_expiration, effective_is_mine_for_trade_dm_message, is_own_signed_v2_outbound,
-        is_pre_active_maker_listing, is_pre_active_taker_take,
+        default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
+        is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
         trade_message_is_terminal, trade_message_should_untrack_order_chat,
     };
     use crate::models::Order;
+    use crate::ui::orders::message_action_compact_label_for_message;
     use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
     use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn cant_do_surfaces_rejection_without_changing_order_status() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, is_mine) VALUES (?, 'buy', 'active', 1000, 'USD', 10, \
+             'bank', 0, 1)",
+        )
+        .bind(order_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("active order");
+
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let pending_notifications = Arc::new(Mutex::new(0));
+        let (notification_tx, mut notification_rx) = tokio::sync::mpsc::unbounded_channel();
+        let trade_keys = Keys::generate();
+        let message = Message::new_order(
+            Some(order_id),
+            None,
+            Some(7),
+            Action::CantDo,
+            Some(Payload::Order(SmallOrder {
+                status: Some(Status::Canceled),
+                ..Default::default()
+            })),
+        );
+
+        handle_trade_dm_for_order(
+            &messages,
+            &pending_notifications,
+            &notification_tx,
+            order_id,
+            7,
+            message,
+            100,
+            Keys::generate().public_key(),
+            &pool,
+            &trade_keys,
+            true,
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("stored order");
+        assert_eq!(stored.status.as_deref(), Some("active"));
+        let messages = messages.lock().expect("messages lock");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            message_action_compact_label_for_message(&messages[0]),
+            "Action Rejected"
+        );
+        assert_eq!(*pending_notifications.lock().expect("pending lock"), 1);
+        assert!(notification_rx.try_recv().is_ok());
+    }
 
     #[test]
     fn own_signed_v2_outbound_is_skipped_by_waiter_guard() {
@@ -2103,6 +2244,9 @@ mod tests {
             trade_keys: None,
             counterparty_pubkey: None,
             order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
             is_mine,
             buyer_invoice: None,
             request_id: Some(1),

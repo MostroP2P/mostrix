@@ -30,9 +30,10 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::helpers::{
-    load_dispute_chat_inner_ids, load_order_chat_inner_ids, order_chat_since_from_file,
+    load_dispute_chat_inner_ids, load_order_chat_inner_ids, load_user_dispute_chat_inner_ids,
+    order_chat_since_from_file,
 };
-use crate::ui::{AdminChatUpdate, ChatParty, DecodedChatMessage, OrderChatUpdate};
+use crate::ui::{AdminChatUpdate, ChatParty, DecodedChatMessage, OrderChatUpdate, UserChatChannel};
 use crate::util::chat_security::{
     try_emit_chat_update, ChatRateLimiters, OuterIdLru, CHAT_SEEN_OUTER_CAP,
 };
@@ -48,6 +49,8 @@ use futures::StreamExt;
 pub enum ChatKeyId {
     /// User P2P order chat, keyed by order id (UUID string).
     Order(String),
+    /// User-to-solver dispute chat, keyed by parent order id.
+    UserDispute(String),
     /// Admin dispute chat, keyed by dispute id + party (buyer/seller).
     Dispute(String, ChatParty),
 }
@@ -160,10 +163,34 @@ pub fn track_order_chat(
     });
 }
 
+/// Track a user-to-solver dispute chat by its derived ECDH secret.
+pub fn track_user_dispute_chat(
+    order_id: String,
+    shared_key_hex: String,
+    local_trade_pubkey: PublicKey,
+    solver_pubkey: PublicKey,
+    since: Option<i64>,
+) {
+    send_chat_router_cmd(ChatRouterCmd::TrackChatKey {
+        key_id: ChatKeyId::UserDispute(order_id),
+        shared_key_hex,
+        local_trade_pubkey: Some(local_trade_pubkey),
+        allowed_signers: vec![local_trade_pubkey, solver_pubkey],
+        since,
+    });
+}
+
 /// Stop tracking a user P2P order chat (order row removed / terminal cancel).
 pub fn untrack_order_chat(order_id: String) {
     send_chat_router_cmd(ChatRouterCmd::UntrackChatKey {
         key_id: ChatKeyId::Order(order_id),
+    });
+}
+
+/// Stop tracking a user-to-solver dispute chat for an order.
+pub fn untrack_user_dispute_chat(order_id: String) {
+    send_chat_router_cmd(ChatRouterCmd::UntrackChatKey {
+        key_id: ChatKeyId::UserDispute(order_id),
     });
 }
 
@@ -262,10 +289,27 @@ fn emit_messages(
                 user_tx,
                 vec![OrderChatUpdate {
                     order_id: order_id.clone(),
+                    channel: UserChatChannel::Peer,
                     local_trade_pubkey,
                     messages,
                 }],
                 "order-chat",
+            );
+        }
+        ChatKeyId::UserDispute(order_id) => {
+            let Some(local_trade_pubkey) = target.local_trade_pubkey else {
+                log::warn!("User dispute chat {order_id} missing local trade pubkey");
+                return;
+            };
+            let _ = try_emit_chat_update(
+                user_tx,
+                vec![OrderChatUpdate {
+                    order_id: order_id.clone(),
+                    channel: UserChatChannel::Solver,
+                    local_trade_pubkey,
+                    messages,
+                }],
+                "solver-chat",
             );
         }
         ChatKeyId::Dispute(dispute_id, party) => {
@@ -524,6 +568,7 @@ fn apply_chat_router_cmd(
 fn load_inner_ids_for_key(key_id: &ChatKeyId) -> HashSet<EventId> {
     match key_id {
         ChatKeyId::Order(order_id) => load_order_chat_inner_ids(order_id),
+        ChatKeyId::UserDispute(order_id) => load_user_dispute_chat_inner_ids(order_id),
         ChatKeyId::Dispute(dispute_id, party) => load_dispute_chat_inner_ids(dispute_id, *party),
     }
 }

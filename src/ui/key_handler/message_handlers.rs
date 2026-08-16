@@ -1,3 +1,4 @@
+use crate::models::Order;
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::OperationResult;
 use crate::ui::{
@@ -203,6 +204,15 @@ fn spawn_dispute(app: &mut AppState, ctx: &EnterKeyContext<'_>, order_id: Uuid) 
                     update_order_status(&pool_clone, &order_id.to_string(), Status::Dispute).await
                 {
                     log::warn!("Failed to save Dispute status for order {order_id}: {e}");
+                }
+                if let Err(e) = Order::update_dispute_id(
+                    &pool_clone,
+                    &order_id.to_string(),
+                    &dispute_id.to_string(),
+                )
+                .await
+                {
+                    log::warn!("Failed to save dispute id for order {order_id}: {e}");
                 }
                 let _ = result_tx.send(OperationResult::Info(format!(
                     "Dispute opened. Dispute id: {dispute_id} — give it to the solver."

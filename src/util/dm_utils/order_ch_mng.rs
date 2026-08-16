@@ -262,6 +262,8 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             invoice: Some(invoice.clone()),
             body: None,
             maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond),
+            solver_pubkey: None,
+            dispute_id: None,
         };
 
         let invoice_state = InvoiceInputState {
@@ -495,6 +497,8 @@ mod tests {
                     trade_index: 1,
                     initiator_trade_pubkey: "pk".to_string(),
                     is_mine: true,
+                    solver_pubkey: None,
+                    dispute_id: None,
                 },
                 action: Action::PayBondInvoice,
             },

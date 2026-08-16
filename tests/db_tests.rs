@@ -156,6 +156,50 @@ async fn test_order_get_by_id_not_found() {
 }
 
 #[tokio::test]
+async fn test_order_persists_user_solver_chat_metadata() {
+    let pool = create_test_db().await.unwrap();
+    let trade_keys = Keys::generate();
+    let solver = Keys::generate();
+    let order_id = uuid::Uuid::new_v4();
+    let small_order = SmallOrder {
+        id: Some(order_id),
+        fiat_code: "USD".to_string(),
+        payment_method: "cash".to_string(),
+        ..Default::default()
+    };
+    Order::new(&pool, small_order, &trade_keys, None, 1, true)
+        .await
+        .unwrap();
+
+    let dispute_id = uuid::Uuid::new_v4().to_string();
+    let solver_pubkey = solver.public_key().to_string();
+    Order::update_dispute_id(&pool, &order_id.to_string(), &dispute_id)
+        .await
+        .unwrap();
+    Order::update_solver_chat(
+        &pool,
+        &order_id.to_string(),
+        &solver_pubkey,
+        "shared-secret-hex",
+    )
+    .await
+    .unwrap();
+
+    let stored = Order::get_by_id(&pool, &order_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(stored.dispute_id.as_deref(), Some(dispute_id.as_str()));
+    assert_eq!(
+        stored.solver_pubkey.as_deref(),
+        Some(solver_pubkey.as_str())
+    );
+    assert_eq!(
+        stored.dispute_chat_shared_key_hex.as_deref(),
+        Some("shared-secret-hex")
+    );
+}
+
+#[tokio::test]
 async fn test_order_update_existing() {
     let pool = create_test_db().await.unwrap();
     let trade_keys = Keys::generate();

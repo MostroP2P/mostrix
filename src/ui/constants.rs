@@ -91,6 +91,7 @@ pub const HELP_ORDERS_CANCEL_PENDING_MSG: &str =
 // Help popup lines (My Trades)
 pub const HELP_MY_TRADES_NAV: &str = "↑↓: Select order";
 pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
+pub const HELP_MY_TRADES_TAB_CHAT: &str = "Tab: Switch Peer/Solver chat (after solver assignment)";
 pub const HELP_MY_TRADES_SHIFT_I: &str = "Shift+I: Enable/disable message input";
 pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order (cooperative cancel)";
 pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (FiatSent message)";
@@ -177,6 +178,7 @@ pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
 // --- Footer (My Trades / Order Chat) ---
 
 pub const FOOTER_MYTRADES_SELECT_ORDER: &str = "↑↓: Select order";
+pub const FOOTER_MYTRADES_TAB_CHAT: &str = "Tab: Peer/Solver chat";
 pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_MYTRADES_SHIFT_I_DISABLE: &str = "Shift+I: Disable input";
 pub const FOOTER_MYTRADES_SHIFT_I_ENABLE: &str = "Shift+I: Enable input";

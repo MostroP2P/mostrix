@@ -828,6 +828,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_solver_chat_roundtrip_accepts_only_conversation_parties() {
+        let user = Keys::generate();
+        let solver = Keys::generate();
+        let shared =
+            SharedKey::derive(user.secret_key(), &solver.public_key()).expect("shared key derives");
+        let (conv, sign) = shared.chat_keys().expect("chat keys derive");
+        let event = wrap_chat_message(&user, &conv, &sign, "evidence sent")
+            .await
+            .expect("chat wraps");
+
+        let allowed = [user.public_key(), solver.public_key()];
+        let unwrapped = unwrap_giftwrap_with_shared_key(shared.keys(), &event, &allowed)
+            .await
+            .expect("conversation party unwraps");
+        assert_eq!(unwrapped.content, "evidence sent");
+        assert_eq!(unwrapped.sender, user.public_key());
+
+        let stranger = Keys::generate();
+        let stranger_event = wrap_chat_message(&stranger, &conv, &sign, "spoof")
+            .await
+            .expect("envelope builds");
+        assert!(
+            unwrap_giftwrap_with_shared_key(shared.keys(), &stranger_event, &allowed)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn dual_read_unwraps_giftwrap_and_kind14_fixtures() {
         let sender = Keys::generate();
         let receiver = Keys::generate();
