@@ -90,13 +90,16 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
             return;
         }
     };
+    // Live subscription is `.since(now)` — always take the incoming revision.
+    // Do not compare `dispute.created_at`: after Mostro #878 that field is the
+    // stable open-time tag, not the Nostr publish stamp, so a status update
+    // would otherwise fail to replace when open times are equal (or when a
+    // tagged open time is older than a legacy event-stamp fallback).
     if let Some(existing) = disputes_lock
         .iter_mut()
         .find(|existing| existing.id == dispute.id)
     {
-        if dispute.created_at >= existing.created_at {
-            *existing = dispute;
-        }
+        *existing = dispute;
     } else {
         disputes_lock.push(dispute);
     }

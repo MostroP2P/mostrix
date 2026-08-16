@@ -236,7 +236,11 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
     }
 }
 
-/// Parse dispute from nostr tags
+/// Parse dispute from nostr tags.
+///
+/// When present, the `created_at` tag is the dispute open time from Mostro's
+/// SQLite (`disputes.created_at` on kind 38386). It is independent of the Nostr
+/// event's `created_at` (publish/replace time used for NIP-33 ordering).
 pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();
     for tag in tags {
@@ -262,6 +266,14 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
                     .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
                 dispute.status = status.to_string();
             }
+            "created_at" => {
+                // Prefer a positive unix-seconds open time; ignore malformed tags.
+                if let Ok(ts) = value.parse::<i64>() {
+                    if ts > 0 {
+                        dispute.created_at = ts;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -269,14 +281,16 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     Ok(dispute)
 }
 
-/// Parse disputes from events
+/// Parse disputes from events.
 ///
-/// Uses a HashMap keyed by dispute id to keep only the latest dispute per id,
-/// mirroring the strategy used in `parse_orders_events` for orders.
+/// Keeps only the latest NIP-33 revision per dispute id (greatest Nostr
+/// `event.created_at`). For display, prefers the kind-38386 `created_at` **tag**
+/// (dispute open time from Mostro) and falls back to `event.created_at` when the
+/// tag is missing (older daemons / unreposted events).
 pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
-    let mut latest_by_id: HashMap<Uuid, Dispute> = HashMap::new();
+    // (published_at, dispute) — published_at drives latest-wins; dispute.created_at is open time.
+    let mut latest_by_id: HashMap<Uuid, (i64, Dispute)> = HashMap::new();
 
-    // Scan events to extract all disputes
     for event in events.iter() {
         let mut dispute = match dispute_from_tags(event.tags.clone()) {
             Ok(d) => d,
@@ -286,21 +300,25 @@ pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
             }
         };
 
-        // Get created_at field from Nostr event
-        dispute.created_at = event.created_at.as_secs() as i64;
+        let published_at = event.created_at.as_secs() as i64;
+        // Tag open time wins for UI; event stamp is only a fallback for legacy events.
+        if dispute.created_at <= 0 {
+            dispute.created_at = published_at;
+        }
 
         latest_by_id
             .entry(dispute.id)
-            .and_modify(|existing| {
-                if dispute.created_at > existing.created_at {
+            .and_modify(|(existing_published_at, existing)| {
+                if published_at > *existing_published_at {
+                    *existing_published_at = published_at;
                     *existing = dispute.clone();
                 }
             })
-            .or_insert(dispute);
+            .or_insert((published_at, dispute));
     }
 
-    // Collect latest disputes and sort by creation time (newest first)
-    let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().collect();
+    // Newest dispute open time first (Pending "Created" column).
+    let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().map(|(_, d)| d).collect();
     disputes_list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     disputes_list
 }
@@ -715,12 +733,121 @@ pub(super) fn handle_mostro_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        inferred_status_from_trade_action, is_terminal_trade_status,
-        should_apply_status_transition, should_strictly_advance_status,
+        dispute_from_tags, inferred_status_from_trade_action, is_terminal_trade_status,
+        parse_disputes_events, should_apply_status_transition, should_strictly_advance_status,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::{Action, Status};
+    use mostro_core::prelude::{Action, DisputeStatus, Status, NOSTR_DISPUTE_EVENT_KIND};
+    use nostr_sdk::prelude::*;
+    use std::collections::BTreeSet;
     use std::str::FromStr;
+    use uuid::Uuid;
+
+    fn dispute_tags(id: Uuid, status: &str, opened_at: Option<i64>) -> Tags {
+        let mut tags = vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec![status.to_string()]),
+        ];
+        if let Some(ts) = opened_at {
+            tags.push(Tag::custom("created_at", vec![ts.to_string()]));
+        }
+        Tags::from_list(tags)
+    }
+
+    fn dispute_event(
+        keys: &Keys,
+        id: Uuid,
+        status: &str,
+        opened_at: Option<i64>,
+        published_at: u64,
+    ) -> Event {
+        EventBuilder::new(Kind::Custom(NOSTR_DISPUTE_EVENT_KIND), "")
+            .tags(dispute_tags(id, status, opened_at))
+            .custom_created_at(Timestamp::from(published_at))
+            .finalize(keys)
+            .expect("dispute event")
+    }
+
+    #[test]
+    fn dispute_from_tags_reads_created_at_open_time() {
+        let id = Uuid::new_v4();
+        let dispute =
+            dispute_from_tags(dispute_tags(id, "initiated", Some(1_700_000_100))).unwrap();
+        assert_eq!(dispute.id, id);
+        assert_eq!(dispute.status, DisputeStatus::Initiated.to_string());
+        assert_eq!(dispute.created_at, 1_700_000_100);
+    }
+
+    #[test]
+    fn dispute_from_tags_ignores_invalid_or_non_positive_created_at() {
+        let id = Uuid::new_v4();
+        let tags = Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec!["initiated".to_string()]),
+            Tag::custom("created_at", vec!["not-a-number".to_string()]),
+        ]);
+        let dispute = dispute_from_tags(tags).unwrap();
+        assert_eq!(dispute.created_at, 0);
+
+        let tags_zero = Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec!["initiated".to_string()]),
+            Tag::custom("created_at", vec!["0".to_string()]),
+        ]);
+        assert_eq!(dispute_from_tags(tags_zero).unwrap().created_at, 0);
+    }
+
+    #[test]
+    fn parse_disputes_prefers_created_at_tag_over_event_stamp() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [dispute_event(
+            &keys,
+            id,
+            "initiated",
+            Some(1_700_000_100),
+            1_800_000_000,
+        )]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_disputes_events(events);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].created_at, 1_700_000_100);
+        assert_eq!(parsed[0].status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn parse_disputes_falls_back_to_event_stamp_without_tag() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [dispute_event(&keys, id, "initiated", None, 1_800_000_000)]
+            .into_iter()
+            .collect();
+
+        let parsed = parse_disputes_events(events);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].created_at, 1_800_000_000);
+    }
+
+    #[test]
+    fn parse_disputes_latest_revision_wins_by_event_stamp_not_open_tag() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let open = 1_700_000_100;
+        // Older publish still initiated; newer publish taken — same open-time tag.
+        let events: BTreeSet<_> = [
+            dispute_event(&keys, id, "initiated", Some(open), 1_800_000_000),
+            dispute_event(&keys, id, "in-progress", Some(open), 1_800_000_100),
+        ]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_disputes_events(events);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].status, DisputeStatus::InProgress.to_string());
+        assert_eq!(parsed[0].created_at, open);
+    }
 
     #[test]
     fn hold_invoice_payment_settled_and_purchase_completed_infer_success() {
