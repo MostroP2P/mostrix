@@ -691,11 +691,8 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        // Ensure the selected dispute index is valid when disputes list changes.
-        // Only count "initiated" disputes since that's what we display
+        // Ensure Pending dispute selection stays valid when the list changes.
         {
-            use mostro_core::prelude::*;
-            use std::str::FromStr;
             let disputes_lock = match disputes.lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -711,19 +708,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     continue;
                 }
             };
-            let initiated_count = disputes_lock
-                .iter()
-                .filter(|d| {
-                    DisputeStatus::from_str(d.status.as_str())
-                        .map(|s| s == DisputeStatus::Initiated)
-                        .unwrap_or(false)
-                })
-                .count();
-            if initiated_count > 0 && app.selected_dispute_idx >= initiated_count {
-                app.selected_dispute_idx = initiated_count.saturating_sub(1);
-            } else if initiated_count == 0 {
-                app.selected_dispute_idx = 0;
-            }
+            crate::ui::helpers::clamp_pending_dispute_selection(&mut app, &disputes_lock);
         }
 
         // Process async completions before draw so popups appear without extra keypresses.

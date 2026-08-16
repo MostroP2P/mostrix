@@ -23,7 +23,12 @@ pub struct AppState {
     pub active_tab: Tab,
     /// Orders tab selection by order UUID (currency-filtered; see helpers/order_selection.rs).
     pub selected_order_id: Option<Uuid>,
-    pub selected_dispute_idx: usize, // Disputes Pending (Initiated) list index
+    /// Persistent scroll state for the Orders tab table.
+    pub orders_table_state: TableState,
+    /// Disputes Pending selection by dispute UUID (initiated projection; see dispute_selection.rs).
+    pub selected_pending_dispute_id: Option<Uuid>,
+    /// Persistent scroll state for the Disputes Pending table.
+    pub disputes_table_state: TableState,
     /// Disputes In Progress / Finalized selection is by **dispute id**, not a raw
     /// index into `admin_disputes_in_progress` (see `helpers/dispute_selection.rs`).
     pub selected_dispute_id: Option<String>,
@@ -77,7 +82,7 @@ Mostrix supports two distinct roles, each with its own set of tabs and workflows
 
 Focused on trading and order management.
 
-- **Orders**: View the global order book (stateful table scrolls with ↑↓ when the book is taller than the terminal; optional vertical scrollbar).
+- **Orders**: View the global order book (persistent `TableState` scrolls with ↑↓; shared vertical scrollbar confined to data rows).
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
 - **Settings**: Local configuration, including key rotation via **Generate New Keys** and mnemonic backup prompts. **User mode only**: **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
@@ -87,7 +92,7 @@ Focused on trading and order management.
 
 Focused on dispute resolution and protocol management.
 
-- **Disputes Pending**: List of disputes waiting to be taken. Only displays disputes with `Initiated` status (filtering implemented in `disputes_tab.rs`). Admins can select and take ownership of these disputes.
+- **Disputes Pending**: List of disputes waiting to be taken (`Initiated` only via `get_initiated_disputes`). Selection by dispute UUID (`selected_pending_dispute_id` + `dispute_selection.rs`); persistent `disputes_table_state` + shared scrollbar (same pattern as Orders). Admins take ownership with Enter.
 - **Disputes in Progress**: Complete workspace for managing taken disputes (state: `InProgress`), featuring:
   - Integrated chat system with buyer and seller
   - Comprehensive dispute information header
@@ -270,9 +275,10 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 
 Renders a table of pending orders from the Mostro network. Status and order kinds are color-coded for readability.
 
-- **Scrolling**: uses a stateful [`Table`](https://docs.rs/ratatui) + `TableState` so ↑↓ keeps the selected row in view when the order book is taller than the terminal (same idea as the Messages sidebar / Disputes In Progress list). A vertical scrollbar appears when row count exceeds the visible body height.
+- **Scrolling**: persistent [`TableState`](https://docs.rs/ratatui) on `AppState.orders_table_state` so ↑↓ keeps the selected row in view without resetting the viewport each frame (aligned with Disputes Pending). A vertical scrollbar from `render_table_list_scrollbar` appears when row count exceeds the visible body; thumb tracks viewport **offset** and stays on the data-row track (does not overwrite borders/header).
 - **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same currency-filtered book projection. If the stored id is hidden by `currencies_filter`, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
 - **Narrow terminals** (`width < 100`): compact column set (Kind / Fiat Amt / Premium / Payment) — Premium stays visible.
+- **Short terminals** (`height < 4`): header row is dropped so at least one data row remains visible.
 
 **Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`
 

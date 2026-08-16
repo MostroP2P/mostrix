@@ -3,7 +3,7 @@ use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{
     build_active_order_chat_list, save_order_chat_message, selected_filtered_book_order,
-    selected_filtered_dispute,
+    selected_filtered_dispute, selected_pending_dispute,
 };
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, handle_enter_finalize_popup, message_counter,
@@ -1020,20 +1020,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 return;
             }
         };
-        // Filter to only get "initiated" disputes
-        let initiated_disputes: Vec<(usize, &Dispute)> = disputes_lock
-            .iter()
-            .enumerate()
-            .filter(|(_, dispute)| {
-                DisputeStatus::from_str(dispute.status.as_str())
-                    .map(|s| s == DisputeStatus::Initiated)
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        if let Some((_original_idx, dispute)) = initiated_disputes.get(app.selected_dispute_idx) {
-            // Only allow taking disputes with "Initiated" status
-            // (We already filtered, so this should always be true)
+        if let Some(dispute) = selected_pending_dispute(app, &disputes_lock) {
             app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
             // Default to YES
         }

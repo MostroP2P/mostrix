@@ -1,5 +1,6 @@
 use crate::ui::helpers::{
     active_order_chat_list_len, move_book_order_selection, move_dispute_selection,
+    move_pending_dispute_selection,
 };
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
@@ -190,9 +191,6 @@ fn handle_up_key(
                 };
                 move_book_order_selection(app, &orders_lock, -1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                // Only count disputes with "initiated" status
-                use mostro_core::prelude::*;
-                use std::str::FromStr;
                 let disputes_lock = match disputes.lock() {
                     Ok(g) => g,
                     Err(e) => {
@@ -202,28 +200,7 @@ fn handle_up_key(
                         return;
                     }
                 };
-                let initiated_count = disputes_lock
-                    .iter()
-                    .filter(|d| {
-                        DisputeStatus::from_str(d.status.as_str())
-                            .map(|s| s == DisputeStatus::Initiated)
-                            .unwrap_or(false)
-                    })
-                    .count();
-                if initiated_count == 0 {
-                    app.selected_dispute_idx = 0;
-                } else {
-                    // Ensure index doesn't go below 0
-                    if app.selected_dispute_idx > 0 {
-                        app.selected_dispute_idx -= 1;
-                    } else {
-                        app.selected_dispute_idx = 0;
-                    }
-                    // Clamp to valid range
-                    app.selected_dispute_idx = app
-                        .selected_dispute_idx
-                        .min(initiated_count.saturating_sub(1));
-                }
+                move_pending_dispute_selection(app, &disputes_lock, -1);
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 move_dispute_selection(app, -1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {
@@ -336,9 +313,6 @@ fn handle_down_key(
                 };
                 move_book_order_selection(app, &orders_lock, 1);
             } else if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-                // Only count disputes with "initiated" status
-                use mostro_core::prelude::*;
-                use std::str::FromStr;
                 let disputes_lock = match disputes.lock() {
                     Ok(g) => g,
                     Err(e) => {
@@ -348,28 +322,7 @@ fn handle_down_key(
                         return;
                     }
                 };
-                let initiated_count = disputes_lock
-                    .iter()
-                    .filter(|d| {
-                        DisputeStatus::from_str(d.status.as_str())
-                            .map(|s| s == DisputeStatus::Initiated)
-                            .unwrap_or(false)
-                    })
-                    .count();
-                if initiated_count == 0 {
-                    app.selected_dispute_idx = 0;
-                } else {
-                    // Ensure index doesn't exceed bounds
-                    if app.selected_dispute_idx < initiated_count.saturating_sub(1) {
-                        app.selected_dispute_idx += 1;
-                    } else {
-                        app.selected_dispute_idx = initiated_count.saturating_sub(1);
-                    }
-                    // Clamp to valid range
-                    app.selected_dispute_idx = app
-                        .selected_dispute_idx
-                        .min(initiated_count.saturating_sub(1));
-                }
+                move_pending_dispute_selection(app, &disputes_lock, 1);
             } else if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
                 move_dispute_selection(app, 1);
             } else if let Tab::User(UserTab::Messages) = app.active_tab {

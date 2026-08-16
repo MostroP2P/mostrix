@@ -4,21 +4,22 @@ use mostro_core::prelude::*;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::ui::helpers::{
-    format_local_timestamp, format_premium, get_filtered_book_orders, selected_book_display_idx,
+    format_local_timestamp, format_premium, get_filtered_book_orders, render_table_list_scrollbar,
+    selected_book_display_idx,
 };
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
 ///
-/// Uses a stateful [`Table`] so ↑↓ selection stays in view when the book is taller
-/// than the terminal. Selection is resolved by order id against the currency-filtered
+/// Uses a persistent [`TableState`] (`app.orders_table_state`) so ↑↓ selection stays
+/// in view when the book is taller than the terminal (viewport offset survives
+/// frames). Selection is resolved by order id against the currency-filtered
 /// projection (`helpers/order_selection.rs`) so highlight and Enter stay aligned.
+/// Vertical scrollbar uses [`render_table_list_scrollbar`] (offset + data-row track).
+/// On short terminals (`height < 4`) the header is dropped so a data row remains.
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -87,6 +88,9 @@ pub fn render_orders_tab(
         selected_book_display_idx(app.selected_order_id, &filtered).unwrap_or(0);
 
     let compact = area.width < 100;
+    // Drop the header when height < 4 so at least one data row stays visible
+    // (same short-terminal rule as Disputes Pending).
+    let show_header = area.height >= 4;
     let header_labels = if compact {
         vec!["📈 Kind", "💵 Fiat Amt", "± Premium", "💳 Payment"]
     } else {
@@ -102,11 +106,6 @@ pub fn render_orders_tab(
             "📅 Created",
         ]
     };
-    let header_cells = header_labels
-        .into_iter()
-        .map(|label| Cell::from(label).style(Style::default().add_modifier(Modifier::BOLD)))
-        .collect::<Vec<_>>();
-    let header = Row::new(header_cells);
 
     let rows: Vec<Row> = filtered
         .iter()
@@ -206,8 +205,7 @@ pub fn render_orders_tab(
     };
 
     let row_count = rows.len();
-    let table = Table::new(rows, widths)
-        .header(header)
+    let mut table = Table::new(rows, widths)
         .row_highlight_style(Style::default().bg(PRIMARY_COLOR).fg(Color::Black))
         .block(
             Block::default()
@@ -218,19 +216,27 @@ pub fn render_orders_tab(
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
 
+    if show_header {
+        let header_cells = header_labels
+            .into_iter()
+            .map(|label| Cell::from(label).style(Style::default().add_modifier(Modifier::BOLD)))
+            .collect::<Vec<_>>();
+        table = table.header(Row::new(header_cells));
+    }
+
     app.orders_table_state.select(Some(display_selected_idx));
     f.render_stateful_widget(table, area, &mut app.orders_table_state);
 
-    // Header + borders consume 3 rows; remaining height is the scrollable body.
-    let visible_rows = area.height.saturating_sub(3) as usize;
-    if row_count > visible_rows && visible_rows > 0 {
-        let mut scrollbar_state = ScrollbarState::new(row_count).position(display_selected_idx);
-        f.render_stateful_widget(
-            Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
-            area,
-            &mut scrollbar_state,
-        );
-    }
+    let header_rows = u16::from(show_header);
+    let visible_rows = area.height.saturating_sub(2 + header_rows) as usize;
+    render_table_list_scrollbar(
+        f,
+        area,
+        row_count,
+        visible_rows,
+        header_rows,
+        app.orders_table_state.offset(),
+    );
 }
 
 fn premium_cell(premium: i64) -> Cell<'static> {
@@ -414,5 +420,106 @@ mod tests {
                 .expect("Enter resolves a visible order");
         assert_eq!(selected.id, Some(eur_id));
         assert_eq!(selected.payment_method, "PAY-EUR");
+    }
+
+    #[test]
+    fn scrollbar_preserves_borders_and_header_when_scrolled() {
+        let mut book = Vec::new();
+        let mut last_id = Uuid::nil();
+        for i in 0..40 {
+            let o = sample_order(&format!("PAY-{i:02}"), 0);
+            last_id = o.id.unwrap();
+            book.push(o);
+        }
+        let orders = Arc::new(Mutex::new(book));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(last_id);
+
+        let backend = TestBackend::new(130, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let right = buf.area.width - 1;
+        assert_eq!(buf[(right, 0)].symbol(), "╮", "top-right corner intact");
+        assert_eq!(
+            buf[(right, buf.area.height - 1)].symbol(),
+            "╯",
+            "bottom-right corner intact"
+        );
+        assert_eq!(
+            buf[(right, 1)].symbol(),
+            "│",
+            "header row border must not be overwritten by the scrollbar"
+        );
+        assert!(
+            buffer_contains(buf, "Premium"),
+            "header must still render while scrolled"
+        );
+    }
+
+    /// Selecting the last order must park the scrollbar thumb against the end
+    /// cap (`▼`), with no empty track (`║`) between thumb and bottom.
+    #[test]
+    fn scrollbar_thumb_reaches_track_bottom_on_last_row() {
+        let mut book = Vec::new();
+        let mut last_id = Uuid::nil();
+        for i in 0..40 {
+            let o = sample_order(&format!("PAY-{i:02}"), 0);
+            last_id = o.id.unwrap();
+            book.push(o);
+        }
+        let orders = Arc::new(Mutex::new(book));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(last_id);
+
+        // height 10 → borders+header leave 7 data rows; track y=2..8 with ▲…▼
+        let backend = TestBackend::new(130, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let right = buf.area.width - 1;
+        let end_cap_y = buf.area.height - 2; // ▼ just above bottom border
+        let above_end = end_cap_y - 1;
+        assert_eq!(
+            buf[(right, end_cap_y)].symbol(),
+            "▼",
+            "scrollbar end cap must sit on the last track row"
+        );
+        assert_eq!(
+            buf[(right, above_end)].symbol(),
+            "█",
+            "thumb must reach the cell above ▼ when the last order is selected"
+        );
+    }
+
+    #[test]
+    fn short_area_drops_header_but_shows_selected_row() {
+        let o = sample_order("PAY-SHORT", 0);
+        let id = o.id.unwrap();
+        let orders = Arc::new(Mutex::new(vec![o]));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(id);
+
+        let backend = TestBackend::new(130, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            !buffer_contains(buf, "Premium"),
+            "header should be dropped when the area is too short"
+        );
+        assert!(
+            buffer_contains(buf, "PAY-SHORT"),
+            "selected order row must be visible without the header"
+        );
     }
 }

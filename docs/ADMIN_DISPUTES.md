@@ -23,12 +23,12 @@ The admin interface provides dedicated tabs for dispute management:
 
 ### 1. Disputes Pending Tab
 
-Lists all pending disputes on the Mostro network (state: `Initiated`). Admins can:
+Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `get_initiated_disputes`). Admins can:
 
-- **View dispute details**: Order ID, parties involved, status
+- **View dispute details**: Dispute ID, status, created time (Created column drops on narrow terminals)
 - **Take a dispute**: Select a dispute and press Enter to take ownership
-- **Navigate**: Use arrow keys to browse the dispute list
-- **Color coding**: Disputes are color-coded by status (Yellow for pending)
+- **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
+- **Scrolling**: persistent `disputes_table_state` + `render_table_list_scrollbar` (same offset/track pattern as the Orders tab)
 
 ### 2. Disputes in Progress Tab
 
@@ -43,7 +43,7 @@ The interface is divided into three main sections:
 1. **Left Sidebar (20%)**: List of disputes in progress (or finalized when Shift+C filter is active)
    - Shows truncated dispute IDs (safely handles short IDs without panicking)
    - **Selection by dispute id** (`AppState.selected_dispute_id`), resolved through `get_filtered_disputes` / `selected_filtered_dispute` / `move_dispute_selection` in `src/ui/helpers/dispute_selection.rs` — Up/Down and all chat/finalize/attachment actions use the **visible** filtered list, never a raw index into mixed open+closed rows
-   - **Scrollable list**: stateful `List` + `ListState` keeps the highlighted row in view when disputes overflow the sidebar; vertical scrollbar when the list is taller than the panel
+   - **Scrollable list**: stateful `List` + `ListState` keeps the highlighted row in view when disputes overflow the sidebar; vertical scrollbar via shared `render_table_list_scrollbar` (viewport offset, data-row track)
    - Highlighted selection with Up/Down arrow keys (skips disputes hidden by the current filter)
    - Updates main area when selection changes
    - Shows "No disputes in progress" / "No finalized disputes" when empty
