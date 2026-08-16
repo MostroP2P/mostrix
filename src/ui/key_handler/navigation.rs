@@ -1,6 +1,6 @@
 use crate::ui::helpers::{
-    active_order_chat_list_len, move_book_order_selection, move_dispute_selection,
-    move_pending_dispute_selection,
+    active_order_chat_list_len, active_order_chat_list_snapshot, move_book_order_selection,
+    move_dispute_selection, move_pending_dispute_selection,
 };
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::{
@@ -522,6 +522,27 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
+            } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
+                let rows = active_order_chat_list_snapshot(app);
+                let solver_available = rows
+                    .get(app.selected_order_chat_idx)
+                    .is_some_and(|row| row.solver_pubkey.is_some())
+                    || rows.get(app.selected_order_chat_idx).is_some_and(|row| {
+                        uuid::Uuid::parse_str(&row.order_id)
+                            .ok()
+                            .and_then(|id| app.order_chat_static.get(&id))
+                            .and_then(|header| header.solver_pubkey.as_ref())
+                            .is_some()
+                    });
+                if solver_available {
+                    app.active_user_chat_channel = match app.active_user_chat_channel {
+                        UserChatChannel::Peer => UserChatChannel::Solver,
+                        UserChatChannel::Solver => UserChatChannel::Peer,
+                    };
+                    app.order_chat_input.clear();
+                    app.order_chat_selected_message_idx = None;
+                    app.order_chat_scroll_tracker = None;
+                }
             } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
                 app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
@@ -537,6 +558,8 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                 // Reset scroll/selection when switching parties (will be set in render)
                 app.admin_chat_selected_message_idx = None;
                 app.admin_chat_scroll_tracker = None;
+            } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
+                handle_tab_navigation(KeyCode::Tab, app);
             } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
                 app.observer_input_focus = app.observer_input_focus.toggle();
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {

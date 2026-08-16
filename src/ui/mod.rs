@@ -47,7 +47,7 @@ pub use state::{
     InvoiceNotificationActionSelection, KeyInputState, LnAddressVerifyResult, MessageNotification,
     MessageViewState, MostroInfoFetchResult, ObserverInputField, OperationResult,
     OrderChatLastSeen, OrderChatStaticHeader, OrderChatUpdate, OrderMessage, RatingOrderState, Tab,
-    TakeOrderState, ThreeState, UiMode, UserChatSender, UserOrderChatMessage, UserRole, UserTab,
-    ViewingMessageButtonSelection,
+    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage,
+    UserRole, UserTab, ViewingMessageButtonSelection,
 };
 pub use user_state::UserMode;
