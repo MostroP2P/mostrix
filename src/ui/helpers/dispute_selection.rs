@@ -13,19 +13,18 @@ use uuid::Uuid;
 
 use crate::models::AdminDispute;
 use crate::ui::{AppState, DisputeFilter};
-use crate::util::order_utils::DisputeRevision;
 
 /// Pending (initiated) disputes as `(original_index, dispute)` pairs.
-pub fn get_initiated_disputes(disputes: &[DisputeRevision]) -> Vec<(usize, Dispute)> {
+pub fn get_initiated_disputes(disputes: &[Dispute]) -> Vec<(usize, Dispute)> {
     disputes
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            DisputeStatus::from_str(r.dispute.status.as_str())
+        .filter(|(_, d)| {
+            DisputeStatus::from_str(d.status.as_str())
                 .map(|s| s == DisputeStatus::Initiated)
                 .unwrap_or(false)
         })
-        .map(|(i, r)| (i, r.dispute.clone()))
+        .map(|(i, d)| (i, d.clone()))
         .collect()
 }
 
@@ -52,7 +51,7 @@ pub fn selected_pending_display_idx(
 /// Resolves `selected_pending_dispute_id` against the initiated-status projection
 /// so Enter / take always acts on the highlighted row — never on a non-initiated
 /// dispute still present in the raw vec.
-pub fn selected_pending_dispute(app: &AppState, disputes: &[DisputeRevision]) -> Option<Dispute> {
+pub fn selected_pending_dispute(app: &AppState, disputes: &[Dispute]) -> Option<Dispute> {
     let mut initiated = get_initiated_disputes(disputes);
     let idx = selected_pending_display_idx(app.selected_pending_dispute_id, &initiated)?;
     Some(initiated.swap_remove(idx).1)
@@ -60,11 +59,7 @@ pub fn selected_pending_dispute(app: &AppState, disputes: &[DisputeRevision]) ->
 
 /// Move Pending-tab selection `delta` rows within initiated disputes, clamping
 /// at both ends, and store the landing dispute's id.
-pub fn move_pending_dispute_selection(
-    app: &mut AppState,
-    disputes: &[DisputeRevision],
-    delta: isize,
-) {
+pub fn move_pending_dispute_selection(app: &mut AppState, disputes: &[Dispute], delta: isize) {
     let initiated = get_initiated_disputes(disputes);
     let Some(idx) = selected_pending_display_idx(app.selected_pending_dispute_id, &initiated)
     else {
@@ -82,7 +77,7 @@ pub fn move_pending_dispute_selection(
 /// Keeps a still-valid id unchanged; clears when nothing is initiated; otherwise
 /// repairs a missing/stale id to the first initiated dispute (used from the main
 /// loop when the dispute list refreshes).
-pub fn clamp_pending_dispute_selection(app: &mut AppState, disputes: &[DisputeRevision]) {
+pub fn clamp_pending_dispute_selection(app: &mut AppState, disputes: &[Dispute]) {
     let initiated = get_initiated_disputes(disputes);
     if initiated.is_empty() {
         app.selected_pending_dispute_id = None;
@@ -321,10 +316,10 @@ mod tests {
         assert_eq!(app.selected_dispute_id, None, "navigation stays a no-op");
     }
 
-    fn pending_dispute(nibble: u8) -> DisputeRevision {
+    fn pending_dispute(nibble: u8) -> Dispute {
         let mut d = Dispute::new(Uuid::from_bytes([nibble * 0x11; 16]), "active".to_string());
         d.id = Uuid::from_bytes([nibble * 0x11; 16]);
-        DisputeRevision::new(d, i64::from(nibble))
+        d
     }
 
     #[test]
@@ -335,8 +330,8 @@ mod tests {
         app.selected_pending_dispute_id = Some(keep);
 
         let reordered = vec![pending_dispute(1), pending_dispute(2)];
-        assert_eq!(reordered[1].dispute.id, keep);
-        assert_eq!(reordered[0].dispute.id, other);
+        assert_eq!(reordered[1].id, keep);
+        assert_eq!(reordered[0].id, other);
 
         let selected = selected_pending_dispute(&app, &reordered).expect("selection");
         assert_eq!(selected.id, keep);
@@ -350,7 +345,7 @@ mod tests {
         app.selected_pending_dispute_id = Some(taken);
 
         let mut disputes = vec![pending_dispute(1), pending_dispute(2)];
-        disputes[1].dispute.status = "in-progress".to_string();
+        disputes[1].status = "in-progress".to_string();
 
         let selected = selected_pending_dispute(&app, &disputes).expect("fallback");
         assert_eq!(selected.id, initiated);
@@ -375,7 +370,7 @@ mod tests {
         clamp_pending_dispute_selection(&mut app, &disputes);
         assert_eq!(
             app.selected_pending_dispute_id,
-            Some(disputes[0].dispute.id),
+            Some(disputes[0].id),
             "stale id repaired to first initiated"
         );
     }

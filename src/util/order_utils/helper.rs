@@ -236,26 +236,6 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
     }
 }
 
-/// Parsed kind-38386 dispute plus the Nostr publish stamp of the revision we kept.
-///
-/// - [`DisputeRevision::dispute`]::`created_at` — open time for UI (tag, else event stamp fallback)
-/// - [`DisputeRevision::published_at`] — NIP-33 `event.created_at` for latest-wins / live replace
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DisputeRevision {
-    pub dispute: Dispute,
-    pub published_at: i64,
-}
-
-impl DisputeRevision {
-    #[must_use]
-    pub fn new(dispute: Dispute, published_at: i64) -> Self {
-        Self {
-            dispute,
-            published_at,
-        }
-    }
-}
-
 /// Parse dispute from nostr tags.
 ///
 /// When present, the `created_at` tag is the dispute open time from Mostro's
@@ -304,12 +284,12 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
 /// Parse disputes from events.
 ///
 /// Keeps only the latest NIP-33 revision per dispute id (greatest Nostr
-/// `event.created_at`, stored as [`DisputeRevision::published_at`]). For display,
-/// [`Dispute::created_at`] prefers the kind-38386 `created_at` **tag** (dispute
-/// open time from Mostro) and falls back to `event.created_at` when the tag is
-/// missing (older daemons / unreposted events).
-pub fn parse_disputes_events(events: NostrEvents) -> Vec<DisputeRevision> {
-    let mut latest_by_id: HashMap<Uuid, DisputeRevision> = HashMap::new();
+/// `event.created_at`). For display, prefers the kind-38386 `created_at` **tag**
+/// (dispute open time from Mostro) and falls back to `event.created_at` when the
+/// tag is missing (older daemons / unreposted events).
+pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
+    // (published_at, dispute) — published_at drives latest-wins; dispute.created_at is open time.
+    let mut latest_by_id: HashMap<Uuid, (i64, Dispute)> = HashMap::new();
 
     for event in events.iter() {
         let mut dispute = match dispute_from_tags(event.tags.clone()) {
@@ -326,20 +306,20 @@ pub fn parse_disputes_events(events: NostrEvents) -> Vec<DisputeRevision> {
             dispute.created_at = published_at;
         }
 
-        let revision = DisputeRevision::new(dispute, published_at);
         latest_by_id
-            .entry(revision.dispute.id)
-            .and_modify(|existing| {
-                if revision.published_at > existing.published_at {
-                    *existing = revision.clone();
+            .entry(dispute.id)
+            .and_modify(|(existing_published_at, existing)| {
+                if published_at > *existing_published_at {
+                    *existing_published_at = published_at;
+                    *existing = dispute.clone();
                 }
             })
-            .or_insert(revision);
+            .or_insert((published_at, dispute));
     }
 
     // Newest dispute open time first (Pending "Created" column).
-    let mut disputes_list: Vec<DisputeRevision> = latest_by_id.into_values().collect();
-    disputes_list.sort_by_key(|b| std::cmp::Reverse(b.dispute.created_at));
+    let mut disputes_list: Vec<Dispute> = latest_by_id.into_values().map(|(_, d)| d).collect();
+    disputes_list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     disputes_list
 }
 
@@ -476,10 +456,7 @@ pub async fn fetch_events_list(
                 .timeout(FETCH_EVENTS_TIMEOUT)
                 .await?;
             let disputes = parse_disputes_events(fetched_events);
-            Ok(disputes
-                .into_iter()
-                .map(|rev| Event::Dispute(rev.dispute))
-                .collect())
+            Ok(disputes.into_iter().map(Event::Dispute).collect())
         }
         _ => Err(anyhow::anyhow!("Unsupported ListKind for mostrix")),
     }
@@ -502,17 +479,32 @@ pub async fn get_orders(
     ))
 }
 
-/// Fetch disputes from the Mostro network with NIP-33 revision metadata.
-pub async fn get_disputes(
-    client: &Client,
-    mostro_pubkey: PublicKey,
-) -> Result<Vec<DisputeRevision>> {
-    let filters = create_filter(ListKind::Disputes, mostro_pubkey, None)?;
-    let fetched_events = client
-        .fetch_events(filters)
-        .timeout(FETCH_EVENTS_TIMEOUT)
-        .await?;
-    Ok(parse_disputes_events(fetched_events))
+/// Fetch disputes from the Mostro network
+/// Returns a vector of Dispute items
+pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<Vec<Dispute>> {
+    let fetched_events = fetch_events_list(
+        ListKind::Disputes,
+        None,
+        None,
+        None,
+        client,
+        mostro_pubkey,
+        None,
+    )
+    .await?;
+
+    let disputes: Vec<Dispute> = fetched_events
+        .into_iter()
+        .filter_map(|event| {
+            if let Event::Dispute(dispute) = event {
+                Some(dispute)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(disputes)
 }
 
 /// Fetch the latest [`SmallOrder`] for one order id from relays (author + custom order kind + `d` tag).
@@ -821,12 +813,8 @@ mod tests {
 
         let parsed = parse_disputes_events(events);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].dispute.created_at, 1_700_000_100);
-        assert_eq!(parsed[0].published_at, 1_800_000_000);
-        assert_eq!(
-            parsed[0].dispute.status,
-            DisputeStatus::Initiated.to_string()
-        );
+        assert_eq!(parsed[0].created_at, 1_700_000_100);
+        assert_eq!(parsed[0].status, DisputeStatus::Initiated.to_string());
     }
 
     #[test]
@@ -839,8 +827,7 @@ mod tests {
 
         let parsed = parse_disputes_events(events);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].dispute.created_at, 1_800_000_000);
-        assert_eq!(parsed[0].published_at, 1_800_000_000);
+        assert_eq!(parsed[0].created_at, 1_800_000_000);
     }
 
     #[test]
@@ -858,12 +845,8 @@ mod tests {
 
         let parsed = parse_disputes_events(events);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(
-            parsed[0].dispute.status,
-            DisputeStatus::InProgress.to_string()
-        );
-        assert_eq!(parsed[0].dispute.created_at, open);
-        assert_eq!(parsed[0].published_at, 1_800_000_100);
+        assert_eq!(parsed[0].status, DisputeStatus::InProgress.to_string());
+        assert_eq!(parsed[0].created_at, open);
     }
 
     #[test]

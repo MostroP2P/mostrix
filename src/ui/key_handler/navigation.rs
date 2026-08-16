@@ -11,14 +11,12 @@ use crossterm::event::KeyCode;
 use mostro_core::prelude::*;
 use std::sync::{Arc, Mutex};
 
-use crate::util::order_utils::DisputeRevision;
-
 /// Handle navigation keys (Left, Right, Up, Down)
 pub fn handle_navigation(
     code: KeyCode,
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
+    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
 ) {
     match code {
         KeyCode::Left => handle_left_key(app, orders),
@@ -174,7 +172,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
 fn handle_up_key(
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
 ) {
     match &mut app.mode {
         UiMode::Normal
@@ -297,7 +295,7 @@ fn handle_up_key(
 fn handle_down_key(
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
 ) {
     match &mut app.mode {
         UiMode::Normal

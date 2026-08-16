@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use mostro_core::prelude::*;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -10,7 +11,6 @@ use crate::ui::helpers::{
     selected_pending_display_idx,
 };
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::util::order_utils::DisputeRevision;
 
 /// Render the Disputes Pending table (admin mode only).
 ///
@@ -21,7 +21,7 @@ use crate::util::order_utils::DisputeRevision;
 pub fn render_disputes_tab(
     f: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
-    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
     app: &mut AppState,
 ) {
     let disputes_lock = match disputes.lock() {
@@ -169,8 +169,7 @@ pub fn render_disputes_tab(
 mod tests {
     use super::render_disputes_tab;
     use crate::ui::{AppState, UserRole};
-    use crate::util::order_utils::DisputeRevision;
-    use mostro_core::prelude::Dispute;
+    use mostro_core::prelude::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::sync::{Arc, Mutex};
@@ -187,21 +186,21 @@ mod tests {
         flat.contains(needle)
     }
 
-    fn initiated_dispute(nibble: u8) -> DisputeRevision {
+    fn initiated_dispute(nibble: u8) -> Dispute {
         let mut dispute = Dispute::new(Uuid::new_v4(), "active".to_string());
         // Deterministic, visually distinct id prefix per row (e.g. 00000000-, 11111111-, ...)
         dispute.id = Uuid::from_bytes([nibble * 0x11; 16]);
-        DisputeRevision::new(dispute, i64::from(nibble))
+        dispute
     }
 
     /// When more pending disputes exist than table rows, selecting a late row
     /// must scroll the stateful table so that dispute stays visible.
     #[test]
     fn table_scrolls_to_keep_selected_dispute_visible() {
-        let disputes: Vec<DisputeRevision> = (0..10).map(initiated_dispute).collect();
-        let first_id = disputes[0].dispute.id.to_string();
-        let last_id = disputes[9].dispute.id.to_string();
-        let last_uuid = disputes[9].dispute.id;
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let last_id = disputes[9].id.to_string();
+        let last_uuid = disputes[9].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(last_uuid);
@@ -228,9 +227,9 @@ mod tests {
     /// stay readable instead of being clipped by the fixed 40/20/25 layout.
     #[test]
     fn narrow_area_drops_created_column_but_keeps_id_and_status() {
-        let disputes: Vec<DisputeRevision> = (0..3).map(initiated_dispute).collect();
-        let first_id = disputes[0].dispute.id.to_string();
-        let first_uuid = disputes[0].dispute.id;
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let first_uuid = disputes[0].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(first_uuid);
@@ -260,10 +259,10 @@ mod tests {
     /// cannot fit; a single cell with shortened id + status keeps both visible.
     #[test]
     fn ultra_narrow_area_uses_single_column_short_id_and_status() {
-        let disputes: Vec<DisputeRevision> = (0..3).map(initiated_dispute).collect();
-        let first_id = disputes[0].dispute.id.to_string();
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
         let short_id = &first_id[..8];
-        let first_uuid = disputes[0].dispute.id;
+        let first_uuid = disputes[0].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(first_uuid);
@@ -298,9 +297,9 @@ mod tests {
     /// least one data row remains visible.
     #[test]
     fn short_area_drops_header_but_shows_selected_row() {
-        let disputes: Vec<DisputeRevision> = (0..3).map(initiated_dispute).collect();
-        let second_id = disputes[1].dispute.id.to_string();
-        let second_uuid = disputes[1].dispute.id;
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let second_id = disputes[1].id.to_string();
+        let second_uuid = disputes[1].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(second_uuid);
@@ -326,8 +325,8 @@ mod tests {
     /// overwrite the block borders or the header row.
     #[test]
     fn scrollbar_preserves_borders_and_header_when_scrolled() {
-        let disputes: Vec<DisputeRevision> = (0..10).map(initiated_dispute).collect();
-        let last_uuid = disputes[9].dispute.id;
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(last_uuid);
@@ -362,8 +361,8 @@ mod tests {
     /// the end cap (`▼`) — same offset remapping as Orders.
     #[test]
     fn scrollbar_thumb_reaches_track_bottom_on_last_row() {
-        let disputes: Vec<DisputeRevision> = (0..10).map(initiated_dispute).collect();
-        let last_uuid = disputes[9].dispute.id;
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(last_uuid);
@@ -393,10 +392,10 @@ mod tests {
 
     #[test]
     fn table_shows_first_disputes_when_selection_is_at_top() {
-        let disputes: Vec<DisputeRevision> = (0..10).map(initiated_dispute).collect();
-        let first_id = disputes[0].dispute.id.to_string();
-        let last_id = disputes[9].dispute.id.to_string();
-        let first_uuid = disputes[0].dispute.id;
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let last_id = disputes[9].id.to_string();
+        let first_uuid = disputes[0].id;
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(first_uuid);
@@ -422,10 +421,10 @@ mod tests {
     /// one row after scrolling to the bottom (Orders-tab alignment).
     #[test]
     fn persisted_table_state_keeps_viewport_when_moving_up() {
-        let disputes: Vec<DisputeRevision> = (0..10).map(initiated_dispute).collect();
-        let last_uuid = disputes[9].dispute.id;
-        let eighth_uuid = disputes[8].dispute.id;
-        let first_id = disputes[0].dispute.id.to_string();
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
+        let eighth_uuid = disputes[8].id;
+        let first_id = disputes[0].id.to_string();
         let disputes = Arc::new(Mutex::new(disputes));
         let mut app = AppState::new(UserRole::Admin);
         app.selected_pending_dispute_id = Some(last_uuid);
