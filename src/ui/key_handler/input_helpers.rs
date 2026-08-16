@@ -102,11 +102,11 @@ pub fn prepare_admin_chat_message(
     dispute_id_key
 }
 
-/// Send an admin chat message using the per-dispute shared key.
+/// Send an admin chat message using the per-dispute ECDH shared key.
 ///
 /// Looks up the stored `shared_key_hex` for the given party, rebuilds the
-/// shared `Keys`, and spawns an async task that wraps the message in a NIP-59
-/// gift wrap addressed to the shared key's public key.
+/// ECDH `Keys`, and spawns an async task that wraps the message as kind 14
+/// (`K_sign` / `K_conv` via `send_admin_chat_message_via_shared_key`).
 pub fn send_admin_chat_message_via_shared_key(
     dispute_id_key: &str,
     shared_key_hex: Option<&str>,

@@ -721,10 +721,10 @@ pub struct AdminDispute {
 impl AdminDispute {
     /// Create a new admin dispute from SolverDisputeInfo and save it to the database.
     ///
-    /// When `admin_keys` is provided, per-dispute shared keys are eagerly derived
-    /// via ECDH (`generate_shared_key(admin_secret, counterparty_pubkey)`) and
-    /// persisted alongside the dispute so that admin chat messages are addressed to
-    /// (and decrypted with) the shared key, mirroring the mostro-chat model.
+    /// When `admin_keys` is provided, per-dispute ECDH shared secrets are eagerly
+    /// derived (`derive_shared_key_hex`) and persisted as hex. At chat send/receive
+    /// time Mostrix derives `K_conv` / `K_sign` from that ECDH IKM (kind-14 wrap),
+    /// matching the mostro-chat model. No schema change is required for the keys.
     pub async fn new(
         pool: &SqlitePool,
         dispute_info: SolverDisputeInfo,

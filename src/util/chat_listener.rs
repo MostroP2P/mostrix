@@ -927,6 +927,28 @@ mod tests {
     }
 
     #[test]
+    fn live_chat_filters_kind14_uses_authors_not_p_tags() {
+        let ecdh = vec![Keys::generate().public_key()];
+        let sign = vec![Keys::generate().public_key()];
+        let (_legacy, kind14) = live_chat_filters(&ecdh, &sign, true);
+        let json = serde_json::to_value(&kind14).expect("filter json");
+        let authors = json.get("authors").expect("authors");
+        assert!(authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some(&sign[0].to_hex())));
+        assert!(json.get("#p").is_none());
+        assert_eq!(
+            json.get("kinds")
+                .and_then(|k| k.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_u64()),
+            Some(u64::from(Kind::PrivateDirectMessage.as_u16()))
+        );
+    }
+
+    #[test]
     fn resolve_chat_target_ignores_kind14_from_unknown_author() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();

@@ -21,7 +21,7 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Admin
 
-- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, shared-keys chat, workflows; **id-based dispute selection** (`dispute_selection.rs`) + scrollable sidebar list
+- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, kind-14 dispute chat (`K_conv` / `K_sign`), Observer `K_conv` disclosure, workflows; **id-based dispute selection** (`dispute_selection.rs`) + scrollable sidebar list
 - **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Inline finalize popup (💰 pay / ↩️ refund, inner **Admin settle** / **Admin cancel**); admin `wait_for_dm` + `CantDo`; multi-line success popup; trader **AddBondInvoice** payout with follow-up popup (`OpenInvoicePopup` / `PaymentRequestRequired`)
 
 ## Contributing & tooling
@@ -44,7 +44,7 @@ Mostrix supports **dual-transport** Mostro **protocol DMs**. P2P order chat and 
 
 | Status | What |
 |--------|------|
-| **Done** | `mostro-core` **0.13.0**; `protocol_version` on kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); **await instance info** before listener (startup + [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) on reload/reconnect); **`send_dm` → `wrap_message_with`**; **`parse_dm_events` / listener → `unwrap_incoming`**; transport-aware subscribe + event gate; [`respawn_trade_dm_listener`](../src/ui/key_handler/async_tasks.rs) on manual info refresh when transport flips; v2 **first-contact PoW** (`pow_first_contact` / [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs)) |
+| **Done** | `mostro-core` **0.14.3** chat primitives (`K_conv` / `K_sign`); `protocol_version` on kind **38385**; [`transport_from_instance`](../src/util/mostro_info.rs); [`AppState.transport`](../src/ui/app_state.rs); Mostro Info tab; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs); **await instance info** before listener (startup + [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) on reload/reconnect); **`send_dm` → `wrap_message_with`**; **`parse_dm_events` / listener → `unwrap_incoming`**; transport-aware subscribe + event gate; [`respawn_trade_dm_listener`](../src/ui/key_handler/async_tasks.rs) on manual info refresh when transport flips; v2 **first-contact PoW** (`pow_first_contact` / [`nostr_pow_for_protocol_dm`](../src/util/mostro_info.rs)); P2P/dispute chat kind-14 send + dual-read + Observer `K_conv` disclosure (mostrix#102 steps 1–6) |
 
 **v2 end-to-end:** Mostrix auto-selects wire transport from instance info for both outbound and inbound protocol DMs. P2P / dispute chat is kind 14 outbound with a GiftWrap dual-read receive window (`CHAT_ACCEPT_LEGACY_GIFTWRAP`). Manual test checklist: [DM_LISTENER_FLOW.md — Manual verification](DM_LISTENER_FLOW.md#manual-verification-protocol-v2).
 

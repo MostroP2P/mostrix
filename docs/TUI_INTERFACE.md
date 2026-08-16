@@ -257,7 +257,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste)
   - mouse right-click paste (`MouseEventKind::Down(MouseButton::Right)`) using clipboard read fallback
-  This applies to invoice input, admin key/solver inputs, and observer shared-key input.
+  This applies to invoice input, admin key/solver inputs, and Observer `K_conv` / `pub(K_sign)` fields.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
   - Supports direct character input and backspace
@@ -421,9 +421,9 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 
 ### 5. Admin Chat System
 
-**Status**: ✅ **Fully Implemented (NIP‑59 + Shared Keys)**
+**Status**: ✅ **Fully Implemented (kind 14 + ECDH shared keys)**
 
-The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using NIP‑59 gift-wrap events and per‑dispute shared keys derived between the admin key and each party’s trade pubkey.
+The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using kind-14 chat envelopes (`K_sign` / `K_conv`, with dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true) and per‑dispute ECDH shared keys derived between the admin key and each party’s trade pubkey.
 
 #### Helper module organization (readability refactor)
 
@@ -500,9 +500,8 @@ The key handler processes input in this order:
 Active admin-chat transport is kind 14 (`K_sign` / `K_conv`). GiftWrap is inbound-only during the `CHAT_ACCEPT_LEGACY_GIFTWRAP` dual-read window, not the send path.
 
 - **Shared key derivation**:
-  - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
-  - Two shared keys are stored (as hex) in the `admin_disputes` table: `buyer_shared_key_hex` and `seller_shared_key_hex`.
-  - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key and subscribe to the same events.
+  - When a dispute is taken (`AdminDispute::new`), per-party ECDH shared secrets are eagerly derived (`derive_shared_key_hex`) and stored as hex in `buyer_shared_key_hex` / `seller_shared_key_hex`. Chat wrap/unwrap derives `K_conv` / `K_sign` from that IKM at runtime.
+  - Both admin and counterparty can independently derive the same ECDH secret (and thus the same chat keys), matching mostro-chat.
 
 - **Message addressing**:
   - Outbound chat is kind 14 signed by `K_sign` with `p` = `pub(K_conv)` (derived from stored ECDH hex). The admin identity signs the inner rumor.

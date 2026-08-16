@@ -304,8 +304,7 @@ sequenceDiagram
     DB-->>Client: admin_privkey
     Client->>AdminKey: Parse & sign with admin key
     Client->>Client: Construct TakeDispute message
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
-    NostrRelays->>Mostro: Forward TakeDispute action
+    Client->>NostrRelays: Publish protocol DM (GiftWrap or kind 14)
     Mostro->>Mostro: Validate admin key & assign dispute
     Mostro->>Mostro: Update dispute status: Initiated → InProgress
     Mostro->>NostrRelays: Confirmation
@@ -462,7 +461,7 @@ sequenceDiagram
         TUI->>Client: execute_admin_add_solver(solver_pubkey, admin_keys)
         Client->>AdminKey: Use live runtime admin key
         Client->>Client: Construct AdminAddSolver message
-        Client->>NostrRelays: Send NIP-59 Gift Wrap DM
+        Client->>NostrRelays: Send protocol DM (GiftWrap or kind 14)
         NostrRelays->>Mostro: Forward AdminAddSolver action
         Mostro->>Mostro: Validate & add solver
         Mostro->>NostrRelays: admin-add-solver response
@@ -497,7 +496,7 @@ sequenceDiagram
 - ✅ Adds a new public key to the list of authorized dispute solvers
 - ✅ The new solver can then take and resolve disputes
 - ✅ Helps distribute dispute resolution workload
-- ✅ Uses NIP-59 Gift Wrap for secure message delivery
+- ✅ Uses transport-aware protocol DMs (`wrap_message_with`: GiftWrap or kind 14 per instance `protocol_version`)
 
 ### Chatting with Parties
 
@@ -561,7 +560,7 @@ sequenceDiagram
     ChatState->>ChatState: Store in admin_dispute_chats[dispute_id]
     TUI->>Client: send_message_to_buyer(message)
     Client->>AdminKey: Sign with admin key
-    Client->>NostrRelays: Publish encrypted DM (NIP-59)
+    Client->>NostrRelays: Publish encrypted kind-14 chat (K_sign / K_conv)
     NostrRelays->>Buyer: Forward message
     Buyer->>NostrRelays: Send response
     NostrRelays->>Client: Receive response
@@ -592,7 +591,7 @@ sequenceDiagram
     ChatState->>ChatState: Store in admin_dispute_chats[dispute_id]
     TUI->>Client: send_message_to_seller(message)
     Client->>AdminKey: Sign with admin key
-    Client->>NostrRelays: Publish encrypted DM (NIP-59)
+    Client->>NostrRelays: Publish encrypted kind-14 chat (K_sign / K_conv)
     NostrRelays->>Seller: Forward message
     Seller->>NostrRelays: Send response
     NostrRelays->>Client: Receive response
@@ -644,7 +643,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Save (Ctrl+S)**:
   - From the dispute chat, press **Ctrl+S** to open a **Save attachment** popup. The popup lists all file/image attachments in the current dispute for the active party (Buyer or Seller). If there are no attachments, Ctrl+S does nothing.
   - **In the popup**: Use **↑/↓** to select an attachment, **Enter** to save the selected one, **Esc** to cancel. The popup shows one line per attachment (🖼 image or 📎 file + filename) and a footer hint: "↑↓ Select, Enter Save, Esc Cancel".
-  - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared **operation result** popup when the background download finishes; `main.rs` drains `save_attachment_rx` / `order_result_rx` before each frame so the modal does not require an extra keypress (see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)). When a party later provides the corresponding shared key, the admin can use the **Observer** tab to fetch and view the full chat from relays, including any attachments.
+  - Saving downloads the file from the Blossom URL (resolved from `blossom://` to `https://`), optionally decrypts with ChaCha20-Poly1305 when the sender provided a key (or when the admin can derive the shared key from the party’s pubkey), and writes to `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or `_<filename>.enc` if no key). The downloads directory is created if needed. Success or error is shown in the shared **operation result** popup when the background download finishes; `main.rs` drains `save_attachment_rx` / `order_result_rx` before each frame so the modal does not require an extra keypress (see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)). When a party later discloses **`K_conv`** (My Trades **Shift+K**), the admin can use the **Observer** tab to fetch and view the full buyer↔seller chat from relays, including any attachments.
 - **Cipher**: Blob layout is nonce (12 bytes) + ciphertext + authentication tag (16 bytes); decryption uses the `chacha20poly1305` crate. Max blob size is 25 MB per download. **Blossom HTTP**: save uses unauthenticated GET by URL (`fetch_blob`); My Trades **outbound upload** (**Ctrl+O**) uses NIP-24242 PUT auth signed with the order **trade key** — see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "Attachments (send)".
 
 **Source**: `src/util/blossom.rs` (URL resolution, fetch, decrypt, save), `src/ui/helpers/attachments.rs` (parse, serialize, legacy placeholder match), `src/ui/helpers/chat_storage.rs` (JSON transcript save/load), `src/ui/helpers/chat_render.rs` (chat list/line styling).
@@ -652,9 +651,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 ##### Kind-14 Chat Flow (Admin ↔ Parties — Shared Key Model)
 
 - **Shared key derivation**:
-  - When a dispute is taken (`AdminDispute::new`), per-party shared keys are eagerly derived using ECDH: `nostr_sdk::util::generate_shared_key(admin_secret, counterparty_pubkey)`.
-  - Two shared keys are stored (as hex) in the `admin_disputes` table: `buyer_shared_key_hex` and `seller_shared_key_hex`.
-  - The same derivation is used by `mostro-chat` so both the admin and the counterparty can independently derive the same shared key.
+  - When a dispute is taken (`AdminDispute::new`), per-party ECDH shared secrets are eagerly derived (`derive_shared_key_hex`) and stored as hex. Chat wrap/unwrap derives `K_conv` / `K_sign` from that IKM at runtime.
 
 - **Message addressing**:
   - Outbound chat is kind 14 signed by `K_sign` with `p` = `pub(K_conv)` (derived from the stored ECDH hex). The admin identity signs the inner rumor.
@@ -688,7 +685,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_gift_wraps_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched dual-read subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
+    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_chat_messages_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched dual-read subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
@@ -777,7 +774,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 ### Communication Security
 
-- **Encrypted messages**: All communication uses NIP-44 or NIP-59 encryption
+- **Encrypted messages**: Protocol DMs use NIP-44 / NIP-59 per instance transport; P2P and dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true.
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
 
