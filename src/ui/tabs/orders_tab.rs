@@ -460,6 +460,44 @@ mod tests {
         );
     }
 
+    /// Selecting the last order must park the scrollbar thumb against the end
+    /// cap (`▼`), with no empty track (`║`) between thumb and bottom.
+    #[test]
+    fn scrollbar_thumb_reaches_track_bottom_on_last_row() {
+        let mut book = Vec::new();
+        let mut last_id = Uuid::nil();
+        for i in 0..40 {
+            let o = sample_order(&format!("PAY-{i:02}"), 0);
+            last_id = o.id.unwrap();
+            book.push(o);
+        }
+        let orders = Arc::new(Mutex::new(book));
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(last_id);
+
+        // height 10 → borders+header leave 7 data rows; track y=2..8 with ▲…▼
+        let backend = TestBackend::new(130, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let right = buf.area.width - 1;
+        let end_cap_y = buf.area.height - 2; // ▼ just above bottom border
+        let above_end = end_cap_y - 1;
+        assert_eq!(
+            buf[(right, end_cap_y)].symbol(),
+            "▼",
+            "scrollbar end cap must sit on the last track row"
+        );
+        assert_eq!(
+            buf[(right, above_end)].symbol(),
+            "█",
+            "thumb must reach the cell above ▼ when the last order is selected"
+        );
+    }
+
     #[test]
     fn short_area_drops_header_but_shows_selected_row() {
         let o = sample_order("PAY-SHORT", 0);

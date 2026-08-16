@@ -357,6 +357,39 @@ mod tests {
         );
     }
 
+    /// Selecting the last pending dispute must park the scrollbar thumb against
+    /// the end cap (`▼`) — same offset remapping as Orders.
+    #[test]
+    fn scrollbar_thumb_reaches_track_bottom_on_last_row() {
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let last_uuid = disputes[9].id;
+        let disputes = Arc::new(Mutex::new(disputes));
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(last_uuid);
+
+        // height 8 → borders+header leave 5 data rows; track y=2..6 with ▲…▼
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        let right = buf.area.width - 1;
+        let end_cap_y = buf.area.height - 2;
+        let above_end = end_cap_y - 1;
+        assert_eq!(
+            buf[(right, end_cap_y)].symbol(),
+            "▼",
+            "scrollbar end cap must sit on the last track row"
+        );
+        assert_eq!(
+            buf[(right, above_end)].symbol(),
+            "█",
+            "thumb must reach the cell above ▼ when the last dispute is selected"
+        );
+    }
+
     #[test]
     fn table_shows_first_disputes_when_selection_is_at_top() {
         let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();

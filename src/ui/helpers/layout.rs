@@ -10,8 +10,13 @@ use crate::ui::PRIMARY_COLOR;
 ///
 /// Draws only when `content_len` exceeds the visible body. The track is confined
 /// to data rows (skipping the top border and optional header) so the thumb does
-/// not overwrite corner glyphs. Thumb position is the viewport **offset** after
-/// a stateful render, not the selected index.
+/// not overwrite corner glyphs.
+///
+/// `viewport_offset` is the stateful table/list **offset** (first visible row).
+/// Ratatui only parks the thumb at the track end when
+/// `position == content_length - 1`, so this helper maps the scrollable offset
+/// range `[0, content_len - visible_rows]` onto that scale — selecting the last
+/// row (max offset) places the thumb fully at the bottom.
 pub fn render_table_list_scrollbar(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -29,9 +34,11 @@ pub fn render_table_list_scrollbar(
         width: area.width,
         height: visible_rows as u16,
     };
-    let mut scrollbar_state = ScrollbarState::new(content_len)
-        .viewport_content_length(visible_rows)
-        .position(viewport_offset);
+    // Max table offset keeps the last row at the bottom of the viewport.
+    // Remap so that offset maps onto ratatui's [0, content_length - 1] positions.
+    let max_offset = content_len.saturating_sub(visible_rows);
+    let mut scrollbar_state =
+        ScrollbarState::new(max_offset.saturating_add(1)).position(viewport_offset.min(max_offset));
     f.render_stateful_widget(
         Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
         track,

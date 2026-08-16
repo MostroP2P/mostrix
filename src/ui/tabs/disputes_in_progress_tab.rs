@@ -987,6 +987,39 @@ mod tests {
         );
     }
 
+    /// Last sidebar selection must park the shared scrollbar thumb against `▼`
+    /// on the sidebar's right edge (same remapping as Orders / Pending).
+    #[test]
+    fn sidebar_scrollbar_thumb_reaches_track_bottom_on_last_row() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = (0..20)
+            .map(|i| dispute(&format!("dip-{i:02}"), "in-progress"))
+            .collect();
+        app.selected_dispute_id = Some("dip-19".to_string());
+
+        let backend = TestBackend::new(100, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        // Sidebar is ~20% width → right edge of first column ≈ x=19
+        let sidebar_right = (buf.area.width as f64 * 0.20).floor() as u16;
+        let sidebar_right = sidebar_right.saturating_sub(1);
+        let end_cap_y = buf.area.height - 2;
+        assert_eq!(
+            buf[(sidebar_right, end_cap_y)].symbol(),
+            "▼",
+            "sidebar scrollbar end cap must sit on the last track row"
+        );
+        assert_eq!(
+            buf[(sidebar_right, end_cap_y - 1)].symbol(),
+            "█",
+            "thumb must reach the cell above ▼ when the last sidebar dispute is selected"
+        );
+    }
+
     #[test]
     fn sidebar_shows_first_disputes_when_selection_is_at_top() {
         let mut app = AppState::new(UserRole::Admin);
