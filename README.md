@@ -101,8 +101,9 @@ user_mode = "user"
 - **`admin_privkey`**  
   - Private key used when running Mostrix in **admin mode**.  
   - Needed for admin-only flows (e.g., dispute resolution for admins).  
+  - For operator actions such as **Add Dispute Solver**, this must be the **Mostro daemon** `nsec` (same key whose pubkey is `mostro_pubkey`).  
+  - Set it via **Settings → Change Admin Key** (or edit `settings.toml`). Do not use **Generate New Keys** for this — that option exists in **User** mode only.  
   - Leave it empty if you are a normal user.
-  - When you use **Settings → Generate New Keys** in Admin mode, Mostrix rotates this value and shows the backup mnemonic popup.
 
 - **`relays`**  
   - List of Nostr relay URLs (WebSocket endpoints) that Mostrix will connect to.  

@@ -626,6 +626,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 return true;
             }
 
+            // Admin Settings no longer offers Generate New Keys; refuse if reached somehow.
+            if matches!(app.user_role, UserRole::Admin) {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "Generate New Keys is User-mode only. Use Change Admin Key to set the Mostro daemon nsec.".to_string(),
+                ));
+                return true;
+            }
+
             // YES: generate mnemonic + derived key, persist in background, then show backup popup.
             let mnemonic = match generate_mnemonic_12_words() {
                 Ok(m) => m,
@@ -649,13 +657,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 }
             };
 
-            let is_user_mode = matches!(app.user_role, UserRole::User);
-
             // Persist rotation asynchronously to avoid UI blocking; backup popup
             // will be shown only after successful commit via key_rotation_rx in main.
             spawn_key_rotation_task(
                 ctx.pool.clone(),
-                is_user_mode,
+                true, // user mode only
                 mnemonic.clone(),
                 derived_nsec,
                 ctx.key_rotation_tx.clone(),

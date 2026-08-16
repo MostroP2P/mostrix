@@ -16,12 +16,12 @@ Where `X` is the index:
 
 ## Key Rotation and Backup Prompts
 
-The Settings tab includes a **Generate New Keys** option (User mode or Admin mode, depending on the current role).
+The Settings tab includes a **Generate New Keys** option in **User mode** only.
 
 - **User mode**: Mostrix generates a new 12-word mnemonic, deletes/recreates the DB user identity, and updates `settings.toml`’s `nsec_privkey`.
-- **Admin mode**: Mostrix rotates the admin keypair and updates `settings.toml`’s `admin_privkey`.
+- **Admin mode**: use **Change Admin Key** to paste the Mostro daemon `nsec` into `admin_privkey`. Generating a new admin keypair is not offered — operator actions (e.g. `AdminAddSolver`) require the daemon’s own key.
 
-In both cases Mostrix shows a backup popup displaying the newly generated 12 words. The mnemonic must be saved, and Mostrix should be restarted after saving so all derived keys and in-memory state use the new values.
+In the user-mode flow Mostrix shows a backup popup displaying the newly generated 12 words. The mnemonic must be saved, and Mostrix should be restarted after saving so all derived keys and in-memory state use the new values.
 
 On very first launch, when Mostrix must bootstrap a brand-new `settings.toml`, it also shows the backup popup as an overlay on the initial Orders/Disputes tab (it does not force switching to the Settings tab).
 

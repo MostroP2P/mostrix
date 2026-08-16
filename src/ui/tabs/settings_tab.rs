@@ -23,8 +23,13 @@ pub enum SettingsMenuAction {
 type SettingsMenuRow = (SettingsMenuAction, &'static str);
 
 /// Single source of truth for Admin Settings rows (action + list label).
+///
+/// Admin mode intentionally omits **Generate New Keys**: `AdminAddSolver` and
+/// other operator actions must be signed with the Mostro daemon nsec, which is
+/// set via **Change Admin Key** — generating a fresh keypair would overwrite
+/// `admin_privkey` with a key the daemon rejects.
 #[allow(clippy::redundant_static_lifetimes)]
-const ADMIN_SETTINGS: [SettingsMenuRow; 9] = [
+const ADMIN_SETTINGS: [SettingsMenuRow; 8] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -39,7 +44,6 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 9] = [
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
     (SettingsMenuAction::AddDisputeSolver, "Add Dispute Solver"),
     (SettingsMenuAction::ChangeAdminKey, "Change Admin Key"),
-    (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
 ];
 
 /// Single source of truth for User Settings rows (action + list label).
@@ -197,4 +201,33 @@ pub fn render_settings_tab(
         .alignment(ratatui::layout::Alignment::Center),
         chunks[4],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_settings_omit_generate_new_keys() {
+        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 8);
+        assert!(ADMIN_SETTINGS
+            .iter()
+            .all(|(action, _)| *action != SettingsMenuAction::GenerateNewKeys));
+        assert!(matches!(
+            settings_action_for_index(UserRole::Admin, 7),
+            Some(SettingsMenuAction::ChangeAdminKey)
+        ));
+        assert!(settings_action_for_index(UserRole::Admin, 8).is_none());
+    }
+
+    #[test]
+    fn user_settings_keep_generate_new_keys() {
+        assert!(USER_SETTINGS
+            .iter()
+            .any(|(action, _)| *action == SettingsMenuAction::GenerateNewKeys));
+        assert_eq!(
+            settings_action_for_index(UserRole::User, USER_SETTINGS_OPTIONS_COUNT - 1),
+            Some(SettingsMenuAction::GenerateNewKeys)
+        );
+    }
 }

@@ -1102,6 +1102,9 @@ pub fn spawn_refresh_mostro_info_task(
     });
 }
 
+/// Rotate the **user** identity (mnemonic + `nsec_privkey`). Admin key changes
+/// must use **Change Admin Key** with the Mostro daemon nsec — do not pass
+/// `is_user_mode = false` (that path is rejected).
 pub fn spawn_key_rotation_task(
     pool: SqlitePool,
     is_user_mode: bool,
@@ -1111,55 +1114,54 @@ pub fn spawn_key_rotation_task(
 ) {
     tokio::spawn(async move {
         let rotation_result: Result<(), anyhow::Error> = async {
-            if is_user_mode {
-                let new_user = User::from_mnemonic(mnemonic.clone())?;
-                let mut tx = pool.begin().await?;
-                User::replace_all_in_tx(&new_user, &mut tx).await?;
-                Order::delete_all_in_tx(&mut tx).await?;
-                log::info!("User key rotation: cleared orders table (stale trade keys)");
+            if !is_user_mode {
+                return Err(anyhow::anyhow!(
+                    "Admin key rotation via Generate New Keys is disabled; use Change Admin Key"
+                ));
+            }
 
-                let mut s = crate::settings::load_settings_from_disk()?;
-                s.nsec_privkey = derived_nsec.clone();
-                let toml_string = toml::to_string_pretty(&s)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
+            let new_user = User::from_mnemonic(mnemonic.clone())?;
+            let mut tx = pool.begin().await?;
+            User::replace_all_in_tx(&new_user, &mut tx).await?;
+            Order::delete_all_in_tx(&mut tx).await?;
+            log::info!("User key rotation: cleared orders table (stale trade keys)");
 
-                let home_dir = dirs::home_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-                let package_name = env!("CARGO_PKG_NAME");
-                let hidden_file_path = home_dir
-                    .join(format!(".{package_name}"))
-                    .join("settings.toml");
-                let executable_file_path = env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
-                let target_settings_file = executable_file_path
-                    .filter(|p| p.exists())
-                    .unwrap_or(hidden_file_path);
+            let mut s = crate::settings::load_settings_from_disk()?;
+            s.nsec_privkey = derived_nsec.clone();
+            let toml_string = toml::to_string_pretty(&s)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
 
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                let tmp_path = target_settings_file.with_extension(format!("tmp-{}", nanos));
-                fs::write(&tmp_path, toml_string).map_err(|e| {
-                    anyhow::anyhow!("Failed to write temporary settings file: {}", e)
-                })?;
+            let home_dir =
+                dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+            let package_name = env!("CARGO_PKG_NAME");
+            let hidden_file_path = home_dir
+                .join(format!(".{package_name}"))
+                .join("settings.toml");
+            let executable_file_path = env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
+            let target_settings_file = executable_file_path
+                .filter(|p| p.exists())
+                .unwrap_or(hidden_file_path);
 
-                if let Err(e) = tx.commit().await {
-                    let _ = fs::remove_file(&tmp_path);
-                    return Err(anyhow::anyhow!("Failed to commit user update: {}", e));
-                }
-                if let Err(e) = fs::rename(&tmp_path, &target_settings_file) {
-                    let _ = fs::remove_file(&tmp_path);
-                    return Err(anyhow::anyhow!(
-                        "Failed to atomically replace settings: {}",
-                        e
-                    ));
-                }
-            } else {
-                let mut s = crate::settings::load_settings_from_disk()?;
-                s.admin_privkey = derived_nsec.clone();
-                crate::settings::save_settings(&s)?;
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let tmp_path = target_settings_file.with_extension(format!("tmp-{}", nanos));
+            fs::write(&tmp_path, toml_string)
+                .map_err(|e| anyhow::anyhow!("Failed to write temporary settings file: {}", e))?;
+
+            if let Err(e) = tx.commit().await {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(anyhow::anyhow!("Failed to commit user update: {}", e));
+            }
+            if let Err(e) = fs::rename(&tmp_path, &target_settings_file) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(anyhow::anyhow!(
+                    "Failed to atomically replace settings: {}",
+                    e
+                ));
             }
             Ok(())
         }

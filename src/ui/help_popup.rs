@@ -279,11 +279,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Change Admin Key",
-            "Update admin_privkey in settings (dispute chat and classification).",
-        ),
-        (
-            "Generate New Keys",
-            "Rotate identity/trade keys. Confirm prompts and back up any new mnemonic.",
+            "Set admin_privkey to the Mostro daemon nsec (operator actions + dispute chat).",
         ),
     ];
 
