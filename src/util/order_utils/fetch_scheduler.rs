@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 use super::get_disputes;
 use super::helper::{
     aggregate_latest_orders_by_id, fetch_mostro_order_events, pending_orders_for_book,
+    DisputeRevision,
 };
 use super::relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
@@ -24,7 +25,7 @@ use super::relay_order_db_reconcile::{
 /// Contains shared state for orders and disputes that are periodically updated
 pub struct FetchSchedulerResult {
     pub orders: Arc<Mutex<Vec<SmallOrder>>>,
-    pub disputes: Arc<Mutex<Vec<Dispute>>>,
+    pub disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     /// Background task for periodic order fetches; abort and call [`spawn_fetch_scheduler_loops`]
     /// after a soft client reload so polls use the new session.
     pub order_task: JoinHandle<()>,
@@ -78,9 +79,13 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
     );
 }
 
-fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispute) {
-    let dispute_id = dispute.id;
-    let dispute_status = dispute.status.clone();
+pub(crate) fn apply_live_dispute_update(
+    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
+    revision: DisputeRevision,
+) {
+    let dispute_id = revision.dispute.id;
+    let dispute_status = revision.dispute.status.clone();
+    let published_at = revision.published_at;
     let mut disputes_lock = match disputes.lock() {
         Ok(guard) => guard,
         Err(e) => {
@@ -90,24 +95,23 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
             return;
         }
     };
-    // Live subscription is `.since(now)` — always take the incoming revision.
-    // Do not compare `dispute.created_at`: after Mostro #878 that field is the
-    // stable open-time tag, not the Nostr publish stamp, so a status update
-    // would otherwise fail to replace when open times are equal (or when a
-    // tagged open time is older than a legacy event-stamp fallback).
+    // Compare NIP-33 publish stamps only — Dispute.created_at is open-time display.
     if let Some(existing) = disputes_lock
         .iter_mut()
-        .find(|existing| existing.id == dispute.id)
+        .find(|existing| existing.dispute.id == revision.dispute.id)
     {
-        *existing = dispute;
+        if published_at > existing.published_at {
+            *existing = revision;
+        }
     } else {
-        disputes_lock.push(dispute);
+        disputes_lock.push(revision);
     }
-    disputes_lock.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+    disputes_lock.sort_by_key(|b| std::cmp::Reverse(b.dispute.created_at));
     log::debug!(
-        "[disputes_live] upserted dispute_id={} status={} total_disputes={}",
+        "[disputes_live] upserted dispute_id={} status={} published_at={} total_disputes={}",
         dispute_id,
         dispute_status,
+        published_at,
         disputes_lock.len()
     );
 }
@@ -136,7 +140,7 @@ pub fn start_fetch_scheduler(
     pool: SqlitePool,
 ) -> FetchSchedulerResult {
     let orders: Arc<Mutex<Vec<SmallOrder>>> = Arc::new(Mutex::new(Vec::new()));
-    let disputes: Arc<Mutex<Vec<Dispute>>> = Arc::new(Mutex::new(Vec::new()));
+    let disputes: Arc<Mutex<Vec<DisputeRevision>>> = Arc::new(Mutex::new(Vec::new()));
 
     let (order_task, dispute_task) = spawn_fetch_scheduler_loops(
         client,
@@ -163,7 +167,7 @@ pub fn spawn_fetch_scheduler_loops(
     client: Client,
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,
     orders: Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: Arc<Mutex<Vec<Dispute>>>,
+    disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     settings: &Settings,
     pool: SqlitePool,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
@@ -410,8 +414,8 @@ pub fn spawn_fetch_scheduler_loops(
                             "[disputes_live] received dispute event, parsed_candidates={}",
                             parsed.len()
                         );
-                        if let Some(dispute) = parsed.pop() {
-                            apply_live_dispute_update(&disputes_clone, dispute);
+                        if let Some(revision) = parsed.pop() {
+                            apply_live_dispute_update(&disputes_clone, revision);
                         }
                     }
                 }
@@ -421,4 +425,43 @@ pub fn spawn_fetch_scheduler_loops(
     });
 
     (order_task, dispute_task)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_live_dispute_update;
+    use crate::util::order_utils::DisputeRevision;
+    use mostro_core::prelude::Dispute;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    fn revision(status: &str, open_at: i64, published_at: i64) -> DisputeRevision {
+        let mut dispute = Dispute::new(Uuid::from_bytes([0xab; 16]), "active".to_string());
+        dispute.id = Uuid::from_bytes([0xab; 16]);
+        dispute.status = status.to_string();
+        dispute.created_at = open_at;
+        DisputeRevision::new(dispute, published_at)
+    }
+
+    #[test]
+    fn live_update_replaces_only_when_published_at_is_newer() {
+        let open = 1_700_000_100;
+        let store = Arc::new(Mutex::new(vec![revision("initiated", open, 1_800_000_000)]));
+
+        apply_live_dispute_update(&store, revision("in-progress", open, 1_800_000_050));
+        {
+            let lock = store.lock().unwrap();
+            assert_eq!(lock.len(), 1);
+            assert_eq!(lock[0].dispute.status, "in-progress");
+            assert_eq!(lock[0].published_at, 1_800_000_050);
+            assert_eq!(lock[0].dispute.created_at, open);
+        }
+
+        // Older or equal publish stamp must not overwrite the stored revision.
+        apply_live_dispute_update(&store, revision("initiated", open, 1_800_000_050));
+        apply_live_dispute_update(&store, revision("initiated", open, 1_800_000_001));
+        let lock = store.lock().unwrap();
+        assert_eq!(lock[0].dispute.status, "in-progress");
+        assert_eq!(lock[0].published_at, 1_800_000_050);
+    }
 }

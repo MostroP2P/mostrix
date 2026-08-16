@@ -18,7 +18,7 @@ use crate::util::{
     set_dm_router_cmd_tx, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
     OrderDmSubscriptionCmd, StartupDmHydration,
 };
-use mostro_core::prelude::{Dispute, SmallOrder, Transport};
+use mostro_core::prelude::{SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, PublicKey, SignerAuthenticator};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -31,6 +31,8 @@ use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
+use crate::util::order_utils::DisputeRevision;
+
 pub struct RuntimeReconnectContext<'a> {
     pub app: &'a mut AppState,
     pub client: &'a mut Client,
@@ -41,7 +43,7 @@ pub struct RuntimeReconnectContext<'a> {
     pub message_listener_handle: &'a mut JoinHandle<()>,
     pub message_notification_tx: &'a UnboundedSender<MessageNotification>,
     pub orders: Arc<Mutex<Vec<SmallOrder>>>,
-    pub disputes: Arc<Mutex<Vec<Dispute>>>,
+    pub disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     pub order_fetch_task: &'a mut JoinHandle<()>,
     pub dispute_fetch_task: &'a mut JoinHandle<()>,
     pub dm_subscription_tx: &'a mut UnboundedSender<OrderDmSubscriptionCmd>,
@@ -245,7 +247,7 @@ pub async fn apply_pending_key_reload(
     message_listener_handle: &mut JoinHandle<()>,
     message_notification_tx: &UnboundedSender<MessageNotification>,
     orders: Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: Arc<Mutex<Vec<Dispute>>>,
+    disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     order_fetch_task: &mut JoinHandle<()>,
     dispute_fetch_task: &mut JoinHandle<()>,
     dm_subscription_tx: &mut UnboundedSender<OrderDmSubscriptionCmd>,
@@ -418,7 +420,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
     pool: &SqlitePool,
     orders: Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: Arc<Mutex<Vec<Dispute>>>,
+    disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     order_fetch_task: &mut JoinHandle<()>,
     dispute_fetch_task: &mut JoinHandle<()>,
     message_listener_handle: &mut JoinHandle<()>,
@@ -571,7 +573,7 @@ pub async fn apply_pending_runtime_reloads(
     message_listener_handle: &mut JoinHandle<()>,
     message_notification_tx: &UnboundedSender<MessageNotification>,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<Dispute>>>,
+    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
     order_fetch_task: &mut JoinHandle<()>,
     dispute_fetch_task: &mut JoinHandle<()>,
     dm_subscription_tx: &mut UnboundedSender<OrderDmSubscriptionCmd>,

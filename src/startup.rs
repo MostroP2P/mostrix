@@ -32,7 +32,7 @@ use crate::util::{
     listen_for_order_messages,
     order_utils::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
-        start_fetch_scheduler, FetchSchedulerResult,
+        start_fetch_scheduler, DisputeRevision, FetchSchedulerResult,
     },
     StartupDmHydration,
 };
@@ -63,7 +63,7 @@ pub struct StartupBootstrap {
     pub mostro_pubkey: PublicKey,
     pub current_mostro_pubkey: Arc<Mutex<PublicKey>>,
     pub orders: Arc<Mutex<Vec<SmallOrder>>>,
-    pub disputes: Arc<Mutex<Vec<Dispute>>>,
+    pub disputes: Arc<Mutex<Vec<DisputeRevision>>>,
     pub order_task: JoinHandle<()>,
     pub dispute_task: JoinHandle<()>,
     pub app: AppState,

@@ -30,6 +30,7 @@ use crate::ui::{
     OperationResult, Tab, TakeOrderState, UiMode, UserChatChannel, UserMode, UserTab,
     ViewingMessageButtonSelection,
 };
+use crate::util::order_utils::DisputeRevision;
 use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
@@ -42,7 +43,7 @@ use zeroize::Zeroizing;
 /// Context passed to Enter and confirmation handlers to avoid too many arguments.
 pub struct EnterKeyContext<'a> {
     pub orders: &'a Arc<Mutex<Vec<SmallOrder>>>,
-    pub disputes: &'a Arc<Mutex<Vec<Dispute>>>,
+    pub disputes: &'a Arc<Mutex<Vec<DisputeRevision>>>,
     pub pool: &'a SqlitePool,
     pub client: &'a Client,
     /// Settings snapshot; prefer locking `current_mostro_pubkey` for the live instance key.
@@ -473,7 +474,7 @@ pub fn handle_key_event(
     key_event: KeyEvent,
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<Dispute>>>,
+    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,

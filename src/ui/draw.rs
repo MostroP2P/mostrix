@@ -11,6 +11,7 @@ use crate::shared::permissions::SolverPermission;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
 use crate::util::fatal::request_fatal_restart;
+use crate::util::order_utils::DisputeRevision;
 
 /// Preferred content height so bordered tab panels can still show one data row
 /// (top border + row + bottom border) after the panel drops its own header.
@@ -57,7 +58,7 @@ pub fn ui_draw(
     f: &mut ratatui::Frame,
     app: &mut AppState,
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
-    disputes: &Arc<Mutex<Vec<mostro_core::prelude::Dispute>>>,
+    disputes: &Arc<Mutex<Vec<DisputeRevision>>>,
     status_line: Option<&[String]>,
 ) {
     let (tab_h, status_h) = shell_chrome_heights(f.area().height, status_line.is_some());
@@ -648,6 +649,7 @@ fn render_add_solver_popup(f: &mut ratatui::Frame, add_solver_state: &AddSolverS
 mod tests {
     use super::{shell_chrome_heights, ui_draw, FULL_STATUS_BAR_HEIGHT, FULL_TAB_BAR_HEIGHT};
     use crate::ui::{AppState, UserRole};
+    use crate::util::order_utils::DisputeRevision;
     use mostro_core::prelude::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -665,10 +667,10 @@ mod tests {
         flat.contains(needle)
     }
 
-    fn initiated_dispute(nibble: u8) -> Dispute {
+    fn initiated_dispute(nibble: u8) -> DisputeRevision {
         let mut dispute = Dispute::new(Uuid::new_v4(), "active".to_string());
         dispute.id = Uuid::from_bytes([nibble * 0x11; 16]);
-        dispute
+        DisputeRevision::new(dispute, i64::from(nibble))
     }
 
     #[test]
@@ -698,10 +700,10 @@ mod tests {
     fn ui_draw_keeps_pending_dispute_visible_on_8_row_terminal() {
         let dispute = initiated_dispute(1);
         assert!(
-            dispute.id.to_string().starts_with("11111111"),
+            dispute.dispute.id.to_string().starts_with("11111111"),
             "fixture must use the 11111111- id prefix"
         );
-        let dispute_id = dispute.id;
+        let dispute_id = dispute.dispute.id;
         let disputes = Arc::new(Mutex::new(vec![dispute]));
         let orders = Arc::new(Mutex::new(Vec::new()));
         let mut app = AppState::new(UserRole::Admin);
