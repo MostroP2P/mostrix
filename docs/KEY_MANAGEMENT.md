@@ -132,5 +132,6 @@ Each order entry also stores the specific `trade_keys` (or the index) used, allo
 Mostrix avoids storing full message histories locally. Instead, it uses the deterministic nature of the keys:
 1. On startup, the client retrieves all active order IDs and their associated `trade_index` from the database.
 2. It re-derives the corresponding `Trade Keys`.
-3. It queries Nostr relays for recent `GiftWrap` events (NIP-59) directed to those specific trade public keys.
-4. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.
+3. It queries Nostr relays for recent **protocol DM** events directed to those trade public keys — GiftWrap (kind 1059) or signed kind 14, depending on the Mostro instance `protocol_version` / [`Transport`](../src/util/mod.rs).
+4. Separately, **P2P / dispute chat** is hydrated by the shared-key chat router (kind 14 `authors = [pub(K_sign)]`, plus legacy GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
+5. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.

@@ -1,4 +1,4 @@
-//! Send encrypted order-chat attachments (encrypt → Blossom → shared-key GiftWrap).
+//! Send encrypted order-chat attachments (encrypt → Blossom → kind-14 chat DM).
 
 use std::path::{Path, PathBuf};
 

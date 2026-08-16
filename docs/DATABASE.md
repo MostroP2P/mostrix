@@ -58,8 +58,8 @@ Recent migrations for the `admin_disputes` table add the following fields:
 - **`initiator_info` / `counterpart_info`**: JSON-encoded user info for each party.
 - **`fiat_code`**: Fiat currency code for the disputed order.
 - **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
-- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental NIP‑59 fetches and chat restore at startup.
-- **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded per‑dispute shared keys derived between the admin key and each party’s trade pubkey, used as the identity for the shared‑keys admin chat system.
+- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 (and dual-read GiftWrap) hydrate and chat restore at startup.
+- **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded ECDH IKM between the admin key and each party’s trade pubkey. Runtime chat derives `K_conv` / `K_sign` from this secret (kind-14 wrap/unwrap).
 
 **Source**: `src/db.rs:113`
 
@@ -215,14 +215,14 @@ CREATE TABLE IF NOT EXISTS orders (
 | `premium` | `INTEGER` | Premium amount in satoshis. |
 | `trade_keys` | `TEXT` | **Critical**: The trade keys (secret key in hex) for this order. Used to decrypt messages and sign actions for this specific trade. |
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
-| `order_chat_shared_key_hex` | `TEXT` | Hex-encoded shared key used for user order chat cache/restore flow and attachment decryption when no inline key is present in the attachment JSON. |
+| `order_chat_shared_key_hex` | `TEXT` | Hex-encoded ECDH IKM for user order chat. Used to derive `K_conv` / `K_sign` at runtime and for attachment decryption when no inline key is present in the attachment JSON. |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
 | `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |
 | `created_at` | `INTEGER` | Unix timestamp when the order was created. |
 | `expires_at` | `INTEGER` | Unix timestamp when the order expires (if applicable). |
-| `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade GiftWrap for this order. Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
+| `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade protocol DM for this order (GiftWrap or kind 14 per transport). Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
 
 #### Purpose
 
@@ -315,10 +315,10 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 | `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created (if available). |
 | `taken_at` | `INTEGER` | Unix timestamp when the admin took the dispute. |
 | `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
-| `buyer_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the buyer side (used for incremental fetch and restore). |
-| `seller_chat_last_seen` | `INTEGER` | Last processed NIP‑59 chat timestamp for the seller side (used for incremental fetch and restore). |
-| `buyer_shared_key_hex` | `TEXT` | Hex‑encoded shared key (secret) derived via ECDH between the admin key and the buyer’s trade pubkey; used as the identity for buyer‑side admin chat. |
-| `seller_shared_key_hex` | `TEXT` | Hex‑encoded shared key (secret) derived via ECDH between the admin key and the seller’s trade pubkey; used as the identity for seller‑side admin chat. |
+| `buyer_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the buyer side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
+| `seller_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the seller side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
+| `buyer_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the buyer’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
+| `seller_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the seller’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
 
 #### Purpose
 
@@ -328,7 +328,7 @@ The `admin_disputes` table is essential for:
 - **State Persistence**: Allows the admin to see active disputes across application restarts.
 - **Resolution Context**: Stores all necessary information for resolving disputes (parties, amounts, invoices, etc.).
 - **Privacy Mode Tracking**: Records which parties are using full privacy mode, which affects communication methods.
-- **Chat Restore Cursors**: `buyer_chat_last_seen` and `seller_chat_last_seen` persist the last processed NIP‑59 timestamps so that admin chat can resume incrementally after restart without replaying the full history.
+- **Chat Restore Cursors**: `buyer_chat_last_seen` and `seller_chat_last_seen` persist the last processed chat timestamps so that admin chat can resume incrementally after restart without replaying the full history.
 
 #### Data Persistence
 

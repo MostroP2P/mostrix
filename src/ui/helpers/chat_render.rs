@@ -188,7 +188,7 @@ pub fn build_observer_scrollview_content(
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No messages yet. Paste a shared key and press Enter to load.",
+            "No messages yet. Paste K_conv and press Enter to load.",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -199,5 +199,33 @@ pub fn build_observer_scrollview_content(
         content_height,
         content_width,
         line_start_per_message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_observer_scrollview_content;
+
+    #[test]
+    fn observer_empty_hint_asks_for_k_conv_not_ecdh_shared_key() {
+        let content = build_observer_scrollview_content(&[], 40, Some(20));
+        let flat: String = content
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(
+            flat.contains("K_conv"),
+            "empty Observer hint must mention K_conv: {flat}"
+        );
+        assert!(
+            !flat.to_lowercase().contains("shared key"),
+            "empty Observer hint must not say shared key: {flat}"
+        );
     }
 }

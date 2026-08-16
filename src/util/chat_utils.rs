@@ -376,9 +376,10 @@ async fn unwrap_chat_envelope(
 
 /// Fetch recent chat events for a shared ECDH key and return decoded messages.
 ///
-/// Subscribes by `authors = [pub(K_sign)]` (kind 14). While
-/// [`CHAT_ACCEPT_LEGACY_GIFTWRAP`] is true, also tries the legacy gift-wrap `#p`
-/// filter. Inner events whose signer is not in `allowed_signers` are dropped.
+/// Prefer [`fetch_chat_messages_for_shared_key`]. This name is kept as a
+/// thin alias for older call sites; the hydrate path is kind 14 by
+/// `authors = [pub(K_sign)]`, plus legacy GiftWrap `#p` only while
+/// [`CHAT_ACCEPT_LEGACY_GIFTWRAP`] is true.
 pub async fn fetch_gift_wraps_for_shared_key(
     client: &Client,
     shared_keys: &Keys,
