@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# CI only reads the repo; no job needs write access to anything.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -70,8 +74,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
+      # Pinned to the rust-toolchain.toml channel on purpose: that file overrides
+      # `rustup default`, so a target installed into `stable` would be invisible to
+      # the toolchain cargo actually resolves (E0463: can't find crate for `core`).
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.97.0
           targets: x86_64-apple-darwin
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

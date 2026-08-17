@@ -5,6 +5,10 @@ on:
     tags: ['v*.*.*']          # run only when a tag like v1.2.3 is pushed
   workflow_dispatch:
 
+# Default to read-only; the `release` job opts into `contents: write` to publish.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
