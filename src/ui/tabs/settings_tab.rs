@@ -87,6 +87,9 @@ pub fn settings_action_for_index(user_role: UserRole, idx: usize) -> Option<Sett
     settings_rows(user_role).get(idx).map(|(action, _)| *action)
 }
 
+/// Package version from `Cargo.toml` (`CARGO_PKG_VERSION`).
+pub const MOSTRIX_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Render the Settings tab UI
 ///
 /// Displays settings options based on user role (User or Admin).
@@ -108,17 +111,34 @@ pub fn render_settings_tab(
     let inner_area = block.inner(area);
     f.render_widget(block, area);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // mode section
-            Constraint::Length(1), // spacer
-            Constraint::Min(0),    // list area
-            Constraint::Length(1), // footer
-        ],
-    )
-    .split(inner_area);
+    // On short terminals, keep mode + list + nav; drop the version row first.
+    let show_version = inner_area.height >= 8;
+    let chunks = if show_version {
+        Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // mode
+                Constraint::Length(1), // version
+                Constraint::Length(1), // spacer
+                Constraint::Min(0),    // list area
+                Constraint::Length(1), // footer
+            ],
+        )
+        .split(inner_area)
+    } else {
+        Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // mode
+                Constraint::Length(1), // spacer
+                Constraint::Min(0),    // list area
+                Constraint::Length(1), // footer
+            ],
+        )
+        .split(inner_area)
+    };
 
     // Current mode display
     f.render_widget(
@@ -137,6 +157,30 @@ pub fn render_settings_tab(
         .alignment(ratatui::layout::Alignment::Center),
         chunks[1],
     );
+
+    let (list_chunk, footer_chunk) = if show_version {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "Mostrix ",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Span::styled(
+                    format!("v{MOSTRIX_VERSION}"),
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[2],
+        );
+        (chunks[4], chunks[5])
+    } else {
+        (chunks[3], chunks[4])
+    };
 
     let rows = settings_rows(user_role);
     let list_items: Vec<ListItem> = rows
@@ -157,7 +201,7 @@ pub fn render_settings_tab(
     // Determine the list width based on terminal width to keep it readable
     let list_width = if inner_area.width > 60 {
         // center the list for wide terminals
-        let chunks = Layout::new(
+        let centered = Layout::new(
             Direction::Horizontal,
             [
                 Constraint::Fill(1),
@@ -166,11 +210,11 @@ pub fn render_settings_tab(
             ],
         )
         .flex(Flex::Center)
-        .split(chunks[3]);
-        chunks[1]
+        .split(list_chunk);
+        centered[1]
     } else {
         // use full width on narrow terminals
-        chunks[3]
+        list_chunk
     };
 
     let list = List::new(list_items)
@@ -199,13 +243,26 @@ pub fn render_settings_tab(
             Span::styled(" all options", Style::default().fg(Color::White)),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[4],
+        footer_chunk,
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
 
     #[test]
     fn admin_settings_omit_generate_new_keys() {
@@ -229,5 +286,36 @@ mod tests {
             settings_action_for_index(UserRole::User, USER_SETTINGS_OPTIONS_COUNT - 1),
             Some(SettingsMenuAction::GenerateNewKeys)
         );
+    }
+
+    #[test]
+    fn render_shows_mostrix_version_on_tall_terminal() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_settings_tab(f, f.area(), UserRole::User, 0);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Mostrix"));
+        assert!(buffer_contains(buf, &format!("v{MOSTRIX_VERSION}")));
+        assert!(buffer_contains(buf, "Current Mode"));
+        assert!(buffer_contains(buf, "navigate"));
+    }
+
+    #[test]
+    fn render_hides_version_on_short_terminal() {
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_settings_tab(f, f.area(), UserRole::User, 0);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // Outer frame is 6 rows; after borders inner height is 4 (< 8), so version is omitted.
+        assert!(!buffer_contains(buf, "Mostrix"));
+        assert!(buffer_contains(buf, "Current Mode"));
     }
 }
