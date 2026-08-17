@@ -2,6 +2,8 @@
 # https://github.com/cross-rs/cross/wiki/Configuration
 #
 # No custom image overrides: mostrix uses rustls (sqlx + reqwest), so we do not
-# need OpenSSL. The default cross base images are sufficient for the non-Windows
-# targets in archs (Linux musl, FreeBSD). Windows releases use
-# x86_64-pc-windows-msvc on windows-latest (see .github/workflows/release.yml).
+# need OpenSSL. The default cross base images are sufficient for the cross-built
+# targets in archs (Linux musl, FreeBSD). Windows and macOS releases are built
+# natively instead: x86_64-pc-windows-msvc on windows-latest, and
+# {aarch64,x86_64}-apple-darwin on macos-latest, because the Apple SDK cannot be
+# redistributed in a cross image (see .github/workflows/release.yml).

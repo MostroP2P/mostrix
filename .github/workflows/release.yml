@@ -63,7 +63,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Windows MSVC must build on windows-latest (native); other targets use cross on Ubuntu.
+          # Windows MSVC must build on windows-latest (native); Apple targets must build on
+          # macos-latest (the Apple SDK cannot be redistributed in a cross image, and it ships
+          # both arm64 and x86_64 slices, so one runner covers both Darwin triples).
+          # Everything else uses cross on Ubuntu.
           # windows-gnu via cross is avoided: MinGW ld in the cross image rejects LLVM
           # -exclude-symbols .drectve directives from modern Rust (link failure).
           targets=$(
@@ -76,6 +79,9 @@ jobs:
                   echo "Unsupported Windows target in archs (use x86_64-pc-windows-msvc): $t" >&2
                   exit 1
                   ;;
+                *-apple-darwin)
+                  jq -nc --arg t "$t" '{target:$t,os:"macos-latest",use_cross:false}'
+                  ;;
                 *)
                   jq -nc --arg t "$t" '{target:$t,os:"ubuntu-latest",use_cross:true}'
                   ;;
@@ -84,7 +90,7 @@ jobs:
           )
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
-  # Build binaries for all targets (cross on Linux, native cargo on Windows MSVC)
+  # Build binaries for all targets (cross on Linux, native cargo on Windows MSVC and macOS)
   build:
     needs: matrix
     strategy:
