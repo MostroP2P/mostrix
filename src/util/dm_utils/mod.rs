@@ -1027,10 +1027,7 @@ async fn handle_trade_dm_for_order(
     };
 
     if let Some(candidate) = status_candidate {
-        let oid = small_order_ref_from_payload(&inner_kind.payload)
-            .and_then(|o| o.id)
-            .or(inner_kind.id)
-            .unwrap_or(order_id);
+        let oid = order_id;
         if should_accept_candidate {
             if baseline_status != Some(candidate) {
                 if let Err(e) = update_order_status(pool, &oid.to_string(), candidate).await {
@@ -2132,6 +2129,87 @@ mod tests {
         );
         assert_eq!(*pending_notifications.lock().expect("pending lock"), 1);
         assert!(notification_rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn payload_id_mismatch_cannot_redirect_status_update() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium, is_mine) VALUES (?, 'buy', 'active', 1000, 'USD', 10, 'bank', 0, 1)",
+        )
+        .bind(id_a.to_string())
+        .execute(&pool)
+        .await
+        .expect("order a");
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium, is_mine) VALUES (?, 'buy', 'active', 1000, 'USD', 10, 'bank', 0, 1)",
+        )
+        .bind(id_b.to_string())
+        .execute(&pool)
+        .await
+        .expect("order b");
+
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let pending_notifications = Arc::new(Mutex::new(0));
+        let (notification_tx, _notification_rx) = tokio::sync::mpsc::unbounded_channel();
+        let trade_keys = Keys::generate();
+        let message = Message::new_order(
+            Some(id_a),
+            None,
+            Some(8),
+            Action::Released,
+            Some(Payload::Order(SmallOrder {
+                id: Some(id_b),
+                status: Some(Status::Success),
+                ..Default::default()
+            })),
+        );
+
+        handle_trade_dm_for_order(
+            &messages,
+            &pending_notifications,
+            &notification_tx,
+            id_a,
+            8,
+            message,
+            100,
+            Keys::generate().public_key(),
+            &pool,
+            &trade_keys,
+            true,
+        )
+        .await;
+
+        let row_a = Order::get_by_id(&pool, &id_a.to_string())
+            .await
+            .expect("order a present");
+        let row_b = Order::get_by_id(&pool, &id_b.to_string())
+            .await
+            .expect("order b present");
+        assert_eq!(row_a.status.as_deref(), Some("success"));
+        assert_eq!(row_b.status.as_deref(), Some("active"));
     }
 
     #[test]
