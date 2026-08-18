@@ -13,6 +13,162 @@ use crate::ui::PRIMARY_COLOR;
 
 pub use crate::ui::constants::StepLabel;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookKindFilter {
+    #[default]
+    Any,
+    Buy,
+    Sell,
+}
+
+impl OrderBookKindFilter {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Any => "Any",
+            Self::Buy => "Buy",
+            Self::Sell => "Sell",
+        }
+    }
+
+    pub fn cycle(&mut self) {
+        *self = match self {
+            Self::Any => Self::Buy,
+            Self::Buy => Self::Sell,
+            Self::Sell => Self::Any,
+        };
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookFilterField {
+    #[default]
+    Kind,
+    FiatCurrency,
+    FiatAmountMin,
+    FiatAmountMax,
+    PremiumMin,
+    PremiumMax,
+    PaymentMethod,
+    CreatedWithinDays,
+}
+
+impl OrderBookFilterField {
+    pub const ALL: [Self; 8] = [
+        Self::Kind,
+        Self::FiatCurrency,
+        Self::FiatAmountMin,
+        Self::FiatAmountMax,
+        Self::PremiumMin,
+        Self::PremiumMax,
+        Self::PaymentMethod,
+        Self::CreatedWithinDays,
+    ];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Kind => "Buy/Sell",
+            Self::FiatCurrency => "Fiat currency",
+            Self::FiatAmountMin => "Fiat amount min",
+            Self::FiatAmountMax => "Fiat amount max",
+            Self::PremiumMin => "Premium min %",
+            Self::PremiumMax => "Premium max %",
+            Self::PaymentMethod => "Payment method",
+            Self::CreatedWithinDays => "Created within days",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    #[must_use]
+    pub fn prev(self) -> Self {
+        let idx = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OrderBookFilters {
+    pub kind: OrderBookKindFilter,
+    pub fiat_code: String,
+    pub fiat_amount_min: String,
+    pub fiat_amount_max: String,
+    pub premium_min: String,
+    pub premium_max: String,
+    pub payment_method: String,
+    pub created_within_days: String,
+}
+
+impl OrderBookFilters {
+    #[must_use]
+    pub fn has_active_filters(&self) -> bool {
+        self.kind != OrderBookKindFilter::Any
+            || !self.fiat_code.trim().is_empty()
+            || !self.fiat_amount_min.trim().is_empty()
+            || !self.fiat_amount_max.trim().is_empty()
+            || !self.premium_min.trim().is_empty()
+            || !self.premium_max.trim().is_empty()
+            || !self.payment_method.trim().is_empty()
+            || !self.created_within_days.trim().is_empty()
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.kind != OrderBookKindFilter::Any {
+            parts.push(format!("kind={}", self.kind.label()));
+        }
+        if !self.fiat_code.trim().is_empty() {
+            parts.push(format!("fiat={}", self.fiat_code.trim().to_uppercase()));
+        }
+        if !self.fiat_amount_min.trim().is_empty() || !self.fiat_amount_max.trim().is_empty() {
+            parts.push(format!(
+                "fiat amount={}..{}",
+                empty_as_any(&self.fiat_amount_min),
+                empty_as_any(&self.fiat_amount_max)
+            ));
+        }
+        if !self.premium_min.trim().is_empty() || !self.premium_max.trim().is_empty() {
+            parts.push(format!(
+                "premium={}..{}%",
+                empty_as_any(&self.premium_min),
+                empty_as_any(&self.premium_max)
+            ));
+        }
+        if !self.payment_method.trim().is_empty() {
+            parts.push(format!("payment~{}", self.payment_method.trim()));
+        }
+        if !self.created_within_days.trim().is_empty() {
+            parts.push(format!("created<={}d", self.created_within_days.trim()));
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(" | ")
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OrderBookFilterState {
+    pub filters: OrderBookFilters,
+    pub focused: OrderBookFilterField,
+}
+
+fn empty_as_any(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "*"
+    } else {
+        trimmed
+    }
+}
+
 /// Stable My Trades header fields for one trade (maker publish or taker take). Not updated by later DMs.
 #[derive(Clone, Debug)]
 pub struct OrderChatStaticHeader {
