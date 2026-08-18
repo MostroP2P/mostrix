@@ -562,6 +562,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = *previous_mode;
             true
         }
+        UiMode::OrderFilters(state) => {
+            app.mode = UiMode::OrderFilters(state);
+            true
+        }
         UiMode::SaveAttachmentPopup(_) => {
             // Up/Down/Enter/Esc handled in key_handler/mod.rs
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
