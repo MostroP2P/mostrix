@@ -104,7 +104,15 @@ pub fn get_filtered_disputes(app: &AppState) -> Vec<(usize, AdminDispute)> {
                 .as_deref()
                 .and_then(|s| DisputeStatus::from_str(s).ok());
             match app.dispute_filter {
-                DisputeFilter::InProgress => status == Some(DisputeStatus::InProgress),
+                DisputeFilter::InProgress => {
+                    // Keep the highlighted dispute visible after auto-close so the
+                    // header can show the new status without the row vanishing.
+                    status == Some(DisputeStatus::InProgress)
+                        || app
+                            .selected_dispute_id
+                            .as_deref()
+                            .is_some_and(|id| d.dispute_id == id)
+                }
                 DisputeFilter::Finalized => matches!(
                     status,
                     Some(DisputeStatus::Settled)
@@ -156,6 +164,23 @@ pub fn move_dispute_selection(app: &mut AppState, delta: isize) {
         .saturating_add_signed(delta)
         .min(filtered.len().saturating_sub(1));
     app.selected_dispute_id = Some(filtered[new_idx].1.dispute_id.clone());
+}
+
+/// Persist the sidebar selection when that dispute just became terminal.
+///
+/// `displayed_before` is the dispute id shown before the status copy, including
+/// the first-row fallback when `selected_dispute_id` is unset.
+pub fn retain_closed_displayed_dispute(
+    app: &mut AppState,
+    displayed_before: Option<&str>,
+    closed_dispute_ids: &[String],
+) {
+    let Some(displayed_id) = displayed_before else {
+        return;
+    };
+    if closed_dispute_ids.iter().any(|id| id == displayed_id) {
+        app.selected_dispute_id = Some(displayed_id.to_string());
+    }
 }
 
 #[cfg(test)]
@@ -224,11 +249,10 @@ mod tests {
         assert_eq!(selected.dispute_id, "in-progress-d");
     }
 
-    /// When the selected dispute stops being visible under the current filter
-    /// (e.g. it was just finalized), resolution falls back to the first
-    /// visible row instead of a hidden one.
+    /// When the selected dispute is auto-closed (e.g. cooperative cancel), it
+    /// stays in the In Progress sidebar so the header can show the new status.
     #[test]
-    fn hidden_selection_falls_back_to_first_visible() {
+    fn selected_finalized_row_stays_visible_in_in_progress_filter() {
         let mut app = admin_app(vec![
             dispute("in-progress-c", "in-progress"),
             dispute("in-progress-d", "in-progress"),
@@ -238,9 +262,56 @@ mod tests {
         app.admin_disputes_in_progress[0] = dispute("in-progress-c", "seller-refunded");
 
         let filtered = get_filtered_disputes(&app);
-        assert_eq!(selected_display_idx(&app, &filtered), Some(0));
-        let selected = selected_filtered_dispute(&app).expect("fallback resolves");
-        assert_eq!(selected.dispute_id, "in-progress-d");
+        let ids: Vec<&str> = filtered
+            .iter()
+            .map(|(_, d)| d.dispute_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["in-progress-c", "in-progress-d"]);
+        let selected = selected_filtered_dispute(&app).expect("selection stays");
+        assert_eq!(selected.dispute_id, "in-progress-c");
+        assert_eq!(selected.status.as_deref(), Some("seller-refunded"));
+    }
+
+    #[test]
+    fn navigating_away_hides_unselected_finalized_row() {
+        let mut app = admin_app(vec![
+            dispute("in-progress-c", "seller-refunded"),
+            dispute("in-progress-d", "in-progress"),
+        ]);
+        app.selected_dispute_id = Some("in-progress-c".to_string());
+        assert_eq!(get_filtered_disputes(&app).len(), 2);
+
+        move_dispute_selection(&mut app, 1);
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("in-progress-d"));
+        let filtered = get_filtered_disputes(&app);
+        let ids: Vec<&str> = filtered
+            .iter()
+            .map(|(_, d)| d.dispute_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["in-progress-d"]);
+    }
+
+    #[test]
+    fn retain_closed_pins_fallback_displayed_row() {
+        let mut app = admin_app(vec![
+            dispute("in-progress-c", "in-progress"),
+            dispute("in-progress-d", "in-progress"),
+        ]);
+        let displayed = selected_filtered_dispute(&app)
+            .expect("fallback selection")
+            .dispute_id;
+        assert_eq!(displayed, "in-progress-c");
+
+        app.admin_disputes_in_progress[0] = dispute("in-progress-c", "seller-refunded");
+        retain_closed_displayed_dispute(
+            &mut app,
+            Some(displayed.as_str()),
+            std::slice::from_ref(&displayed),
+        );
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("in-progress-c"));
+        let selected = selected_filtered_dispute(&app).expect("pinned selection");
+        assert_eq!(selected.dispute_id, "in-progress-c");
+        assert_eq!(selected.status.as_deref(), Some("seller-refunded"));
     }
 
     /// The Finalized filter shows only settled/refunded/released disputes and

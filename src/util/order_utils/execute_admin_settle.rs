@@ -7,7 +7,9 @@ use uuid::Uuid;
 use super::BondSlashChoice;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::helper::handle_mostro_response;
+use crate::util::order_utils::helper::{
+    admin_finalize_ack, handle_mostro_response, AdminFinalizeAck,
+};
 
 /// Settle a dispute in favor of the buyer (AdminSettle action).
 /// This pays the full escrow amount to the buyer.
@@ -28,8 +30,9 @@ use crate::util::order_utils::helper::handle_mostro_response;
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if Mostro confirms with `AdminSettled`, or an error
-/// if the operation failed (including `CantDo` from the daemon).
+/// Returns `Ok(AdminFinalizeAck::Confirmed)` if Mostro confirms with `AdminSettled`,
+/// `Ok(AdminFinalizeAck::AlreadyCooperativelyCanceled)` if the order was already
+/// cooperatively canceled, or an error if the operation failed (including `CantDo`).
 ///
 /// # Errors
 ///
@@ -47,7 +50,7 @@ pub async fn execute_admin_settle(
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<()> {
+) -> Result<AdminFinalizeAck> {
     let request_id = Uuid::new_v4().as_u128() as u64;
     let payload = bond.to_optional_payload();
     let settle_message = Message::new_dispute(
@@ -80,19 +83,14 @@ pub async fn execute_admin_settle(
     }
 
     let inner_message = handle_mostro_response(response_message, request_id)?;
-    if inner_message.action != Action::AdminSettled {
-        return Err(anyhow::anyhow!(
-            "Unexpected action in response: {:?}",
-            inner_message.action
-        ));
-    }
+    let ack = admin_finalize_ack(inner_message.action.clone(), Action::AdminSettled)?;
 
     log::info!(
         "✅ Admin settle (pay buyer) confirmed for order {} ({})",
         order_id,
         bond.log_context()
     );
-    Ok(())
+    Ok(ack)
 }
 
 #[cfg(test)]

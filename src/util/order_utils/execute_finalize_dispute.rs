@@ -9,6 +9,7 @@ use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::mostro_info::MostroInstanceInfo;
 
 use super::{execute_admin_cancel, execute_admin_settle, BondSlashChoice};
+use crate::util::order_utils::helper::AdminFinalizeAck;
 
 /// Finalize a dispute by either settling (paying buyer) or canceling (refunding seller).
 ///
@@ -32,8 +33,8 @@ use super::{execute_admin_cancel, execute_admin_settle, BondSlashChoice};
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if the finalization message was successfully sent and the database
-/// was updated, or an error if the operation failed.
+/// Returns `Ok(AdminFinalizeAck)` if the message was sent and the database was
+/// updated, or an error if the operation failed.
 ///
 /// # Errors
 ///
@@ -55,7 +56,7 @@ pub async fn execute_finalize_dispute(
     pool: &SqlitePool,
     is_settle: bool,
     mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<()> {
+) -> Result<AdminFinalizeAck> {
     let dispute_id_str = dispute_id.to_string();
     let dispute: AdminDispute = sqlx::query_as::<_, AdminDispute>(
         r#"SELECT * FROM admin_disputes WHERE dispute_id = ? LIMIT 1"#,
@@ -93,7 +94,7 @@ pub async fn execute_finalize_dispute(
 
     let order_id = Uuid::parse_str(&dispute.id)?;
 
-    let result = if is_settle {
+    let ack = if is_settle {
         execute_admin_settle(
             &order_id,
             bond,
@@ -102,7 +103,7 @@ pub async fn execute_finalize_dispute(
             mostro_pubkey,
             mostro_instance,
         )
-        .await
+        .await?
     } else {
         execute_admin_cancel(
             &order_id,
@@ -112,21 +113,22 @@ pub async fn execute_finalize_dispute(
             mostro_pubkey,
             mostro_instance,
         )
-        .await
+        .await?
     };
 
-    result?;
-
-    if is_settle {
-        AdminDispute::set_status_settled(pool, &dispute.id).await?;
-    } else {
+    let cooperatively_canceled = matches!(ack, AdminFinalizeAck::AlreadyCooperativelyCanceled);
+    if cooperatively_canceled || !is_settle {
         AdminDispute::set_status_seller_refunded(pool, &dispute.id).await?;
+    } else {
+        AdminDispute::set_status_settled(pool, &dispute.id).await?;
     }
 
     // Dispute left InProgress: drop buyer/seller shared-key chat subscriptions.
     untrack_dispute_chat_parties(&dispute_id_str);
 
-    let action_name = if is_settle {
+    let action_name = if cooperatively_canceled {
+        "closed (cooperative cancellation accepted)"
+    } else if is_settle {
         "settled (buyer paid)"
     } else {
         "canceled (seller refunded)"
@@ -138,5 +140,5 @@ pub async fn execute_finalize_dispute(
         action_name,
         bond.log_context()
     );
-    Ok(())
+    Ok(ack)
 }

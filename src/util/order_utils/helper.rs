@@ -148,6 +148,29 @@ pub(crate) fn is_terminal_trade_status(status: Status) -> bool {
     )
 }
 
+/// Outcome of an admin settle/cancel request after Mostro replies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminFinalizeAck {
+    /// Mostro confirmed `AdminSettled` or `AdminCanceled`.
+    Confirmed,
+    /// Order was already cooperatively canceled; Mostro replied `CooperativeCancelAccepted`.
+    AlreadyCooperativelyCanceled,
+}
+
+/// Map a settle/cancel DM action to [`AdminFinalizeAck`].
+pub(super) fn admin_finalize_ack(action: Action, expected: Action) -> Result<AdminFinalizeAck> {
+    if action == expected {
+        Ok(AdminFinalizeAck::Confirmed)
+    } else if action == Action::CooperativeCancelAccepted {
+        Ok(AdminFinalizeAck::AlreadyCooperativelyCanceled)
+    } else {
+        Err(anyhow::anyhow!(
+            "Unexpected action in response: {:?}",
+            action
+        ))
+    }
+}
+
 /// Guard status writes against backward transitions from stale/out-of-order DMs.
 ///
 /// Returns `true` when `candidate` is equal/newer than `current` in the actor-aware phase graph.
@@ -532,6 +555,34 @@ pub async fn fetch_small_order_by_id_from_relay(
     Ok(Some(order_from_tags(best.tags.clone())?))
 }
 
+/// Fetch the latest kind-38386 [`Dispute`] for one dispute id (`d` tag).
+///
+/// Uses `limit(10)` and picks the event with the greatest [`Event::created_at`].
+pub async fn fetch_dispute_by_id_from_relay(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    dispute_id: Uuid,
+) -> Result<Option<Dispute>> {
+    let filter = Filter::new()
+        .author(mostro_pubkey)
+        .kind(nostr_sdk::prelude::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND))
+        .identifier(dispute_id.to_string())
+        .limit(10);
+    let events = client
+        .fetch_events(filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch dispute from relay by id: {}", e))?;
+    let Some(best) = events.iter().max_by_key(|e| e.created_at) else {
+        return Ok(None);
+    };
+    let mut dispute = dispute_from_tags(best.tags.clone())?;
+    if dispute.created_at <= 0 {
+        dispute.created_at = best.created_at.as_secs() as i64;
+    }
+    Ok(Some(dispute))
+}
+
 /// Fetch a single order's fiat code from the relay by order id (identifier "d" tag).
 /// Used when the order is not in the local DB (e.g. admin taking a dispute for an order they did not create).
 pub async fn fetch_order_fiat_from_relay(
@@ -733,8 +784,9 @@ pub(super) fn handle_mostro_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        dispute_from_tags, inferred_status_from_trade_action, is_terminal_trade_status,
-        parse_disputes_events, should_apply_status_transition, should_strictly_advance_status,
+        admin_finalize_ack, dispute_from_tags, inferred_status_from_trade_action,
+        is_terminal_trade_status, parse_disputes_events, should_apply_status_transition,
+        should_strictly_advance_status, AdminFinalizeAck,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
     use mostro_core::prelude::{Action, DisputeStatus, Status, NOSTR_DISPUTE_EVENT_KIND};
@@ -946,5 +998,26 @@ mod tests {
             Status::WaitingPayment,
             kind,
         ));
+    }
+
+    #[test]
+    fn admin_finalize_ack_accepts_expected_and_cooperative_cancel() {
+        assert_eq!(
+            admin_finalize_ack(Action::AdminCanceled, Action::AdminCanceled).unwrap(),
+            AdminFinalizeAck::Confirmed
+        );
+        assert_eq!(
+            admin_finalize_ack(Action::AdminSettled, Action::AdminSettled).unwrap(),
+            AdminFinalizeAck::Confirmed
+        );
+        assert_eq!(
+            admin_finalize_ack(Action::CooperativeCancelAccepted, Action::AdminCanceled).unwrap(),
+            AdminFinalizeAck::AlreadyCooperativelyCanceled
+        );
+        assert_eq!(
+            admin_finalize_ack(Action::CooperativeCancelAccepted, Action::AdminSettled).unwrap(),
+            AdminFinalizeAck::AlreadyCooperativelyCanceled
+        );
+        assert!(admin_finalize_ack(Action::Canceled, Action::AdminCanceled).is_err());
     }
 }

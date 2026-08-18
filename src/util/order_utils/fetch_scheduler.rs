@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 use futures::StreamExt;
 use mostro_core::prelude::*;
@@ -14,6 +15,10 @@ use sqlx::SqlitePool;
 use super::get_disputes;
 use super::helper::{
     aggregate_latest_orders_by_id, fetch_mostro_order_events, pending_orders_for_book,
+};
+use super::relay_dispute_db_reconcile::{
+    reconcile_one_admin_dispute_if_terminal, reconcile_terminal_admin_disputes_from_relay,
+    run_targeted_relay_dispute_db_reconcile_tick,
 };
 use super::relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,
@@ -323,6 +328,7 @@ pub fn spawn_fetch_scheduler_loops(
     // Spawn task to periodically fetch disputes
     let disputes_clone = Arc::clone(&disputes);
     let client_for_disputes = client.clone();
+    let pool_for_disputes = pool.clone();
     let current_mostro_pubkey_for_disputes = Arc::clone(&current_mostro_pubkey);
     let dispute_task = tokio::spawn(async move {
         catch_unwind_request_fatal_restart("disputes scheduler", async move {
@@ -358,6 +364,7 @@ pub fn spawn_fetch_scheduler_loops(
                 Instant::now(),
                 Duration::from_secs(RECONCILIATION_INTERVAL_SECS),
             );
+            let targeted_dispute_reconcile_cursor = Arc::new(Mutex::new(0usize));
             loop {
                 tokio::select! {
                     _ = refresh_interval.tick() => {
@@ -374,6 +381,27 @@ pub fn spawn_fetch_scheduler_loops(
                         if let Ok(fetched_disputes) =
                             get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
                         {
+                            reconcile_terminal_admin_disputes_from_relay(
+                                &pool_for_disputes,
+                                &fetched_disputes,
+                            )
+                            .await;
+                            let seen: std::collections::HashSet<Uuid> =
+                                fetched_disputes.iter().map(|d| d.id).collect();
+                            if let Err(e) = run_targeted_relay_dispute_db_reconcile_tick(
+                                &client_for_disputes,
+                                &pool_for_disputes,
+                                mostro_pubkey_for_disputes,
+                                &targeted_dispute_reconcile_cursor,
+                                &seen,
+                            )
+                            .await
+                            {
+                                log::warn!(
+                                    "[disputes_reconcile_targeted] relay DB status reconcile failed: {}",
+                                    e
+                                );
+                            }
                             let mut disputes_lock = match disputes_clone.lock() {
                                 Ok(g) => g,
                                 Err(e) => {
@@ -411,6 +439,11 @@ pub fn spawn_fetch_scheduler_loops(
                             parsed.len()
                         );
                         if let Some(dispute) = parsed.pop() {
+                            reconcile_one_admin_dispute_if_terminal(
+                                &pool_for_disputes,
+                                &dispute,
+                            )
+                            .await;
                             apply_live_dispute_update(&disputes_clone, dispute);
                         }
                     }
