@@ -388,7 +388,6 @@ impl Order {
         existing: Option<&Order>,
         message_request_id: Option<i64>,
     ) -> Order {
-        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
         let (counterparty_pubkey, order_chat_shared_key_hex) =
             match crate::util::chat_utils::order_chat_counterparty_and_shared_hex(
                 trade_keys,
@@ -412,7 +411,9 @@ impl Order {
             fiat_amount: small_order.fiat_amount,
             payment_method: small_order.payment_method.clone(),
             premium: small_order.premium,
-            trade_keys: Some(trade_keys_hex),
+            // Security invariant: trade_keys ownership is bound to the persisted order row.
+            // DM hydration must never rotate/swap it from the decrypting trade context.
+            trade_keys: existing.and_then(|e| e.trade_keys.clone()),
             counterparty_pubkey,
             order_chat_shared_key_hex,
             dispute_id: existing.and_then(|e| e.dispute_id.clone()),
@@ -445,7 +446,16 @@ impl Order {
         trade_keys: &nostr_sdk::prelude::Keys,
         message_request_id: Option<i64>,
     ) -> Result<Self> {
-        let resolved_id = small_order.id.unwrap_or(order_id_fallback);
+        if let Some(payload_id) = small_order.id {
+            if payload_id != order_id_fallback {
+                anyhow::bail!(
+                    "Rejected DM order upsert: payload id {} does not match routed order id {}",
+                    payload_id,
+                    order_id_fallback
+                );
+            }
+        }
+        let resolved_id = order_id_fallback;
         small_order.id = Some(resolved_id);
         let id_str = resolved_id.to_string();
 
@@ -1107,6 +1117,131 @@ mod terminal_dm_status_tests {
         assert_eq!(
             expected, actual,
             "TERMINAL_DM_STATUSES must match mostro_core::order::Status::to_string()"
+        );
+    }
+}
+
+#[cfg(test)]
+mod upsert_from_small_order_dm_tests {
+    use super::Order;
+    use mostro_core::prelude::{Kind, SmallOrder, Status};
+    use nostr_sdk::prelude::Keys;
+    use uuid::Uuid;
+
+    async fn create_test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+        pool
+    }
+
+    fn sample_small_order(id: Uuid, amount: i64) -> SmallOrder {
+        SmallOrder {
+            id: Some(id),
+            kind: Some(Kind::Buy),
+            status: Some(Status::Active),
+            amount,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "bank".to_string(),
+            premium: 0,
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_invoice: None,
+            created_at: None,
+            expires_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_payload_id_mismatch_against_routed_order_id() {
+        let pool = create_test_pool().await;
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let keys_b = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium, trade_keys, is_mine, trade_index) VALUES (?, 'buy', 'active', 1000, 'USD', 10, 'bank', 0, ?, 1, 7)",
+        )
+        .bind(id_b.to_string())
+        .bind(keys_b.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed order b");
+
+        let err = Order::upsert_from_small_order_dm(
+            &pool,
+            id_a,
+            sample_small_order(id_b, 1),
+            &Keys::generate(),
+            Some(1),
+        )
+        .await
+        .expect_err("mismatched id must fail");
+        assert!(err
+            .to_string()
+            .contains("payload id"));
+
+        let untouched = Order::get_by_id(&pool, &id_b.to_string())
+            .await
+            .expect("order b still present");
+        assert_eq!(untouched.amount, 1000);
+        assert_eq!(
+            untouched.trade_keys.as_deref(),
+            Some(keys_b.secret_key().to_secret_hex().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_existing_trade_keys_on_dm_upsert() {
+        let pool = create_test_pool().await;
+        let id = Uuid::new_v4();
+        let stored_keys = Keys::generate();
+        let decrypting_keys = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium, trade_keys, is_mine, trade_index) VALUES (?, 'buy', 'active', 1000, 'USD', 10, 'bank', 0, ?, 1, 3)",
+        )
+        .bind(id.to_string())
+        .bind(stored_keys.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed order");
+
+        Order::upsert_from_small_order_dm(
+            &pool,
+            id,
+            sample_small_order(id, 777),
+            &decrypting_keys,
+            Some(2),
+        )
+        .await
+        .expect("upsert succeeds");
+
+        let updated = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("updated order");
+        assert_eq!(updated.amount, 777);
+        assert_eq!(
+            updated.trade_keys.as_deref(),
+            Some(stored_keys.secret_key().to_secret_hex().as_str())
         );
     }
 }
