@@ -21,6 +21,7 @@ use crate::ui::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
         get_visible_attachment_messages, is_dispute_finalized, selected_filtered_dispute,
     },
+    orders::{OrderBookFilterField, OrderBookFilterState, OrderBookFilters},
     send_attachment_picker::{
         close_user_send_attachment_picker, explorer_selection_is_sendable_file,
         open_user_send_attachment_picker,
@@ -560,6 +561,77 @@ fn update_invoice_notification_action_selection(
     }
 }
 
+fn active_order_filter_input(state: &mut OrderBookFilterState) -> Option<&mut String> {
+    match state.focused {
+        OrderBookFilterField::Kind => None,
+        OrderBookFilterField::FiatCurrency => Some(&mut state.filters.fiat_code),
+        OrderBookFilterField::FiatAmountMin => Some(&mut state.filters.fiat_amount_min),
+        OrderBookFilterField::FiatAmountMax => Some(&mut state.filters.fiat_amount_max),
+        OrderBookFilterField::PremiumMin => Some(&mut state.filters.premium_min),
+        OrderBookFilterField::PremiumMax => Some(&mut state.filters.premium_max),
+        OrderBookFilterField::PaymentMethod => Some(&mut state.filters.payment_method),
+        OrderBookFilterField::CreatedWithinDays => Some(&mut state.filters.created_within_days),
+    }
+}
+
+fn handle_order_filter_popup_key(app: &mut AppState, code: KeyCode, key_event: &KeyEvent) -> bool {
+    let UiMode::OrderFilters(mut state) = app.mode.clone() else {
+        return false;
+    };
+
+    match code {
+        KeyCode::Esc => {
+            app.mode = UiMode::UserMode(UserMode::Normal);
+        }
+        KeyCode::Enter => {
+            app.order_filters = state.filters;
+            app.selected_order_id = None;
+            app.orders_table_state = ratatui::widgets::TableState::default();
+            app.mode = UiMode::UserMode(UserMode::Normal);
+        }
+        KeyCode::Up => {
+            state.focused = state.focused.prev();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.focused = state.focused.next();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::BackTab => {
+            state.focused = state.focused.prev();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::Kind => {
+            state.filters.kind.cycle();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            state.filters = OrderBookFilters::default();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Backspace => {
+            if let Some(input) = active_order_filter_input(&mut state) {
+                input.pop();
+            }
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(c) => {
+            if let Some(input) = active_order_filter_input(&mut state) {
+                if !c.is_control() {
+                    input.push(c);
+                }
+            }
+            app.mode = UiMode::OrderFilters(state);
+        }
+        _ => {
+            app.mode = UiMode::OrderFilters(state);
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Main key event handler - dispatches to appropriate handlers
 pub fn handle_key_event(
@@ -587,6 +659,10 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    if matches!(app.mode, UiMode::OrderFilters(_)) {
+        return Some(handle_order_filter_popup_key(app, code, &key_event));
+    }
 
     // Help popup (Ctrl+H): close on Esc, Enter, or Ctrl+H; restore previous mode so input state is preserved
     if let UiMode::HelpPopup(_, ref previous_mode) = &app.mode {
@@ -1272,6 +1348,40 @@ pub fn handle_key_event(
                         let _ = tx.send(result);
                     });
                     return Some(true);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Tab::User(UserTab::Orders) = app.active_tab {
+        let has_shift = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        if has_shift {
+            match code {
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    if matches!(
+                        app.mode,
+                        UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                    ) {
+                        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+                            filters: app.order_filters.clone(),
+                            focused: OrderBookFilterField::Kind,
+                        });
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    if matches!(
+                        app.mode,
+                        UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                    ) {
+                        app.order_filters = OrderBookFilters::default();
+                        app.selected_order_id = None;
+                        app.orders_table_state = ratatui::widgets::TableState::default();
+                        return Some(true);
+                    }
                 }
                 _ => {}
             }
