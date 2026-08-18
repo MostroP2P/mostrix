@@ -51,7 +51,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                "Paste K_conv and press Enter to load chat",
+                "Paste Shared key and press Enter to load chat",
                 Style::default().fg(Color::Gray),
             ),
         ])
@@ -68,7 +68,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("  –  paste K_conv (read-only). Never paste K_sign."),
+                Span::raw("  –  paste Shared key (read-only). Never paste K_sign."),
             ]),
             status_line,
         ]
@@ -104,7 +104,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         let hint = if app.observer_loading {
             "Fetching messages..."
         } else {
-            "No messages yet. Paste K_conv and press Enter to load."
+            "No messages yet. Paste Shared key and press Enter to load."
         };
         let paragraph = Paragraph::new(Line::from(Span::styled(
             hint,
@@ -152,7 +152,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         f.render_stateful_widget(scroll_view, inner_area, &mut app.observer_scrollview_state);
     }
 
-    // K_conv / optional pub(K_sign) inputs + footer
+    // Shared key / optional pub(K_sign) inputs + footer
     let show_both_fields = !compact;
     let input_chunks = if show_both_fields {
         Layout::new(
@@ -184,7 +184,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     let conv_input = Paragraph::new(app.observer_shared_key_input.as_str()).block(
         Block::default()
             .title(Span::styled(
-                "K_conv (64-char hex, read-only grant)",
+                "Shared key (64-char hex, read-only grant)",
                 title_style,
             ))
             .borders(Borders::ALL)
@@ -225,7 +225,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         "Ctrl+V / Ctrl+Shift+V / middle-click"
     };
     let footer = Paragraph::new(format!(
-        "Ctrl+H: Help | Tab: Switch K_conv / pub(K_sign) | Paste ({paste_hint})\n\
+        "Ctrl+H: Help | Tab: Switch Shared key / pub(K_sign) | Paste ({paste_hint})\n\
 Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
     ));
     let footer_idx = if show_both_fields { 2 } else { 1 };
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn observer_tab_prompts_for_k_conv_not_ecdh() {
+    fn observer_tab_prompts_for_shared_key_not_ecdh() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = AppState::new(UserRole::Admin);
@@ -258,7 +258,10 @@ mod tests {
             .draw(|f| render_observer_tab(f, f.area(), &mut app))
             .unwrap();
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "K_conv"), "missing K_conv field");
+        assert!(
+            buffer_contains(buf, "Shared key"),
+            "missing Shared key field"
+        );
         assert!(
             buffer_contains(buf, "Never paste K_sign") || buffer_contains(buf, "K_sign"),
             "missing K_sign warning"
@@ -308,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn observer_tab_compact_height_keeps_k_conv_field() {
+    fn observer_tab_compact_height_keeps_shared_key_field() {
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = AppState::new(UserRole::Admin);
@@ -317,8 +320,8 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(
-            buffer_contains(buf, "K_conv"),
-            "compact layout dropped K_conv"
+            buffer_contains(buf, "Shared key"),
+            "compact layout dropped Shared key"
         );
     }
 }

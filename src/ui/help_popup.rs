@@ -481,12 +481,12 @@ mod help_content_tests {
     }
 
     #[test]
-    fn observer_help_lists_k_conv_load_and_tab_focus() {
+    fn observer_help_lists_shared_key_load_and_tab_focus() {
         let app = AppState::new(UserRole::Admin);
         let (_, lines) = help_content(&app, Tab::Admin(AdminTab::Observer));
         assert!(
             lines.iter().any(|l| l == HELP_OBS_ENTER_LOAD),
-            "K_conv load missing from Observer help: {lines:?}"
+            "Shared key load missing from Observer help: {lines:?}"
         );
         assert!(
             lines.iter().any(|l| l == HELP_OBS_TAB_FOCUS),

@@ -1208,18 +1208,18 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate K_conv, then fetch observer chat authenticated against
-        // known admin/party inner signers from taken disputes.
+        // Validate the Shared key (K_conv), then fetch observer chat authenticated
+        // against known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
-            let msg = "K_conv is required".to_string();
+            let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
         if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
-            let msg = "K_conv must be a valid 64-char hex secret (32 bytes)".to_string();
+            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;

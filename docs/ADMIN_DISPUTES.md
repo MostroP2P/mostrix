@@ -100,22 +100,22 @@ See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workf
 
 **Status**: ✅ **Implemented – Relay-based chat inspection**
 
-The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 events from Nostr relays. A party involved in a dispute discloses **`K_conv` only** (My Trades **Shift+K**) — never `K_sign`. `K_conv` decrypts the conversation but cannot author a valid kind-14 envelope as `pub(K_sign)`, so Observer access is read-only by construction.
+The Observer tab is a read-only tool that lets admins inspect encrypted user-to-user chats by fetching kind-14 events from Nostr relays. A party involved in a dispute discloses the **Shared key only** (protocol `K_conv`; My Trades **Shift+K**) — never `K_sign`. The Shared key decrypts the conversation but cannot author a valid kind-14 envelope as `pub(K_sign)`, so Observer access is read-only by construction.
 
 #### Observer Workflow
 
-1. **Acquire `K_conv`**:
-   - During a dispute, one of the parties discloses **`K_conv`** (64-character hex). In Mostrix this is **Shift+K** on My Trades. They may also share **`pub(K_sign)`** as an optional locator for an `authors` filter. Never accept or ask for the `K_sign` secret.
+1. **Acquire the Shared key**:
+   - During a dispute, one of the parties discloses the **Shared key** (64-character hex). In Mostrix this is **Shift+K** on My Trades, which also offers a **C** shortcut to copy the Shared key to the clipboard so it can be sent to the admin. They may also share **`pub(K_sign)`** as an optional locator for an `authors` filter. Never accept or ask for the `K_sign` secret.
 2. **Open Observer tab**:
    - Switch to Admin mode and navigate to the **Observer** tab.
 3. **Paste keys**:
-   - In the **K_conv** field, paste the 64-char hex grant. Optionally paste **`pub(K_sign)`** (hex or npub) in the second field. **Tab** switches focus. Paste supports bracketed paste into the focused field.
+   - In the **Shared key** field, paste the 64-char hex grant. Optionally paste **`pub(K_sign)`** (hex or npub) in the second field. **Tab** switches focus. Paste supports bracketed paste into the focused field.
 4. **Fetch and view chat**:
    - Press **Enter** to:
-     - Validate `K_conv` (non-empty, valid hex secret).
+     - Validate the Shared key (non-empty, valid hex secret).
      - Parse optional `pub(K_sign)`; invalid locators fail closed.
      - Fetch kind-14 events for the last 7 days: `authors = [pub(K_sign)]` when the locator is present, otherwise `#p = pub(K_conv)` (junk may arrive; decrypt fails).
-     - Unwrap with `K_conv` against the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes). Unknown inner signers are dropped.
+     - Unwrap with the Shared key against the known-role map (admin key plus buyer/seller trade pubkeys from taken disputes). Unknown inner signers are dropped.
      - Fetch fails if the known-role map is empty (no admin keys and no taken-dispute party pubkeys).
      - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
    - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
@@ -124,8 +124,8 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 
 #### Observer Keyboard Shortcuts
 
-- **Enter**: Fetch chat from relays using `K_conv` (and optional `pub(K_sign)`).
-- **Tab / Shift+Tab**: Switch focus between `K_conv` and `pub(K_sign)`.
+- **Enter**: Fetch chat from relays using the Shared key (and optional `pub(K_sign)`).
+- **Tab / Shift+Tab**: Switch focus between the Shared key and `pub(K_sign)` fields.
 - **Ctrl+C**: Clear inputs, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
@@ -134,7 +134,7 @@ When validation or fetching fails (empty key, invalid hex, no messages found, de
 
 #### Observer State (AppState)
 
-- `observer_shared_key_input: String` -- disclosed `K_conv` hex.
+- `observer_shared_key_input: String` -- disclosed Shared key (`K_conv`) hex.
 - `observer_sign_pubkey_input: String` -- optional `pub(K_sign)` locator.
 - `observer_input_focus` -- which field receives typing/paste.
 - `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages.
@@ -146,7 +146,9 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches kind-14 messages using disclosed `K_conv` and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from `K_conv` alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+>
+> **Sharing the Shared key**: on My Trades, **Shift+K** opens a popup with the Shared key and the optional `pub(K_sign)` locator. Press **C** to copy the Shared key hex to the clipboard for pasting into a message to the admin — `pub(K_sign)` and the `K_sign` secret are never copied.
 
 **Source**: `src/ui/tabs/observer_tab.rs` (rendering), `src/ui/key_handler/enter_handlers.rs` (Enter handler), `src/util/chat_utils.rs` (`fetch_observer_chat`), `src/ui/key_handler/mod.rs` (Ctrl+S and observer save-attachment popup handling), `src/ui/save_attachment_popup.rs` (`render_observer_save_attachment_popup`)
 

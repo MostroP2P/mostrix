@@ -188,7 +188,7 @@ pub fn build_observer_scrollview_content(
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No messages yet. Paste K_conv and press Enter to load.",
+            "No messages yet. Paste Shared key and press Enter to load.",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -206,8 +206,11 @@ pub fn build_observer_scrollview_content(
 mod tests {
     use super::build_observer_scrollview_content;
 
+    /// The UI label for the disclosed `K_conv` secret is "Shared key" (never
+    /// confused with the persisted ECDH `order_chat_shared_key_hex`, which is
+    /// not shown to users at all).
     #[test]
-    fn observer_empty_hint_asks_for_k_conv_not_ecdh_shared_key() {
+    fn observer_empty_hint_asks_for_shared_key() {
         let content = build_observer_scrollview_content(&[], 40, Some(20));
         let flat: String = content
             .lines
@@ -220,12 +223,8 @@ mod tests {
             })
             .collect();
         assert!(
-            flat.contains("K_conv"),
-            "empty Observer hint must mention K_conv: {flat}"
-        );
-        assert!(
-            !flat.to_lowercase().contains("shared key"),
-            "empty Observer hint must not say shared key: {flat}"
+            flat.contains("Shared key"),
+            "empty Observer hint must mention Shared key: {flat}"
         );
     }
 }

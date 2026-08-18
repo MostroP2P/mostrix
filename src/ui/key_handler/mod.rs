@@ -263,8 +263,45 @@ fn handle_user_order_chat_input(
     None
 }
 
-/// Handle clipboard copy for invoice
-fn handle_clipboard_copy(invoice: String) -> bool {
+/// Reset the Shift+K Shared key disclosure popup's "copied" indicator on any
+/// key other than `c`/`C`. Mirrors the invoice-copy indicator reset above.
+fn reset_disclosure_copied_indicator(mode: &mut UiMode, code: KeyCode) {
+    if let UiMode::OperationResult(ref mut result) = mode {
+        if let OperationResult::ConversationDisclosure {
+            copied_to_clipboard,
+            ..
+        } = result.as_mut()
+        {
+            if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
+                *copied_to_clipboard = false;
+            }
+        }
+    }
+}
+
+/// Copy the disclosed Shared key (`K_conv`) to the clipboard when the Shift+K
+/// disclosure popup is open, updating its "copied" indicator.
+///
+/// Only `conv_hex` (the Shared key) is ever copied — `sign_pubkey_hex`
+/// (`pub(K_sign)`) is not, and the `K_sign` secret itself is never disclosed.
+/// Returns `true` if the popup was open and handled the key.
+fn copy_disclosed_shared_key_if_open(mode: &mut UiMode) -> bool {
+    if let UiMode::OperationResult(ref mut result) = mode {
+        if let OperationResult::ConversationDisclosure {
+            conv_hex,
+            copied_to_clipboard,
+            ..
+        } = result.as_mut()
+        {
+            *copied_to_clipboard = handle_clipboard_copy(conv_hex.clone());
+            return true;
+        }
+    }
+    false
+}
+
+/// Handle clipboard copy for text (invoice, Shared key, etc.)
+fn handle_clipboard_copy(text: String) -> bool {
     #[cfg(target_os = "linux")]
     {
         // On Linux, prefer arboard (system clipboard) but run it off the UI thread.
@@ -291,7 +328,7 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                     }
 
                     let r = match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(text),
                         Err(e) => Err(e),
                     };
 
@@ -306,15 +343,15 @@ fn handle_clipboard_copy(invoice: String) -> bool {
                 #[cfg(not(unix))]
                 {
                     match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
+                        Ok(mut clipboard) => clipboard.set().wait().text(text),
                         Err(e) => Err(e),
                     }
                 }
             };
 
             match copy_result {
-                Ok(_) => log::info!("Invoice copied to clipboard"),
-                Err(e) => log::warn!("Failed to copy invoice to clipboard: {}", e),
+                Ok(_) => log::info!("Copied to clipboard"),
+                Err(e) => log::warn!("Failed to copy to clipboard: {}", e),
             }
         });
         true
@@ -325,16 +362,16 @@ fn handle_clipboard_copy(invoice: String) -> bool {
     {
         std::thread::spawn(move || {
             let copy_result = match arboard::Clipboard::new() {
-                Ok(mut clipboard) => clipboard.set_text(invoice),
+                Ok(mut clipboard) => clipboard.set_text(text),
                 Err(e) => Err(e),
             };
 
             match copy_result {
                 Ok(_) => {
-                    log::info!("Invoice copied to clipboard");
+                    log::info!("Copied to clipboard");
                 }
                 Err(e) => {
-                    log::warn!("Failed to copy invoice to clipboard: {}", e);
+                    log::warn!("Failed to copy to clipboard: {}", e);
                 }
             }
         });
@@ -999,6 +1036,9 @@ pub fn handle_key_event(
         }
     }
 
+    // Same "copied" indicator reset for the Shift+K Shared key disclosure popup.
+    reset_disclosure_copied_indicator(&mut app.mode, code);
+
     // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
     // Check these BEFORE handle_admin_chat_input to prevent interception
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -1135,7 +1175,7 @@ pub fn handle_key_event(
                     }
                     let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
                         app.mode = UiMode::operation_result(OperationResult::Info(
-                            "Select an order to reveal K_conv.".to_string(),
+                            "Select an order to reveal the Shared key.".to_string(),
                         ));
                         return Some(true);
                     };
@@ -1158,18 +1198,20 @@ pub fn handle_key_event(
                                     trade_keys.as_ref(),
                                     order.counterparty_pubkey.as_deref(),
                                 ) {
-                                    Some((conv, sign_pk)) => OperationResult::Info(format!(
-                                        "K_conv (read-only grant for solvers):\n{conv}\n\n\
-pub(K_sign) optional locator:\n{sign_pk}\n\n\
-Disclose K_conv only. Never share the K_sign secret."
-                                    )),
+                                    Some((conv, sign_pk)) => {
+                                        OperationResult::ConversationDisclosure {
+                                            conv_hex: conv,
+                                            sign_pubkey_hex: sign_pk,
+                                            copied_to_clipboard: false,
+                                        }
+                                    }
                                     None => OperationResult::Error(
-                                        "No conversation key for this order yet.".to_string(),
+                                        "No Shared key for this order yet.".to_string(),
                                     ),
                                 }
                             }
                             Err(e) => OperationResult::Error(format!(
-                                "Could not load order for K_conv: {e}"
+                                "Could not load order for Shared key: {e}"
                             )),
                         };
                         let _ = tx.send(result);
@@ -1458,6 +1500,16 @@ Disclose K_conv only. Never share the K_sign secret."
                 return Some(true);
             }
 
+            // Handle copy Shared key (K_conv) for the Shift+K disclosure popup. Only
+            // the Shared key is copyable — pub(K_sign) and the K_sign secret are not.
+            if !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+                && copy_disclosed_shared_key_if_open(&mut app.mode)
+            {
+                return Some(true);
+            }
+
             // Handle copy invoice for PayInvoice / PayBondInvoice notifications
             if let UiMode::NewMessageNotification(
                 ref notification,
@@ -1658,5 +1710,73 @@ mod key_handler_tests {
             state.action_selection,
             InvoiceNotificationActionSelection::Primary
         );
+    }
+
+    fn disclosure_mode(copied_to_clipboard: bool) -> UiMode {
+        UiMode::operation_result(OperationResult::ConversationDisclosure {
+            conv_hex: "a".repeat(64),
+            sign_pubkey_hex: "b".repeat(64),
+            copied_to_clipboard,
+        })
+    }
+
+    #[test]
+    fn copy_disclosed_shared_key_sets_copied_flag_and_handles_the_key() {
+        let mut mode = disclosure_mode(false);
+        assert!(copy_disclosed_shared_key_if_open(&mut mode));
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(*copied_to_clipboard, "C should mark the Shared key copied"),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_disclosed_shared_key_ignores_other_modes() {
+        let mut mode = UiMode::operation_result(OperationResult::Info("hi".to_string()));
+        assert!(
+            !copy_disclosed_shared_key_if_open(&mut mode),
+            "generic Info popup must not be treated as a Shared key copy target"
+        );
+    }
+
+    #[test]
+    fn disclosure_copied_indicator_resets_on_keys_other_than_c() {
+        let mut mode = disclosure_mode(true);
+        reset_disclosure_copied_indicator(&mut mode, KeyCode::Esc);
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(
+                !*copied_to_clipboard,
+                "non-C keys must clear the copied indicator"
+            ),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disclosure_copied_indicator_survives_c_key() {
+        let mut mode = disclosure_mode(true);
+        reset_disclosure_copied_indicator(&mut mode, KeyCode::Char('c'));
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(*copied_to_clipboard, "C key must not clear the indicator"),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
     }
 }
