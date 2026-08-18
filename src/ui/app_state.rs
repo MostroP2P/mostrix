@@ -18,7 +18,8 @@ use crate::ui::helpers::OrderChatListItem;
 use crate::ui::navigation::{AdminTab, Tab, UserRole};
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
-    MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
+    MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters,
+    OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
 use crate::util::{transport_from_instance, MostroInstanceInfo};
@@ -60,9 +61,11 @@ pub enum UiMode {
     AddCurrency(KeyInputState),
     ConfirmCurrency(String, bool), // (currency_string, selected_button: true=Yes, false=No)
     ConfirmClearCurrencies(bool),  // (selected_button: true=Yes, false=No)
+    /// Orders tab local filters. Enter applies, Esc cancels.
+    OrderFilters(OrderBookFilterState),
     ConfirmDeleteHistoryOrder(uuid::Uuid, bool), // (order_id, selected_button)
-    ConfirmBulkDeleteHistory(bool), // (selected_button)
-    ConfirmExit(bool),             // (selected_button: true=Yes, false=No)
+    ConfirmBulkDeleteHistory(bool),              // (selected_button)
+    ConfirmExit(bool),                           // (selected_button: true=Yes, false=No)
 
     // Generate new keys flow (Settings tab)
     ConfirmGenerateNewKeys(bool), // (selected_button: true=Yes, false=No)
@@ -144,6 +147,7 @@ impl Clone for UiMode {
                 UiMode::ConfirmCurrency(currency.clone(), *selected)
             }
             UiMode::ConfirmClearCurrencies(selected) => UiMode::ConfirmClearCurrencies(*selected),
+            UiMode::OrderFilters(state) => UiMode::OrderFilters(state.clone()),
             UiMode::ConfirmDeleteHistoryOrder(order_id, selected) => {
                 UiMode::ConfirmDeleteHistoryOrder(*order_id, *selected)
             }
@@ -258,6 +262,8 @@ pub struct AppState {
     pub pending_admin_disputes_reload: bool,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
+    /// Orders-tab local filters, applied after the settings currency filter.
+    pub order_filters: OrderBookFilters,
     /// Cached Mostro instance info (kind 38385 event), if available.
     pub mostro_info: Option<MostroInstanceInfo>,
     /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
@@ -345,6 +351,7 @@ impl AppState {
             admin_keys: None,
             pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
+            order_filters: OrderBookFilters::default(),
             mostro_info: None,
             transport: Transport::default(),
             offline_overlay_message: None,
