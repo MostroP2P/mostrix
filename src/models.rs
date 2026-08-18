@@ -1196,9 +1196,7 @@ mod upsert_from_small_order_dm_tests {
         )
         .await
         .expect_err("mismatched id must fail");
-        assert!(err
-            .to_string()
-            .contains("payload id"));
+        assert!(err.to_string().contains("payload id"));
 
         let untouched = Order::get_by_id(&pool, &id_b.to_string())
             .await
