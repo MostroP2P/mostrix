@@ -395,6 +395,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             vec![
                 HELP_ORDERS_ENTER_TAKE.to_string(),
                 HELP_ORDERS_SELECT.to_string(),
+                HELP_ORDERS_SHIFT_F_FILTERS.to_string(),
+                HELP_ORDERS_SHIFT_X_CLEAR_FILTERS.to_string(),
             ],
         ),
         Tab::User(UserTab::MyTrades) => (
