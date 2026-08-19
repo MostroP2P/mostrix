@@ -369,7 +369,6 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
-                HELP_OBS_TAB_FOCUS.to_string(),
                 HELP_OBS_PASTE_SHARED_KEY.to_string(),
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
@@ -481,7 +480,7 @@ mod help_content_tests {
     }
 
     #[test]
-    fn observer_help_lists_shared_key_load_and_tab_focus() {
+    fn observer_help_lists_shared_key_load() {
         let app = AppState::new(UserRole::Admin);
         let (_, lines) = help_content(&app, Tab::Admin(AdminTab::Observer));
         assert!(
@@ -489,8 +488,8 @@ mod help_content_tests {
             "Shared key load missing from Observer help: {lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l == HELP_OBS_TAB_FOCUS),
-            "Tab focus missing from Observer help: {lines:?}"
+            !lines.iter().any(|l| l.contains("Tab: Switch")),
+            "Tab focus shortcut should be removed from Observer help now that only one field exists: {lines:?}"
         );
     }
 

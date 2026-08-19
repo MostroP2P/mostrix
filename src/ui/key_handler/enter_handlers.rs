@@ -1225,17 +1225,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             return;
         }
 
-        let sign_pubkey = match crate::util::chat_utils::parse_optional_sign_pubkey(
-            &app.observer_sign_pubkey_input,
-        ) {
-            Ok(pk) => pk,
-            Err(e) => {
-                let msg = e.to_string();
-                app.observer_error = Some(msg.clone());
-                app.mode = UiMode::operation_result(OperationResult::Error(msg));
-                return;
-            }
-        };
+        // No UI field feeds an optional Signer pubkey locator at the moment, so the
+        // `authors` filter in `fetch_observer_chat` stays unrestricted.
+        let sign_pubkey = None;
 
         // Spawn async fetch via the order_result channel
         let generation = app.begin_observer_fetch();

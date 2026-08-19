@@ -103,12 +103,12 @@ Focused on dispute resolution and protocol management.
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a disclosed **Shared key** (protocol `K_conv`):
-  - **Shared key** input (64-char hex secret, paste-friendly) plus optional `pub(K_sign)` locator
-  - Fetches kind-14 chat events from relays for the last 7 days (`authors` when locator present, else `#p = pub(K_conv)`)
+  - **Shared key** input (64-char hex secret, paste-friendly). There is currently no UI field for the optional Signer pubkey (`pub(K_sign)`) locator, so `fetch_observer_chat` is always called with `sign_pubkey: None`.
+  - Fetches kind-14 chat events from relays for the last 7 days (`#p = pub(K_conv)`)
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
   - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
-  - Keyboard hints: `Tab` switches Shared key / `pub(K_sign)`, `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
+  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key (set `admin_privkey` to the Mostro daemon nsec)
@@ -179,7 +179,7 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 | `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save; clears `pending_order_attachment_sends` and `sending_attachment_order_id` when `order_id` matches; then normalized to `Info` (`Attachment sent: …`) |
 | `OrderChatAttachmentError` | Early send failure (validate / encrypt / upload before DM); clears `sending_attachment_order_id` when `order_id` matches; normalized to `Error` popup. Generic `OperationResult::Error` from other tasks does **not** clear the in-flight send guard. |
 | `OrderChatAttachmentSendFailed` | Stores `PreparedOrderChatAttachment` in `AppState.pending_order_attachment_sends`; clears `sending_attachment_order_id` when `order_id` matches; normalized to `Error` (Blossom URL + **Ctrl+Shift+O** retry hint) |
-| `ConversationDisclosure` | My Trades **Shift+K** result: shows the disclosed Shared key (`K_conv`) and optional `pub(K_sign)` locator. Not normalized to `Info` — rendered as its own popup so **C** can safely copy only the Shared key hex to the clipboard (never `pub(K_sign)` or the `K_sign` secret) |
+| `ConversationDisclosure` | My Trades **Shift+K** result: shows the disclosed Shared key (`K_conv`). Not normalized to `Info` — rendered as its own popup so **C** can safely copy only the Shared key hex to the clipboard (never the signing key) |
 
 **`OperationResult::Info` / `Error` text**: `render_operation_result` splits on newlines, wraps at word boundaries (avoids mid-word breaks on long UUIDs), and sizes the popup from line count. Admin dispute **finalization success** uses a structured multi-line body from `BondSlashChoice::finalize_success_message` (see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md)).
 
@@ -193,7 +193,7 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, Tab switches Shared key / `pub(K_sign)` (Left/Right still change tabs).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter to load chat, paste, scroll, clear, and save-attachment shortcuts (Left/Right still change tabs).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -259,7 +259,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste)
   - mouse right-click paste (`MouseEventKind::Down(MouseButton::Right)`) using clipboard read fallback
-  This applies to invoice input, admin key/solver inputs, and Observer Shared key / `pub(K_sign)` fields.
+  This applies to invoice input, admin key/solver inputs, and the Observer Shared key field.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
   - Supports direct character input and backspace
@@ -267,7 +267,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
   - Text wrapping with word boundary detection
   - **Input toggle**: Press **Shift+I** to enable/disable chat input (prevents accidental typing)
   - **Visual feedback**: Input title shows enabled/disabled state
-- **Copy to Clipboard**: Pressing `C` in a `PayInvoice` or `PayBondInvoice` notification, or in the My Trades **Shift+K** Shared key disclosure popup, uses the `arboard` crate (`handle_clipboard_copy` in `src/ui/key_handler/mod.rs`) to copy the invoice or the Shared key hex respectively. Only the Shared key is copyable from the disclosure popup — `pub(K_sign)` and the `K_sign` secret are never copied. On Linux, it uses the `SetExtLinux::wait()` method to properly wait until the clipboard is overwritten, ensuring reliable clipboard handling without arbitrary delays.
+- **Copy to Clipboard**: Pressing `C` in a `PayInvoice` or `PayBondInvoice` notification, or in the My Trades **Shift+K** Shared key disclosure popup, uses the `arboard` crate (`handle_clipboard_copy` in `src/ui/key_handler/mod.rs`) to copy the invoice or the Shared key hex respectively. Only the Shared key is copyable from the disclosure popup — the signing key is never copied (and never displayed). The write runs synchronously and reports the real result: `copied_to_clipboard` (and the "✓ ... copied!" confirmation) is only set once `arboard::Clipboard::new()` and `set_text()` actually succeed; a failed write leaves the popup showing "Press C to copy" instead of a false success message. Persistence beyond that call is handled by the platform backend without blocking on it — the shared clipboard worker thread `arboard` starts on X11, or the background process `wl-clipboard-rs` detaches on Wayland.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
 
@@ -396,7 +396,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+F** mark fiat sent (YES/NO popup).
   - **Shift+R** release sats (YES/NO popup).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
-  - **Shift+K** reveal Shared key (read-only grant for solvers; never the `K_sign` secret). Opens a popup where **C** copies the Shared key to the clipboard.
+  - **Shift+K** reveal Shared key (read-only grant for solvers; never the signing key). Opens a popup where **C** copies the Shared key to the clipboard.
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
   - **Ctrl+O** send attachment (file picker); **Ctrl+Shift+O** retry DM when a prepared send is pending.

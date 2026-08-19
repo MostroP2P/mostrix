@@ -209,10 +209,10 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         }
     }
 
-    // Handle paste for the focused Observer field (`K_conv` or `pub(K_sign)`)
+    // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
         let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
-        app.observer_active_input_mut().push_str(&filtered_text);
+        app.observer_shared_key_input.push_str(&filtered_text);
     }
 }
 

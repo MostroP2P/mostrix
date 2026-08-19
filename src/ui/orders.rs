@@ -202,12 +202,11 @@ pub enum OperationResult {
     },
     /// My Trades Shift+K result: read-only chat disclosure for a solver.
     ///
-    /// `conv_hex` is the disclosed `K_conv` secret (labelled "Shared key" in the
-    /// UI); `sign_pubkey_hex` is the optional `pub(K_sign)` relay locator. Only
-    /// `conv_hex` is copyable (Press `C`) — `K_sign` itself is never disclosed.
+    /// `conv_hex` is the disclosed `K_conv` secret (labelled "Shared key" in
+    /// the UI) — the only field shown, and the only one copyable (Press `C`).
+    /// The signing key itself is never disclosed.
     ConversationDisclosure {
         conv_hex: String,
-        sign_pubkey_hex: String,
         copied_to_clipboard: bool,
     },
 }

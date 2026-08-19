@@ -46,11 +46,11 @@ pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Load chat for Shared key";
     target_os = "openbsd",
     target_os = "netbsd"
 ))]
-pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+Shift+V: Paste into focused field";
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+Shift+V: Paste into Shared key field";
 #[cfg(target_os = "windows")]
-pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into focused field";
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into Shared key field";
 #[cfg(target_os = "macos")]
-pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste into focused field";
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste into Shared key field";
 #[cfg(not(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -59,13 +59,12 @@ pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste into focused field";
     target_os = "windows",
     target_os = "macos"
 )))]
-pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into focused field";
+pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into Shared key field";
 pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
 pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
 pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
 pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
-pub const HELP_OBS_TAB_FOCUS: &str = "Tab: Switch Shared key / pub(K_sign) fields";
 
 // Help popup lines (Settings)
 pub const HELP_SETTINGS_SWITCH_FROM_MENU: &str =
@@ -100,7 +99,7 @@ pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open 
 pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (Dispute message)";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_SHIFT_K_KCONV: &str =
-    "Shift+K: Reveal Shared key (read-only grant for solvers; never K_sign)";
+    "Shift+K: Reveal Shared key (read-only grant for solvers; never your signing key)";
 pub const HELP_MY_TRADES_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const HELP_MY_TRADES_CTRL_O_SEND: &str = "Ctrl+O: Send attachment (file picker)";
 pub const HELP_MY_TRADES_CTRL_SHIFT_O_RETRY: &str =

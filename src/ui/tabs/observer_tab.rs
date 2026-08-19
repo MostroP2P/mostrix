@@ -5,11 +5,18 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::helpers::build_observer_scrollview_content;
-use crate::ui::{AppState, ObserverInputField, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
+
+/// Below this width the full field labels and footer (the longer footer line
+/// needs ~104 columns) no longer fit; fall back to the abbreviated compact
+/// labels/footer instead of silently clipping keyboard shortcuts.
+const OBSERVER_NARROW_WIDTH: u16 = 60;
 
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
-    let compact = area.height < 16;
-    let input_height = if compact { 5 } else { 8 };
+    let compact = area.height < 16 || area.width < OBSERVER_NARROW_WIDTH;
+    // Compact footer is 3 short lines (vs. 2 long ones) so shortcuts stay
+    // readable instead of being cut off; field row stays 3 rows either way.
+    let input_height = if compact { 6 } else { 5 };
     // Borders consume 2 rows. Compact: 1 inner row (status/error). Full: 2 inner rows.
     let header_height = if compact { 3 } else { 4 };
     let chunks = Layout::new(
@@ -68,7 +75,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
                         .fg(PRIMARY_COLOR)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("  –  paste Shared key (read-only). Never paste K_sign."),
+                Span::raw("  –  paste Shared key (read-only). Never paste a signing key."),
             ]),
             status_line,
         ]
@@ -152,84 +159,55 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         f.render_stateful_widget(scroll_view, inner_area, &mut app.observer_scrollview_state);
     }
 
-    // Shared key / optional pub(K_sign) inputs + footer
-    let show_both_fields = !compact;
-    let input_chunks = if show_both_fields {
-        Layout::new(
-            Direction::Vertical,
-            [
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(2),
-            ],
-        )
-        .split(chunks[2])
-    } else {
-        Layout::new(
-            Direction::Vertical,
-            [Constraint::Length(3), Constraint::Length(2)],
-        )
-        .split(chunks[2])
-    };
+    // Shared key input + footer
+    let footer_height = if compact { 3 } else { 2 };
+    let input_chunks = Layout::new(
+        Direction::Vertical,
+        [Constraint::Length(3), Constraint::Length(footer_height)],
+    )
+    .split(chunks[2]);
 
     let focused_border = Style::default()
         .fg(PRIMARY_COLOR)
         .add_modifier(Modifier::BOLD);
-    let idle_border = Style::default().fg(Color::Gray);
     let title_style = Style::default()
         .fg(PRIMARY_COLOR)
         .add_modifier(Modifier::BOLD);
 
-    let conv_focused = app.observer_input_focus == ObserverInputField::ConvKey;
+    let conv_title = if compact {
+        "Shared key (hex)"
+    } else {
+        "Shared key (64-char hex, read-only grant)"
+    };
+
     let conv_input = Paragraph::new(app.observer_shared_key_input.as_str()).block(
         Block::default()
-            .title(Span::styled(
-                "Shared key (64-char hex, read-only grant)",
-                title_style,
-            ))
+            .title(Span::styled(conv_title, title_style))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(if conv_focused {
-                focused_border
-            } else {
-                idle_border
-            }),
+            .border_style(focused_border),
     );
-    let sign_input = Paragraph::new(app.observer_sign_pubkey_input.as_str()).block(
-        Block::default()
-            .title(Span::styled(
-                "pub(K_sign) optional locator (hex/npub)",
-                title_style,
-            ))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if !conv_focused {
-                focused_border
-            } else {
-                idle_border
-            }),
-    );
+    f.render_widget(conv_input, input_chunks[0]);
 
-    if show_both_fields {
-        f.render_widget(conv_input, input_chunks[0]);
-        f.render_widget(sign_input, input_chunks[1]);
-    } else if conv_focused {
-        f.render_widget(conv_input, input_chunks[0]);
+    let footer_text = if compact {
+        // Shortened so shortcuts stay visible instead of clipping on narrow terminals.
+        "Ctrl+H:Help  Paste\n\
+Enter:Load  Esc:Clear  Ctrl+C:All\n\
+Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
+            .to_string()
     } else {
-        f.render_widget(sign_input, input_chunks[0]);
-    }
-
-    let paste_hint = if cfg!(windows) {
-        "Shift+Insert / Ctrl+V / Ctrl+Shift+V / right-click"
-    } else {
-        "Ctrl+V / Ctrl+Shift+V / middle-click"
-    };
-    let footer = Paragraph::new(format!(
-        "Ctrl+H: Help | Tab: Switch Shared key / pub(K_sign) | Paste ({paste_hint})\n\
+        let paste_hint = if cfg!(windows) {
+            "Shift+Insert / Ctrl+V / Ctrl+Shift+V / right-click"
+        } else {
+            "Ctrl+V / Ctrl+Shift+V / middle-click"
+        };
+        format!(
+            "Ctrl+H: Help | Paste ({paste_hint})\n\
 Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
-    ));
-    let footer_idx = if show_both_fields { 2 } else { 1 };
-    f.render_widget(footer, input_chunks[footer_idx]);
+        )
+    };
+    let footer = Paragraph::new(footer_text);
+    f.render_widget(footer, input_chunks[1]);
 }
 
 #[cfg(test)]
@@ -263,12 +241,16 @@ mod tests {
             "missing Shared key field"
         );
         assert!(
-            buffer_contains(buf, "Never paste K_sign") || buffer_contains(buf, "K_sign"),
-            "missing K_sign warning"
+            buffer_contains(buf, "Never paste a signing key"),
+            "missing signing-key warning"
         );
         assert!(
             buffer_contains(buf, "read-only"),
             "missing read-only grant copy"
+        );
+        assert!(
+            !buffer_contains(buf, "Signer pubkey"),
+            "Signer pubkey input box should be removed"
         );
     }
 
@@ -323,5 +305,42 @@ mod tests {
             buffer_contains(buf, "Shared key"),
             "compact layout dropped Shared key"
         );
+    }
+
+    /// A narrow-but-tall terminal (plenty of height, insufficient width) should still
+    /// switch to the compact layout: abbreviated field labels and a shortened footer
+    /// so keyboard shortcuts stay fully on-screen instead of being clipped.
+    #[test]
+    fn observer_tab_narrow_width_uses_abbreviated_labels_and_footer() {
+        let buf = render_observer(&mut AppState::new(UserRole::Admin), 40, 24);
+
+        assert!(
+            buffer_contains(&buf, "Shared key (hex)"),
+            "narrow layout should use the abbreviated Shared key label"
+        );
+        assert!(
+            !buffer_contains(&buf, "Shared key (64-char hex, read-only grant)"),
+            "narrow layout should not use the full-width Shared key label"
+        );
+        // The long-form footer's second line never fits even at 80 columns, so its
+        // presence here would indicate clipped text rather than a rendered shortcut.
+        assert!(
+            !buffer_contains(&buf, "Ctrl+S: Save attachment"),
+            "narrow layout should not attempt to render the full-width footer"
+        );
+
+        for shortcut in [
+            "Ctrl+H:Help",
+            "Enter:Load",
+            "Esc:Clear",
+            "Ctrl+C:All",
+            "Ctrl+S:Save",
+            "Scroll",
+        ] {
+            assert!(
+                buffer_contains(&buf, shortcut),
+                "narrow footer is missing shortcut: {shortcut}"
+            );
+        }
     }
 }
