@@ -11,7 +11,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **`mostro-core` 0.13.0** | Done | `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond`, `Transport` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Bond submenu overlay** | Done | [`src/ui/dispute_bond_slash_popup.rs`](../src/ui/dispute_bond_slash_popup.rs) — `render_bond_slash_overlay`; **TestBackend** unit tests for selection chrome |
-| **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`; `CantDo` before DB update |
+| **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`, or `CooperativeCancelAccepted` when users already canceled; `CantDo` before DB update |
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
 | **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
@@ -205,7 +205,7 @@ Call chain from the TUI (today):
 
 1. [`execute_finalize_dispute_action`](../src/ui/key_handler/admin_handlers.rs) — spawns async task with `bond` from `ConfirmFinalizeDispute` (chosen on the finalize popup / overlay).
 2. [`execute_finalize_dispute`](../src/util/order_utils/execute_finalize_dispute.rs) — DB guards, then dispatches settle or cancel with the same `bond`.
-3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())` with `request_id`, `wait_for_dm`, and `handle_mostro_response` (surfaces `CantDo` before DB update). Success requires `AdminSettled` / `AdminCanceled` from Mostro.
+3. [`execute_admin_settle`](../src/util/order_utils/execute_admin_settle.rs) / [`execute_admin_cancel`](../src/util/order_utils/execute_admin_cancel.rs) — `Message::new_dispute(..., bond.to_optional_payload())` with `request_id`, `wait_for_dm`, and `handle_mostro_response` (surfaces `CantDo` before DB update). Success is `AdminSettled` / `AdminCanceled`, or `CooperativeCancelAccepted` when the users already canceled (local status becomes `SellerRefunded`).
 
 Success popup (`OperationResult::Info`) is built by [`BondSlashChoice::finalize_success_message`](../src/util/order_utils/bond_resolution.rs) and rendered with newline-aware, word-boundary wrapping in [`operation_result.rs`](../src/ui/operation_result.rs) (dynamic popup height).
 
@@ -252,8 +252,8 @@ After sending a finalization action, Mostro replies over the same admin DM chann
 
 | Request | Success action | Failure |
 |---------|----------------|---------|
-| `AdminSettle` | `AdminSettled` | `CantDo` (e.g. `InvalidPayload` for bad bond slash) |
-| `AdminCancel` | `AdminCanceled` | same |
+| `AdminSettle` | `AdminSettled` / `CooperativeCancelAccepted` | `CantDo` (e.g. `InvalidPayload` for bad bond slash) |
+| `AdminCancel` | `AdminCanceled` / `CooperativeCancelAccepted` | same |
 
 Mostrix waits with `wait_for_dm` and validates via `handle_mostro_response` before updating `admin_disputes`.
 

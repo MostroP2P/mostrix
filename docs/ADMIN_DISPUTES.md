@@ -263,8 +263,12 @@ pub enum Status {
 stateDiagram-v2
     [*] --> Initiated: Dispute Created
     Initiated --> InProgress: Admin Takes Dispute
+    Initiated --> SellerRefunded: Users cooperatively cancel
+    Initiated --> Settled: Seller releases
     InProgress --> SellerRefunded: Resolve for Seller
+    InProgress --> SellerRefunded: Users cooperatively cancel
     InProgress --> Settled: Resolve for Buyer
+    InProgress --> Settled: Seller releases
     Settled --> Released: Seller Releases
     SellerRefunded --> [*]: Dispute Closed
     Released --> [*]: Dispute Closed
@@ -428,6 +432,21 @@ Once a dispute is finalized (status: `Settled`, `SellerRefunded`, or `Released`)
 This multi-layered protection ensures that finalized disputes cannot be accidentally or maliciously modified.
 
 **Source**: `src/models.rs` (AdminDispute::is_finalized, can_settle, can_cancel), `src/util/order_utils/execute_finalize_dispute.rs`
+
+### Auto-close when users resolve the trade
+
+Mostro closes the dispute without a solver DM when the parties finish the trade themselves:
+
+| User action | Order status | Kind-38386 `s` tag | Local admin row |
+|---|---|---|---|
+| Cooperative cancel | `CooperativelyCanceled` | `seller-refunded` | Finalized (seller refunded) |
+| Seller release | `Success` / settled hold | `settled` | Finalized (settled) |
+
+Mostrix already subscribes to kind 38386 at startup (`fetch_scheduler` live sub + 30s snapshot). Taken `admin_disputes` rows are reconciled from those events (`relay_dispute_db_reconcile.rs`). The dispute **stays in the Disputes Management sidebar** so the header `Status` field can update to `seller-refunded` / `settled`; Shift+F is disabled. Navigating away drops it from the In Progress filter (it remains under Shift+C Finalized). If the admin still presses Resolve before that lands, Mostro replies `CooperativeCancelAccepted`; Mostrix treats that as already-closed (`SellerRefunded`) instead of showing `Unexpected action in response`.
+
+Untaken (`Initiated`) disputes disappear from the Pending tab as soon as the replacement event is no longer `initiated`.
+
+**Source**: `src/util/order_utils/relay_dispute_db_reconcile.rs`, `src/util/order_utils/fetch_scheduler.rs`
 
 ### Adding a Solver
 

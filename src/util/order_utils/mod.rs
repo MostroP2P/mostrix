@@ -9,6 +9,7 @@ mod execute_send_msg;
 mod execute_take_dispute;
 mod fetch_scheduler;
 mod helper;
+mod relay_dispute_db_reconcile;
 mod relay_order_db_reconcile;
 mod send_new_order;
 mod take_order;
@@ -30,6 +31,11 @@ pub use helper::{
     get_disputes, get_orders, inferred_status_from_trade_action, map_action_to_status,
     order_from_tags, parse_disputes_events, parse_orders_events, pending_orders_for_book,
     should_apply_status_transition, should_strictly_advance_status, validate_range_amount,
+    AdminFinalizeAck,
+};
+pub use relay_dispute_db_reconcile::{
+    apply_terminal_relay_statuses_to_admin_disputes, reconcile_one_admin_dispute_if_terminal,
+    reconcile_terminal_admin_disputes_from_relay, run_targeted_relay_dispute_db_reconcile_tick,
 };
 pub use relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,

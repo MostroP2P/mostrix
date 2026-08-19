@@ -346,6 +346,8 @@ When saving a dispute to the database, the following fields are validated:
 
 **Note**: The `admin_disputes` table is populated when an admin takes a dispute from the Mostro network. The admin receives a `SolverDisputeInfo` struct via direct message from Mostro, which is then persisted to this table.
 
+**Relay terminal reconcile**: `src/util/order_utils/relay_dispute_db_reconcile.rs` advances taken rows from kind-38386 `s` tags (`seller-refunded` / `settled` / `released`) when users cooperatively cancel or the seller releases. Live subscription + 30s snapshot in `fetch_scheduler.rs`; targeted `#d` fetches for leftover `in-progress` rows. Does not overwrite an already-finalized status.
+
 **Source**: `SolverDisputeInfo` struct definition (see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#dispute-information-structure))
 
 **Source**: `src/models.rs:154`

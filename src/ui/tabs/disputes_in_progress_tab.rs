@@ -10,8 +10,8 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
 use crate::ui::constants::*;
 use crate::ui::helpers::{
-    build_chat_scrollview_content, count_visible_attachments, format_local_timestamp,
-    format_user_rating, get_filtered_disputes, get_selected_chat_message,
+    build_chat_scrollview_content, count_visible_attachments, dispute_status_color,
+    format_local_timestamp, format_user_rating, get_filtered_disputes, get_selected_chat_message,
     render_table_list_scrollbar,
 };
 use crate::ui::ChatParty;
@@ -91,13 +91,19 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Stateful List keeps the selected row in view when the sidebar overflows
         // (same pattern as Orders / Disputes Pending tables). Scrollbar uses the
         // shared data-row track helper after ListState computes its offset.
+        // Reserve: borders (2) + highlight symbol (2) + gap between id and status (2).
+        let inner_width = sidebar_area.width.saturating_sub(6) as usize;
         let items: Vec<ListItem> = filtered_disputes
             .iter()
             .map(|(_original_idx, d)| {
-                let truncated_id = truncate_dispute_id_label(&d.dispute_id, 20);
+                let status = d.status.as_deref().unwrap_or("unknown");
+                let id_budget = inner_width
+                    .saturating_sub(status.chars().count())
+                    .clamp(4, 16);
+                let truncated_id = truncate_dispute_id_label(&d.dispute_id, id_budget);
                 ListItem::new(Line::from(Span::styled(
-                    format!("Dispute ID: {}", truncated_id),
-                    Style::default().fg(Color::White),
+                    format!("{truncated_id}  {status}"),
+                    Style::default().fg(dispute_status_color(d.status.as_deref())),
                 )))
             })
             .collect();
@@ -125,7 +131,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     // 2. Main Area
     if let Some((_original_idx, ref selected_dispute)) = filtered_disputes.get(valid_selected_idx) {
         // Determine layout based on filter state
-        let is_finalized = app.dispute_filter == DisputeFilter::Finalized;
+        let is_finalized = selected_dispute.is_finalized();
 
         let main_chunks = if is_finalized {
             // For finalized disputes: no chat/input, just expanded header and footer
@@ -342,7 +348,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 Span::styled("Status: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     selected_dispute.status.as_deref().unwrap_or("Unknown"),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(dispute_status_color(selected_dispute.status.as_deref()))
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![

@@ -24,7 +24,7 @@ use crate::util::{
     blossom_servers_from_settings, handle_message_notification, handle_operation_result,
     install_background_panic_hook, order_utils::validate_range_amount, set_chat_router_cmd_tx,
     set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    spawn_send_order_chat_attachment,
+    spawn_send_order_chat_attachment, untrack_dispute_chat_parties,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -721,6 +721,23 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             };
             crate::ui::helpers::clamp_pending_dispute_selection(&mut app, &disputes_lock);
+            if app.user_role == UserRole::Admin {
+                let displayed_before =
+                    crate::ui::helpers::selected_filtered_dispute(&app).map(|d| d.dispute_id);
+                let closed =
+                    crate::util::order_utils::apply_terminal_relay_statuses_to_admin_disputes(
+                        &mut app.admin_disputes_in_progress,
+                        &disputes_lock,
+                    );
+                crate::ui::helpers::retain_closed_displayed_dispute(
+                    &mut app,
+                    displayed_before.as_deref(),
+                    &closed,
+                );
+                for dispute_id in closed {
+                    untrack_dispute_chat_parties(&dispute_id);
+                }
+            }
         }
 
         // Process async completions before draw so popups appear without extra keypresses.

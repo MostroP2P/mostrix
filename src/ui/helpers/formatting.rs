@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, Utc};
-use mostro_core::prelude::UserInfo;
+use mostro_core::prelude::{DisputeStatus, UserInfo};
 use ratatui::style::Color;
+use std::str::FromStr;
 
 use crate::models::AdminDispute;
 
@@ -23,6 +24,17 @@ pub fn format_user_rating(info: Option<&UserInfo>) -> String {
 /// Check if a dispute is finalized (Settled, SellerRefunded, or Released).
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
     Some(selected_dispute.is_finalized())
+}
+
+/// Color for a kebab-case dispute status in the admin header/sidebar.
+pub fn dispute_status_color(status: Option<&str>) -> Color {
+    match status.and_then(|s| DisputeStatus::from_str(s).ok()) {
+        Some(DisputeStatus::Initiated) => Color::Yellow,
+        Some(DisputeStatus::InProgress) => Color::Green,
+        Some(DisputeStatus::Settled) | Some(DisputeStatus::Released) => Color::Green,
+        Some(DisputeStatus::SellerRefunded) => Color::Red,
+        None => Color::White,
+    }
 }
 
 /// Formats an order ID for display (truncates to 8 chars).
@@ -183,5 +195,15 @@ mod premium_tests {
         assert_eq!(format_premium(2), ("+2%".to_string(), Color::Green));
         assert_eq!(format_premium(-3), ("-3%".to_string(), Color::Red));
         assert_eq!(format_premium(0), ("0%".to_string(), Color::Gray));
+    }
+
+    #[test]
+    fn dispute_status_color_matches_lifecycle() {
+        assert_eq!(dispute_status_color(Some("in-progress")), Color::Green);
+        assert_eq!(dispute_status_color(Some("seller-refunded")), Color::Red);
+        assert_eq!(dispute_status_color(Some("settled")), Color::Green);
+        assert_eq!(dispute_status_color(Some("initiated")), Color::Yellow);
+        assert_eq!(dispute_status_color(None), Color::White);
+        assert_eq!(dispute_status_color(Some("unknown")), Color::White);
     }
 }

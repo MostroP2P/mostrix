@@ -3,7 +3,7 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
-    execute_admin_add_solver, execute_finalize_dispute, BondSlashChoice,
+    execute_admin_add_solver, execute_finalize_dispute, AdminFinalizeAck, BondSlashChoice,
 };
 use uuid::Uuid;
 
@@ -175,10 +175,18 @@ pub(crate) fn execute_finalize_dispute_action(
         )
         .await
         {
-            Ok(_) => {
-                let _ = result_tx.send(OperationResult::Info(
-                    bond.finalize_success_message(dispute_id, is_settle),
-                ));
+            Ok(ack) => {
+                let msg = match ack {
+                    AdminFinalizeAck::Confirmed => {
+                        bond.finalize_success_message(dispute_id, is_settle)
+                    }
+                    AdminFinalizeAck::AlreadyCooperativelyCanceled => {
+                        format!(
+                            "Dispute finalized\n\nOutcome:\nCooperative cancellation accepted — seller refunded\n\nDispute ID:\n{dispute_id}"
+                        )
+                    }
+                };
+                let _ = result_tx.send(OperationResult::Info(msg));
             }
             Err(e) => {
                 log::error!("Failed to finalize dispute: {}", e);

@@ -983,6 +983,40 @@ impl AdminDispute {
         Ok(dispute)
     }
 
+    /// Get a taken dispute by its Mostro dispute UUID (`admin_disputes.dispute_id`).
+    pub async fn get_by_dispute_id(
+        pool: &SqlitePool,
+        dispute_id: &str,
+    ) -> Result<Option<AdminDispute>> {
+        let mut dispute = sqlx::query_as::<_, AdminDispute>(
+            r#"SELECT * FROM admin_disputes WHERE dispute_id = ? LIMIT 1"#,
+        )
+        .bind(dispute_id)
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(ref mut dispute) = dispute {
+            dispute.deserialize_user_info();
+        }
+
+        Ok(dispute)
+    }
+
+    /// Dispute UUIDs still locally `in-progress` (targeted kind-38386 reconcile).
+    pub async fn list_in_progress_dispute_ids(pool: &SqlitePool) -> Result<Vec<String>> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            r#"SELECT dispute_id FROM admin_disputes
+               WHERE status = ?
+                 AND dispute_id IS NOT NULL
+                 AND dispute_id != ''
+               ORDER BY dispute_id"#,
+        )
+        .bind(DisputeStatus::InProgress.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     /// Helper method to deserialize JSON UserInfo fields
     fn deserialize_user_info(&mut self) {
         if let Some(ref json_str) = self.initiator_info {
@@ -1057,14 +1091,34 @@ impl AdminDispute {
         Ok(())
     }
 
-    /// Check if the dispute is finalized (Settled, SellerRefunded, or Released)
+    /// Advance a taken dispute to `status` by Mostro dispute UUID.
     ///
-    /// A finalized dispute cannot have further actions taken on it.
-    pub fn is_finalized(&self) -> bool {
+    /// No-op (returns `false`) when the row is missing or already finalized, so a
+    /// later `seller-refunded` event cannot overwrite `settled`.
+    pub async fn set_status_by_dispute_id(
+        pool: &SqlitePool,
+        dispute_id: &str,
+        status: DisputeStatus,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE admin_disputes SET status = ?
+               WHERE dispute_id = ?
+                 AND (status IS NULL OR status NOT IN (?, ?, ?))"#,
+        )
+        .bind(status.to_string())
+        .bind(dispute_id)
+        .bind(DisputeStatus::Settled.to_string())
+        .bind(DisputeStatus::SellerRefunded.to_string())
+        .bind(DisputeStatus::Released.to_string())
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Whether a kebab-case dispute status is terminal (Settled, SellerRefunded, Released).
+    pub fn is_terminal_status(status: &str) -> bool {
         use std::str::FromStr;
-        self.status
-            .as_deref()
-            .and_then(|s| DisputeStatus::from_str(s).ok())
+        DisputeStatus::from_str(status)
             .map(|s| {
                 matches!(
                     s,
@@ -1074,6 +1128,13 @@ impl AdminDispute {
                 )
             })
             .unwrap_or(false)
+    }
+
+    /// Check if the dispute is finalized (Settled, SellerRefunded, or Released)
+    ///
+    /// A finalized dispute cannot have further actions taken on it.
+    pub fn is_finalized(&self) -> bool {
+        self.status.as_deref().is_some_and(Self::is_terminal_status)
     }
 
     /// Check if AdminSettle action can be performed on this dispute
