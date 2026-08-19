@@ -263,82 +263,175 @@ fn handle_user_order_chat_input(
     None
 }
 
-/// Handle clipboard copy for invoice
-fn handle_clipboard_copy(invoice: String) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, prefer arboard (system clipboard) but run it off the UI thread.
-        // Some clipboard backends can emit warnings to stderr; silence stderr during the call
-        // to avoid corrupting the TUI.
-        std::thread::spawn(move || {
-            // Needed for `SetExtLinux::wait`. It keeps this thread alive serving the selection
-            // until another app takes the clipboard ownership; otherwhise the copied text is lost
-            // as soon as the thread exists. See the documentation of `SetExtLinux::wait` for
-            // details.
-            use arboard::SetExtLinux;
-            let copy_result = {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::io::AsRawFd;
-                    let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
-                    let devnull = std::fs::File::open("/dev/null");
-                    if saved_stderr >= 0 {
-                        if let Ok(devnull) = devnull {
-                            unsafe {
-                                let _ = libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
-                            }
-                        }
-                    }
-
-                    let r = match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
-                        Err(e) => Err(e),
-                    };
-
-                    if saved_stderr >= 0 {
-                        unsafe {
-                            let _ = libc::dup2(saved_stderr, libc::STDERR_FILENO);
-                            let _ = libc::close(saved_stderr);
-                        }
-                    }
-                    r
-                }
-                #[cfg(not(unix))]
-                {
-                    match arboard::Clipboard::new() {
-                        Ok(mut clipboard) => clipboard.set().wait().text(invoice),
-                        Err(e) => Err(e),
-                    }
-                }
-            };
-
-            match copy_result {
-                Ok(_) => log::info!("Invoice copied to clipboard"),
-                Err(e) => log::warn!("Failed to copy invoice to clipboard: {}", e),
+/// Reset the Shift+K Shared key disclosure popup's "copied" indicator on any
+/// key other than an unmodified `c`/`C`. Ctrl+C (Observer clear-all / generic
+/// clear shortcuts elsewhere) must also clear the indicator, so it is treated
+/// the same as any other non-copy key. Mirrors the invoice-copy indicator
+/// reset above.
+fn reset_disclosure_copied_indicator(mode: &mut UiMode, key_event: &KeyEvent) {
+    if let UiMode::OperationResult(ref mut result) = mode {
+        if let OperationResult::ConversationDisclosure {
+            copied_to_clipboard,
+            ..
+        } = result.as_mut()
+        {
+            let is_unmodified_copy_key =
+                matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                    && !key_event.modifiers.contains(KeyModifiers::CONTROL);
+            if !is_unmodified_copy_key {
+                *copied_to_clipboard = false;
             }
-        });
-        true
+        }
+    }
+}
+
+/// Copy the disclosed Shared key (`K_conv`) to the clipboard when the Shift+K
+/// disclosure popup is open, updating its "copied" indicator.
+///
+/// Only `conv_hex` (the Shared key) is ever copied — the signing key itself
+/// is never disclosed. Returns `true` if the popup was open and handled the key.
+fn copy_disclosed_shared_key_if_open(mode: &mut UiMode) -> bool {
+    copy_disclosed_shared_key_if_open_with(mode, handle_clipboard_copy)
+}
+
+/// Testable core of [`copy_disclosed_shared_key_if_open`]; `copy_fn` is injected
+/// so tests can assert on both success and failure without touching the real
+/// system clipboard.
+fn copy_disclosed_shared_key_if_open_with(
+    mode: &mut UiMode,
+    copy_fn: impl FnOnce(String) -> bool,
+) -> bool {
+    if let UiMode::OperationResult(ref mut result) = mode {
+        if let OperationResult::ConversationDisclosure {
+            conv_hex,
+            copied_to_clipboard,
+        } = result.as_mut()
+        {
+            *copied_to_clipboard = copy_fn(conv_hex.clone());
+            return true;
+        }
+    }
+    false
+}
+
+/// Silence stderr while running a clipboard operation so backend warnings do
+/// not corrupt the TUI.
+#[cfg(unix)]
+fn with_stderr_silenced<T>(operation: impl FnOnce() -> T) -> T {
+    use std::os::unix::io::AsRawFd;
+
+    let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+    if saved_stderr >= 0 {
+        if let Ok(devnull) = std::fs::File::open("/dev/null") {
+            unsafe {
+                let _ = libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
+            }
+        }
     }
 
-    // Non-Linux: clipboard ops can still block; run off UI thread.
-    #[cfg(not(target_os = "linux"))]
-    {
-        std::thread::spawn(move || {
-            let copy_result = match arboard::Clipboard::new() {
-                Ok(mut clipboard) => clipboard.set_text(invoice),
-                Err(e) => Err(e),
-            };
+    let result = operation();
 
-            match copy_result {
-                Ok(_) => {
-                    log::info!("Invoice copied to clipboard");
+    if saved_stderr >= 0 {
+        unsafe {
+            let _ = libc::dup2(saved_stderr, libc::STDERR_FILENO);
+            let _ = libc::close(saved_stderr);
+        }
+    }
+
+    result
+}
+
+/// Linux/X11/Wayland clipboard ownership is held by the process that wrote the
+/// selection; drop the `Clipboard` and the paste target may see empty data. Run
+/// the initial write on a background thread, report its result to the caller,
+/// then keep that thread alive with `SetExtLinux::wait` until another app
+/// replaces the selection (same pattern as the pre-#134 invoice copy path).
+#[cfg(target_os = "linux")]
+fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<bool>) {
+    use arboard::SetExtLinux;
+
+    let copy_result = {
+        #[cfg(unix)]
+        {
+            with_stderr_silenced(|| match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    let write_result = clipboard.set().text(text.clone());
+                    let _ = result_tx.send(write_result.is_ok());
+                    if write_result.is_ok() {
+                        let _ = clipboard.set().wait().text(text);
+                    }
+                    write_result
                 }
                 Err(e) => {
-                    log::warn!("Failed to copy invoice to clipboard: {}", e);
+                    let _ = result_tx.send(false);
+                    Err(e)
+                }
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    let write_result = clipboard.set().text(text.clone());
+                    let _ = result_tx.send(write_result.is_ok());
+                    if write_result.is_ok() {
+                        let _ = clipboard.set().wait().text(text);
+                    }
+                    write_result
+                }
+                Err(e) => {
+                    let _ = result_tx.send(false);
+                    Err(e)
                 }
             }
-        });
-        true
+        }
+    };
+
+    match copy_result {
+        Ok(_) => log::info!("Copied to clipboard"),
+        Err(e) => log::warn!("Failed to copy to clipboard: {}", e),
+    }
+}
+
+/// Handle clipboard copy for text (invoice, Shared key, etc.)
+///
+/// Returns whether the write actually succeeded — `copied_to_clipboard` at the
+/// call site should only be set to `true` when this returns `true`, not merely
+/// because a copy attempt was made. On Linux the write runs on a background
+/// thread that keeps serving the selection after the result is reported.
+fn handle_clipboard_copy(text: String) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
+        rx.recv().unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let copy_result = {
+            #[cfg(unix)]
+            {
+                with_stderr_silenced(|| {
+                    arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+                })
+            }
+            #[cfg(not(unix))]
+            {
+                arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+            }
+        };
+
+        match copy_result {
+            Ok(_) => {
+                log::info!("Copied to clipboard");
+                true
+            }
+            Err(e) => {
+                log::warn!("Failed to copy to clipboard: {}", e);
+                false
+            }
+        }
     }
 }
 
@@ -574,7 +667,7 @@ pub fn handle_key_event(
         if let Some(text) = read_clipboard_text_best_effort() {
             let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
             if !filtered.is_empty() {
-                app.observer_active_input_mut().push_str(&filtered);
+                app.observer_shared_key_input.push_str(&filtered);
                 return Some(true);
             }
         }
@@ -999,6 +1092,9 @@ pub fn handle_key_event(
         }
     }
 
+    // Same "copied" indicator reset for the Shift+K Shared key disclosure popup.
+    reset_disclosure_copied_indicator(&mut app.mode, &key_event);
+
     // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
     // Check these BEFORE handle_admin_chat_input to prevent interception
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -1135,7 +1231,7 @@ pub fn handle_key_event(
                     }
                     let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
                         app.mode = UiMode::operation_result(OperationResult::Info(
-                            "Select an order to reveal K_conv.".to_string(),
+                            "Select an order to reveal the Shared key.".to_string(),
                         ));
                         return Some(true);
                     };
@@ -1158,18 +1254,19 @@ pub fn handle_key_event(
                                     trade_keys.as_ref(),
                                     order.counterparty_pubkey.as_deref(),
                                 ) {
-                                    Some((conv, sign_pk)) => OperationResult::Info(format!(
-                                        "K_conv (read-only grant for solvers):\n{conv}\n\n\
-pub(K_sign) optional locator:\n{sign_pk}\n\n\
-Disclose K_conv only. Never share the K_sign secret."
-                                    )),
+                                    Some((conv, _sign_pk)) => {
+                                        OperationResult::ConversationDisclosure {
+                                            conv_hex: conv,
+                                            copied_to_clipboard: false,
+                                        }
+                                    }
                                     None => OperationResult::Error(
-                                        "No conversation key for this order yet.".to_string(),
+                                        "No Shared key for this order yet.".to_string(),
                                     ),
                                 }
                             }
                             Err(e) => OperationResult::Error(format!(
-                                "Could not load order for K_conv: {e}"
+                                "Could not load order for Shared key: {e}"
                             )),
                         };
                         let _ = tx.send(result);
@@ -1191,8 +1288,8 @@ Disclose K_conv only. Never share the K_sign secret."
         return Some(result);
     }
 
-    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the focused field.
-    // Skip when a modal owns input so we don't edit K_conv / pub(K_sign) behind an overlay.
+    // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the field.
+    // Skip when a modal owns input so we don't edit the Shared key behind an overlay.
     if app.observer_inputs_editable() {
         let is_ctrl = key_event
             .modifiers
@@ -1200,11 +1297,11 @@ Disclose K_conv only. Never share the K_sign secret."
         if !is_ctrl {
             match code {
                 KeyCode::Char(c) => {
-                    app.observer_active_input_mut().push(c);
+                    app.observer_shared_key_input.push(c);
                     return Some(true);
                 }
                 KeyCode::Backspace => {
-                    app.observer_active_input_mut().pop();
+                    app.observer_shared_key_input.pop();
                     return Some(true);
                 }
                 _ => {}
@@ -1458,6 +1555,16 @@ Disclose K_conv only. Never share the K_sign secret."
                 return Some(true);
             }
 
+            // Handle copy Shared key (K_conv) for the Shift+K disclosure popup. Only
+            // the Shared key is copyable — the signing key itself is never disclosed.
+            if !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+                && copy_disclosed_shared_key_if_open(&mut app.mode)
+            {
+                return Some(true);
+            }
+
             // Handle copy invoice for PayInvoice / PayBondInvoice notifications
             if let UiMode::NewMessageNotification(
                 ref notification,
@@ -1488,9 +1595,7 @@ Disclose K_conv only. Never share the K_sign secret."
 #[cfg(test)]
 mod key_handler_tests {
     use super::*;
-    use crate::ui::{
-        InvoiceInputState, InvoiceNotificationActionSelection, ObserverInputField, UserRole,
-    };
+    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, UserRole};
     use crossterm::event::KeyModifiers;
 
     #[test]
@@ -1621,14 +1726,13 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn observer_tab_toggles_k_conv_and_sign_locator_focus() {
+    fn observer_tab_ignores_tab_and_backtab_with_a_single_input_field() {
         let mut app = AppState::new(UserRole::Admin);
         app.active_tab = Tab::Admin(AdminTab::Observer);
-        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
+        app.observer_shared_key_input = "abc".to_string();
         handle_tab_navigation(KeyCode::Tab, &mut app);
-        assert_eq!(app.observer_input_focus, ObserverInputField::SignAuthor);
         handle_tab_navigation(KeyCode::BackTab, &mut app);
-        assert_eq!(app.observer_input_focus, ObserverInputField::ConvKey);
+        assert_eq!(app.observer_shared_key_input, "abc");
     }
 
     #[test]
@@ -1658,5 +1762,118 @@ mod key_handler_tests {
             state.action_selection,
             InvoiceNotificationActionSelection::Primary
         );
+    }
+
+    fn disclosure_mode(copied_to_clipboard: bool) -> UiMode {
+        UiMode::operation_result(OperationResult::ConversationDisclosure {
+            conv_hex: "a".repeat(64),
+            copied_to_clipboard,
+        })
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn copy_disclosed_shared_key_sets_copied_flag_when_the_write_succeeds() {
+        let mut mode = disclosure_mode(false);
+        assert!(copy_disclosed_shared_key_if_open_with(&mut mode, |_| true));
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(*copied_to_clipboard, "C should mark the Shared key copied"),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_disclosed_shared_key_leaves_flag_false_when_the_write_fails() {
+        let mut mode = disclosure_mode(false);
+        assert!(
+            copy_disclosed_shared_key_if_open_with(&mut mode, |_| false),
+            "the popup was still open and handled the key even though the copy failed"
+        );
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(
+                !*copied_to_clipboard,
+                "a failed clipboard write must not report success"
+            ),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_disclosed_shared_key_ignores_other_modes() {
+        let mut mode = UiMode::operation_result(OperationResult::Info("hi".to_string()));
+        assert!(
+            !copy_disclosed_shared_key_if_open_with(&mut mode, |_| true),
+            "generic Info popup must not be treated as a Shared key copy target"
+        );
+    }
+
+    #[test]
+    fn disclosure_copied_indicator_resets_on_keys_other_than_c() {
+        let mut mode = disclosure_mode(true);
+        reset_disclosure_copied_indicator(&mut mode, &key(KeyCode::Esc));
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(
+                !*copied_to_clipboard,
+                "non-C keys must clear the copied indicator"
+            ),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disclosure_copied_indicator_survives_c_key() {
+        let mut mode = disclosure_mode(true);
+        reset_disclosure_copied_indicator(&mut mode, &key(KeyCode::Char('c')));
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(*copied_to_clipboard, "C key must not clear the indicator"),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disclosure_copied_indicator_clears_on_ctrl_c() {
+        let mut mode = disclosure_mode(true);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        reset_disclosure_copied_indicator(&mut mode, &ctrl_c);
+        let UiMode::OperationResult(result) = &mode else {
+            panic!("expected OperationResult mode");
+        };
+        match result.as_ref() {
+            OperationResult::ConversationDisclosure {
+                copied_to_clipboard,
+                ..
+            } => assert!(
+                !*copied_to_clipboard,
+                "Ctrl+C must clear the indicator consistently with the Observer clear-all shortcut"
+            ),
+            other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
     }
 }

@@ -24,23 +24,6 @@ use crate::ui::user_state::UserMode;
 use crate::util::{transport_from_instance, MostroInstanceInfo};
 use nostr_sdk::prelude::Keys;
 
-/// Which Observer input has keyboard / paste focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ObserverInputField {
-    #[default]
-    ConvKey,
-    SignAuthor,
-}
-
-impl ObserverInputField {
-    pub fn toggle(self) -> Self {
-        match self {
-            Self::ConvKey => Self::SignAuthor,
-            Self::SignAuthor => Self::ConvKey,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum UiMode {
     // Shared modes (available to both user and admin)
@@ -254,10 +237,6 @@ pub struct AppState {
     pub sending_attachment_order_id: Option<String>,
     /// Observer mode: disclosed `K_conv` as 64-char hex (read-only grant).
     pub observer_shared_key_input: String,
-    /// Observer mode: optional `pub(K_sign)` locator (hex or npub) for `authors` filter.
-    pub observer_sign_pubkey_input: String,
-    /// Observer mode: which input receives typing and paste.
-    pub observer_input_focus: ObserverInputField,
     /// Observer mode: chat messages fetched from relays for the pasted `K_conv`.
     pub observer_messages: Vec<DisputeChatMessage>,
     /// Observer mode: scroll state for chat messages.
@@ -357,8 +336,6 @@ impl AppState {
             user_send_attachment_explorer: None,
             sending_attachment_order_id: None,
             observer_shared_key_input: String::new(),
-            observer_sign_pubkey_input: String::new(),
-            observer_input_focus: ObserverInputField::ConvKey,
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
             observer_scroll_tracker: None,
@@ -386,14 +363,7 @@ impl AppState {
         self.mostro_info = info;
     }
 
-    pub fn observer_active_input_mut(&mut self) -> &mut String {
-        match self.observer_input_focus {
-            ObserverInputField::ConvKey => &mut self.observer_shared_key_input,
-            ObserverInputField::SignAuthor => &mut self.observer_sign_pubkey_input,
-        }
-    }
-
-    /// True when Observer `K_conv` / `pub(K_sign)` fields should accept typing and paste.
+    /// True when the Observer Shared key field should accept typing and paste.
     ///
     /// False while a modal (`HelpPopup`, `OperationResult`, save-attachment, …) owns input.
     pub fn observer_inputs_editable(&self) -> bool {
@@ -428,9 +398,6 @@ impl AppState {
         self.bump_observer_fetch_generation();
         self.observer_shared_key_input.zeroize();
         self.observer_shared_key_input.clear();
-        self.observer_sign_pubkey_input.zeroize();
-        self.observer_sign_pubkey_input.clear();
-        self.observer_input_focus = ObserverInputField::ConvKey;
 
         for msg in &mut self.observer_messages {
             msg.content.zeroize();

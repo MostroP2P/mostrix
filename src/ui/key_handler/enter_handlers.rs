@@ -1208,34 +1208,26 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         }
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
-        // Validate K_conv, then fetch observer chat authenticated against
-        // known admin/party inner signers from taken disputes.
+        // Validate the Shared key (K_conv), then fetch observer chat authenticated
+        // against known admin/party inner signers from taken disputes.
         let key_str = app.observer_shared_key_input.trim().to_string();
         if key_str.is_empty() {
-            let msg = "K_conv is required".to_string();
+            let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
         if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
-            let msg = "K_conv must be a valid 64-char hex secret (32 bytes)".to_string();
+            let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
-        let sign_pubkey = match crate::util::chat_utils::parse_optional_sign_pubkey(
-            &app.observer_sign_pubkey_input,
-        ) {
-            Ok(pk) => pk,
-            Err(e) => {
-                let msg = e.to_string();
-                app.observer_error = Some(msg.clone());
-                app.mode = UiMode::operation_result(OperationResult::Error(msg));
-                return;
-            }
-        };
+        // No UI field feeds an optional Signer pubkey locator at the moment, so the
+        // `authors` filter in `fetch_observer_chat` stays unrestricted.
+        let sign_pubkey = None;
 
         // Spawn async fetch via the order_result channel
         let generation = app.begin_observer_fetch();

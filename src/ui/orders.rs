@@ -200,6 +200,15 @@ pub enum OperationResult {
         prepared: crate::ui::helpers::PreparedOrderChatAttachment,
         error: String,
     },
+    /// My Trades Shift+K result: read-only chat disclosure for a solver.
+    ///
+    /// `conv_hex` is the disclosed `K_conv` secret (labelled "Shared key" in
+    /// the UI) — the only field shown, and the only one copyable (Press `C`).
+    /// The signing key itself is never disclosed.
+    ConversationDisclosure {
+        conv_hex: String,
+        copied_to_clipboard: bool,
+    },
 }
 
 /// Result of async Lightning address LNURL verification and save (settings flow; not order/dispute).
