@@ -60,6 +60,26 @@ async fn test_user_reserve_next_trade_index() {
 }
 
 #[tokio::test]
+async fn test_last_trade_index_monotonic_under_out_of_order_update() {
+    let pool = create_test_db().await.unwrap();
+    let mnemonic = test_mnemonic();
+
+    User::new(mnemonic, &pool).await.unwrap();
+
+    let (idx1, _) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
+    let (idx2, _) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
+    assert_eq!(idx1, 2);
+    assert_eq!(idx2, 3);
+
+    // Simulates delayed save_order calling update_last_trade_index for an earlier reservation.
+    User::update_last_trade_index(&pool, idx1).await.unwrap();
+
+    let (idx3, _) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
+    assert_ne!(idx3, idx2, "counter must not regress and reuse a live trade index");
+    assert_eq!(idx3, 4);
+}
+
+#[tokio::test]
 async fn test_user_get_identity_keys() {
     let pool = create_test_db().await.unwrap();
     let mnemonic = test_mnemonic();

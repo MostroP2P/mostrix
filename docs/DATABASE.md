@@ -158,15 +158,9 @@ The `users` table is critical for:
 #### Data Persistence
 
 - **Mnemonic**: Stored in plain text (encrypted at the filesystem level if the OS supports it). This is necessary for key derivation.
-- **Trade Index**: Updated every time a new order is created or taken to ensure no key reuse.
+- **Trade Index**: Reserved atomically via `User::reserve_next_trade_index` before create/take/`NextTrade` network I/O; `save_order` persists the order row only and does not rewrite the counter.
 
-**Source**: `src/util/db_utils.rs:25`
-
-```25:27:src/util/db_utils.rs
-                if let Err(e) = User::update_last_trade_index(pool, trade_index).await {
-                    log::error!("Failed to update user: {}", e);
-                }
-```
+**Source**: `src/models.rs` (`User::reserve_next_trade_index`), `src/util/db_utils.rs` (`save_order`)
 
 #### 2. `orders` Table
 
@@ -460,7 +454,7 @@ The database contains highly sensitive information:
 1. **User Creation**: `User::new()` - Creates a new user with a generated mnemonic
 2. **User Retrieval**: `User::get()` - Gets the single user record
 3. **Trade Index Reservation**: `User::reserve_next_trade_index()` - Atomically increments and returns the next trade index and derived keys
-4. **Trade Index Update**: `User::update_last_trade_index()` - Sets the counter to an explicit value (e.g. after `save_order`)
+4. **Trade Index Update**: `User::update_last_trade_index()` - Monotonic raise only (`MAX`); avoids regressing the counter on stale writes
 5. **Order Creation**: `Order::new()` - Creates or updates an order record
 6. **Order Retrieval**: `Order::get_by_id()` - Retrieves an order by ID
 

@@ -116,12 +116,14 @@ impl User {
         Ok(())
     }
 
-    /// Set `last_trade_index` to an explicit value (e.g. when persisting an order in `save_order`).
+    /// Raise `last_trade_index` to at least `idx` without decreasing the counter.
     ///
-    /// To allocate the next index before starting a trade, use [`Self::reserve_next_trade_index`].
+    /// Prefer [`Self::reserve_next_trade_index`] before starting a trade; trade flows
+    /// already commit the index at reservation time and must not write a stale value
+    /// after a delayed order save.
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
         sqlx::query(
-            r#"UPDATE users SET last_trade_index = ? WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,
+            r#"UPDATE users SET last_trade_index = MAX(COALESCE(last_trade_index, 0), ?) WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,
         )
         .bind(idx)
         .execute(pool)

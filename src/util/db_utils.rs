@@ -3,7 +3,7 @@ use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::sqlite::SqlitePool;
 
-use crate::models::{Order, User};
+use crate::models::Order;
 
 /// Delete an order row from the local database.
 ///
@@ -47,15 +47,6 @@ pub async fn save_order(
             log::info!("Order {} created", order_id);
         } else {
             log::warn!("Warning: The newly created order has no ID.");
-        }
-
-        match User::get(pool).await {
-            Ok(_user) => {
-                if let Err(e) = User::update_last_trade_index(pool, trade_index).await {
-                    log::error!("Failed to update user: {}", e);
-                }
-            }
-            Err(e) => log::error!("Failed to get user: {}", e),
         }
     }
     Ok(())
