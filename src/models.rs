@@ -1376,7 +1376,11 @@ mod admin_dispute_new_tests {
         .expect("admin_disputes table");
     }
 
-    fn solver_dispute_info(order_id: Uuid, status: &str, payment_method: &str) -> SolverDisputeInfo {
+    fn solver_dispute_info(
+        order_id: Uuid,
+        status: &str,
+        payment_method: &str,
+    ) -> SolverDisputeInfo {
         SolverDisputeInfo {
             id: order_id,
             kind: "sell".to_string(),
@@ -1450,7 +1454,10 @@ mod admin_dispute_new_tests {
             .expect("row still present");
         assert!(unchanged.is_finalized());
         assert_eq!(unchanged.dispute_id, "dispute-final-1");
-        assert_eq!(unchanged.payment_method, "ORIGINAL zelle victim@example.com");
+        assert_eq!(
+            unchanged.payment_method,
+            "ORIGINAL zelle victim@example.com"
+        );
         assert_eq!(
             unchanged.buyer_invoice.as_deref(),
             Some("lnbc-settled-buyer-invoice")
@@ -1481,7 +1488,11 @@ mod admin_dispute_new_tests {
 
         AdminDispute::new(
             &pool,
-            solver_dispute_info(order_id, &DisputeStatus::InProgress.to_string(), "updated pm"),
+            solver_dispute_info(
+                order_id,
+                &DisputeStatus::InProgress.to_string(),
+                "updated pm",
+            ),
             "dispute-new".to_string(),
             Some("EUR".to_string()),
             None,
