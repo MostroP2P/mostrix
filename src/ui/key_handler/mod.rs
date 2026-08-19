@@ -697,7 +697,7 @@ fn handle_order_filter_popup_key(app: &mut AppState, code: KeyCode, key_event: &
             app.mode = UiMode::OrderFilters(state);
         }
         KeyCode::Char('x') | KeyCode::Char('X')
-            if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+            if key_event.modifiers.contains(KeyModifiers::SHIFT) =>
         {
             state.filters = OrderBookFilters::default();
             app.mode = UiMode::OrderFilters(state);
@@ -1938,6 +1938,34 @@ mod key_handler_tests {
                 .is_none(),
                 "{action:?} must be ignored while waiting"
             );
+        }
+    }
+
+    #[test]
+    fn shift_x_clears_order_filter_popup_state() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+            filters: OrderBookFilters {
+                fiat_code: "MXN".to_string(),
+                payment_method: "cash".to_string(),
+                ..Default::default()
+            },
+            focused: OrderBookFilterField::FiatCurrency,
+        });
+
+        let handled = handle_order_filter_popup_key(
+            &mut app,
+            KeyCode::Char('X'),
+            &KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.filters.fiat_code.is_empty());
+                assert!(state.filters.payment_method.is_empty());
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
         }
     }
 
