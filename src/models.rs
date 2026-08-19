@@ -881,6 +881,14 @@ impl AdminDispute {
             };
 
             if is_unique_violation {
+                let existing = Self::get_by_id(pool, &dispute.id).await?;
+                if existing.is_finalized() {
+                    return Err(anyhow::anyhow!(
+                        "Refusing to overwrite finalized admin dispute for order {} (status: {})",
+                        dispute.id,
+                        existing.status.as_deref().unwrap_or("unknown")
+                    ));
+                }
                 dispute.update_db(pool).await?;
             } else {
                 return Err(e.into());
@@ -1003,6 +1011,22 @@ impl AdminDispute {
         }
 
         Ok(disputes)
+    }
+
+    /// Get a dispute by order ID when present.
+    pub async fn try_get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<AdminDispute>> {
+        let mut dispute = sqlx::query_as::<_, AdminDispute>(
+            r#"SELECT * FROM admin_disputes WHERE id = ? LIMIT 1"#,
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(ref mut dispute) = dispute {
+            dispute.deserialize_user_info();
+        }
+
+        Ok(dispute)
     }
 
     /// Get a dispute by ID
@@ -1339,5 +1363,186 @@ mod upsert_from_small_order_dm_tests {
             updated.trade_keys.as_deref(),
             Some(stored_keys.secret_key().to_secret_hex().as_str())
         );
+    }
+}
+
+#[cfg(test)]
+mod admin_dispute_new_tests {
+    use super::AdminDispute;
+    use mostro_core::prelude::{DisputeStatus, SolverDisputeInfo};
+    use uuid::Uuid;
+
+    async fn create_admin_disputes_table(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE admin_disputes (
+                id TEXT PRIMARY KEY,
+                dispute_id TEXT NOT NULL,
+                kind TEXT,
+                status TEXT,
+                hash TEXT,
+                preimage TEXT,
+                order_previous_status TEXT,
+                initiator_pubkey TEXT NOT NULL,
+                buyer_pubkey TEXT,
+                seller_pubkey TEXT,
+                initiator_full_privacy INTEGER NOT NULL,
+                counterpart_full_privacy INTEGER NOT NULL,
+                initiator_info TEXT,
+                counterpart_info TEXT,
+                premium INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                fiat_amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL,
+                fee INTEGER NOT NULL,
+                routing_fee INTEGER NOT NULL,
+                buyer_invoice TEXT,
+                invoice_held_at INTEGER,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                buyer_chat_last_seen INTEGER,
+                seller_chat_last_seen INTEGER,
+                buyer_shared_key_hex TEXT,
+                seller_shared_key_hex TEXT
+            );
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("admin_disputes table");
+    }
+
+    fn solver_dispute_info(
+        order_id: Uuid,
+        status: &str,
+        payment_method: &str,
+    ) -> SolverDisputeInfo {
+        SolverDisputeInfo {
+            id: order_id,
+            kind: "sell".to_string(),
+            status: status.to_string(),
+            hash: Some("hash-abc".to_string()),
+            preimage: None,
+            order_previous_status: "active".to_string(),
+            initiator_pubkey: "02".repeat(32),
+            buyer_pubkey: Some("03".repeat(32)),
+            seller_pubkey: Some("04".repeat(32)),
+            initiator_full_privacy: false,
+            counterpart_full_privacy: false,
+            initiator_info: None,
+            counterpart_info: None,
+            premium: 1,
+            payment_method: payment_method.to_string(),
+            amount: 50_000,
+            fiat_amount: 75,
+            fee: 250,
+            routing_fee: 3,
+            buyer_invoice: None,
+            invoice_held_at: 1_700_000_000,
+            taken_at: 1_700_000_100,
+            created_at: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn refuses_upsert_over_finalized_dispute() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, kind, status, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, buyer_invoice, invoice_held_at, taken_at, created_at
+            ) VALUES (?, 'dispute-final-1', 'sell', 'settled', ?, 0, 0, 1,
+                'ORIGINAL zelle victim@example.com', 50000, 75, 'USD', 250, 3,
+                'lnbc-settled-buyer-invoice', 1700000000, 1700000100, 1700000000)"#,
+        )
+        .bind(order_id.to_string())
+        .bind("02".repeat(32))
+        .execute(&pool)
+        .await
+        .expect("insert settled row");
+
+        let err = AdminDispute::new(
+            &pool,
+            solver_dispute_info(
+                order_id,
+                &DisputeStatus::InProgress.to_string(),
+                "REPLACED pm attacker@evil.example",
+            ),
+            "dispute-reattack-2".to_string(),
+            Some("USD".to_string()),
+            None,
+        )
+        .await
+        .expect_err("must refuse to overwrite finalized row");
+        assert!(
+            err.to_string().contains("finalized"),
+            "unexpected error: {err}"
+        );
+
+        let unchanged = AdminDispute::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("row still present");
+        assert!(unchanged.is_finalized());
+        assert_eq!(unchanged.dispute_id, "dispute-final-1");
+        assert_eq!(
+            unchanged.payment_method,
+            "ORIGINAL zelle victim@example.com"
+        );
+        assert_eq!(
+            unchanged.buyer_invoice.as_deref(),
+            Some("lnbc-settled-buyer-invoice")
+        );
+    }
+
+    #[tokio::test]
+    async fn allows_upsert_over_in_progress_dispute() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, kind, status, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, taken_at, created_at
+            ) VALUES (?, 'dispute-old', 'sell', 'in-progress', ?, 0, 0, 1,
+                'old pm', 50000, 75, 'USD', 250, 3, 1700000100, 1700000000)"#,
+        )
+        .bind(order_id.to_string())
+        .bind("02".repeat(32))
+        .execute(&pool)
+        .await
+        .expect("insert in-progress row");
+
+        AdminDispute::new(
+            &pool,
+            solver_dispute_info(
+                order_id,
+                &DisputeStatus::InProgress.to_string(),
+                "updated pm",
+            ),
+            "dispute-new".to_string(),
+            Some("EUR".to_string()),
+            None,
+        )
+        .await
+        .expect("in-progress upsert succeeds");
+
+        let updated = AdminDispute::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("row updated");
+        assert_eq!(updated.status.as_deref(), Some("in-progress"));
+        assert_eq!(updated.dispute_id, "dispute-new");
+        assert_eq!(updated.payment_method, "updated pm");
+        assert_eq!(updated.fiat_code, "EUR");
     }
 }
