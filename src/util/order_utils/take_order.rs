@@ -66,11 +66,8 @@ pub async fn take_order(
         .id
         .ok_or_else(|| anyhow::anyhow!("Order ID is missing"))?;
 
-    // Get user and trade keys
-    let user = User::get(pool).await?;
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 
     // Subscribe as early as possible for take-order flow so the first
     // Mostro response/event is not missed by the background DM listener.

@@ -63,10 +63,8 @@ sequenceDiagram
 
     User->>TUI: Fill form & confirm (Enter)
     TUI->>Client: send_new_order()
-    Client->>DB: Get user & last_trade_index
-    DB-->>Client: user data
-    Client->>TradeKey: Derive key (index + 1)
-    Client->>DB: Update last_trade_index
+    Client->>DB: reserve_next_trade_index (transaction)
+    DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct message (request_id, trade_index)
     Client->>IdentityKey: Sign Seal
     Client->>TradeKey: Sign Rumor
@@ -105,15 +103,13 @@ sequenceDiagram
 The user fills out the order form and confirms with **Enter** on the \"Create New Order\" form. The UI switches to `WaitingForMostro` mode.
 
 ### 2. Trade Key Derivation
-**Source**: `src/util/order_utils/send_new_order.rs:84`
-```84:87:src/util/order_utils/send_new_order.rs
-    let user = User::get(pool).await?;
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+**Source**: `src/util/order_utils/send_new_order.rs:88`
+```88:89:src/util/order_utils/send_new_order.rs
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 ```
 
-A fresh trade key is derived using the next available index. This ensures privacy by using a unique key for each order.
+A fresh trade key is derived using the next reserved index. Reservation happens in a DB transaction before any DM is sent; a failed commit aborts the flow.
 
 ### 3. Message Construction
 **Source**: `src/util/order_utils/send_new_order.rs:108`
@@ -207,10 +203,8 @@ sequenceDiagram
 
     User->>TUI: Select order & press Enter
     TUI->>Client: take_order(order_id)
-    Client->>DB: Get user & last_trade_index
-    DB-->>Client: user data
-    Client->>TradeKey: Derive new key (index + 1)
-    Client->>DB: Update last_trade_index
+    Client->>DB: reserve_next_trade_index (transaction)
+    DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct TakeOrder message
     Client->>NostrRelays: Subscribe + Publish NIP-59
     NostrRelays->>Mostro: Forward TakeOrder
@@ -233,14 +227,13 @@ sequenceDiagram
 The user navigates to an order in the Orders tab and presses `Enter`.
 
 ### 2. Trade Key Derivation
-**Source**: `src/util/order_utils/take_order.rs:66`
-```66:68:src/util/order_utils/take_order.rs
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+**Source**: `src/util/order_utils/take_order.rs:69`
+```69:70:src/util/order_utils/take_order.rs
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 ```
 
-A new trade key is derived for this specific trade interaction.
+A new trade key is reserved atomically for this specific trade interaction.
 
 ### 3. Message Construction
 **Source**: `src/util/order_utils/take_order.rs:77`
