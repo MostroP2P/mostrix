@@ -314,51 +314,115 @@ fn copy_disclosed_shared_key_if_open_with(
     false
 }
 
-/// Handle clipboard copy for text (invoice, Shared key, etc.)
-///
-/// Runs synchronously and returns whether the write actually succeeded —
-/// `copied_to_clipboard` at the call site should only be set to `true` when
-/// this returns `true`, not merely because a copy attempt was made.
-fn handle_clipboard_copy(text: String) -> bool {
-    // Some clipboard backends (e.g. on Linux) can emit warnings to stderr;
-    // silence stderr during the call to avoid corrupting the TUI.
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
-        let devnull = std::fs::File::open("/dev/null");
-        if saved_stderr >= 0 {
-            if let Ok(devnull) = devnull {
-                unsafe {
-                    let _ = libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
-                }
-            }
-        }
+/// Silence stderr while running a clipboard operation so backend warnings do
+/// not corrupt the TUI.
+#[cfg(unix)]
+fn with_stderr_silenced<T>(operation: impl FnOnce() -> T) -> T {
+    use std::os::unix::io::AsRawFd;
 
-        let result = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
-
-        if saved_stderr >= 0 {
+    let saved_stderr = unsafe { libc::dup(libc::STDERR_FILENO) };
+    if saved_stderr >= 0 {
+        if let Ok(devnull) = std::fs::File::open("/dev/null") {
             unsafe {
-                let _ = libc::dup2(saved_stderr, libc::STDERR_FILENO);
-                let _ = libc::close(saved_stderr);
-            }
-        }
-
-        match result {
-            Ok(_) => {
-                log::info!("Copied to clipboard");
-                true
-            }
-            Err(e) => {
-                log::warn!("Failed to copy to clipboard: {}", e);
-                false
+                let _ = libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
             }
         }
     }
 
-    #[cfg(not(unix))]
+    let result = operation();
+
+    if saved_stderr >= 0 {
+        unsafe {
+            let _ = libc::dup2(saved_stderr, libc::STDERR_FILENO);
+            let _ = libc::close(saved_stderr);
+        }
+    }
+
+    result
+}
+
+/// Linux/X11/Wayland clipboard ownership is held by the process that wrote the
+/// selection; drop the `Clipboard` and the paste target may see empty data. Run
+/// the initial write on a background thread, report its result to the caller,
+/// then keep that thread alive with `SetExtLinux::wait` until another app
+/// replaces the selection (same pattern as the pre-#134 invoice copy path).
+#[cfg(target_os = "linux")]
+fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<bool>) {
+    use arboard::SetExtLinux;
+
+    let copy_result = {
+        #[cfg(unix)]
+        {
+            with_stderr_silenced(|| match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    let write_result = clipboard.set().text(text.clone());
+                    let _ = result_tx.send(write_result.is_ok());
+                    if write_result.is_ok() {
+                        let _ = clipboard.set().wait().text(text);
+                    }
+                    write_result
+                }
+                Err(e) => {
+                    let _ = result_tx.send(false);
+                    Err(e)
+                }
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    let write_result = clipboard.set().text(text.clone());
+                    let _ = result_tx.send(write_result.is_ok());
+                    if write_result.is_ok() {
+                        let _ = clipboard.set().wait().text(text);
+                    }
+                    write_result
+                }
+                Err(e) => {
+                    let _ = result_tx.send(false);
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    match copy_result {
+        Ok(_) => log::info!("Copied to clipboard"),
+        Err(e) => log::warn!("Failed to copy to clipboard: {}", e),
+    }
+}
+
+/// Handle clipboard copy for text (invoice, Shared key, etc.)
+///
+/// Returns whether the write actually succeeded — `copied_to_clipboard` at the
+/// call site should only be set to `true` when this returns `true`, not merely
+/// because a copy attempt was made. On Linux the write runs on a background
+/// thread that keeps serving the selection after the result is reported.
+fn handle_clipboard_copy(text: String) -> bool {
+    #[cfg(target_os = "linux")]
     {
-        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
+        rx.recv().unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let copy_result = {
+            #[cfg(unix)]
+            {
+                with_stderr_silenced(|| {
+                    arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+                })
+            }
+            #[cfg(not(unix))]
+            {
+                arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+            }
+        };
+
+        match copy_result {
             Ok(_) => {
                 log::info!("Copied to clipboard");
                 true
