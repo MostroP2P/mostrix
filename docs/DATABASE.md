@@ -25,12 +25,13 @@ On first startup, Mostrix:
 
 1. Creates the `~/.mostrix/` directory if it doesn't exist
 2. Creates the SQLite database file
-3. Creates the necessary tables:
+3. Enables WAL journal mode and a 5s busy timeout (`configure_sqlite_pool`)
+4. Creates the necessary tables:
    - **User Mode Tables**: `users` and `orders`
    - **Admin Mode Tables**: `admin_disputes`
-4. Generates a new 12-word BIP-39 mnemonic if no user exists
-5. Creates the initial user record
-6. Runs database migrations for existing databases (if needed)
+5. Generates a new 12-word BIP-39 mnemonic if no user exists
+6. Creates the initial user record
+7. Runs database migrations for existing databases (if needed)
 
 **Source**: `src/db.rs:66`
 
@@ -143,7 +144,7 @@ CREATE TABLE IF NOT EXISTS users (
 |-------|------|-------------|
 | `i0_pubkey` | `char(64)` | Primary key. The public key derived from the identity key (index 0). Used as the unique identifier for the user. |
 | `mnemonic` | `TEXT` | The 12-word BIP-39 mnemonic phrase. **Critical**: This is the root of all key derivation. Must be kept secure. |
-| `last_trade_index` | `INTEGER` | The highest trade index that has been used. Used to ensure each new trade gets a unique key. Starts at `NULL` (treated as 0 or 1). |
+| `last_trade_index` | `INTEGER` | The highest trade index reserved for a trade. Ensures each new trade gets a unique key. Starts at `NULL`; reservation uses `none_base` (`1` for create/take, `0` for range `NextTrade`). |
 | `created_at` | `INTEGER` | Unix timestamp when the user record was created. |
 
 #### Purpose
@@ -381,23 +382,20 @@ When saving a dispute to the database, the following fields are validated:
 The relationship between `users.last_trade_index` and `orders.trade_keys` is critical:
 
 1. **Order Creation**: When creating a new order:
-   - `last_trade_index` is read from the `users` table
-   - A new trade key is derived using `trade_index = last_trade_index + 1`
-   - The trade keys are stored in the `orders` table
-   - `last_trade_index` is updated in the `users` table
+   - `User::reserve_next_trade_index` atomically increments `last_trade_index` in a transaction
+   - Trade keys are derived for the reserved index
+   - The trade keys are stored in the `orders` table when Mostro confirms
 
 2. **Trade Recovery**: On startup:
    - All orders are loaded from the `orders` table
    - Trade keys are retrieved for each active order
    - The client can decrypt messages and interact with active trades
 
-**Source**: `src/util/order_utils/send_new_order.rs:84`
+**Source**: `src/util/order_utils/send_new_order.rs:88`
 
-```84:87:src/util/order_utils/send_new_order.rs
-    let user = User::get(pool).await?;
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+```88:89:src/util/order_utils/send_new_order.rs
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 ```
 
 ## Message Recovery Strategy
@@ -461,9 +459,10 @@ The database contains highly sensitive information:
 
 1. **User Creation**: `User::new()` - Creates a new user with a generated mnemonic
 2. **User Retrieval**: `User::get()` - Gets the single user record
-3. **Trade Index Update**: `User::update_last_trade_index()` - Updates the trade index counter
-4. **Order Creation**: `Order::new()` - Creates or updates an order record
-5. **Order Retrieval**: `Order::get_by_id()` - Retrieves an order by ID
+3. **Trade Index Reservation**: `User::reserve_next_trade_index()` - Atomically increments and returns the next trade index and derived keys
+4. **Trade Index Update**: `User::update_last_trade_index()` - Sets the counter to an explicit value (e.g. after `save_order`)
+5. **Order Creation**: `Order::new()` - Creates or updates an order record
+6. **Order Retrieval**: `Order::get_by_id()` - Retrieves an order by ID
 
 **Source**: `src/models.rs` for all database operation implementations.
 

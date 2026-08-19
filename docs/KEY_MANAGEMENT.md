@@ -78,22 +78,23 @@ In this mode, Mostro cannot link the trade to your identity key. You operate ano
 - **Rumor (Kind 1)**: Signed by the **Trade Key (Index N)**.
 
 ## Trade Index Incrementation
-Whenever a user creates or takes an order, the `last_trade_index` is incremented and stored in the database.
+Whenever a user creates or takes an order, the next trade index is reserved atomically in the database before any network I/O.
 
-**Implementation**: `src/util/order_utils/take_order.rs:66`
-```66:68:src/util/order_utils/take_order.rs
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+**Implementation**: `src/util/order_utils/take_order.rs:69`
+```69:70:src/util/order_utils/take_order.rs
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 ```
+
+The reservation runs in a transaction (`User::reserve_next_trade_index` in `src/models.rs`); a failed commit (e.g. database locked) aborts the operation instead of reusing keys. The same helper is used in `send_new_order` (`none_base = 1`) and range-order `NextTrade` flows (`none_base = 0` in `execute_send_msg`).
 
 ## Database Persistence
 
 ### Derivation Logic
 The derivation logic for trade keys uses the `trade_index` as the child index in the derivation path.
 
-**Implementation**: `src/models.rs:86`
-```86:96:src/models.rs
+**Implementation**: `src/models.rs:165`
+```165:175:src/models.rs
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
         let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(

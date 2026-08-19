@@ -17,31 +17,14 @@ Range orders allow users to create orders with variable amounts within a specifi
 
 Before completing a range order trade, Mostrix must inform the Mostro daemon about the next trade key that will be used for the remaining amount. This is done via the `NextTrade` payload.
 
-**Source**: `src/util/order_utils/execute_send_msg.rs:17`
-```17:40:src/util/order_utils/execute_send_msg.rs
-        Action::FiatSent | Action::Release => {
-            // Check if this is a range order that needs NextTrade payload
-            if let (Some(min_amount), Some(max_amount)) = (order.min_amount, order.max_amount) {
-                if max_amount - order.fiat_amount >= min_amount {
-                    // This is a range order with remaining amount, create NextTrade payload
-                    let user = User::get(pool).await?;
-                    let next_trade_index = user.last_trade_index.unwrap_or(0) + 1;
-                    let next_trade_keys = user.derive_trade_keys(next_trade_index)?;
-
-                    // Update last trade index
-                    User::update_last_trade_index(pool, next_trade_index).await?;
+**Source**: `src/util/order_utils/execute_send_msg.rs:23`
+```23:28:src/util/order_utils/execute_send_msg.rs
+                    let (next_trade_index, next_trade_keys) =
+                        User::reserve_next_trade_index(pool, 0).await?;
 
                     Ok(Some(Payload::NextTrade(
                         next_trade_keys.public_key().to_string(),
                         next_trade_index as u32,
-                    )))
-                } else {
-                    Ok(None)
-                }
-            } else {
-                Ok(None)
-            }
-        }
 ```
 
 ## Range Order Logic
@@ -54,7 +37,7 @@ When completing a trade (`FiatSent` or `Release`):
 
 3. **Check if new order needed**:
    - If `remaining >= min_amount`: Create `NextTrade` payload with:
-     - Derive next trade key (increment `last_trade_index`)
+     - Reserve next trade key via `User::reserve_next_trade_index(pool, 0)`
      - Send the new trade key's public key and index to Mostro
      - Mostro will create a new pending order with the remaining amount
    - If `remaining < min_amount`: No new order is created (send `None` payload)
@@ -81,9 +64,8 @@ sequenceDiagram
     Client->>DB: Get order (fiat_amount = 250 remaining)
     Client->>Client: Calculate: 400 - 150 = 250 >= 100?
     alt Remaining >= min_amount
-        Client->>DB: Get user & last_trade_index
-        Client->>NextTradeKey: Derive new key (index + 1)
-        Client->>DB: Update last_trade_index
+        Client->>DB: reserve_next_trade_index (none_base=0)
+        DB-->>Client: next_trade_index, next_trade_keys
         Client->>Mostro: Send FiatSent/Release + NextTrade payload
         Note over Mostro: Create new pending order<br/>with remaining 250 USD<br/>using NextTrade key
     else Remaining < min_amount

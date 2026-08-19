@@ -43,6 +43,23 @@ async fn test_user_update_last_trade_index() {
 }
 
 #[tokio::test]
+async fn test_user_reserve_next_trade_index() {
+    let pool = create_test_db().await.unwrap();
+    let mnemonic = test_mnemonic();
+
+    User::new(mnemonic, &pool).await.unwrap();
+
+    let (idx1, keys1) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
+    assert_eq!(idx1, 2);
+    let (idx2, keys2) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
+    assert_eq!(idx2, 3);
+    assert_ne!(keys1.public_key(), keys2.public_key());
+
+    let user = User::get(&pool).await.unwrap();
+    assert_eq!(user.last_trade_index, Some(3));
+}
+
+#[tokio::test]
 async fn test_user_get_identity_keys() {
     let pool = create_test_db().await.unwrap();
     let mnemonic = test_mnemonic();

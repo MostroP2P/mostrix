@@ -116,6 +116,9 @@ impl User {
         Ok(())
     }
 
+    /// Set `last_trade_index` to an explicit value (e.g. when persisting an order in `save_order`).
+    ///
+    /// To allocate the next index before starting a trade, use [`Self::reserve_next_trade_index`].
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
         sqlx::query(
             r#"UPDATE users SET last_trade_index = ? WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,
@@ -124,6 +127,38 @@ impl User {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Atomically increment `last_trade_index` and derive keys for the new index.
+    ///
+    /// Runs read-modify-write inside a transaction so a failed commit (e.g. `SQLITE_BUSY`)
+    /// surfaces as an error instead of silently reusing an index. `none_base` is the value
+    /// treated as the previous index when `last_trade_index` is NULL (order flows use `1`,
+    /// range-order `NextTrade` uses `0`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction cannot be started, the user row cannot be read,
+    /// the index update fails, or key derivation fails.
+    pub async fn reserve_next_trade_index(
+        pool: &SqlitePool,
+        none_base: i64,
+    ) -> Result<(i64, Keys)> {
+        let mut tx = pool.begin().await?;
+        let user: User = sqlx::query_as(
+            r#"SELECT i0_pubkey, mnemonic, last_trade_index, created_at FROM users LIMIT 1"#,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let next_idx = user.last_trade_index.unwrap_or(none_base) + 1;
+        sqlx::query(r#"UPDATE users SET last_trade_index = ? WHERE i0_pubkey = ?"#)
+            .bind(next_idx)
+            .bind(&user.i0_pubkey)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let trade_keys = user.derive_trade_keys(next_idx)?;
+        Ok((next_idx, trade_keys))
     }
 
     pub async fn get_identity_keys(pool: &SqlitePool) -> Result<Keys> {

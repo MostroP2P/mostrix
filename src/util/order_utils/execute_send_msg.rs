@@ -20,12 +20,8 @@ async fn create_msg_payload(
             if let (Some(min_amount), Some(max_amount)) = (order.min_amount, order.max_amount) {
                 if max_amount - order.fiat_amount >= min_amount {
                     // This is a range order with remaining amount, create NextTrade payload
-                    let user = User::get(pool).await?;
-                    let next_trade_index = user.last_trade_index.unwrap_or(0) + 1;
-                    let next_trade_keys = user.derive_trade_keys(next_trade_index)?;
-
-                    // Update last trade index
-                    User::update_last_trade_index(pool, next_trade_index).await?;
+                    let (next_trade_index, next_trade_keys) =
+                        User::reserve_next_trade_index(pool, 0).await?;
 
                     Ok(Some(Payload::NextTrade(
                         next_trade_keys.public_key().to_string(),

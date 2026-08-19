@@ -85,11 +85,8 @@ pub async fn send_new_order(
         Some(form.invoice.trim().to_string())
     };
 
-    // Get user and trade keys
-    let user = User::get(pool).await?;
-    let next_idx = user.last_trade_index.unwrap_or(1) + 1;
-    let trade_keys = user.derive_trade_keys(next_idx)?;
-    let _ = User::update_last_trade_index(pool, next_idx).await;
+    // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
+    let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
 
     // Create SmallOrder
     let small_order = SmallOrder::new(

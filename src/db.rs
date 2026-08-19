@@ -6,6 +6,21 @@ use sqlx::SqlitePool;
 use std::fs::File;
 use std::path::Path;
 
+/// SQLite pragmas for safer concurrent access (WAL + busy retry window).
+async fn configure_sqlite_pool(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(pool)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout=5000")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Opens or creates the local SQLite pool at `~/.mostrix/mostrix.db`.
+///
+/// Applies WAL mode and a 5s busy timeout via [`configure_sqlite_pool`] to reduce
+/// `SQLITE_BUSY` failures under concurrent access.
 pub async fn init_db() -> Result<SqlitePool> {
     let pool: SqlitePool;
     let name = env!("CARGO_PKG_NAME");
@@ -30,6 +45,7 @@ pub async fn init_db() -> Result<SqlitePool> {
         }
 
         pool = SqlitePool::connect(&db_url).await?;
+        configure_sqlite_pool(&pool).await?;
 
         sqlx::query(
             r#"
@@ -110,6 +126,7 @@ pub async fn init_db() -> Result<SqlitePool> {
         }
     } else {
         pool = SqlitePool::connect(&db_url).await?;
+        configure_sqlite_pool(&pool).await?;
 
         // Run migrations for existing databases
         migrate_db(&pool).await?;
