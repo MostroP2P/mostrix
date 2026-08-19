@@ -83,9 +83,24 @@ fn apply_live_order_update(orders: &Arc<Mutex<Vec<SmallOrder>>>, order: SmallOrd
     );
 }
 
-fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispute) {
+fn apply_live_dispute_update_inner(disputes: &mut Vec<Dispute>, dispute: Dispute) {
     let dispute_id = dispute.id;
     let dispute_status = dispute.status.clone();
+    if let Some(existing) = disputes.iter_mut().find(|e| e.id == dispute.id) {
+        *existing = dispute;
+    } else {
+        disputes.push(dispute);
+    }
+    disputes.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+    log::debug!(
+        "[disputes_live] upserted dispute_id={} status={} total_disputes={}",
+        dispute_id,
+        dispute_status,
+        disputes.len()
+    );
+}
+
+fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispute) {
     let mut disputes_lock = match disputes.lock() {
         Ok(guard) => guard,
         Err(e) => {
@@ -95,26 +110,7 @@ fn apply_live_dispute_update(disputes: &Arc<Mutex<Vec<Dispute>>>, dispute: Dispu
             return;
         }
     };
-    // Live subscription is `.since(now)` — always take the incoming revision.
-    // Do not compare `dispute.created_at`: after Mostro #878 that field is the
-    // stable open-time tag, not the Nostr publish stamp, so a status update
-    // would otherwise fail to replace when open times are equal (or when a
-    // tagged open time is older than a legacy event-stamp fallback).
-    if let Some(existing) = disputes_lock
-        .iter_mut()
-        .find(|existing| existing.id == dispute.id)
-    {
-        *existing = dispute;
-    } else {
-        disputes_lock.push(dispute);
-    }
-    disputes_lock.sort_by_key(|b| std::cmp::Reverse(b.created_at));
-    log::debug!(
-        "[disputes_live] upserted dispute_id={} status={} total_disputes={}",
-        dispute_id,
-        dispute_status,
-        disputes_lock.len()
-    );
+    apply_live_dispute_update_inner(&mut disputes_lock, dispute);
 }
 
 /// Start background tasks to periodically fetch orders and disputes
@@ -378,7 +374,7 @@ pub fn spawn_fetch_scheduler_loops(
                                     return;
                                 }
                             };
-                        if let Ok(fetched_disputes) =
+                        let seen: std::collections::HashSet<Uuid> = if let Ok(fetched_disputes) =
                             get_disputes(&client_for_disputes, mostro_pubkey_for_disputes).await
                         {
                             reconcile_terminal_admin_disputes_from_relay(
@@ -388,20 +384,6 @@ pub fn spawn_fetch_scheduler_loops(
                             .await;
                             let seen: std::collections::HashSet<Uuid> =
                                 fetched_disputes.iter().map(|d| d.id).collect();
-                            if let Err(e) = run_targeted_relay_dispute_db_reconcile_tick(
-                                &client_for_disputes,
-                                &pool_for_disputes,
-                                mostro_pubkey_for_disputes,
-                                &targeted_dispute_reconcile_cursor,
-                                &seen,
-                            )
-                            .await
-                            {
-                                log::warn!(
-                                    "[disputes_reconcile_targeted] relay DB status reconcile failed: {}",
-                                    e
-                                );
-                            }
                             let mut disputes_lock = match disputes_clone.lock() {
                                 Ok(g) => g,
                                 Err(e) => {
@@ -417,6 +399,42 @@ pub fn spawn_fetch_scheduler_loops(
                                 "[disputes_reconcile] refreshed disputes count={}",
                                 disputes_lock.len()
                             );
+                            drop(disputes_lock);
+                            seen
+                        } else {
+                            std::collections::HashSet::new()
+                        };
+                        match run_targeted_relay_dispute_db_reconcile_tick(
+                            &client_for_disputes,
+                            &pool_for_disputes,
+                            mostro_pubkey_for_disputes,
+                            &targeted_dispute_reconcile_cursor,
+                            &seen,
+                        )
+                        .await
+                        {
+                            Ok(resolved) => {
+                                if !resolved.is_empty() {
+                                    let mut disputes_lock = match disputes_clone.lock() {
+                                        Ok(g) => g,
+                                        Err(e) => {
+                                            crate::util::request_fatal_restart(format!(
+                                                "Mostrix encountered an internal error while reconciling disputes (poisoned disputes lock: {e}). Please restart the app."
+                                            ));
+                                            return;
+                                        }
+                                    };
+                                    for d in resolved {
+                                        apply_live_dispute_update_inner(&mut disputes_lock, d);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "[disputes_reconcile_targeted] relay DB status reconcile failed: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                     notification = notifications.next() => {

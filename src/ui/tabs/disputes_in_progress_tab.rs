@@ -91,11 +91,16 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         // Stateful List keeps the selected row in view when the sidebar overflows
         // (same pattern as Orders / Disputes Pending tables). Scrollbar uses the
         // shared data-row track helper after ListState computes its offset.
+        // Reserve: borders (2) + highlight symbol (2) + gap between id and status (2).
+        let inner_width = sidebar_area.width.saturating_sub(6) as usize;
         let items: Vec<ListItem> = filtered_disputes
             .iter()
             .map(|(_original_idx, d)| {
-                let truncated_id = truncate_dispute_id_label(&d.dispute_id, 16);
                 let status = d.status.as_deref().unwrap_or("unknown");
+                let id_budget = inner_width
+                    .saturating_sub(status.chars().count())
+                    .clamp(4, 16);
+                let truncated_id = truncate_dispute_id_label(&d.dispute_id, id_budget);
                 ListItem::new(Line::from(Span::styled(
                     format!("{truncated_id}  {status}"),
                     Style::default().fg(dispute_status_color(d.status.as_deref())),

@@ -85,11 +85,18 @@ pub async fn execute_admin_settle(
     let inner_message = handle_mostro_response(response_message, request_id)?;
     let ack = admin_finalize_ack(inner_message.action.clone(), Action::AdminSettled)?;
 
-    log::info!(
-        "✅ Admin settle (pay buyer) confirmed for order {} ({})",
-        order_id,
-        bond.log_context()
-    );
+    match &ack {
+        AdminFinalizeAck::Confirmed => log::info!(
+            "✅ Admin settle (pay buyer) confirmed for order {} ({})",
+            order_id,
+            bond.log_context()
+        ),
+        AdminFinalizeAck::AlreadyCooperativelyCanceled => log::info!(
+            "ℹ️ Order {} already cooperatively canceled ({})",
+            order_id,
+            bond.log_context()
+        ),
+    }
     Ok(ack)
 }
 

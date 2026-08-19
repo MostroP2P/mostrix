@@ -252,8 +252,8 @@ After sending a finalization action, Mostro replies over the same admin DM chann
 
 | Request | Success action | Failure |
 |---------|----------------|---------|
-| `AdminSettle` | `AdminSettled` | `CantDo` (e.g. `InvalidPayload` for bad bond slash) |
-| `AdminCancel` | `AdminCanceled` | same |
+| `AdminSettle` | `AdminSettled` / `CooperativeCancelAccepted` | `CantDo` (e.g. `InvalidPayload` for bad bond slash) |
+| `AdminCancel` | `AdminCanceled` / `CooperativeCancelAccepted` | same |
 
 Mostrix waits with `wait_for_dm` and validates via `handle_mostro_response` before updating `admin_disputes`.
 

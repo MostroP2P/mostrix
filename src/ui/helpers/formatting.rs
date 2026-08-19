@@ -204,5 +204,6 @@ mod premium_tests {
         assert_eq!(dispute_status_color(Some("settled")), Color::Green);
         assert_eq!(dispute_status_color(Some("initiated")), Color::Yellow);
         assert_eq!(dispute_status_color(None), Color::White);
+        assert_eq!(dispute_status_color(Some("unknown")), Color::White);
     }
 }

@@ -88,24 +88,30 @@ pub async fn reconcile_terminal_admin_disputes_from_relay(
 }
 
 /// Per-dispute `#d` fetch for local InProgress rows missing from the latest snapshot.
+///
+/// Returns terminal disputes fetched from relays so the caller can feed them into
+/// the shared live dispute vec (ensuring the UI stays in sync with DB updates).
 pub async fn run_targeted_relay_dispute_db_reconcile_tick(
     client: &Client,
     pool: &SqlitePool,
     mostro_pubkey: PublicKey,
     cursor: &Arc<Mutex<usize>>,
     already_seen: &HashSet<Uuid>,
-) -> Result<()> {
+) -> Result<Vec<Dispute>> {
     let ids = AdminDispute::list_in_progress_dispute_ids(pool).await?;
-    let ids: Vec<String> = ids
+    let ids: Vec<(Uuid, String)> = ids
         .into_iter()
-        .filter(|id| {
-            Uuid::parse_str(id)
-                .ok()
-                .is_none_or(|u| !already_seen.contains(&u))
+        .filter_map(|id| {
+            let uuid = Uuid::parse_str(&id).ok()?;
+            if already_seen.contains(&uuid) {
+                None
+            } else {
+                Some((uuid, id))
+            }
         })
         .collect();
     if ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let len = ids.len();
     let (start, take) = {
@@ -116,21 +122,15 @@ pub async fn run_targeted_relay_dispute_db_reconcile_tick(
         let take = TARGETED_RELAY_RECONCILE_MAX_PER_TICK.min(len);
         (start, take)
     };
+    let mut resolved = Vec::new();
     for i in 0..take {
-        let id_str = &ids[(start + i) % len];
-        let dispute_id = match Uuid::parse_str(id_str) {
-            Ok(u) => u,
-            Err(_) => {
-                log::debug!(
-                    "[disputes_reconcile_targeted] skip invalid dispute id in DB: {}",
-                    id_str
-                );
-                continue;
-            }
-        };
-        match fetch_dispute_by_id_from_relay(client, mostro_pubkey, dispute_id).await {
+        let (dispute_id, _) = &ids[(start + i) % len];
+        match fetch_dispute_by_id_from_relay(client, mostro_pubkey, *dispute_id).await {
             Ok(Some(relay_dispute)) => {
                 reconcile_one_admin_dispute_if_terminal(pool, &relay_dispute).await;
+                if AdminDispute::is_terminal_status(&relay_dispute.status) {
+                    resolved.push(relay_dispute);
+                }
             }
             Ok(None) => {
                 log::debug!(
@@ -153,7 +153,7 @@ pub async fn run_targeted_relay_dispute_db_reconcile_tick(
             .map_err(|_| anyhow::anyhow!("targeted dispute reconcile cursor mutex poisoned"))?;
         *c = (start + take) % len;
     }
-    Ok(())
+    Ok(resolved)
 }
 
 #[cfg(test)]
