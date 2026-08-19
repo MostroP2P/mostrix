@@ -75,7 +75,10 @@ async fn test_last_trade_index_monotonic_under_out_of_order_update() {
     User::update_last_trade_index(&pool, idx1).await.unwrap();
 
     let (idx3, _) = User::reserve_next_trade_index(&pool, 1).await.unwrap();
-    assert_ne!(idx3, idx2, "counter must not regress and reuse a live trade index");
+    assert_ne!(
+        idx3, idx2,
+        "counter must not regress and reuse a live trade index"
+    );
     assert_eq!(idx3, 4);
 }
 
