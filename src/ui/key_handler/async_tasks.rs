@@ -19,7 +19,7 @@ use crate::util::{
     OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
-use nostr_sdk::prelude::{Client, Keys, PublicKey, SignerAuthenticator};
+use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -406,6 +406,48 @@ pub async fn apply_pending_key_reload(
     }
 }
 
+/// Join `{relay}: {error}` pairs from `unsubscribe_all` per-relay failures.
+fn format_unsubscribe_failures<U, E>(failed: impl IntoIterator<Item = (U, E)>) -> String
+where
+    U: std::fmt::Display,
+    E: std::fmt::Display,
+{
+    failed
+        .into_iter()
+        .map(|(url, err)| format!("{url}: {err}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Optional warn detail for `unsubscribe_all`. `Some` is logged; callers must still respawn.
+fn unsubscribe_all_warn_detail<T, E: std::fmt::Display>(
+    result: Result<&Output<T>, E>,
+) -> Option<String> {
+    match result {
+        Ok(output) if output.failed.is_empty() => None,
+        Ok(output) => Some(format!(
+            "failed on relays: {}",
+            format_unsubscribe_failures(output.failed.iter())
+        )),
+        Err(e) => Some(format!("failed: {e}")),
+    }
+}
+
+/// Best-effort `unsubscribe_all` after fetch/DM tasks have been aborted.
+///
+/// Partial relay CLOSE failures are routine on connectivity flaps. Treating them as
+/// fatal returned Err after abort and never respawned the tasks, leaving a
+/// permanent blind window until process restart.
+async fn unsubscribe_all_best_effort(client: &Client, log_context: &str) {
+    let warn = match client.unsubscribe_all().await {
+        Ok(output) => unsubscribe_all_warn_detail::<_, std::convert::Infallible>(Ok(&output)),
+        Err(e) => unsubscribe_all_warn_detail::<(), _>(Err(e)),
+    };
+    if let Some(detail) = warn {
+        log::warn!("{log_context}: unsubscribe_all {detail} (continuing)");
+    }
+}
+
 /// Refresh order/dispute relay subscriptions and the trade DM listener from disk settings.
 ///
 /// Lighter than [`apply_pending_key_reload`]: does not rotate identity keys or clear the Messages tab.
@@ -446,25 +488,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
-    match client.unsubscribe_all().await {
-        Ok(output) if !output.failed.is_empty() => {
-            let failed: Vec<String> = output
-                .failed
-                .iter()
-                .map(|(url, err)| format!("{url}: {err}"))
-                .collect();
-            return Err(format!(
-                "Fetch scheduler reload: unsubscribe_all failed on relays: {}",
-                failed.join("; ")
-            ));
-        }
-        Ok(_) => {}
-        Err(e) => {
-            return Err(format!(
-                "Fetch scheduler reload: unsubscribe_all failed: {e}"
-            ));
-        }
-    }
+    unsubscribe_all_best_effort(client, "Fetch scheduler reload").await;
 
     connect_client_safely(client)
         .await
@@ -639,23 +663,7 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.message_listener_handle.abort();
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
-    match ctx.client.unsubscribe_all().await {
-        Ok(output) if !output.failed.is_empty() => {
-            let failed: Vec<String> = output
-                .failed
-                .iter()
-                .map(|(url, err)| format!("{url}: {err}"))
-                .collect();
-            return Err(format!(
-                "Reconnect: unsubscribe_all failed on relays: {}",
-                failed.join("; ")
-            ));
-        }
-        Ok(_) => {}
-        Err(e) => {
-            return Err(format!("Reconnect: unsubscribe_all failed: {e}"));
-        }
-    }
+    unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
 
     connect_client_safely(ctx.client)
         .await
@@ -1196,4 +1204,54 @@ pub fn spawn_load_seed_words_task(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr_sdk::prelude::RelayUrl;
+
+    #[test]
+    fn format_unsubscribe_failures_joins_url_and_error() {
+        let failed = [
+            ("wss://relay.one/", "connection closed"),
+            ("wss://relay.two/", "timeout"),
+        ];
+        assert_eq!(
+            format_unsubscribe_failures(failed),
+            "wss://relay.one/: connection closed; wss://relay.two/: timeout"
+        );
+    }
+
+    #[test]
+    fn format_unsubscribe_failures_empty_is_empty_string() {
+        let failed: [(&str, &str); 0] = [];
+        assert_eq!(format_unsubscribe_failures(failed), "");
+    }
+
+    #[test]
+    fn unsubscribe_all_success_has_no_warn_detail() {
+        let output = Output::new(());
+        assert_eq!(
+            unsubscribe_all_warn_detail::<(), std::convert::Infallible>(Ok(&output)),
+            None
+        );
+    }
+
+    #[test]
+    fn unsubscribe_all_partial_failure_is_warn_not_fatal() {
+        let mut output = Output::new(());
+        let url = RelayUrl::parse("wss://relay.example/").expect("valid relay url");
+        output.failed.insert(url, "connection closed".to_string());
+        let detail =
+            unsubscribe_all_warn_detail::<(), std::convert::Infallible>(Ok(&output)).expect("warn");
+        assert!(detail.contains("wss://relay.example"));
+        assert!(detail.contains("connection closed"));
+    }
+
+    #[test]
+    fn unsubscribe_all_err_is_warn_not_fatal() {
+        let detail = unsubscribe_all_warn_detail::<(), _>(Err("pool closed")).expect("warn");
+        assert_eq!(detail, "failed: pool closed");
+    }
 }
