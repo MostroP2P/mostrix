@@ -420,6 +420,9 @@ pub fn parse_orders_events(
 
 /// Fetch raw Mostro order-kind events from relays (same filter as [`fetch_events_list`] for orders).
 ///
+/// Events are filtered client-side to include only those authored by `mostro_pubkey`, since relay-side
+/// author filtering cannot be trusted.
+///
 /// Relay queries are capped (see [`crate::util::filters::MOSTRO_LIST_FETCH_EVENT_LIMIT`]); very old
 /// order updates may not be included in the snapshot.
 pub async fn fetch_mostro_order_events(
@@ -427,10 +430,14 @@ pub async fn fetch_mostro_order_events(
     mostro_pubkey: PublicKey,
 ) -> Result<NostrEvents> {
     let filters = create_filter(ListKind::Orders, mostro_pubkey, None)?;
-    Ok(client
+    let events = client
         .fetch_events(filters)
         .timeout(FETCH_EVENTS_TIMEOUT)
-        .await?)
+        .await?;
+    Ok(events
+        .into_iter()
+        .filter(|e| e.pubkey == mostro_pubkey)
+        .collect())
 }
 
 /// Pending listings for the public order book from an aggregated relay snapshot.
@@ -474,10 +481,13 @@ pub async fn fetch_events_list(
         }
         ListKind::Disputes => {
             let filters = create_filter(list_kind, mostro_pubkey, None)?;
-            let fetched_events = client
+            let fetched_events: NostrEvents = client
                 .fetch_events(filters)
                 .timeout(FETCH_EVENTS_TIMEOUT)
-                .await?;
+                .await?
+                .into_iter()
+                .filter(|e| e.pubkey == mostro_pubkey)
+                .collect();
             let disputes = parse_disputes_events(fetched_events);
             Ok(disputes.into_iter().map(Event::Dispute).collect())
         }
@@ -532,6 +542,7 @@ pub async fn get_disputes(client: &Client, mostro_pubkey: PublicKey) -> Result<V
 
 /// Fetch the latest [`SmallOrder`] for one order id from relays (author + custom order kind + `d` tag).
 ///
+/// Only events authored by `mostro_pubkey` are considered (client-side verification).
 /// Uses `limit(10)` and picks the event with the greatest [`Event::created_at`] so relays that return
 /// multiple revisions for the same identifier still resolve to the newest snapshot.
 pub async fn fetch_small_order_by_id_from_relay(
@@ -549,7 +560,11 @@ pub async fn fetch_small_order_by_id_from_relay(
         .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay by id: {}", e))?;
-    let Some(best) = events.iter().max_by_key(|e| e.created_at) else {
+    let Some(best) = events
+        .iter()
+        .filter(|e| e.pubkey == mostro_pubkey)
+        .max_by_key(|e| e.created_at)
+    else {
         return Ok(None);
     };
     Ok(Some(order_from_tags(best.tags.clone())?))
@@ -557,6 +572,7 @@ pub async fn fetch_small_order_by_id_from_relay(
 
 /// Fetch the latest kind-38386 [`Dispute`] for one dispute id (`d` tag).
 ///
+/// Only events authored by `mostro_pubkey` are considered (client-side verification).
 /// Uses `limit(10)` and picks the event with the greatest [`Event::created_at`].
 pub async fn fetch_dispute_by_id_from_relay(
     client: &Client,
@@ -573,7 +589,11 @@ pub async fn fetch_dispute_by_id_from_relay(
         .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch dispute from relay by id: {}", e))?;
-    let Some(best) = events.iter().max_by_key(|e| e.created_at) else {
+    let Some(best) = events
+        .iter()
+        .filter(|e| e.pubkey == mostro_pubkey)
+        .max_by_key(|e| e.created_at)
+    else {
         return Ok(None);
     };
     let mut dispute = dispute_from_tags(best.tags.clone())?;
