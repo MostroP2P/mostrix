@@ -8,9 +8,7 @@ use std::path::Path;
 
 /// SQLite pragmas for safer concurrent access (WAL + busy retry window).
 async fn configure_sqlite_pool(pool: &SqlitePool) -> Result<()> {
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(pool)
-        .await?;
+    sqlx::query("PRAGMA journal_mode=WAL").execute(pool).await?;
     sqlx::query("PRAGMA busy_timeout=5000")
         .execute(pool)
         .await?;
