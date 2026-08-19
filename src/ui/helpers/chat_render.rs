@@ -67,7 +67,7 @@ fn format_message_lines(
     let (sender_label, sender_color, is_right_aligned) = match msg.sender {
         ChatSender::Admin => ("Admin", Color::Cyan, false),
         ChatSender::Buyer => ("Buyer", Color::Green, true),
-        ChatSender::Seller => ("Seller", Color::Magenta, false),
+        ChatSender::Seller => ("Seller", Color::Magenta, true),
     };
     let content_color = msg
         .attachment
