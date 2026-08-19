@@ -774,6 +774,11 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
+        let order_filter_shortcuts = if app.user_role == UserRole::User {
+            " | Shift+F: Order filters | Shift+X: Clear order filters"
+        } else {
+            ""
+        };
         // Mostro name (Lightning node alias) from instance info
         let mostro_alias = match app.mostro_info.as_ref() {
             Some(info) => info
@@ -790,8 +795,8 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
-                "💱 Currencies: {} - Filters: {}",
-                mostro_instance_currencies, currencies_filter_str
+                "💱 Currencies: {} - Filters: {}{}",
+                mostro_instance_currencies, currencies_filter_str, order_filter_shortcuts
             ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;

@@ -402,10 +402,7 @@ pub fn parse_orders_events(
         .filter(|o| {
             // If currencies filter is provided and not empty, filter by any currency in the list
             // If currencies is None or empty, show all orders (no filter)
-            currencies
-                .as_ref()
-                .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
-                .unwrap_or(true)
+            order_matches_currency_filter(o, currencies.as_deref())
         })
         .filter(|o| {
             kind.as_ref()
@@ -452,15 +449,23 @@ pub fn pending_orders_for_book(
         .values()
         .filter(|o| {
             o.status == Some(Status::Pending)
-                && currencies
-                    .as_ref()
-                    .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
-                    .unwrap_or(true)
+                && order_matches_currency_filter(o, currencies.as_deref())
         })
         .cloned()
         .collect();
     requested.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     requested
+}
+
+fn order_matches_currency_filter(order: &SmallOrder, currencies: Option<&[String]>) -> bool {
+    currencies
+        .map(|currencies| {
+            currencies.is_empty()
+                || currencies
+                    .iter()
+                    .any(|currency| currency.eq_ignore_ascii_case(&order.fiat_code))
+        })
+        .unwrap_or(true)
 }
 
 /// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
@@ -800,10 +805,13 @@ mod tests {
     use super::{
         admin_finalize_ack, dispute_from_tags, handle_mostro_response,
         inferred_status_from_trade_action, is_terminal_trade_status, parse_disputes_events,
-        should_apply_status_transition, should_strictly_advance_status, AdminFinalizeAck,
+        pending_orders_for_book, should_apply_status_transition, should_strictly_advance_status,
+        AdminFinalizeAck,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::{Action, DisputeStatus, Message, Status, NOSTR_DISPUTE_EVENT_KIND};
+    use mostro_core::prelude::{
+        Action, DisputeStatus, Message, SmallOrder, Status, NOSTR_DISPUTE_EVENT_KIND,
+    };
     use nostr_sdk::prelude::*;
     use std::collections::BTreeSet;
     use std::str::FromStr;
@@ -894,6 +902,26 @@ mod tests {
         let parsed = parse_disputes_events(events);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].created_at, 1_800_000_000);
+    }
+
+    #[test]
+    fn pending_orders_match_currency_filter_case_insensitively() {
+        let id = Uuid::new_v4();
+        let mut latest = std::collections::HashMap::new();
+        latest.insert(
+            id,
+            SmallOrder {
+                id: Some(id),
+                status: Some(Status::Pending),
+                fiat_code: "usd".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let filtered = pending_orders_for_book(&latest, Some(vec!["USD".to_string()]));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, Some(id));
     }
 
     #[test]
