@@ -97,6 +97,19 @@ pub async fn execute_take_dispute(
                     ));
                 }
 
+                if let Some(existing) =
+                    AdminDispute::try_get_by_id(pool, &dispute_info.id.to_string()).await?
+                {
+                    if existing.is_finalized() {
+                        return Err(anyhow::anyhow!(
+                            "Cannot take dispute {}: order {} already has a finalized dispute (status: {})",
+                            dispute_id,
+                            dispute_info.id,
+                            existing.status.as_deref().unwrap_or("unknown")
+                        ));
+                    }
+                }
+
                 // Clone and override status to InProgress before saving - this admin is now resolving it
                 let mut dispute_info_clone = dispute_info.clone();
                 dispute_info_clone.status = DisputeStatus::InProgress.to_string();
