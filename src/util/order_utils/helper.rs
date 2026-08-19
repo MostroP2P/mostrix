@@ -774,42 +774,36 @@ pub(super) fn handle_mostro_response(
         return Err(anyhow::anyhow!(error_msg));
     }
 
-    // Validate request_id if present
-    if let Some(id) = inner_message.request_id {
-        if id != expected_request_id {
+    // Waiter path: every response must carry the in-flight request_id (see take_order.rs).
+    match inner_message.request_id {
+        Some(id) if id != expected_request_id => {
             log::warn!(
                 "Received response with mismatched request_id. Expected: {}, Got: {}",
                 expected_request_id,
                 id
             );
-            return Err(anyhow::anyhow!("Mismatched request_id"));
+            Err(anyhow::anyhow!("Mismatched request_id"))
         }
-    } else if inner_message.action != Action::RateReceived
-        && inner_message.action != Action::NewOrder
-        && inner_message.action != Action::AddInvoice
-        && inner_message.action != Action::AddBondInvoice
-        && inner_message.action != Action::PayInvoice
-        && inner_message.action != Action::PayBondInvoice
-    {
-        log::warn!(
-            "Received response with null request_id. Expected: {}",
-            expected_request_id
-        );
-        return Err(anyhow::anyhow!("Response with null request_id"));
+        Some(_) => Ok(inner_message),
+        None => {
+            log::warn!(
+                "Received response with null request_id. Expected: {}",
+                expected_request_id
+            );
+            Err(anyhow::anyhow!("Response with null request_id"))
+        }
     }
-
-    Ok(inner_message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        admin_finalize_ack, dispute_from_tags, inferred_status_from_trade_action,
-        is_terminal_trade_status, parse_disputes_events, should_apply_status_transition,
-        should_strictly_advance_status, AdminFinalizeAck,
+        admin_finalize_ack, dispute_from_tags, handle_mostro_response,
+        inferred_status_from_trade_action, is_terminal_trade_status, parse_disputes_events,
+        should_apply_status_transition, should_strictly_advance_status, AdminFinalizeAck,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::{Action, DisputeStatus, Status, NOSTR_DISPUTE_EVENT_KIND};
+    use mostro_core::prelude::{Action, DisputeStatus, Message, Status, NOSTR_DISPUTE_EVENT_KIND};
     use nostr_sdk::prelude::*;
     use std::collections::BTreeSet;
     use std::str::FromStr;
@@ -1039,5 +1033,58 @@ mod tests {
             AdminFinalizeAck::AlreadyCooperativelyCanceled
         );
         assert!(admin_finalize_ack(Action::Canceled, Action::AdminCanceled).is_err());
+    }
+
+    #[test]
+    fn handle_mostro_response_rejects_null_request_id_on_waiter_path() {
+        const EXPECTED_RID: u64 = 0xC0FF_EE00_1234_5678;
+
+        for action in [
+            Action::RateReceived,
+            Action::NewOrder,
+            Action::AddInvoice,
+            Action::AddBondInvoice,
+            Action::PayInvoice,
+            Action::PayBondInvoice,
+        ] {
+            let message =
+                Message::new_order(Some(Uuid::new_v4()), None, None, action.clone(), None);
+            let err = handle_mostro_response(&message, EXPECTED_RID)
+                .expect_err("null request_id must fail closed on waiter path");
+            assert!(
+                err.to_string().contains("null request_id"),
+                "action {action:?} should reject null request_id"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_mostro_response_accepts_matching_request_id() {
+        const EXPECTED_RID: u64 = 0xC0FF_EE00_1234_5678;
+        let message = Message::new_order(
+            Some(Uuid::new_v4()),
+            Some(EXPECTED_RID),
+            None,
+            Action::PayInvoice,
+            None,
+        );
+        let inner = handle_mostro_response(&message, EXPECTED_RID).expect("matching rid");
+        assert_eq!(inner.request_id, Some(EXPECTED_RID));
+        assert_eq!(inner.action, Action::PayInvoice);
+    }
+
+    #[test]
+    fn handle_mostro_response_rejects_mismatched_request_id() {
+        const EXPECTED_RID: u64 = 0xC0FF_EE00_1234_5678;
+        let message = Message::new_order(
+            Some(Uuid::new_v4()),
+            Some(EXPECTED_RID.wrapping_add(1)),
+            None,
+            Action::PayInvoice,
+            None,
+        );
+        let err = handle_mostro_response(&message, EXPECTED_RID)
+            .expect_err("mismatched request_id must be rejected");
+        assert!(err.to_string().contains("Mismatched request_id"));
     }
 }
