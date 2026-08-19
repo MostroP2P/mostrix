@@ -248,13 +248,12 @@ pub fn render_orders_tab(
 }
 
 fn split_filter_and_table(area: Rect, has_filters: bool) -> (Option<Rect>, Rect) {
-    if area.height < 7 {
+    if !has_filters || area.height < 7 {
         return (None, area);
     }
-    let filter_height = if has_filters { 3 } else { 2 };
     let chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(filter_height), Constraint::Min(3)],
+        [Constraint::Length(3), Constraint::Min(3)],
     )
     .split(area);
     (Some(chunks[0]), chunks[1])
@@ -267,20 +266,13 @@ fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     } else {
         "Shift+F: edit filters | Shift+X: clear filters | Enter: take/cancel selected order"
     };
-    let text = if app.order_filters.has_active_filters() {
-        vec![
-            Line::from(vec![
-                Span::styled("Filters: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(summary),
-            ]),
-            Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
-        ]
-    } else {
-        vec![Line::from(Span::styled(
-            hint,
-            Style::default().fg(Color::DarkGray),
-        ))]
-    };
+    let text = vec![
+        Line::from(vec![
+            Span::styled("Filters: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(summary),
+        ]),
+        Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
+    ];
     f.render_widget(
         Paragraph::new(text).wrap(Wrap { trim: true }).block(
             Block::default()
@@ -327,7 +319,11 @@ pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilter
 
     let mut lines = vec![
         Line::from(Span::styled(
-            "Enter Apply | Esc Cancel | Up/Down Field | Space Cycle kind | Ctrl+X Clear",
+            "Enter Apply | Esc Cancel | Up/Down Field",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "Space Cycle kind | Shift+X Clear",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
@@ -434,6 +430,7 @@ mod tests {
         assert!(buffer_contains(&buf, "Premium"));
         assert!(buffer_contains(&buf, "-3%"));
         assert!(buffer_contains(&buf, "SEPA"));
+        assert!(!buffer_contains(&buf, "Order Filters"));
     }
 
     #[test]
@@ -483,6 +480,7 @@ mod tests {
         assert!(buffer_contains(buf, "Premium max %"));
         assert!(buffer_contains(buf, "Payment method"));
         assert!(buffer_contains(buf, "Created within days"));
+        assert!(buffer_contains(buf, "Shift+X Clear"));
         assert!(buffer_contains(buf, "cash"));
     }
 
