@@ -298,6 +298,17 @@ pub fn spawn_fetch_scheduler_loops(
                         if event.kind != nostr_sdk::prelude::Kind::Custom(NOSTR_ORDER_EVENT_KIND) {
                             continue;
                         }
+                        let expected_author = match current_mostro_pubkey_for_orders.lock() {
+                            Ok(pk) => *pk,
+                            Err(_) => continue,
+                        };
+                        if event.pubkey != expected_author {
+                            log::warn!(
+                                "[orders_live] rejected event with unexpected author {}",
+                                event.pubkey
+                            );
+                            continue;
+                        }
                         let mut one = BTreeSet::new();
                         one.insert(event);
                         let latest_live = aggregate_latest_orders_by_id(&one);
@@ -447,6 +458,17 @@ pub fn spawn_fetch_scheduler_loops(
                         };
                         let event = *event;
                         if event.kind != nostr_sdk::prelude::Kind::Custom(NOSTR_DISPUTE_EVENT_KIND) {
+                            continue;
+                        }
+                        let expected_author = match current_mostro_pubkey_for_disputes.lock() {
+                            Ok(pk) => *pk,
+                            Err(_) => continue,
+                        };
+                        if event.pubkey != expected_author {
+                            log::warn!(
+                                "[disputes_live] rejected event with unexpected author {}",
+                                event.pubkey
+                            );
                             continue;
                         }
                         let mut one = BTreeSet::new();
