@@ -268,8 +268,13 @@ fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     };
     let text = vec![
         Line::from(vec![
-            Span::styled("Filters: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(summary),
+            Span::styled(
+                "Filters: ",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(summary, Style::default().fg(Color::White)),
         ]),
         Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
     ];
@@ -295,12 +300,12 @@ pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilter
     let area = f.area();
     let popup = center_rect(
         area,
-        72.min(area.width.saturating_sub(2)),
-        15.min(area.height),
+        76.min(area.width.saturating_sub(2)),
+        16.min(area.height),
     );
     f.render_widget(Clear, popup);
 
-    let compact = popup.height < 13 || popup.width < 52;
+    let compact = popup.height < 14 || popup.width < 56;
     let lines = if compact {
         compact_order_filter_popup_lines(state)
     } else {
@@ -324,35 +329,19 @@ pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilter
 }
 
 fn full_order_filter_popup_lines(state: &OrderBookFilterState) -> Vec<Line<'static>> {
-    let rows = OrderBookFilterField::ALL
-        .iter()
-        .map(|field| {
-            let selected = *field == state.focused;
-            let style = if selected {
-                Style::default().bg(PRIMARY_COLOR).fg(Color::Black)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            Line::from(vec![
-                Span::styled(if selected { ">" } else { " " }, style),
-                Span::styled(format!(" {:<20}", field.label()), style),
-                Span::styled(filter_field_value(state, *field), style),
-            ])
-        })
-        .collect::<Vec<_>>();
-
     let mut lines = vec![
-        Line::from(Span::styled(
-            "Enter Apply | Esc Cancel | Up/Down Field",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "Space Cycle kind | Shift+X Clear",
-            Style::default().fg(Color::DarkGray),
-        )),
+        shortcut_line(&[("Enter", "Apply"), ("Esc", "Cancel"), ("Up/Down", "Field")]),
+        shortcut_line(&[("Space", "Cycle kind"), ("Shift+X", "Clear")]),
+        active_filters_line(state),
         Line::from(""),
     ];
-    lines.extend(rows);
+    lines.extend(
+        OrderBookFilterField::ALL
+            .iter()
+            .map(|field| filter_field_line(state, *field)),
+    );
+    lines.push(Line::from(""));
+    lines.push(focused_field_hint_line(state.focused));
     lines
 }
 
@@ -360,14 +349,8 @@ fn compact_order_filter_popup_lines(state: &OrderBookFilterState) -> Vec<Line<'s
     let label = state.focused.label();
     let value = filter_field_value(state, state.focused);
     vec![
-        Line::from(Span::styled(
-            "Enter Apply | Esc Cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "Up/Down Field | Shift+X Clear",
-            Style::default().fg(Color::DarkGray),
-        )),
+        shortcut_line(&[("Enter", "Apply"), ("Esc", "Cancel")]),
+        shortcut_line(&[("Up/Down", "Field"), ("Shift+X", "Clear")]),
         Line::from(""),
         Line::from(Span::styled(
             label,
@@ -375,8 +358,149 @@ fn compact_order_filter_popup_lines(state: &OrderBookFilterState) -> Vec<Line<'s
                 .fg(PRIMARY_COLOR)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(value, Style::default().fg(Color::White))),
+        Line::from(vec![
+            Span::styled("Value: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                value,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        focused_field_hint_line(state.focused),
     ]
+}
+
+fn active_filters_line(state: &OrderBookFilterState) -> Line<'static> {
+    if state.filters.has_active_filters() {
+        Line::from(vec![
+            Span::styled("Active: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                state.filters.summary(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "Active: no filters. Set fields below, then press Enter.",
+            Style::default().fg(Color::DarkGray),
+        ))
+    }
+}
+
+fn shortcut_line(items: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, (key, label)) in items.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn filter_field_line(state: &OrderBookFilterState, field: OrderBookFilterField) -> Line<'static> {
+    Line::from(filter_field_spans(state, field, 20, 0))
+}
+
+fn filter_field_spans(
+    state: &OrderBookFilterState,
+    field: OrderBookFilterField,
+    label_width: usize,
+    value_width: usize,
+) -> Vec<Span<'static>> {
+    let selected = field == state.focused;
+    let row_style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let label_style = if selected {
+        row_style
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let value = filter_field_value(state, field);
+    let value_style = if value == "Any" {
+        if selected {
+            row_style
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    } else {
+        if selected {
+            row_style
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        }
+    };
+    let value = if value_width == 0 {
+        if selected && active_order_filter_field_accepts_text(field) && value == "Any" {
+            "Type value...".to_string()
+        } else {
+            value
+        }
+    } else {
+        truncate_for_cell(&value, value_width)
+    };
+
+    vec![
+        Span::styled(if selected { "> " } else { "  " }, row_style),
+        Span::styled(format!("{:<label_width$}", field.label()), label_style),
+        Span::styled(" ", row_style),
+        Span::styled(value, value_style),
+    ]
+}
+
+fn active_order_filter_field_accepts_text(field: OrderBookFilterField) -> bool {
+    !matches!(field, OrderBookFilterField::Kind)
+}
+
+fn focused_field_hint_line(field: OrderBookFilterField) -> Line<'static> {
+    let hint = match field {
+        OrderBookFilterField::Kind => "Space cycles Buy/Sell. Use Any to include both.",
+        OrderBookFilterField::FiatCurrency => "Type a currency code, for example MXN or USD.",
+        OrderBookFilterField::FiatAmountMin => "Type the minimum fiat amount to include.",
+        OrderBookFilterField::FiatAmountMax => "Type the maximum fiat amount to include.",
+        OrderBookFilterField::PremiumMin => {
+            "Type the minimum premium percent, negative values allowed."
+        }
+        OrderBookFilterField::PremiumMax => {
+            "Type the maximum premium percent, negative values allowed."
+        }
+        OrderBookFilterField::PaymentMethod => "Type part of a payment method, for example SPEI.",
+        OrderBookFilterField::CreatedWithinDays => "Type a number of days, for example 7.",
+    };
+    Line::from(vec![
+        Span::styled("Hint: ", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(hint, Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+fn truncate_for_cell(value: &str, width: usize) -> String {
+    let mut chars = value.chars();
+    let mut out: String = chars.by_ref().take(width).collect();
+    if chars.next().is_some() && width > 1 {
+        out.pop();
+        out.push('.');
+    }
+    format!("{out:<width$}")
 }
 
 fn filter_field_value(state: &OrderBookFilterState, field: OrderBookFilterField) -> String {
