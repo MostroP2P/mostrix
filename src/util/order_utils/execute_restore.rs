@@ -7,6 +7,9 @@ use std::str::FromStr;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::models::{Order, User};
+use crate::ui::helpers::user_dispute_chat_since_from_file;
+use crate::util::chat_listener::track_user_dispute_chat;
+use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::dm_utils::{
     parse_dm_events, send_dm, wait_for_dm, OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
 };
@@ -98,8 +101,10 @@ pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui:
 /// user's mnemonic at the reported trade index, full details are fetched from
 /// the relays when available, and the row is inserted locally. Non-terminal
 /// orders are handed to the DM router (`TrackOrder`) so their messages route
-/// live without a restart. `last_trade_index` advances to the highest index
-/// seen so future trades never reuse a key.
+/// live without a restart. Disputes restore their id and, when a solver is
+/// already assigned, the user↔solver chat secret (re-derived from the restored
+/// trade keys) so an in-flight dispute stays readable. `last_trade_index`
+/// advances to the highest index seen so future trades never reuse a key.
 pub async fn execute_restore_session(
     pool: &SqlitePool,
     client: &Client,
@@ -219,26 +224,73 @@ pub async fn execute_restore_session(
         }
     }
 
-    // Disputed orders come back in the orders list too; here we only make sure
-    // their local status reflects the dispute. User-side solver chat is not
-    // wired yet, so initiator/solver info has nowhere to be stored.
+    // Disputed orders come back in the orders list too, so their row already
+    // exists here; this pass restores what makes a dispute usable again: the
+    // status, the dispute id, and the solver chat the user would otherwise
+    // lose exactly when they need it most.
     for dispute in &restore_data.restore_disputes {
         let id_str = dispute.order_id.to_string();
         // UPDATE on a missing row is a silent no-op, so check presence first:
         // a dispute whose order failed to restore must not be reported as applied.
         let applied = match Order::get_by_id(pool, &id_str).await {
-            Ok(_) => Order::update_status(pool, &id_str, Status::Dispute)
+            Ok(row) => Order::update_status(pool, &id_str, Status::Dispute)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(|e| e.to_string())
+                .map(|()| row),
             Err(e) => Err(format!("order row not present: {e}")),
         };
-        if let Err(e) = applied {
-            log::error!(
-                "Restore: could not mark order {} as disputed (dispute {}): {e}",
-                dispute.order_id,
+        let row = match applied {
+            Ok(row) => row,
+            Err(e) => {
+                log::error!(
+                    "Restore: could not mark order {} as disputed (dispute {}): {e}",
+                    dispute.order_id,
+                    dispute.dispute_id
+                );
+                summary.dispute_status_failed += 1;
+                continue;
+            }
+        };
+
+        if let Err(e) =
+            Order::update_dispute_id(pool, &id_str, &dispute.dispute_id.to_string()).await
+        {
+            log::warn!("Restore: failed to persist dispute id for order {id_str}: {e}");
+        }
+
+        // Re-derive the user↔solver chat secret from the restored trade keys, so
+        // an in-flight dispute stays readable after a reinstall instead of
+        // silently losing its conversation.
+        let Some(solver_pubkey_str) = dispute.solver_pubkey.as_deref() else {
+            continue;
+        };
+        let restored_chat = row
+            .trade_keys
+            .as_deref()
+            .and_then(|hex| Keys::parse(hex).ok())
+            .and_then(|trade_keys| {
+                derive_shared_key_hex(Some(&trade_keys), Some(solver_pubkey_str))
+                    .map(|hex| (trade_keys, hex))
+            });
+        let Some((trade_keys, shared_hex)) = restored_chat else {
+            log::warn!(
+                "Restore: could not derive solver chat key for order {id_str} (dispute {})",
                 dispute.dispute_id
             );
-            summary.dispute_status_failed += 1;
+            continue;
+        };
+        match Order::update_solver_chat(pool, &id_str, solver_pubkey_str, &shared_hex).await {
+            Ok(()) => match PublicKey::parse(solver_pubkey_str) {
+                Ok(solver_pubkey) => track_user_dispute_chat(
+                    id_str.clone(),
+                    shared_hex,
+                    trade_keys.public_key(),
+                    solver_pubkey,
+                    user_dispute_chat_since_from_file(&id_str),
+                ),
+                Err(e) => log::warn!("Restore: invalid solver pubkey for order {id_str}: {e}"),
+            },
+            Err(e) => log::warn!("Restore: failed to persist solver chat for {id_str}: {e}"),
         }
     }
 
@@ -434,6 +486,9 @@ mod tests {
             trade_keys: None,
             counterparty_pubkey: None,
             order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
             is_mine: false,
             buyer_invoice: None,
             request_id: None,
