@@ -506,10 +506,12 @@ fn latest_small_order_by_id(
                 return None;
             }
             order.created_at = Some(event.created_at.as_secs() as i64);
-            Some((event.created_at, order))
+            Some((event.created_at, event.id, order))
         })
-        .max_by_key(|(created_at, _)| *created_at)
-        .map(|(_, order)| order)
+        .max_by(|(a_ts, a_id, _), (b_ts, b_id, _)| {
+            compare_revision_keys(*a_ts, *a_id, *b_ts, *b_id)
+        })
+        .map(|(_, _, order)| order)
 }
 
 fn latest_dispute_by_id(
@@ -534,10 +536,22 @@ fn latest_dispute_by_id(
             if dispute.created_at <= 0 {
                 dispute.created_at = event.created_at.as_secs() as i64;
             }
-            Some((event.created_at, dispute))
+            Some((event.created_at, event.id, dispute))
         })
-        .max_by_key(|(created_at, _)| *created_at)
-        .map(|(_, dispute)| dispute)
+        .max_by(|(a_ts, a_id, _), (b_ts, b_id, _)| {
+            compare_revision_keys(*a_ts, *a_id, *b_ts, *b_id)
+        })
+        .map(|(_, _, dispute)| dispute)
+}
+
+fn compare_revision_keys(
+    a_ts: Timestamp,
+    a_id: EventId,
+    b_ts: Timestamp,
+    b_id: EventId,
+) -> std::cmp::Ordering {
+    a_ts.cmp(&b_ts)
+        .then_with(|| b_id.as_bytes().cmp(a_id.as_bytes()))
 }
 
 /// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
@@ -1078,6 +1092,39 @@ mod tests {
     }
 
     #[test]
+    fn targeted_order_lookup_breaks_equal_timestamp_ties_by_lower_event_id() {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        let usd_event = order_event(
+            &keys,
+            order_id,
+            "USD",
+            "pending",
+            NOSTR_ORDER_EVENT_KIND,
+            10,
+        );
+        let eur_event = order_event(
+            &keys,
+            order_id,
+            "EUR",
+            "pending",
+            NOSTR_ORDER_EVENT_KIND,
+            10,
+        );
+        let expected_fiat = if usd_event.id.as_bytes() < eur_event.id.as_bytes() {
+            "USD"
+        } else {
+            "EUR"
+        };
+        let events: BTreeSet<_> = [usd_event, eur_event].into_iter().collect();
+
+        let order = latest_small_order_by_id(&events, keys.public_key(), order_id).unwrap();
+
+        assert_eq!(order.id, Some(order_id));
+        assert_eq!(order.fiat_code, expected_fiat);
+    }
+
+    #[test]
     fn targeted_dispute_lookup_ignores_newer_event_with_wrong_id() {
         let keys = Keys::generate();
         let wanted_id = Uuid::new_v4();
@@ -1093,6 +1140,27 @@ mod tests {
 
         assert_eq!(dispute.id, wanted_id);
         assert_eq!(dispute.status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn targeted_dispute_lookup_breaks_equal_timestamp_ties_by_lower_event_id() {
+        let keys = Keys::generate();
+        let dispute_id = Uuid::new_v4();
+        let initiated_event =
+            dispute_event(&keys, dispute_id, "initiated", Some(1_700_000_100), 10);
+        let in_progress_event =
+            dispute_event(&keys, dispute_id, "in-progress", Some(1_700_000_100), 10);
+        let expected_status = if initiated_event.id.as_bytes() < in_progress_event.id.as_bytes() {
+            DisputeStatus::Initiated.to_string()
+        } else {
+            DisputeStatus::InProgress.to_string()
+        };
+        let events: BTreeSet<_> = [initiated_event, in_progress_event].into_iter().collect();
+
+        let dispute = latest_dispute_by_id(&events, keys.public_key(), dispute_id).unwrap();
+
+        assert_eq!(dispute.id, dispute_id);
+        assert_eq!(dispute.status, expected_status);
     }
 
     #[test]
