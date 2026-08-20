@@ -774,7 +774,11 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
-        let order_filter_shortcuts = if app.user_role == UserRole::User {
+        let order_filter_shortcuts = if app.user_role == UserRole::User
+            && matches!(
+                app.active_tab,
+                crate::ui::navigation::Tab::User(crate::ui::navigation::UserTab::Orders)
+            ) {
             " | Shift+F: Order filters | Shift+X: Clear order filters"
         } else {
             ""
