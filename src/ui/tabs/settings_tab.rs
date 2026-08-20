@@ -15,6 +15,7 @@ pub enum SettingsMenuAction {
     AddCurrencyFilter,
     ClearCurrencyFilters,
     ViewSeedWords,
+    RestoreSession,
     AddDisputeSolver,
     ChangeAdminKey,
     GenerateNewKeys,
@@ -48,7 +49,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 8] = [
 
 /// Single source of truth for User Settings rows (action + list label).
 #[allow(clippy::redundant_static_lifetimes)]
-const USER_SETTINGS: [SettingsMenuRow; 9] = [
+const USER_SETTINGS: [SettingsMenuRow; 10] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -69,6 +70,10 @@ const USER_SETTINGS: [SettingsMenuRow; 9] = [
         "Clear Currency Filters",
     ),
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
+    (
+        SettingsMenuAction::RestoreSession,
+        "Restore Session (from Mostro)",
+    ),
     (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
 ];
 
@@ -317,5 +322,32 @@ mod tests {
         // Outer frame is 6 rows; after borders inner height is 4 (< 8), so version is omitted.
         assert!(!buffer_contains(buf, "Mostrix"));
         assert!(buffer_contains(buf, "Current Mode"));
+    }
+
+    #[test]
+    fn restore_session_is_a_user_option_but_not_an_admin_one() {
+        assert!(USER_SETTINGS
+            .iter()
+            .any(|(a, _)| *a == SettingsMenuAction::RestoreSession));
+        // Admin mode signs with admin_privkey, not the identity mnemonic Mostro
+        // indexes users by, so a restore there would recover nothing.
+        assert!(!ADMIN_SETTINGS
+            .iter()
+            .any(|(a, _)| *a == SettingsMenuAction::RestoreSession));
+    }
+
+    #[test]
+    fn user_menu_keeps_restore_next_to_the_key_management_rows() {
+        let labels: Vec<&str> = USER_SETTINGS.iter().map(|(_, l)| *l).collect();
+        let seed = labels.iter().position(|l| *l == "View Seed Words").unwrap();
+        let restore = labels
+            .iter()
+            .position(|l| *l == "Restore Session (from Mostro)")
+            .unwrap();
+        let generate = labels
+            .iter()
+            .position(|l| *l == "Generate New Keys")
+            .unwrap();
+        assert!(seed < restore && restore < generate);
     }
 }

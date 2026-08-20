@@ -65,7 +65,9 @@ use crate::util::chat_utils::{
     send_user_order_chat_message_via_shared_key,
 };
 use crate::util::dm_utils::{apply_saved_ln_address_invoice_choice, present_add_invoice_popup};
-use crate::util::order_utils::BondSlashChoice;
+use crate::util::order_utils::{
+    execute_restore_session, restore_completion_result, BondSlashChoice,
+};
 
 fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
     match action {
@@ -614,6 +616,36 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                     "Cleaning up success/canceled orders from local history...".to_string(),
                 ));
                 spawn_bulk_history_cleanup_task(ctx.pool.clone(), ctx.order_result_tx.clone());
+            } else {
+                app.mode = default_mode;
+            }
+            true
+        }
+        UiMode::ConfirmRestoreSession(selected_button) => {
+            if selected_button {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Restoring session from Mostro...".to_string(),
+                ));
+                let pool = ctx.pool.clone();
+                let client = ctx.client.clone();
+                let mostro_pubkey = ctx.mostro_pubkey;
+                let mostro_info = ctx.mostro_info.clone();
+                let result_tx = ctx.order_result_tx.clone();
+                let dm_subscription_tx = ctx.dm_subscription_tx.clone();
+                tokio::spawn(async move {
+                    let outcome = execute_restore_session(
+                        &pool,
+                        &client,
+                        mostro_pubkey,
+                        mostro_info.as_ref(),
+                        dm_subscription_tx,
+                    )
+                    .await;
+                    if let Err(e) = &outcome {
+                        log::error!("Session restore failed: {e}");
+                    }
+                    let _ = result_tx.send(restore_completion_result(&outcome));
+                });
             } else {
                 app.mode = default_mode;
             }
@@ -1297,6 +1329,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             Some(SettingsMenuAction::ChangeAdminKey) => {
                 app.mode = UiMode::AdminMode(AdminMode::SetupAdminKey(key_state));
+            }
+            Some(SettingsMenuAction::RestoreSession) => {
+                app.mode = UiMode::ConfirmRestoreSession(true);
             }
             Some(SettingsMenuAction::GenerateNewKeys) => {
                 app.mode = UiMode::ConfirmGenerateNewKeys(true);
