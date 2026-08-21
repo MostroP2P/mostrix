@@ -444,7 +444,8 @@ fn handle_clipboard_copy(text: String) -> bool {
     {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
-        rx.recv().unwrap_or(false)
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or(false)
     }
 
     #[cfg(not(target_os = "linux"))]
