@@ -233,7 +233,7 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
 fn compact_orders_help(narrow: bool) -> Vec<Line<'static>> {
     if narrow {
         let (title_style, _) = settings_instruction_block_style();
-        return ["↑↓  Enter", "Shift+F  Shift+X"]
+        return ["↑↓", "Enter", "Shift+F", "Shift+X"]
             .into_iter()
             .map(|row| Line::from(Span::styled(row, title_style)))
             .collect();
@@ -586,7 +586,7 @@ mod help_content_tests {
 
     #[test]
     fn short_narrow_orders_help_keeps_filter_shortcuts_and_close_hint_visible() {
-        let backend = TestBackend::new(32, 8);
+        let backend = TestBackend::new(20, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let app = AppState::new(UserRole::User);
 

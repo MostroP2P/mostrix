@@ -502,7 +502,7 @@ fn latest_small_order_by_id(
                     return None;
                 }
             };
-            if order.id != Some(order_id) {
+            if order.id != Some(order_id) || order.kind.is_none() {
                 return None;
             }
             order.created_at = Some(event.created_at.as_secs() as i64);
@@ -922,6 +922,15 @@ mod tests {
         ])
     }
 
+    fn order_tags_without_kind(id: Uuid, fiat_code: &str, status: &str) -> Tags {
+        Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("f", vec![fiat_code.to_string()]),
+            Tag::custom("s", vec![status.to_string()]),
+            Tag::custom("amt", vec!["1000".to_string()]),
+        ])
+    }
+
     fn order_event(
         keys: &Keys,
         id: Uuid,
@@ -935,6 +944,20 @@ mod tests {
             .custom_created_at(Timestamp::from(published_at))
             .finalize(keys)
             .expect("order event")
+    }
+
+    fn order_event_without_kind(
+        keys: &Keys,
+        id: Uuid,
+        fiat_code: &str,
+        status: &str,
+        published_at: u64,
+    ) -> Event {
+        EventBuilder::new(Kind::Custom(NOSTR_ORDER_EVENT_KIND), "")
+            .tags(order_tags_without_kind(id, fiat_code, status))
+            .custom_created_at(Timestamp::from(published_at))
+            .finalize(keys)
+            .expect("order event without kind")
     }
 
     #[test]
@@ -1122,6 +1145,30 @@ mod tests {
 
         assert_eq!(order.id, Some(order_id));
         assert_eq!(order.fiat_code, expected_fiat);
+    }
+
+    #[test]
+    fn targeted_order_lookup_rejects_order_without_kind() {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            order_event_without_kind(&keys, order_id, "EUR", "pending", 20),
+            order_event(
+                &keys,
+                order_id,
+                "USD",
+                "pending",
+                NOSTR_ORDER_EVENT_KIND,
+                10,
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let order = latest_small_order_by_id(&events, keys.public_key(), order_id).unwrap();
+
+        assert_eq!(order.id, Some(order_id));
+        assert_eq!(order.fiat_code, "USD");
     }
 
     #[test]
