@@ -19,6 +19,18 @@ use tokio::sync::mpsc::UnboundedSender;
 /// Nostr events from relays (distinct from [`Event`] in `util::types`).
 type NostrEvents = BTreeSet<nostr_sdk::prelude::Event>;
 
+fn has_mostro_event_kind(event: &nostr_sdk::prelude::Event, kind: u16) -> bool {
+    event.kind == nostr_sdk::prelude::Kind::Custom(kind)
+}
+
+fn is_mostro_order_event(event: &nostr_sdk::prelude::Event, mostro_pubkey: PublicKey) -> bool {
+    event.pubkey == mostro_pubkey && has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND)
+}
+
+fn is_mostro_dispute_event(event: &nostr_sdk::prelude::Event, mostro_pubkey: PublicKey) -> bool {
+    event.pubkey == mostro_pubkey && has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND)
+}
+
 /// Parse order from nostr tags
 pub fn order_from_tags(tags: Tags) -> Result<SmallOrder> {
     let mut order = SmallOrder::default();
@@ -315,6 +327,9 @@ pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
     let mut latest_by_id: HashMap<Uuid, (i64, Dispute)> = HashMap::new();
 
     for event in events.iter() {
+        if !has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND) {
+            continue;
+        }
         let mut dispute = match dispute_from_tags(event.tags.clone()) {
             Ok(d) => d,
             Err(e) => {
@@ -353,6 +368,9 @@ pub fn aggregate_latest_orders_by_id(events: &NostrEvents) -> HashMap<Uuid, Smal
     let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
 
     for event in events.iter() {
+        if !has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND) {
+            continue;
+        }
         let mut order = match order_from_tags(event.tags.clone()) {
             Ok(o) => o,
             Err(e) => {
@@ -402,10 +420,7 @@ pub fn parse_orders_events(
         .filter(|o| {
             // If currencies filter is provided and not empty, filter by any currency in the list
             // If currencies is None or empty, show all orders (no filter)
-            currencies
-                .as_ref()
-                .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
-                .unwrap_or(true)
+            order_matches_currency_filter(o, currencies.as_deref())
         })
         .filter(|o| {
             kind.as_ref()
@@ -436,7 +451,7 @@ pub async fn fetch_mostro_order_events(
         .await?;
     Ok(events
         .into_iter()
-        .filter(|e| e.pubkey == mostro_pubkey)
+        .filter(|e| is_mostro_order_event(e, mostro_pubkey))
         .collect())
 }
 
@@ -452,15 +467,91 @@ pub fn pending_orders_for_book(
         .values()
         .filter(|o| {
             o.status == Some(Status::Pending)
-                && currencies
-                    .as_ref()
-                    .map(|currencies| currencies.is_empty() || currencies.contains(&o.fiat_code))
-                    .unwrap_or(true)
+                && order_matches_currency_filter(o, currencies.as_deref())
         })
         .cloned()
         .collect();
     requested.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     requested
+}
+
+fn order_matches_currency_filter(order: &SmallOrder, currencies: Option<&[String]>) -> bool {
+    currencies
+        .map(|currencies| {
+            currencies.is_empty()
+                || currencies
+                    .iter()
+                    .any(|currency| currency.eq_ignore_ascii_case(&order.fiat_code))
+        })
+        .unwrap_or(true)
+}
+
+fn latest_small_order_by_id(
+    events: &NostrEvents,
+    mostro_pubkey: PublicKey,
+    order_id: Uuid,
+) -> Option<SmallOrder> {
+    events
+        .iter()
+        .filter(|event| is_mostro_order_event(event, mostro_pubkey))
+        .filter_map(|event| {
+            let mut order = match order_from_tags(event.tags.clone()) {
+                Ok(order) => order,
+                Err(e) => {
+                    log::warn!("Failed to parse order from tags: {:?}", e);
+                    return None;
+                }
+            };
+            if order.id != Some(order_id) || order.kind.is_none() {
+                return None;
+            }
+            order.created_at = Some(event.created_at.as_secs() as i64);
+            Some((event.created_at, event.id, order))
+        })
+        .max_by(|(a_ts, a_id, _), (b_ts, b_id, _)| {
+            compare_revision_keys(*a_ts, *a_id, *b_ts, *b_id)
+        })
+        .map(|(_, _, order)| order)
+}
+
+fn latest_dispute_by_id(
+    events: &NostrEvents,
+    mostro_pubkey: PublicKey,
+    dispute_id: Uuid,
+) -> Option<Dispute> {
+    events
+        .iter()
+        .filter(|event| is_mostro_dispute_event(event, mostro_pubkey))
+        .filter_map(|event| {
+            let mut dispute = match dispute_from_tags(event.tags.clone()) {
+                Ok(dispute) => dispute,
+                Err(e) => {
+                    log::warn!("Failed to parse dispute from tags: {:?}", e);
+                    return None;
+                }
+            };
+            if dispute.id != dispute_id {
+                return None;
+            }
+            if dispute.created_at <= 0 {
+                dispute.created_at = event.created_at.as_secs() as i64;
+            }
+            Some((event.created_at, event.id, dispute))
+        })
+        .max_by(|(a_ts, a_id, _), (b_ts, b_id, _)| {
+            compare_revision_keys(*a_ts, *a_id, *b_ts, *b_id)
+        })
+        .map(|(_, _, dispute)| dispute)
+}
+
+fn compare_revision_keys(
+    a_ts: Timestamp,
+    a_id: EventId,
+    b_ts: Timestamp,
+    b_id: EventId,
+) -> std::cmp::Ordering {
+    a_ts.cmp(&b_ts)
+        .then_with(|| b_id.as_bytes().cmp(a_id.as_bytes()))
 }
 
 /// Fetch events list using the same logic as mostro-cli (adapted for mostrix)
@@ -486,7 +577,7 @@ pub async fn fetch_events_list(
                 .timeout(FETCH_EVENTS_TIMEOUT)
                 .await?
                 .into_iter()
-                .filter(|e| e.pubkey == mostro_pubkey)
+                .filter(|e| is_mostro_dispute_event(e, mostro_pubkey))
                 .collect();
             let disputes = parse_disputes_events(fetched_events);
             Ok(disputes.into_iter().map(Event::Dispute).collect())
@@ -560,14 +651,7 @@ pub async fn fetch_small_order_by_id_from_relay(
         .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch order from relay by id: {}", e))?;
-    let Some(best) = events
-        .iter()
-        .filter(|e| e.pubkey == mostro_pubkey)
-        .max_by_key(|e| e.created_at)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(order_from_tags(best.tags.clone())?))
+    Ok(latest_small_order_by_id(&events, mostro_pubkey, order_id))
 }
 
 /// Fetch the latest kind-38386 [`Dispute`] for one dispute id (`d` tag).
@@ -589,18 +673,7 @@ pub async fn fetch_dispute_by_id_from_relay(
         .timeout(FETCH_EVENTS_TIMEOUT)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch dispute from relay by id: {}", e))?;
-    let Some(best) = events
-        .iter()
-        .filter(|e| e.pubkey == mostro_pubkey)
-        .max_by_key(|e| e.created_at)
-    else {
-        return Ok(None);
-    };
-    let mut dispute = dispute_from_tags(best.tags.clone())?;
-    if dispute.created_at <= 0 {
-        dispute.created_at = best.created_at.as_secs() as i64;
-    }
-    Ok(Some(dispute))
+    Ok(latest_dispute_by_id(&events, mostro_pubkey, dispute_id))
 }
 
 /// Fetch a single order's fiat code from the relay by order id (identifier "d" tag).
@@ -799,11 +872,16 @@ pub(super) fn handle_mostro_response(
 mod tests {
     use super::{
         admin_finalize_ack, dispute_from_tags, handle_mostro_response,
-        inferred_status_from_trade_action, is_terminal_trade_status, parse_disputes_events,
-        should_apply_status_transition, should_strictly_advance_status, AdminFinalizeAck,
+        inferred_status_from_trade_action, is_terminal_trade_status, latest_dispute_by_id,
+        latest_small_order_by_id, parse_disputes_events, parse_orders_events,
+        pending_orders_for_book, should_apply_status_transition, should_strictly_advance_status,
+        AdminFinalizeAck,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::{Action, DisputeStatus, Message, Status, NOSTR_DISPUTE_EVENT_KIND};
+    use mostro_core::prelude::{
+        Action, DisputeStatus, Message, SmallOrder, Status, NOSTR_DISPUTE_EVENT_KIND,
+        NOSTR_ORDER_EVENT_KIND,
+    };
     use nostr_sdk::prelude::*;
     use std::collections::BTreeSet;
     use std::str::FromStr;
@@ -832,6 +910,54 @@ mod tests {
             .custom_created_at(Timestamp::from(published_at))
             .finalize(keys)
             .expect("dispute event")
+    }
+
+    fn order_tags(id: Uuid, fiat_code: &str, status: &str) -> Tags {
+        Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("k", vec!["buy".to_string()]),
+            Tag::custom("f", vec![fiat_code.to_string()]),
+            Tag::custom("s", vec![status.to_string()]),
+            Tag::custom("amt", vec!["1000".to_string()]),
+        ])
+    }
+
+    fn order_tags_without_kind(id: Uuid, fiat_code: &str, status: &str) -> Tags {
+        Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("f", vec![fiat_code.to_string()]),
+            Tag::custom("s", vec![status.to_string()]),
+            Tag::custom("amt", vec!["1000".to_string()]),
+        ])
+    }
+
+    fn order_event(
+        keys: &Keys,
+        id: Uuid,
+        fiat_code: &str,
+        status: &str,
+        kind: u16,
+        published_at: u64,
+    ) -> Event {
+        EventBuilder::new(Kind::Custom(kind), "")
+            .tags(order_tags(id, fiat_code, status))
+            .custom_created_at(Timestamp::from(published_at))
+            .finalize(keys)
+            .expect("order event")
+    }
+
+    fn order_event_without_kind(
+        keys: &Keys,
+        id: Uuid,
+        fiat_code: &str,
+        status: &str,
+        published_at: u64,
+    ) -> Event {
+        EventBuilder::new(Kind::Custom(NOSTR_ORDER_EVENT_KIND), "")
+            .tags(order_tags_without_kind(id, fiat_code, status))
+            .custom_created_at(Timestamp::from(published_at))
+            .finalize(keys)
+            .expect("order event without kind")
     }
 
     #[test]
@@ -894,6 +1020,194 @@ mod tests {
         let parsed = parse_disputes_events(events);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].created_at, 1_800_000_000);
+    }
+
+    #[test]
+    fn pending_orders_match_currency_filter_case_insensitively() {
+        let id = Uuid::new_v4();
+        let mut latest = std::collections::HashMap::new();
+        latest.insert(
+            id,
+            SmallOrder {
+                id: Some(id),
+                status: Some(Status::Pending),
+                fiat_code: "usd".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let filtered = pending_orders_for_book(&latest, Some(vec!["USD".to_string()]));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, Some(id));
+    }
+
+    #[test]
+    fn parse_orders_ignores_events_with_wrong_kind() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            order_event(&keys, id, "USD", "pending", NOSTR_ORDER_EVENT_KIND + 1, 20),
+            order_event(&keys, id, "USD", "pending", NOSTR_ORDER_EVENT_KIND, 10),
+        ]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_orders_events(events, None, Some(Status::Pending), None);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, Some(id));
+        assert_eq!(parsed[0].created_at, Some(10));
+    }
+
+    #[test]
+    fn parse_disputes_ignores_events_with_wrong_kind() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            EventBuilder::new(Kind::Custom(NOSTR_DISPUTE_EVENT_KIND + 1), "")
+                .tags(dispute_tags(id, "in-progress", Some(1_700_000_200)))
+                .custom_created_at(Timestamp::from(20))
+                .finalize(&keys)
+                .expect("wrong kind dispute event"),
+            dispute_event(&keys, id, "initiated", Some(1_700_000_100), 10),
+        ]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_disputes_events(events);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, id);
+        assert_eq!(parsed[0].status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn targeted_order_lookup_ignores_newer_event_with_wrong_id() {
+        let keys = Keys::generate();
+        let wanted_id = Uuid::new_v4();
+        let other_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            order_event(
+                &keys,
+                wanted_id,
+                "USD",
+                "pending",
+                NOSTR_ORDER_EVENT_KIND,
+                10,
+            ),
+            order_event(
+                &keys,
+                other_id,
+                "EUR",
+                "pending",
+                NOSTR_ORDER_EVENT_KIND,
+                20,
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let order = latest_small_order_by_id(&events, keys.public_key(), wanted_id).unwrap();
+
+        assert_eq!(order.id, Some(wanted_id));
+        assert_eq!(order.fiat_code, "USD");
+    }
+
+    #[test]
+    fn targeted_order_lookup_breaks_equal_timestamp_ties_by_lower_event_id() {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        let usd_event = order_event(
+            &keys,
+            order_id,
+            "USD",
+            "pending",
+            NOSTR_ORDER_EVENT_KIND,
+            10,
+        );
+        let eur_event = order_event(
+            &keys,
+            order_id,
+            "EUR",
+            "pending",
+            NOSTR_ORDER_EVENT_KIND,
+            10,
+        );
+        let expected_fiat = if usd_event.id.as_bytes() < eur_event.id.as_bytes() {
+            "USD"
+        } else {
+            "EUR"
+        };
+        let events: BTreeSet<_> = [usd_event, eur_event].into_iter().collect();
+
+        let order = latest_small_order_by_id(&events, keys.public_key(), order_id).unwrap();
+
+        assert_eq!(order.id, Some(order_id));
+        assert_eq!(order.fiat_code, expected_fiat);
+    }
+
+    #[test]
+    fn targeted_order_lookup_rejects_order_without_kind() {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            order_event_without_kind(&keys, order_id, "EUR", "pending", 20),
+            order_event(
+                &keys,
+                order_id,
+                "USD",
+                "pending",
+                NOSTR_ORDER_EVENT_KIND,
+                10,
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let order = latest_small_order_by_id(&events, keys.public_key(), order_id).unwrap();
+
+        assert_eq!(order.id, Some(order_id));
+        assert_eq!(order.fiat_code, "USD");
+    }
+
+    #[test]
+    fn targeted_dispute_lookup_ignores_newer_event_with_wrong_id() {
+        let keys = Keys::generate();
+        let wanted_id = Uuid::new_v4();
+        let other_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            dispute_event(&keys, wanted_id, "initiated", Some(1_700_000_100), 10),
+            dispute_event(&keys, other_id, "in-progress", Some(1_700_000_200), 20),
+        ]
+        .into_iter()
+        .collect();
+
+        let dispute = latest_dispute_by_id(&events, keys.public_key(), wanted_id).unwrap();
+
+        assert_eq!(dispute.id, wanted_id);
+        assert_eq!(dispute.status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn targeted_dispute_lookup_breaks_equal_timestamp_ties_by_lower_event_id() {
+        let keys = Keys::generate();
+        let dispute_id = Uuid::new_v4();
+        let initiated_event =
+            dispute_event(&keys, dispute_id, "initiated", Some(1_700_000_100), 10);
+        let in_progress_event =
+            dispute_event(&keys, dispute_id, "in-progress", Some(1_700_000_100), 10);
+        let expected_status = if initiated_event.id.as_bytes() < in_progress_event.id.as_bytes() {
+            DisputeStatus::Initiated.to_string()
+        } else {
+            DisputeStatus::InProgress.to_string()
+        };
+        let events: BTreeSet<_> = [initiated_event, in_progress_event].into_iter().collect();
+
+        let dispute = latest_dispute_by_id(&events, keys.public_key(), dispute_id).unwrap();
+
+        assert_eq!(dispute.id, dispute_id);
+        assert_eq!(dispute.status, expected_status);
     }
 
     #[test]

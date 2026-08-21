@@ -57,7 +57,8 @@ pub use order_chat_projection::{
 };
 pub use order_selection::{
     get_filtered_book_orders, move_book_order_selection, order_passes_currency_filter,
-    selected_book_display_idx, selected_filtered_book_order,
+    order_passes_order_filters, order_passes_order_filters_at, selected_book_display_idx,
+    selected_filtered_book_order,
 };
 pub use startup::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
