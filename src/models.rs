@@ -174,6 +174,13 @@ impl User {
 
     /// Derive the trade key at `m/44'/1237'/38383'/0/{trade_index}` (NIP-06).
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
+        if trade_index < 0 || trade_index > u32::MAX as i64 {
+            anyhow::bail!(
+                "Invalid trade_index {} for key derivation; expected 0..={}",
+                trade_index,
+                u32::MAX
+            );
+        }
         let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(
             &self.mnemonic,
@@ -1273,6 +1280,21 @@ mod derive_trade_keys_tests {
         )
         .expect("wrong-path derivation");
         assert_ne!(keys.public_key(), wrong.public_key());
+    }
+
+    #[test]
+    fn derive_trade_keys_rejects_out_of_range_indices() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+
+        for invalid in [-1_i64, i64::from(u32::MAX) + 1] {
+            let err = user
+                .derive_trade_keys(invalid)
+                .expect_err("out-of-range trade_index must fail");
+            assert!(
+                err.to_string().contains("Invalid trade_index"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
 
