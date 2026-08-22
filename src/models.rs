@@ -172,14 +172,22 @@ impl User {
         Ok(keys)
     }
 
+    /// Derive the trade key at `m/44'/1237'/38383'/0/{trade_index}` (NIP-06).
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
+        if trade_index < 0 || trade_index > u32::MAX as i64 {
+            anyhow::bail!(
+                "Invalid trade_index {} for key derivation; expected 0..={}",
+                trade_index,
+                u32::MAX
+            );
+        }
         let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(
             &self.mnemonic,
             None,
             Some(account),
-            Some(trade_index as u32),
             Some(0),
+            Some(trade_index as u32),
         )?;
         Ok(keys)
     }
@@ -1210,6 +1218,86 @@ impl AdminDispute {
     /// Returns true if the dispute is not finalized and can be canceled.
     pub fn can_cancel(&self) -> bool {
         !self.is_finalized()
+    }
+}
+
+#[cfg(test)]
+mod derive_trade_keys_tests {
+    use super::User;
+
+    /// Same mnemonic as mostro-webtool trade-key API tests.
+    const SAMPLE_MNEMONIC: &str =
+        "leader monkey parrot ring guide accident before fence cannon height naive bean";
+
+    /// Independent cross-client vectors for `m/44'/1237'/38383'/0/{index}`.
+    const TRADE_KEY_VECTORS: &[(i64, &str, &str)] = &[
+        (
+            1,
+            "1c71f0a29c9d14198781f36897c6d6c08e2c4f905ba69fc5f8e67d375d705a8a",
+            "977b9da8056e6a83a991cb31ac507b0a618fbbee355e36e107e0e348686ab833",
+        ),
+        (
+            2,
+            "5011d0e7a57ae27627ab76962537072c6809ef3b9e24c2e3db4e672c61624eef",
+            "03c78114b80a2db782bb86be47c8062388d78a0585dfa79b8594e105740758c3",
+        ),
+        (
+            5,
+            "088bb3266bde36a0d7080b8ae655e86f5c12ac13ec59fa12754f277cdc2c970b",
+            "542fe37421c128dd421289d45f498cd99a06701706f33a1a74926e6d2d32182d",
+        ),
+    ];
+
+    /// Pre-fix swapped-path pubkey for index 2 (`m/44'/1237'/38383'/2/0`).
+    const WRONG_PATH_INDEX_TWO_PUBKEY: &str =
+        "7da91a7dec95859f279866bc0bb3a86ff3d67a43da3f43cd722d1dbc948e0d02";
+
+    #[test]
+    fn derive_trade_keys_matches_mostro_derivation_path() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+
+        for &(trade_index, expected_pubkey_hex, expected_secret_hex) in TRADE_KEY_VECTORS {
+            let derived = user
+                .derive_trade_keys(trade_index)
+                .expect("derive_trade_keys");
+            assert_eq!(
+                derived.public_key().to_hex(),
+                expected_pubkey_hex,
+                "trade index {trade_index} pubkey"
+            );
+            assert_eq!(
+                derived.secret_key().to_secret_hex(),
+                expected_secret_hex,
+                "trade index {trade_index} secret"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_trade_keys_index_two_matches_mostro_webtool_vector() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+        let keys = user.derive_trade_keys(2).expect("trade index 2");
+
+        assert_eq!(
+            keys.public_key().to_hex(),
+            "5011d0e7a57ae27627ab76962537072c6809ef3b9e24c2e3db4e672c61624eef"
+        );
+        assert_ne!(keys.public_key().to_hex(), WRONG_PATH_INDEX_TWO_PUBKEY);
+    }
+
+    #[test]
+    fn derive_trade_keys_rejects_out_of_range_indices() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+
+        for invalid in [-1_i64, i64::from(u32::MAX) + 1] {
+            let err = user
+                .derive_trade_keys(invalid)
+                .expect_err("out-of-range trade_index must fail");
+            assert!(
+                err.to_string().contains("Invalid trade_index"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
 
