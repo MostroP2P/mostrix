@@ -172,14 +172,15 @@ impl User {
         Ok(keys)
     }
 
+    /// Derive the trade key at `m/44'/1237'/38383'/0/{trade_index}` (NIP-06).
     pub fn derive_trade_keys(&self, trade_index: i64) -> Result<Keys> {
         let account: u32 = NOSTR_ORDER_EVENT_KIND as u32;
         let keys = Keys::from_mnemonic_advanced(
             &self.mnemonic,
             None,
             Some(account),
-            Some(trade_index as u32),
             Some(0),
+            Some(trade_index as u32),
         )?;
         Ok(keys)
     }
@@ -1210,6 +1211,68 @@ impl AdminDispute {
     /// Returns true if the dispute is not finalized and can be canceled.
     pub fn can_cancel(&self) -> bool {
         !self.is_finalized()
+    }
+}
+
+#[cfg(test)]
+mod derive_trade_keys_tests {
+    use super::User;
+    use mostro_core::prelude::NOSTR_ORDER_EVENT_KIND;
+    use nostr_sdk::prelude::{FromMnemonic, Keys};
+
+    /// Same mnemonic as mostro-webtool trade-key API tests.
+    const SAMPLE_MNEMONIC: &str =
+        "leader monkey parrot ring guide accident before fence cannon height naive bean";
+
+    fn expected_trade_keys(mnemonic: &str, trade_index: u32) -> Keys {
+        Keys::from_mnemonic_advanced(
+            mnemonic,
+            None,
+            Some(NOSTR_ORDER_EVENT_KIND as u32),
+            Some(0),
+            Some(trade_index),
+        )
+        .expect("reference trade key derivation")
+    }
+
+    #[test]
+    fn derive_trade_keys_matches_mostro_derivation_path() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+
+        for trade_index in [1_i64, 2, 5] {
+            let derived = user
+                .derive_trade_keys(trade_index)
+                .expect("derive_trade_keys");
+            let expected = expected_trade_keys(SAMPLE_MNEMONIC, trade_index as u32);
+            assert_eq!(
+                derived.secret_key(),
+                expected.secret_key(),
+                "trade index {trade_index} must use m/44'/1237'/38383'/0/{trade_index}"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_trade_keys_index_two_matches_mostro_webtool_vector() {
+        let user = User::from_mnemonic(SAMPLE_MNEMONIC.to_string()).expect("user from mnemonic");
+        let keys = user.derive_trade_keys(2).expect("trade index 2");
+
+        assert_eq!(
+            keys.public_key().to_hex(),
+            expected_trade_keys(SAMPLE_MNEMONIC, 2)
+                .public_key()
+                .to_hex()
+        );
+        // Regression guard: swapped change/index produced this pubkey before the fix.
+        let wrong = Keys::from_mnemonic_advanced(
+            SAMPLE_MNEMONIC,
+            None,
+            Some(NOSTR_ORDER_EVENT_KIND as u32),
+            Some(2),
+            Some(0),
+        )
+        .expect("wrong-path derivation");
+        assert_ne!(keys.public_key(), wrong.public_key());
     }
 }
 
