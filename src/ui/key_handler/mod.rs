@@ -649,6 +649,18 @@ fn is_shift_char_shortcut(key_event: &KeyEvent, lower: char, upper: char) -> boo
     }
 }
 
+fn is_order_filter_open_shortcut(key_event: &KeyEvent) -> bool {
+    is_shift_char_shortcut(key_event, 'f', 'F')
+        || matches!(key_event.code, KeyCode::Char('f'))
+            && !key_event.modifiers.intersects(
+                KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER
+                    | KeyModifiers::HYPER
+                    | KeyModifiers::META,
+            )
+}
+
 fn update_invoice_notification_action_selection(
     code: KeyCode,
     invoice_state: &mut crate::ui::InvoiceInputState,
@@ -677,6 +689,10 @@ fn active_order_filter_input(state: &mut OrderBookFilterState) -> Option<&mut St
         OrderBookFilterField::PaymentMethod => Some(&mut state.filters.payment_method),
         OrderBookFilterField::CreatedWithinDays => Some(&mut state.filters.created_within_days),
     }
+}
+
+fn order_filter_field_accepts_text(field: OrderBookFilterField) -> bool {
+    !matches!(field, OrderBookFilterField::Kind)
 }
 
 fn handle_order_filter_popup_key(app: &mut AppState, code: KeyCode, key_event: &KeyEvent) -> bool {
@@ -710,7 +726,10 @@ fn handle_order_filter_popup_key(app: &mut AppState, code: KeyCode, key_event: &
             state.filters.kind.cycle();
             app.mode = UiMode::OrderFilters(state);
         }
-        KeyCode::Char('x') | KeyCode::Char('X') if is_shift_char_shortcut(key_event, 'x', 'X') => {
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if !order_filter_field_accepts_text(state.focused)
+                && is_shift_char_shortcut(key_event, 'x', 'X') =>
+        {
             state.filters = OrderBookFilters::default();
             app.mode = UiMode::OrderFilters(state);
         }
@@ -1537,7 +1556,7 @@ pub fn handle_key_event(
     if let Tab::User(UserTab::Orders) = app.active_tab {
         match code {
             KeyCode::Char('f') | KeyCode::Char('F')
-                if is_shift_char_shortcut(&key_event, 'f', 'F') =>
+                if is_order_filter_open_shortcut(&key_event) =>
             {
                 if matches!(
                     app.mode,
@@ -1961,7 +1980,7 @@ mod key_handler_tests {
                 payment_method: "cash".to_string(),
                 ..Default::default()
             },
-            focused: OrderBookFilterField::FiatCurrency,
+            focused: OrderBookFilterField::Kind,
         });
 
         let handled = handle_order_filter_popup_key(
@@ -1989,7 +2008,7 @@ mod key_handler_tests {
                 payment_method: "cash".to_string(),
                 ..Default::default()
             },
-            focused: OrderBookFilterField::FiatCurrency,
+            focused: OrderBookFilterField::Kind,
         });
 
         let handled = handle_order_filter_popup_key(
@@ -2003,6 +2022,32 @@ mod key_handler_tests {
             UiMode::OrderFilters(state) => {
                 assert!(state.filters.fiat_code.is_empty());
                 assert!(state.filters.payment_method.is_empty());
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uppercase_x_appends_to_text_order_filter_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+            filters: OrderBookFilters {
+                fiat_code: "M".to_string(),
+                ..Default::default()
+            },
+            focused: OrderBookFilterField::FiatCurrency,
+        });
+
+        let handled = handle_order_filter_popup_key(
+            &mut app,
+            KeyCode::Char('X'),
+            &KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(state.filters.fiat_code, "MX");
             }
             other => panic!("expected OrderFilters mode, got {other:?}"),
         }
@@ -2035,6 +2080,30 @@ mod key_handler_tests {
             'f',
             'F'
         ));
+    }
+
+    #[test]
+    fn order_filter_open_shortcut_accepts_plain_f_for_caps_lock_terminals() {
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('F'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::SHIFT
+        )));
+    }
+
+    #[test]
+    fn order_filter_open_shortcut_ignores_control_f() {
+        assert!(!is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL
+        )));
     }
 
     #[test]
