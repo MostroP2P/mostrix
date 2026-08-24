@@ -73,7 +73,7 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
         } else if compact_orders {
-            lines.extend(compact_orders_help(narrow_orders));
+            lines.extend(compact_orders_help(narrow_orders, inner.height));
         } else if compact_my_trades {
             lines.extend(compact_my_trades_help(narrow_my_trades));
         } else if matches!(tab, Tab::User(UserTab::Orders)) {
@@ -230,9 +230,15 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
     .collect()
 }
 
-fn compact_orders_help(narrow: bool) -> Vec<Line<'static>> {
+fn compact_orders_help(narrow: bool, inner_height: u16) -> Vec<Line<'static>> {
     if narrow {
         let (title_style, _) = settings_instruction_block_style();
+        if inner_height <= 4 {
+            return ["Shift+F", "Shift+X"]
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, title_style)))
+                .collect();
+        }
         return ["↑↓", "Enter", "Shift+F", "Shift+X"]
             .into_iter()
             .map(|row| Line::from(Span::styled(row, title_style)))
@@ -618,6 +624,25 @@ mod help_content_tests {
             assert!(
                 buffer_contains(buf, expected),
                 "missing {expected:?} from compact Orders help"
+            );
+        }
+    }
+
+    #[test]
+    fn very_short_narrow_orders_help_keeps_filters_and_close_hint_visible() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::Orders)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for expected in ["Shift+F", "Shift+X", "Esc, Enter or", "Ctrl+H to close"] {
+            assert!(
+                buffer_contains(buf, expected),
+                "missing {expected:?} from very short Orders help"
             );
         }
     }

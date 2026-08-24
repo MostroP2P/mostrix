@@ -650,15 +650,17 @@ fn is_shift_char_shortcut(key_event: &KeyEvent, lower: char, upper: char) -> boo
 }
 
 fn is_order_filter_open_shortcut(key_event: &KeyEvent) -> bool {
-    is_shift_char_shortcut(key_event, 'f', 'F')
-        || matches!(key_event.code, KeyCode::Char('f'))
-            && !key_event.modifiers.intersects(
-                KeyModifiers::CONTROL
-                    | KeyModifiers::ALT
-                    | KeyModifiers::SUPER
-                    | KeyModifiers::HYPER
-                    | KeyModifiers::META,
-            )
+    if key_event.modifiers.intersects(
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::HYPER
+            | KeyModifiers::META,
+    ) {
+        return false;
+    }
+
+    is_shift_char_shortcut(key_event, 'f', 'F') || matches!(key_event.code, KeyCode::Char('f'))
 }
 
 fn update_invoice_notification_action_selection(
@@ -2103,6 +2105,10 @@ mod key_handler_tests {
         assert!(!is_order_filter_open_shortcut(&KeyEvent::new(
             KeyCode::Char('f'),
             KeyModifiers::CONTROL
+        )));
+        assert!(!is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('F'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
         )));
     }
 
