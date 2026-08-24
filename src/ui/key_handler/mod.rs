@@ -905,7 +905,12 @@ fn handle_pay_invoice_display_keys(code: KeyCode, invoice_state: &mut InvoiceInp
 fn is_shift_char_shortcut(key_event: &KeyEvent, lower: char, upper: char) -> bool {
     match key_event.code {
         KeyCode::Char(c) if c == upper => true,
-        KeyCode::Char(c) if c == lower => key_event.modifiers.contains(KeyModifiers::SHIFT),
+        KeyCode::Char(c) if c == lower => {
+            key_event.modifiers.contains(KeyModifiers::SHIFT)
+                || key_event
+                    .state
+                    .contains(crossterm::event::KeyEventState::CAPS_LOCK)
+        }
         _ => false,
     }
 }
@@ -2327,6 +2332,16 @@ mod key_handler_tests {
         ));
         assert!(is_shift_char_shortcut(
             &KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
+            'f',
+            'F'
+        ));
+        assert!(is_shift_char_shortcut(
+            &KeyEvent::new_with_kind_and_state(
+                KeyCode::Char('f'),
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Press,
+                crossterm::event::KeyEventState::CAPS_LOCK,
+            ),
             'f',
             'F'
         ));
