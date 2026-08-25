@@ -158,6 +158,9 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     if let OperationResult::SessionRestored { message } = result {
         result = OperationResult::Info(message);
     }
+    if let OperationResult::OrdersRefreshed { message } = result {
+        result = OperationResult::Info(message);
+    }
     if let OperationResult::InvoiceSubmitted {
         message,
         order_id,

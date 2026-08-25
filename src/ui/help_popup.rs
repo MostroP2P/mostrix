@@ -422,6 +422,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
                 HELP_MY_TRADES_SHIFT_V_RATE.to_string(),
                 HELP_MY_TRADES_SHIFT_D_DISPUTE.to_string(),
+                HELP_MY_TRADES_SHIFT_U_REFRESH.to_string(),
                 HELP_MY_TRADES_SHIFT_K_KCONV.to_string(),
                 HELP_MY_TRADES_CTRL_S_ATTACH.to_string(),
                 HELP_MY_TRADES_CTRL_O_SEND.to_string(),
@@ -485,6 +486,10 @@ mod help_content_tests {
         assert!(
             lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_D_DISPUTE),
             "Shift+D missing from My Trades help: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_U_REFRESH),
+            "Shift+U missing from My Trades help: {lines:?}"
         );
         assert!(
             lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_K_KCONV),

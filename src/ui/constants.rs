@@ -123,6 +123,7 @@ pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (
 pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
 pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
 pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (Dispute message)";
+pub const HELP_MY_TRADES_SHIFT_U_REFRESH: &str = "Shift+U: Refresh order details from Mostro";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_SHIFT_K_KCONV: &str =
     "Shift+K: Reveal Shared key (read-only grant for solvers; never your signing key)";

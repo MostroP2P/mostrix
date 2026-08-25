@@ -290,11 +290,10 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         OperationResult::PaymentRequestRequired { .. }
         | OperationResult::ObserverChatLoaded { .. }
         | OperationResult::ObserverChatError { .. } => 8.min(max_popup_height),
-        OperationResult::Info(message) => info_popup_height(message, popup_width, max_popup_height),
-        OperationResult::SessionRestored { message } => {
-            info_popup_height(message, popup_width, max_popup_height)
-        }
-        OperationResult::Error(message) => {
+        OperationResult::Info(message)
+        | OperationResult::SessionRestored { message }
+        | OperationResult::OrdersRefreshed { message }
+        | OperationResult::Error(message) => {
             info_popup_height(message, popup_width, max_popup_height)
         }
         OperationResult::InvoiceSubmitted { .. }
@@ -430,6 +429,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         }
         OperationResult::Info(message)
         | OperationResult::SessionRestored { message }
+        | OperationResult::OrdersRefreshed { message }
         | OperationResult::InvoiceSubmitted { message, .. }
         | OperationResult::TradeClosed { message, .. }
         | OperationResult::OrderHistoryDeleted { message, .. }

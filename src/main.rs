@@ -65,7 +65,9 @@ pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 fn requires_db_projection_resync(result: &OperationResult) -> bool {
     matches!(
         result,
-        OperationResult::OrderHistoryDeleted { .. } | OperationResult::SessionRestored { .. }
+        OperationResult::OrderHistoryDeleted { .. }
+            | OperationResult::SessionRestored { .. }
+            | OperationResult::OrdersRefreshed { .. }
     )
 }
 
@@ -84,6 +86,7 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
         OperationResult::MyTradesMakerBookChanged
             | OperationResult::Success(_)
             | OperationResult::SessionRestored { .. }
+            | OperationResult::OrdersRefreshed { .. }
     );
 
     if refresh_maker_book_cache && app.user_role == UserRole::User {
@@ -987,11 +990,16 @@ mod apply_order_result_tests {
     use crate::ui::OperationResult;
 
     #[test]
-    fn session_restore_triggers_the_startup_db_resync() {
-        // Regression: a restore rewrites SQLite from a background task; without
-        // the resync the recovered orders stay invisible until app restart.
+    fn db_rewriting_results_trigger_the_startup_resync() {
+        // Regression: restore and Action::Orders rewrite SQLite from background
+        // tasks; without the resync the rows stay invisible until app restart.
         assert!(requires_db_projection_resync(
             &OperationResult::SessionRestored {
+                message: String::new()
+            }
+        ));
+        assert!(requires_db_projection_resync(
+            &OperationResult::OrdersRefreshed {
                 message: String::new()
             }
         ));
