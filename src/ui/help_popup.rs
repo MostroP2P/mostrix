@@ -7,8 +7,8 @@ use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
-// 13 shortcuts, intro, close hint, borders, and one row of margin above and below.
-const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 19;
+// 15 shortcuts, intro, close hint, borders, and one row of margin above and below.
+const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 21;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
@@ -199,6 +199,7 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
             "Tab  Shift+I",
             "Shift+C  Shift+F",
             "Shift+R  Shift+D",
+            "Shift+U",
         ]
         .into_iter()
         .map(|row| Line::from(Span::styled(row, title_style)))
@@ -210,6 +211,7 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
         "Shift+I / Tab: Toggle input / Peer-Solver chat",
         "Shift+C / Shift+F: Cancel order / mark fiat sent",
         "Shift+R / Shift+D: Release sats / open dispute",
+        "Shift+U: Refresh order details from Mostro",
     ]
     .into_iter()
     .map(help_shortcut_line)
@@ -422,6 +424,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
                 HELP_MY_TRADES_SHIFT_V_RATE.to_string(),
                 HELP_MY_TRADES_SHIFT_D_DISPUTE.to_string(),
+                HELP_MY_TRADES_SHIFT_U_REFRESH.to_string(),
                 HELP_MY_TRADES_SHIFT_K_KCONV.to_string(),
                 HELP_MY_TRADES_CTRL_S_ATTACH.to_string(),
                 HELP_MY_TRADES_CTRL_O_SEND.to_string(),
@@ -487,6 +490,10 @@ mod help_content_tests {
             "Shift+D missing from My Trades help: {lines:?}"
         );
         assert!(
+            lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_U_REFRESH),
+            "Shift+U missing from My Trades help: {lines:?}"
+        );
+        assert!(
             lines.iter().any(|l| l == HELP_MY_TRADES_SHIFT_K_KCONV),
             "Shift+K missing from My Trades help: {lines:?}"
         );
@@ -525,6 +532,7 @@ mod help_content_tests {
             "Shift+F",
             "Shift+R",
             "Shift+D",
+            "Shift+U",
             HELP_CLOSE_HINT,
         ] {
             assert!(
@@ -553,6 +561,7 @@ mod help_content_tests {
             "Shift+F",
             "Shift+R",
             "Shift+D",
+            "Shift+U",
             "Esc, Enter or",
             "Ctrl+H to close",
         ] {
