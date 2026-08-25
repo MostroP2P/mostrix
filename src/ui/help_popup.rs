@@ -317,7 +317,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Show your BIP-39 mnemonic from the local database. Treat as highly sensitive.",
         ),
         (
-            "Restore Session (from Mostro)",
+            "Restore Session",
             "Recover this identity's orders and disputes from Mostro after a reinstall or on a new machine.",
         ),
         (

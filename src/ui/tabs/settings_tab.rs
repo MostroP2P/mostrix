@@ -70,10 +70,7 @@ const USER_SETTINGS: [SettingsMenuRow; 10] = [
         "Clear Currency Filters",
     ),
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
-    (
-        SettingsMenuAction::RestoreSession,
-        "Restore Session (from Mostro)",
-    ),
+    (SettingsMenuAction::RestoreSession, "Restore Session"),
     (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
 ];
 
@@ -340,10 +337,7 @@ mod tests {
     fn user_menu_keeps_restore_next_to_the_key_management_rows() {
         let labels: Vec<&str> = USER_SETTINGS.iter().map(|(_, l)| *l).collect();
         let seed = labels.iter().position(|l| *l == "View Seed Words").unwrap();
-        let restore = labels
-            .iter()
-            .position(|l| *l == "Restore Session (from Mostro)")
-            .unwrap();
+        let restore = labels.iter().position(|l| *l == "Restore Session").unwrap();
         let generate = labels
             .iter()
             .position(|l| *l == "Generate New Keys")
