@@ -87,6 +87,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
         | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
+        | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -158,6 +159,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmClearCurrencies(ref mut selected_button)
         | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
+        | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -563,5 +565,32 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod confirm_toggle_tests {
+    use super::*;
+    use crate::ui::UserRole;
+
+    #[test]
+    fn generate_new_keys_confirmation_can_be_moved_to_no() {
+        // Rotating keys replaces the user row and clears the orders table, so
+        // this confirmation must be selectable. It was missing from both
+        // Left/Right groups: arrowing to NO did nothing and Enter rotated.
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::ConfirmGenerateNewKeys(true);
+
+        handle_right_key(&mut app, &orders);
+        assert!(
+            matches!(app.mode, UiMode::ConfirmGenerateNewKeys(false)),
+            "Right must select NO"
+        );
+        handle_left_key(&mut app, &orders);
+        assert!(
+            matches!(app.mode, UiMode::ConfirmGenerateNewKeys(true)),
+            "Left must select YES"
+        );
     }
 }
