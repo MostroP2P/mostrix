@@ -347,17 +347,20 @@ async fn restore_one_order(
     let id_str = info.order_id.to_string();
 
     // A row from an earlier restore that never got relay details (empty fiat
-    // code is impossible for a real order) is treated as absent so this run
-    // retries the relay lookup and rehydrates it, instead of freezing the
-    // minimal placeholder forever.
-    if let Ok(existing) = Order::get_by_id(pool, &id_str).await {
-        if !is_minimal_placeholder(&existing) {
-            if let Ok(status) = Status::from_str(&info.status) {
-                Order::update_status(pool, &id_str, status).await?;
+    // code is impossible for a real order) is rehydrated by this run instead of
+    // staying a minimal placeholder forever.
+    let placeholder = match Order::get_by_id(pool, &id_str).await {
+        Ok(existing) => {
+            if !is_minimal_placeholder(&existing) {
+                if let Ok(status) = Status::from_str(&info.status) {
+                    Order::update_status(pool, &id_str, status).await?;
+                }
+                return Ok(RestoredAs::AlreadyKnown);
             }
-            return Ok(RestoredAs::AlreadyKnown);
+            true
         }
-    }
+        Err(_) => false,
+    };
 
     let trade_keys = user.derive_trade_keys(info.trade_index)?;
 
@@ -380,6 +383,21 @@ async fn restore_one_order(
     // Mostro's database is authoritative for the status; relay events may lag.
     if let Ok(status) = Status::from_str(&info.status) {
         small_order.status = Some(status);
+    }
+
+    if placeholder {
+        // Rehydrate through the upsert that merges onto the existing row.
+        // `Order::new` would rebuild from a default `SmallOrder` and fall back
+        // to `update_db`, which writes every column — erasing the peer chat
+        // key, dispute id and solver chat that live DMs may have persisted on
+        // this row since the previous restore. The role decided on the first
+        // pass is preserved too, so it is not re-counted here.
+        Order::upsert_from_small_order_dm(pool, info.order_id, small_order, &trade_keys, None)
+            .await?;
+        return Ok(RestoredAs::Inserted {
+            with_details,
+            role_unknown: false,
+        });
     }
 
     let role = restored_order_role(small_order.status);

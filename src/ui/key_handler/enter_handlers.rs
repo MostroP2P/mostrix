@@ -628,7 +628,19 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 ));
                 let pool = ctx.pool.clone();
                 let client = ctx.client.clone();
-                let mostro_pubkey = ctx.mostro_pubkey;
+                // Live key, not the settings snapshot: the request and the
+                // sender validation must both target the instance that is
+                // configured right now, not the one from app start.
+                let mostro_pubkey = match ctx.current_mostro_pubkey.lock() {
+                    Ok(pubkey) => *pubkey,
+                    Err(_) => {
+                        crate::util::request_fatal_restart(
+                            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                                .to_string(),
+                        );
+                        return true;
+                    }
+                };
                 let mostro_info = ctx.mostro_info.clone();
                 let result_tx = ctx.order_result_tx.clone();
                 let dm_subscription_tx = ctx.dm_subscription_tx.clone();
