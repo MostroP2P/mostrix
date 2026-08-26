@@ -8,6 +8,7 @@ use crate::ui::{
     AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection,
     MessageNotification, OperationResult, UiMode, UserMode,
 };
+use crate::util::chat_listener::untrack_dispute_chat_parties;
 use mostro_core::prelude::Action;
 use uuid::Uuid;
 
@@ -87,6 +88,7 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
 }
 
 fn remove_admin_dispute_from_app_state(app: &mut AppState, dispute_id: &str) {
+    untrack_dispute_chat_parties(dispute_id);
     app.admin_disputes_in_progress
         .retain(|d| d.dispute_id != dispute_id);
     app.admin_dispute_chats.remove(dispute_id);

@@ -727,6 +727,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes);
             true
         }
+        UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) => {
+            app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingAddSolver) => {
             // No action while waiting
             true

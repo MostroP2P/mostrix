@@ -703,36 +703,42 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let (footer_line1, footer_line2) = if footer_width < 50 {
             (HELP_KEY.to_string(), None)
         } else if footer_width < 90 {
-            let one = if is_finalized {
-                format!("{} | {} | {}", HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT)
+            let is_input_focused =
+                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+            if is_finalized {
+                (
+                    format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
+                    ),
+                    None,
+                )
+            } else if is_input_focused && app.admin_chat_input_enabled {
+                (
+                    format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY, FOOTER_ENTER_SEND, FOOTER_SHIFT_F_RESOLVE, FOOTER_SHIFT_R_RECOVER
+                    ),
+                    Some(format!(
+                        "{} | {} | {}{}",
+                        FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
+                    )),
+                )
             } else {
-                let is_input_focused =
-                    matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-                let short = if is_input_focused && app.admin_chat_input_enabled {
+                (
                     format!(
-                        "{} | {} | {} | {} | {} | {} | {}",
+                        "{} | {} | {} | {}",
                         HELP_KEY,
-                        FOOTER_ENTER_SEND,
-                        FOOTER_TAB_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
                         FOOTER_SHIFT_R_RECOVER,
-                        FOOTER_DELETE_LOCAL,
-                        filter_hint
-                    )
-                } else {
-                    format!(
-                        "{} | {} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_TAB_PARTY,
-                        FOOTER_SHIFT_F_RESOLVE,
-                        FOOTER_SHIFT_R_RECOVER,
-                        FOOTER_DELETE_LOCAL,
-                        filter_hint
-                    )
-                };
-                format!("{}{}", short, ctrl_s_hint)
-            };
-            (one, None)
+                        FOOTER_DELETE_LOCAL
+                    ),
+                    Some(format!(
+                        "{} | {}{}",
+                        FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
+                    )),
+                )
+            }
         } else if is_finalized {
             (
                 format!(

@@ -33,6 +33,7 @@ pub enum AdminMode {
         dispute_id: String,
         selected_button: bool, // true=Yes, false=No
     },
+    WaitingDeleteAdminDispute,
     ManagingDispute, // Mode for "Disputes in Progress" tab
     ReviewingDisputeForFinalization {
         dispute_id: uuid::Uuid,

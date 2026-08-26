@@ -74,6 +74,15 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            ref mut selected_button,
+            ..
+        })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
             ..
@@ -145,6 +154,15 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            ref mut selected_button,
+            ..
+        })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
             ..
@@ -266,6 +284,7 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute)
         | UiMode::AdminMode(AdminMode::WaitingAddSolver)
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
@@ -404,6 +423,7 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute)
         | UiMode::AdminMode(AdminMode::WaitingAddSolver)
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })

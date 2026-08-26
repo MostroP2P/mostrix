@@ -223,6 +223,9 @@ pub fn ui_draw(
             "Recovering taken disputes...\nWaiting for Mostro...",
         );
     }
+    if let UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) = &app.mode {
+        waiting::render_waiting_with_message(f, "Deleting dispute from local database...");
+    }
     // Waiting for add solver popup overlay (admin mode only)
     if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
         waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");

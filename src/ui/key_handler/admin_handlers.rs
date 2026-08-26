@@ -10,7 +10,6 @@ use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::orders::OperationResult;
 use crate::ui::{AddSolverState, AdminMode, AppState, UiMode, UserRole};
-use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
     execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
@@ -132,9 +131,7 @@ pub(crate) fn execute_delete_admin_dispute_action(
 ) {
     let pool = ctx.pool.clone();
     let result_tx = ctx.order_result_tx.clone();
-    // Stop chat router tracking immediately so background fetches do not race the delete.
-    untrack_dispute_chat_parties(&dispute_id);
-    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+    app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
 
     tokio::spawn(async move {
         match AdminDispute::delete_by_dispute_id(&pool, &dispute_id).await {

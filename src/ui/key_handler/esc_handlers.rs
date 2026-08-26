@@ -203,8 +203,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
-        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) => {
-            // Can't cancel while waiting for Mostro
+        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) => {
+            // Can't cancel while waiting for Mostro / local DB
             true
         }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {

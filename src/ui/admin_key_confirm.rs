@@ -217,8 +217,8 @@ pub fn render_recover_taken_disputes_confirm(
     selected_button: bool,
 ) {
     let area = f.area();
-    let popup_width = 72.min(area.width.saturating_sub(2).max(40));
-    let popup_height = 14.min(area.height.saturating_sub(2).max(10));
+    let popup_width = 72.min(area.width);
+    let popup_height = 14.min(area.height);
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
@@ -226,48 +226,73 @@ pub fn render_recover_taken_disputes_confirm(
         .title("🔄 Recover Taken Disputes")
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1), // spacer
-            Constraint::Min(5),    // centered body
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // buttons
-            Constraint::Length(1), // help
-        ],
-    )
-    .split(popup);
+    let compact = inner.width < 40 || inner.height < 10;
+    let ultra_compact = inner.height < 6;
+    let constraints: &[Constraint] = if ultra_compact {
+        &[Constraint::Min(1), Constraint::Length(3)]
+    } else if compact {
+        &[
+            Constraint::Min(2),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ]
+    } else {
+        &[
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ]
+    };
+    let chunks = Layout::new(Direction::Vertical, constraints).split(inner);
+    let (body_area, button_area, help_area) = if ultra_compact {
+        (chunks[0], chunks[1], None)
+    } else if compact {
+        (chunks[0], chunks[1], Some(chunks[2]))
+    } else {
+        (chunks[1], chunks[3], Some(chunks[4]))
+    };
 
     let noun = if count == 1 { "dispute" } else { "disputes" };
-    let body = vec![
-        Line::from(Span::styled(
-            format!("📡 Found {count} taken {noun} on relays"),
+    let body = if compact {
+        vec![Line::from(Span::styled(
+            format!("📡 {count} taken {noun} on relays, missing locally."),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "💾 missing from your local database",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "✨ Re-request AdminTookDispute to restore them?",
-            Style::default().fg(PRIMARY_COLOR),
-        )),
-    ];
+        ))]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                format!("📡 Found {count} taken {noun} on relays"),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "💾 missing from your local database",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "✨ Re-request AdminTookDispute to restore them?",
+                Style::default().fg(PRIMARY_COLOR),
+            )),
+        ]
+    };
     f.render_widget(
         Paragraph::new(body)
             .alignment(ratatui::layout::Alignment::Center)
             .wrap(Wrap { trim: true }),
-        chunks[1],
+        body_area,
     );
 
-    let button_area = chunks[3];
-    let button_width = 15;
+    let button_width = if compact { 8u16 } else { 15 };
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
     let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
@@ -349,34 +374,36 @@ pub fn render_recover_taken_disputes_confirm(
         no_inner[0],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Use ", Style::default()),
-            Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to select, ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to cancel", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[4],
-    );
+    if let Some(help_area) = help_area {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Use ", Style::default()),
+                Span::styled(
+                    "Left/Right",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to select, ", Style::default()),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to confirm, ", Style::default()),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to cancel", Style::default()),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            help_area,
+        );
+    }
 }
 
 /// Confirmation before AddInvoice when Settings contain a buyer Lightning address (taller body + wrap).
@@ -566,5 +593,19 @@ mod tests {
         assert!(buffer_contains(buf, "missing from your local database"));
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
+    }
+
+    #[test]
+    fn recover_confirm_keeps_actions_visible_on_narrow_short_terminal() {
+        let backend = TestBackend::new(30, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_recover_taken_disputes_confirm(f, 2, true))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "YES"),
+            "selected YES action must stay visible on 30x8"
+        );
     }
 }
