@@ -561,6 +561,8 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 **Input Handling**:
 
 - **Direct typing**: Start typing to add text to input (when input is enabled)
+- **Paste**: Bracketed paste, **right-click**, and **Ctrl+V** / **Ctrl+Shift+V** / **Shift+Insert** (platform help text varies) append clipboard text into the message box when input is enabled. Ctrl/Alt/Cmd chords are never inserted as literal characters, so shortcuts like **Ctrl+H**, **Ctrl+S**, **Shift+F/I/R/C** keep working.
+- **Delete (local)**: Press **Delete** on a selected dispute to remove it from the local `admin_disputes` table and the left sidebar (same idea as My Trades **Delete** for terminal order history). This does **not** cancel or settle on Mostro; **Shift+R** can re-fetch if the dispute is still assigned to you.
 - **Input toggle**: Press **Shift+I** to enable/disable chat input
   - When disabled, prevents accidental typing while navigating
   - Visual indicator shows "disabled - Shift+I to enable" in input title

@@ -198,6 +198,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. }) => {
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) => {
             // Can't cancel while waiting for Mostro
@@ -266,6 +270,22 @@ mod tests {
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
             count: 3,
+            selected_button: true,
+        });
+
+        assert!(handle_esc_key(&mut app));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+    }
+
+    #[test]
+    fn esc_closes_delete_admin_dispute_confirm() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            dispute_id: "dispute-abc".to_string(),
             selected_button: true,
         });
 

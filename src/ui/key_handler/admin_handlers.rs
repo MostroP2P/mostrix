@@ -1,6 +1,16 @@
+use crate::models::AdminDispute;
 use crate::shared::permissions::SolverPermission;
+use crate::ui::helpers::selected_filtered_dispute;
+use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
+use crate::ui::key_handler::confirmation::{
+    create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
+};
 use crate::ui::key_handler::EnterKeyContext;
-use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
+use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
+use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
+use crate::ui::orders::OperationResult;
+use crate::ui::{AddSolverState, AdminMode, AppState, UiMode, UserRole};
+use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
     execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
@@ -10,15 +20,6 @@ use mostro_core::prelude::Dispute;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-
-use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
-use crate::ui::key_handler::confirmation::{
-    create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
-};
-use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
-use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
-use crate::ui::orders::OperationResult;
-use crate::ui::UserRole;
 
 /// Helper function to execute taking a dispute.
 ///
@@ -106,6 +107,56 @@ pub(crate) fn begin_recover_taken_disputes(
     app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
         count: orphans.len(),
         selected_button: true,
+    });
+}
+
+/// Confirm Delete: remove selected dispute from local `admin_disputes` only.
+pub(crate) fn begin_delete_admin_dispute(app: &mut AppState) {
+    let Some(dispute) = selected_filtered_dispute(app) else {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "Select a dispute in the sidebar to delete from local database.".to_string(),
+        ));
+        return;
+    };
+    app.mode = UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+        dispute_id: dispute.dispute_id.clone(),
+        selected_button: true,
+    });
+}
+
+/// Delete the confirmed dispute from SQLite; UI list refreshes via [`OperationResult::AdminDisputeDeleted`].
+pub(crate) fn execute_delete_admin_dispute_action(
+    app: &mut AppState,
+    dispute_id: String,
+    ctx: &EnterKeyContext<'_>,
+) {
+    let pool = ctx.pool.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    // Stop chat router tracking immediately so background fetches do not race the delete.
+    untrack_dispute_chat_parties(&dispute_id);
+    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+
+    tokio::spawn(async move {
+        match AdminDispute::delete_by_dispute_id(&pool, &dispute_id).await {
+            Ok(affected) if affected > 0 => {
+                let _ = result_tx.send(OperationResult::AdminDisputeDeleted {
+                    dispute_id: dispute_id.clone(),
+                    message: format!(
+                        "Deleted dispute {dispute_id} from local database.\n(Use Shift+R to re-fetch if Mostro still assigns it to you.)"
+                    ),
+                });
+            }
+            Ok(_) => {
+                let _ = result_tx.send(OperationResult::Error(format!(
+                    "Dispute {dispute_id} was not found in local database."
+                )));
+            }
+            Err(e) => {
+                let _ = result_tx.send(OperationResult::Error(format!(
+                    "Failed to delete dispute {dispute_id} from local database: {e}"
+                )));
+            }
+        }
     });
 }
 

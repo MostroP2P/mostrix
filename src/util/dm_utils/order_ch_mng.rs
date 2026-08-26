@@ -5,7 +5,7 @@ use crate::ui::orders::{
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
-    AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
+    AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
     OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
@@ -86,6 +86,22 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
     }
 }
 
+fn remove_admin_dispute_from_app_state(app: &mut AppState, dispute_id: &str) {
+    app.admin_disputes_in_progress
+        .retain(|d| d.dispute_id != dispute_id);
+    app.admin_dispute_chats.remove(dispute_id);
+    app.admin_chat_last_seen
+        .remove(&(dispute_id.to_string(), ChatParty::Buyer));
+    app.admin_chat_last_seen
+        .remove(&(dispute_id.to_string(), ChatParty::Seller));
+    if app.selected_dispute_id.as_deref() == Some(dispute_id) {
+        app.selected_dispute_id = None;
+        app.admin_chat_input.clear();
+        app.admin_chat_selected_message_idx = None;
+        app.admin_chat_scroll_tracker = None;
+    }
+}
+
 /// If `Success` arrived before any DM row exists for this trade, append one placeholder so
 /// **Orders In Progress** (`build_active_order_chat_list`) has a sidebar row without running
 /// `sync_user_order_history_messages_from_db` (which would clobber real actions).
@@ -127,6 +143,14 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     } = result
     {
         remove_many_orders_from_messages_tab(app, &deleted_order_ids);
+        result = OperationResult::Info(message);
+    }
+    if let OperationResult::AdminDisputeDeleted {
+        dispute_id,
+        message,
+    } = result
+    {
+        remove_admin_dispute_from_app_state(app, &dispute_id);
         result = OperationResult::Info(message);
     }
     if let OperationResult::InvoiceSubmitted {

@@ -28,6 +28,11 @@ pub enum AdminMode {
         selected_button: bool, // true=Yes, false=No
     },
     WaitingRecoverTakenDisputes,
+    /// Confirm local-only removal of a taken dispute from SQLite / In Progress list.
+    ConfirmDeleteAdminDispute {
+        dispute_id: String,
+        selected_button: bool, // true=Yes, false=No
+    },
     ManagingDispute, // Mode for "Disputes in Progress" tab
     ReviewingDisputeForFinalization {
         dispute_id: uuid::Uuid,

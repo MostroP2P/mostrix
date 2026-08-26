@@ -177,6 +177,11 @@ pub enum OperationResult {
         deleted_order_ids: Vec<uuid::Uuid>,
         message: String,
     },
+    /// Local-only admin dispute removal; drop from In Progress list / chat maps.
+    AdminDisputeDeleted {
+        dispute_id: String,
+        message: String,
+    },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
     /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).

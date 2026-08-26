@@ -710,21 +710,23 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
                 let short = if is_input_focused && app.admin_chat_input_enabled {
                     format!(
-                        "{} | {} | {} | {} | {} | {}",
+                        "{} | {} | {} | {} | {} | {} | {}",
                         HELP_KEY,
                         FOOTER_ENTER_SEND,
                         FOOTER_TAB_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
                         FOOTER_SHIFT_R_RECOVER,
+                        FOOTER_DELETE_LOCAL,
                         filter_hint
                     )
                 } else {
                     format!(
-                        "{} | {} | {} | {} | {}",
+                        "{} | {} | {} | {} | {} | {}",
                         HELP_KEY,
                         FOOTER_TAB_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
                         FOOTER_SHIFT_R_RECOVER,
+                        FOOTER_DELETE_LOCAL,
                         filter_hint
                     )
                 };
@@ -734,8 +736,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         } else if is_finalized {
             (
                 format!(
-                    "{} | {} | {}",
-                    HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+                    "{} | {} | {} | {}",
+                    HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
                 ),
                 None,
             )
@@ -757,7 +759,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                             filter_hint
                         ),
                         format!(
-                            "{} | {} | {}{}",
+                            "{} | {} | {} | {}{}",
+                            FOOTER_DELETE_LOCAL,
                             FOOTER_PGUP_PGDN_SCROLL,
                             FOOTER_END_BOTTOM,
                             FOOTER_UP_DOWN_SELECT_DISPUTE,
@@ -777,7 +780,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                             ctrl_s_hint
                         ),
                         format!(
-                            "{} | {} | {} | {}",
+                            "{} | {} | {} | {} | {}",
+                            FOOTER_DELETE_LOCAL,
                             FOOTER_PGUP_PGDN_SCROLL,
                             FOOTER_NAV_CHAT,
                             FOOTER_END_BOTTOM,

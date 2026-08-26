@@ -15,8 +15,8 @@ use crate::ui::helpers::{
     sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
-    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
-    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    append_paste_to_admin_dispute_chat, apply_pending_runtime_reloads, create_app_channels,
+    handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
@@ -39,7 +39,10 @@ use crossterm::terminal::{
 };
 use crossterm::{
     self,
-    event::{Event, KeyEvent, MouseButton, MouseEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyEvent, MouseButton, MouseEventKind,
+    },
 };
 use fern::Dispatch;
 use futures::StreamExt;
@@ -55,9 +58,14 @@ pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
 async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: OperationResult) {
-    let is_dispute_related = matches!(&result, OperationResult::Info(msg)
-        if (msg.contains("Dispute") && msg.contains("taken successfully"))
-            || msg.contains("Dispute finalized"));
+    let is_dispute_related = match &result {
+        OperationResult::AdminDisputeDeleted { .. } => true,
+        OperationResult::Info(msg) => {
+            (msg.contains("Dispute") && msg.contains("taken successfully"))
+                || msg.contains("Dispute finalized")
+        }
+        _ => false,
+    };
     let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
     let refresh_maker_book_cache = matches!(
         &result,
@@ -214,6 +222,9 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
         app.observer_shared_key_input.push_str(&filtered_text);
     }
+
+    // Disputes in Progress chatbox (admin) — keeps newlines for multi-line drafts
+    let _ = append_paste_to_admin_dispute_chat(app, pasted_text);
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -245,7 +256,8 @@ async fn main() -> Result<(), anyhow::Error> {
     execute!(
         out,
         EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
+        EnableMouseCapture,
+        EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -802,7 +814,8 @@ async fn main() -> Result<(), anyhow::Error> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 

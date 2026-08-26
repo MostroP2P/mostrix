@@ -257,12 +257,14 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
   - **Global shortcut guard**: `c` / `C` (copy invoice / observer clear) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency**, the picker interceptor runs first and consumes most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
-  - `Event::Paste(...)` (bracketed paste)
+  - `Event::Paste(...)` (bracketed paste; enabled at startup via `EnableBracketedPaste`)
   - mouse right-click paste (`MouseEventKind::Down(MouseButton::Right)`) using clipboard read fallback
-  This applies to invoice input, admin key/solver inputs, and the Observer Shared key field.
+  - key fallbacks: **Ctrl+V** / **Ctrl+Shift+V** / **Cmd+V** / **Shift+Insert** where bracketed paste is unavailable
+  This applies to invoice input, admin key/solver inputs, the Observer Shared key field, and the **Disputes in Progress** admin chatbox.
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
-  - Supports direct character input and backspace
+  - Supports direct character input, backspace, and paste (see above)
+  - Ignores **Ctrl/Alt/Cmd** chords and **Shift+F/I/R/C** so those shortcuts are never typed into the box
   - Dynamic input box that grows from 1 to 10 lines
   - Text wrapping with word boundary detection
   - **Input toggle**: Press **Shift+I** to enable/disable chat input (prevents accidental typing)

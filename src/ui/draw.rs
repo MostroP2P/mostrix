@@ -437,6 +437,21 @@ No: paste BOLT11 or Lightning address manually."
     {
         admin_key_confirm::render_recover_taken_disputes_confirm(f, *count, *selected_button);
     }
+    if let UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+        dispute_id,
+        selected_button,
+    }) = &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🗑 Delete Local Dispute",
+            dispute_id,
+            *selected_button,
+            Some(
+                "Remove this dispute from local database and the In Progress list?\nDoes not cancel/settle on Mostro. Shift+R can re-fetch if still assigned.",
+            ),
+        );
+    }
     if let UiMode::AdminMode(AdminMode::ConfirmAddSolver {
         solver_pubkey,
         permission,

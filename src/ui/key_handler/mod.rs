@@ -172,6 +172,38 @@ pub use validation::{
     validate_mostro_pubkey, validate_npub, validate_relay,
 };
 
+/// True when Disputes in Progress chat input should accept typing / paste.
+fn admin_dispute_chat_input_active(app: &AppState) -> bool {
+    matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
+        && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
+        && app.admin_chat_input_enabled
+}
+
+/// Normalize clipboard / bracketed paste for chat: keep newlines and tabs, drop other controls.
+fn filter_pasted_chat_text(pasted_text: &str) -> String {
+    let normalized = pasted_text.replace("\r\n", "\n").replace('\r', "\n");
+    normalized
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
+/// Append pasted text to the admin dispute chatbox when it is active.
+///
+/// Used by bracketed paste, right-click, and Ctrl/Cmd+V / Shift+Insert fallbacks.
+/// Returns `true` when text was appended.
+pub fn append_paste_to_admin_dispute_chat(app: &mut AppState, pasted_text: &str) -> bool {
+    if !admin_dispute_chat_input_active(app) {
+        return false;
+    }
+    let filtered = filter_pasted_chat_text(pasted_text);
+    if filtered.is_empty() {
+        return false;
+    }
+    app.admin_chat_input.push_str(&filtered);
+    true
+}
+
 /// Check if we're in admin chat input mode and handle character input
 /// Returns Some(true) if handled, None if should continue to normal processing
 /// key_event is needed to check for modifiers (e.g., Shift+F should not be treated as input)
@@ -180,49 +212,48 @@ fn handle_admin_chat_input(
     code: KeyCode,
     key_event: &crossterm::event::KeyEvent,
 ) -> Option<bool> {
-    if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-        if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-            // Only allow input if chat input is enabled
-            if app.admin_chat_input_enabled {
-                // Don't treat Shift+F as input (it's used for finalization)
-                if (code == KeyCode::Char('f') || code == KeyCode::Char('F'))
-                    && key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::SHIFT)
-                {
-                    return None; // Let Shift+F handler process it
-                }
-                // Don't treat Shift+I as input (it's used for toggling input)
-                if (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
-                    && key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::SHIFT)
-                {
-                    return None; // Let Shift+I handler process it
-                }
-                // Don't treat Shift+R as input (recover missing taken disputes)
-                if (code == KeyCode::Char('r') || code == KeyCode::Char('R'))
-                    && key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::SHIFT)
-                {
-                    return None; // Let Shift+R handler process it
-                }
-                match code {
-                    KeyCode::Char(c) => {
-                        app.admin_chat_input.push(c);
-                        return Some(true);
-                    }
-                    KeyCode::Backspace => {
-                        app.admin_chat_input.pop();
-                        return Some(true);
-                    }
-                    _ => {} // For other keys, continue to normal handling
-                }
-            }
-        }
+    if !admin_dispute_chat_input_active(app) {
+        return None;
     }
-    None
+
+    let has_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
+    let has_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
+    let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
+
+    // Never treat Ctrl/Alt/Cmd chords as typed characters (Ctrl+V paste, Ctrl+S, Ctrl+H, …).
+    if has_ctrl || has_alt || has_super {
+        return None;
+    }
+
+    // Leave Shift+letter shortcuts for the Disputes in Progress handlers.
+    if has_shift
+        && matches!(
+            code,
+            KeyCode::Char('f')
+                | KeyCode::Char('F')
+                | KeyCode::Char('i')
+                | KeyCode::Char('I')
+                | KeyCode::Char('r')
+                | KeyCode::Char('R')
+                | KeyCode::Char('c')
+                | KeyCode::Char('C')
+        )
+    {
+        return None;
+    }
+
+    match code {
+        KeyCode::Char(c) => {
+            app.admin_chat_input.push(c);
+            Some(true)
+        }
+        KeyCode::Backspace => {
+            app.admin_chat_input.pop();
+            Some(true)
+        }
+        _ => None,
+    }
 }
 
 fn handle_user_order_chat_input(
@@ -543,10 +574,13 @@ pub fn handle_mouse_invoice_paste_fallback(event: &Event, app: &mut AppState) ->
 
 fn is_paste_shortcut(key_event: &KeyEvent) -> bool {
     let is_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let is_super = key_event.modifiers.contains(KeyModifiers::SUPER);
     let is_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
     match key_event.code {
+        // Shift+Insert is a common terminal paste binding.
         KeyCode::Insert => is_shift,
-        KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl,
+        // Ctrl+V / Ctrl+Shift+V (Linux terminals) and Cmd+V (macOS SUPER).
+        KeyCode::Char('v') | KeyCode::Char('V') => is_ctrl || is_super,
         _ => false,
     }
 }
@@ -679,6 +713,18 @@ pub fn handle_key_event(
                 return Some(true);
             }
         }
+    }
+
+    // Disputes in Progress chat paste fallback (Ctrl/Cmd+V, Shift+Insert).
+    // Runs before handle_admin_chat_input so Ctrl+V is never typed as a literal 'v'.
+    if admin_dispute_chat_input_active(app) && is_paste_shortcut(&key_event) {
+        if let Some(text) = read_clipboard_text_best_effort() {
+            if append_paste_to_admin_dispute_chat(app, &text) {
+                return Some(true);
+            }
+        }
+        // Consume the paste chord even when the clipboard is empty / unreadable.
+        return Some(true);
     }
     // Rate counterparty: 1..=5 stars (Left/Right or +/-).
     if let UiMode::RatingOrder(ref mut s) = app.mode {
@@ -1163,6 +1209,19 @@ pub fn handle_key_event(
                 return Some(true);
             }
         }
+
+        // Delete: remove selected dispute from local DB / sidebar (mirrors My Trades Delete).
+        if code == KeyCode::Delete {
+            let can_delete = matches!(
+                app.mode,
+                UiMode::AdminMode(AdminMode::Normal)
+                    | UiMode::AdminMode(AdminMode::ManagingDispute)
+            );
+            if can_delete {
+                admin_handlers::begin_delete_admin_dispute(app);
+                return Some(true);
+            }
+        }
     }
 
     if let Tab::User(UserTab::MyTrades) = app.active_tab {
@@ -1350,6 +1409,10 @@ pub fn handle_key_event(
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+                    ref mut selected_button,
+                    ..
+                })
+                | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
                     ref mut selected_button,
                     ..
                 })
@@ -1748,6 +1811,71 @@ mod key_handler_tests {
 
         let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert!(is_paste_shortcut(&ctrl_v));
+
+        let ctrl_shift_v = KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(is_paste_shortcut(&ctrl_shift_v));
+
+        let cmd_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER);
+        assert!(is_paste_shortcut(&cmd_v));
+    }
+
+    #[test]
+    fn filter_pasted_chat_text_keeps_newlines_and_drops_other_controls() {
+        assert_eq!(
+            filter_pasted_chat_text("hello\r\nworld\x07"),
+            "hello\nworld"
+        );
+        assert_eq!(filter_pasted_chat_text("a\tb"), "a\tb");
+    }
+
+    #[test]
+    fn append_paste_to_admin_dispute_chat_requires_active_input() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = true;
+        app.admin_chat_input = "hi ".to_string();
+
+        assert!(append_paste_to_admin_dispute_chat(
+            &mut app,
+            "pasted\nline\r\n"
+        ));
+        assert_eq!(app.admin_chat_input, "hi pasted\nline\n");
+
+        app.admin_chat_input_enabled = false;
+        assert!(!append_paste_to_admin_dispute_chat(&mut app, "nope"));
+        assert_eq!(app.admin_chat_input, "hi pasted\nline\n");
+    }
+
+    #[test]
+    fn admin_chat_input_ignores_ctrl_and_shift_shortcut_chords() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = true;
+
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(handle_admin_chat_input(&mut app, ctrl_v.code, &ctrl_v).is_none());
+        assert!(app.admin_chat_input.is_empty());
+
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(handle_admin_chat_input(&mut app, ctrl_s.code, &ctrl_s).is_none());
+
+        let shift_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::SHIFT);
+        assert!(handle_admin_chat_input(&mut app, shift_f.code, &shift_f).is_none());
+
+        let shift_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SHIFT);
+        assert!(handle_admin_chat_input(&mut app, shift_c.code, &shift_c).is_none());
+
+        let plain_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            handle_admin_chat_input(&mut app, plain_a.code, &plain_a),
+            Some(true)
+        );
+        assert_eq!(app.admin_chat_input, "a");
     }
 
     #[test]
