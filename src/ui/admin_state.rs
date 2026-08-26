@@ -22,7 +22,13 @@ pub enum AdminMode {
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
-    ManagingDispute,               // Mode for "Disputes in Progress" tab
+    /// Confirm re-requesting `AdminTakeDispute` for relay in-progress disputes missing locally.
+    ConfirmRecoverTakenDisputes {
+        count: usize,
+        selected_button: bool, // true=Yes, false=No
+    },
+    WaitingRecoverTakenDisputes,
+    ManagingDispute, // Mode for "Disputes in Progress" tab
     ReviewingDisputeForFinalization {
         dispute_id: uuid::Uuid,
         /// Index of the selected button: 0=Pay Buyer, 1=Refund Seller, 2=Bond slash

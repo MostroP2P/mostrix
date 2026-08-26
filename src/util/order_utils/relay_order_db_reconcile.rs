@@ -117,8 +117,7 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
 
     let row = match Order::get_by_id(pool, &order_id.to_string()).await {
         Ok(row) => row,
-        Err(e) => {
-            log::warn!("Failed to get order by id: {}", e);
+        Err(_) => {
             return;
         }
     };

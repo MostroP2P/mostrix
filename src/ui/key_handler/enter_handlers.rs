@@ -42,7 +42,8 @@ use std::str::FromStr;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
-    execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+    execute_finalize_dispute_action, execute_recover_taken_disputes_action,
+    execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -695,9 +696,24 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            selected_button, ..
+        }) => {
+            if selected_button {
+                execute_recover_taken_disputes_action(app, ctx.disputes, ctx);
+            } else {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            }
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
             // No action while waiting
             app.mode = default_mode;
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) => {
+            // Stay on waiting overlay until the async task reports a result.
+            app.mode = UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes);
             true
         }
         UiMode::AdminMode(AdminMode::WaitingAddSolver) => {

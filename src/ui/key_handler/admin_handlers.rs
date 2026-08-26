@@ -3,8 +3,12 @@ use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
-    execute_admin_add_solver, execute_finalize_dispute, AdminFinalizeAck, BondSlashChoice,
+    execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
+    orphan_in_progress_dispute_ids, AdminFinalizeAck, BondSlashChoice,
 };
+use mostro_core::prelude::Dispute;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
@@ -15,7 +19,6 @@ use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::orders::OperationResult;
 use crate::ui::UserRole;
-use crate::util::order_utils::execute_take_dispute;
 
 /// Helper function to execute taking a dispute.
 ///
@@ -66,10 +69,159 @@ pub(crate) fn execute_take_dispute_action(
                 )));
             }
             Err(e) => {
-                log::error!("Failed to take dispute: {}", e);
+                log::error!("Failed to take dispute {}: {}", dispute_id, e);
                 let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
+    });
+}
+
+/// Open Shift+R confirm when relay has `in-progress` disputes missing from local DB.
+pub(crate) fn begin_recover_taken_disputes(
+    app: &mut AppState,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+) {
+    let Ok(relay) = disputes.lock() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Failed to read live disputes list".to_string(),
+        ));
+        return;
+    };
+    let local_ids: HashSet<String> = app
+        .admin_disputes_in_progress
+        .iter()
+        .map(|d| d.dispute_id.clone())
+        .collect();
+    let orphans = orphan_in_progress_dispute_ids(&relay, &local_ids);
+    drop(relay);
+
+    if orphans.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No missing taken disputes to recover (relay in-progress matches local DB)."
+                .to_string(),
+        ));
+        return;
+    }
+
+    app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+        count: orphans.len(),
+        selected_button: true,
+    });
+}
+
+/// Re-send `AdminTakeDispute` for each relay in-progress dispute missing locally.
+pub(crate) fn execute_recover_taken_disputes_action(
+    app: &mut AppState,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+    ctx: &EnterKeyContext<'_>,
+) {
+    let Ok(relay) = disputes.lock() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Failed to read live disputes list".to_string(),
+        ));
+        return;
+    };
+    let local_ids: HashSet<String> = app
+        .admin_disputes_in_progress
+        .iter()
+        .map(|d| d.dispute_id.clone())
+        .collect();
+    let orphans = orphan_in_progress_dispute_ids(&relay, &local_ids);
+    drop(relay);
+
+    if orphans.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No missing taken disputes to recover.".to_string(),
+        ));
+        return;
+    }
+
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+        return;
+    };
+    let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
+        *active_pubkey
+    } else {
+        request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
+        return;
+    };
+
+    app.mode = UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes);
+    let client_clone = ctx.client.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
+    let mostro_info = ctx.mostro_info.clone();
+    tokio::spawn(async move {
+        let mut recovered = 0usize;
+        let mut rejected = 0usize;
+        let mut failed = 0usize;
+        let mut recovered_ids: Vec<String> = Vec::new();
+
+        for dispute_id in orphans {
+            match execute_take_dispute(
+                &dispute_id,
+                &admin_keys,
+                &client_clone,
+                current_mostro_pubkey,
+                &pool_clone,
+                mostro_info.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    recovered += 1;
+                    recovered_ids.push(dispute_id.to_string());
+                    log::info!(
+                        "✅ Recovered dispute {} taken successfully and saved locally",
+                        dispute_id
+                    );
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    log::error!("Failed to recover dispute {}: {}", dispute_id, msg);
+                    if msg.contains("Mostro rejected take dispute") {
+                        rejected += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+            }
+        }
+
+        let mut summary = if recovered > 0 {
+            format!(
+                "✅ Recovered {recovered} · ⛔ skipped {rejected} · ❌ failed {failed}"
+            )
+        } else {
+            format!("ℹ️ No disputes recovered · ⛔ skipped {rejected} · ❌ failed {failed}")
+        };
+        if !recovered_ids.is_empty() {
+            summary.push('\n');
+            summary.push_str(
+                &recovered_ids
+                    .iter()
+                    .map(|id| format!("✨ {id}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        // Keep "taken successfully" wording when anything was restored so the
+        // admin disputes list reloads via apply_order_result.
+        if recovered > 0 {
+            summary.push_str("\n\nDispute(s) taken successfully and saved locally.");
+        }
+        let result = if failed > 0 && recovered == 0 {
+            OperationResult::Error(summary)
+        } else {
+            OperationResult::Info(summary)
+        };
+        let _ = result_tx.send(result);
     });
 }
 

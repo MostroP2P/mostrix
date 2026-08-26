@@ -217,6 +217,12 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
         waiting::render_waiting(f);
     }
+    if let UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) = &app.mode {
+        waiting::render_waiting_with_message(
+            f,
+            "Recovering taken disputes...\nWaiting for Mostro...",
+        );
+    }
     // Waiting for add solver popup overlay (admin mode only)
     if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
         waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");
@@ -423,6 +429,13 @@ No: paste BOLT11 or Lightning address manually."
                 dispute_id
             )),
         );
+    }
+    if let UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+        count,
+        selected_button,
+    }) = &app.mode
+    {
+        admin_key_confirm::render_recover_taken_disputes_confirm(f, *count, *selected_button);
     }
     if let UiMode::AdminMode(AdminMode::ConfirmAddSolver {
         solver_pubkey,

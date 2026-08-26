@@ -88,6 +88,7 @@ The interface is divided into three main sections:
 - **Type**: Start composing message (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
+- **Shift+R**: Recover taken disputes missing locally (re-sends `AdminTakeDispute` for relay `in-progress` ids not in `admin_disputes`)
 - **PageUp/PageDown**: Scroll chat history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -321,8 +322,22 @@ sequenceDiagram
 - Only the `admin_privkey` can sign dispute resolution actions
 - The dispute is assigned to the admin who takes it
 - Other admins cannot take a dispute that's already been taken
+- On success, Mostrix persists `SolverDisputeInfo` into local `admin_disputes` (In Progress list)
 - The admin becomes responsible for resolving the dispute
 - Upon taking a dispute, the admin receives a `SolverDisputeInfo` struct with all dispute details
+
+#### Recovering a missing taken dispute (Shift+R)
+
+If Mostro accepted the take (`AdminTookDispute` DM sent) but Mostrix never saved the row (timeout, missed DM, restart), the dispute disappears from **Pending** (relay status is `in-progress`) and never appears under **In Progress**.
+
+On the **Disputes in Progress** tab, press **Shift+R**:
+
+1. Mostrix compares the live kind-38386 snapshot to local `admin_disputes`
+2. For each relay `in-progress` id missing locally, it re-sends `AdminTakeDispute`
+3. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved
+4. `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
+
+Relay events alone cannot hydrate In Progress: kind 38386 does not carry `SolverDisputeInfo`.
 
 ### Dispute Information Structure
 
@@ -712,6 +727,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Type**: Start typing message directly (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the currently selected dispute
+- **Shift+R**: Recover missing taken disputes (relay `in-progress` without a local row) via `AdminTakeDispute`
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)

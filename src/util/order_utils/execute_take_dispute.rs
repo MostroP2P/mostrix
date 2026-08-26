@@ -191,6 +191,19 @@ pub async fn execute_take_dispute(
                     "Received AdminTookDispute response but SolverDisputeInfo not found in payload"
                 ))
             }
+        } else if inner_message.action == Action::CantDo {
+            let reason = match &inner_message.payload {
+                Some(Payload::CantDo(Some(r))) => {
+                    crate::util::types::get_cant_do_description(r)
+                }
+                Some(Payload::CantDo(None)) => "rejected (no reason)".to_string(),
+                _ => "rejected".to_string(),
+            };
+            Err(anyhow::anyhow!(
+                "Mostro rejected take dispute {}: {}",
+                dispute_id,
+                reason
+            ))
         } else {
             Err(anyhow::anyhow!(
                 "Received response with mismatched action. Expected: {:?}, Got: {:?}",

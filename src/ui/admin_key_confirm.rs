@@ -210,6 +210,175 @@ pub fn render_admin_key_confirm_with_message(
     );
 }
 
+/// Confirm Shift+R recovery of relay `in-progress` disputes missing from local DB.
+pub fn render_recover_taken_disputes_confirm(
+    f: &mut ratatui::Frame,
+    count: usize,
+    selected_button: bool,
+) {
+    let area = f.area();
+    let popup_width = 72.min(area.width.saturating_sub(2).max(40));
+    let popup_height = 14.min(area.height.saturating_sub(2).max(10));
+    let popup = helpers::create_centered_popup(area, popup_width, popup_height);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title("🔄 Recover Taken Disputes")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    f.render_widget(block, popup);
+
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Min(5),   // centered body
+            Constraint::Length(1), // spacer
+            Constraint::Length(3), // buttons
+            Constraint::Length(1), // help
+        ],
+    )
+    .split(popup);
+
+    let noun = if count == 1 { "dispute" } else { "disputes" };
+    let body = vec![
+        Line::from(Span::styled(
+            format!("📡 Found {count} taken {noun} on relays"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "💾 missing from your local database",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "✨ Re-request AdminTookDispute to restore them?",
+            Style::default().fg(PRIMARY_COLOR),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(body)
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        chunks[1],
+    );
+
+    let button_area = chunks[3];
+    let button_width = 15;
+    let separator_width = 1;
+    let total_button_width = (button_width * 2) + separator_width;
+    let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
+    let centered_button_area = Rect {
+        x: button_x,
+        y: button_area.y,
+        width: total_button_width.min(button_area.width),
+        height: button_area.height,
+    };
+    let button_chunks = Layout::new(
+        Direction::Horizontal,
+        [
+            Constraint::Length(button_width),
+            Constraint::Length(separator_width),
+            Constraint::Length(button_width),
+        ],
+    )
+    .split(centered_button_area);
+
+    let yes_style = if selected_button {
+        Style::default()
+            .bg(Color::Green)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    };
+    f.render_widget(
+        Block::default().borders(Borders::ALL).style(yes_style),
+        button_chunks[0],
+    );
+    let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+        .margin(1)
+        .split(button_chunks[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "✓ YES",
+            Style::default()
+                .fg(if selected_button {
+                    Color::Black
+                } else {
+                    Color::Green
+                })
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        yes_inner[0],
+    );
+
+    let no_style = if !selected_button {
+        Style::default()
+            .bg(Color::Red)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    };
+    f.render_widget(
+        Block::default().borders(Borders::ALL).style(no_style),
+        button_chunks[2],
+    );
+    let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
+        .margin(1)
+        .split(button_chunks[2]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "✗ NO",
+            Style::default()
+                .fg(if !selected_button {
+                    Color::Black
+                } else {
+                    Color::Red
+                })
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        no_inner[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Use ", Style::default()),
+            Span::styled(
+                "Left/Right",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to select, ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to confirm, ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to cancel", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[4],
+    );
+}
+
 /// Confirmation before AddInvoice when Settings contain a buyer Lightning address (taller body + wrap).
 pub fn render_saved_ln_address_invoice_confirm(
     f: &mut ratatui::Frame,
@@ -365,4 +534,37 @@ pub fn render_saved_ln_address_invoice_confirm(
         .alignment(ratatui::layout::Alignment::Center),
         chunks[4],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_recover_taken_disputes_confirm;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn recover_confirm_shows_centered_count_and_actions() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_recover_taken_disputes_confirm(f, 39, true))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Recover Taken Disputes"));
+        assert!(buffer_contains(buf, "Found 39 taken disputes on relays"));
+        assert!(buffer_contains(buf, "missing from your local database"));
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
+    }
 }

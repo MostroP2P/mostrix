@@ -710,17 +710,22 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
                 let short = if is_input_focused && app.admin_chat_input_enabled {
                     format!(
-                        "{} | {} | {} | {} | {}",
+                        "{} | {} | {} | {} | {} | {}",
                         HELP_KEY,
                         FOOTER_ENTER_SEND,
                         FOOTER_TAB_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
+                        FOOTER_SHIFT_R_RECOVER,
                         filter_hint
                     )
                 } else {
                     format!(
-                        "{} | {} | {} | {}",
-                        HELP_KEY, FOOTER_TAB_PARTY, FOOTER_SHIFT_F_RESOLVE, filter_hint
+                        "{} | {} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_TAB_PARTY,
+                        FOOTER_SHIFT_F_RESOLVE,
+                        FOOTER_SHIFT_R_RECOVER,
+                        filter_hint
                     )
                 };
                 format!("{}{}", short, ctrl_s_hint)
@@ -742,12 +747,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 if is_input_enabled {
                     (
                         format!(
-                            "{} | {} | {} | {} | {} | {}",
+                            "{} | {} | {} | {} | {} | {} | {}",
                             HELP_KEY,
                             FOOTER_TAB_SWITCH_PARTY,
                             FOOTER_ENTER_SEND,
                             FOOTER_SHIFT_I_DISABLE,
                             FOOTER_SHIFT_F_RESOLVE,
+                            FOOTER_SHIFT_R_RECOVER,
                             filter_hint
                         ),
                         format!(
@@ -761,11 +767,12 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 } else {
                     (
                         format!(
-                            "{} | {} | {} | {} | {}{}",
+                            "{} | {} | {} | {} | {} | {}{}",
                             HELP_KEY,
                             FOOTER_TAB_SWITCH_PARTY,
                             FOOTER_SHIFT_I_ENABLE,
                             FOOTER_SHIFT_F_RESOLVE,
+                            FOOTER_SHIFT_R_RECOVER,
                             filter_hint,
                             ctrl_s_hint
                         ),
@@ -781,10 +788,11 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 (
                     format!(
-                        "{} | {} | {} | {} | {}",
+                        "{} | {} | {} | {} | {} | {}",
                         HELP_KEY,
                         FOOTER_TAB_SWITCH_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
+                        FOOTER_SHIFT_R_RECOVER,
                         filter_hint,
                         FOOTER_UP_DOWN_SELECT_DISPUTE
                     ),
@@ -865,8 +873,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             HELP_KEY.to_string()
         } else {
             format!(
-                "{} | {} | {}",
-                HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+                "{} | {} | {} | {}",
+                HELP_KEY, filter_hint, FOOTER_SHIFT_R_RECOVER, FOOTER_UP_DOWN_SELECT_DISPUTE
             )
         };
         let footer = Paragraph::new(footer_text);

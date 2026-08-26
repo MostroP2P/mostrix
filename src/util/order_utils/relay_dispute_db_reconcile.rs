@@ -19,6 +19,26 @@ use crate::util::chat_listener::untrack_dispute_chat_parties;
 use super::helper::fetch_dispute_by_id_from_relay;
 use super::relay_order_db_reconcile::TARGETED_RELAY_RECONCILE_MAX_PER_TICK;
 
+/// Relay disputes that are `in-progress` but have no local `admin_disputes` row.
+///
+/// Used by admin Shift+R recovery: Mostro may have assigned the solver and sent
+/// `AdminTookDispute`, while the client never persisted `SolverDisputeInfo`.
+pub fn orphan_in_progress_dispute_ids(
+    relay_disputes: &[Dispute],
+    local_dispute_ids: &HashSet<String>,
+) -> Vec<Uuid> {
+    relay_disputes
+        .iter()
+        .filter(|d| {
+            DisputeStatus::from_str(d.status.as_str())
+                .map(|s| s == DisputeStatus::InProgress)
+                .unwrap_or(false)
+        })
+        .filter(|d| !local_dispute_ids.contains(&d.id.to_string()))
+        .map(|d| d.id)
+        .collect()
+}
+
 /// Copy terminal kind-38386 statuses onto matching in-memory taken rows.
 ///
 /// Returns dispute ids whose local status actually changed (for chat untrack).
@@ -346,5 +366,22 @@ mod tests {
 
         assert!(closed.is_empty());
         assert_eq!(admin[0].status.as_deref(), Some("settled"));
+    }
+
+    #[test]
+    fn orphan_ids_are_in_progress_missing_from_local_set() {
+        let local = Uuid::new_v4();
+        let orphan = Uuid::new_v4();
+        let initiated = Uuid::new_v4();
+        let local_ids: HashSet<String> = [local.to_string()].into_iter().collect();
+        let relay = vec![
+            relay_dispute(local, "in-progress"),
+            relay_dispute(orphan, "in-progress"),
+            relay_dispute(initiated, "initiated"),
+        ];
+
+        let orphans = orphan_in_progress_dispute_ids(&relay, &local_ids);
+
+        assert_eq!(orphans, vec![orphan]);
     }
 }

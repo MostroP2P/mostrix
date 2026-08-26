@@ -200,6 +200,14 @@ fn handle_admin_chat_input(
                 {
                     return None; // Let Shift+I handler process it
                 }
+                // Don't treat Shift+R as input (recover missing taken disputes)
+                if (code == KeyCode::Char('r') || code == KeyCode::Char('R'))
+                    && key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    return None; // Let Shift+R handler process it
+                }
                 match code {
                     KeyCode::Char(c) => {
                         app.admin_chat_input.push(c);
@@ -1142,6 +1150,19 @@ pub fn handle_key_event(
             app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
             return Some(true);
         }
+
+        // Shift+R: recover relay in-progress disputes missing from local admin_disputes
+        if has_shift && (code == KeyCode::Char('r') || code == KeyCode::Char('R')) {
+            let can_recover = matches!(
+                app.mode,
+                UiMode::AdminMode(AdminMode::Normal)
+                    | UiMode::AdminMode(AdminMode::ManagingDispute)
+            );
+            if can_recover {
+                admin_handlers::begin_recover_taken_disputes(app, disputes);
+                return Some(true);
+            }
+        }
     }
 
     if let Tab::User(UserTab::MyTrades) = app.active_tab {
@@ -1328,6 +1349,10 @@ pub fn handle_key_event(
                 })
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
                 | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+                | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+                    ref mut selected_button,
+                    ..
+                })
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
                 | UiMode::ConfirmLnAddress(_, ref mut selected_button)

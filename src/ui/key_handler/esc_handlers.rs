@@ -190,6 +190,19 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _)) => {
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. }) => {
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
+        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) => {
+            // Can't cancel while waiting for Mostro
+            true
+        }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             slash_submenu_open,
             dispute_id,
@@ -239,5 +252,27 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // ESC should never exit the application (use Exit tab instead)
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_esc_key;
+    use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
+
+    #[test]
+    fn esc_closes_recover_taken_disputes_confirm() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            count: 3,
+            selected_button: true,
+        });
+
+        assert!(handle_esc_key(&mut app));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
     }
 }

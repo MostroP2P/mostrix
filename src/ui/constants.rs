@@ -30,6 +30,8 @@ pub const HELP_DIP_SELECT_DISPUTE: &str = "↑↓: Select dispute (sidebar)";
 pub const HELP_DIP_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
 pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
+pub const HELP_DIP_SHIFT_R_RECOVER: &str =
+    "Shift+R: Recover taken disputes missing from local DB";
 pub const HELP_DIP_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable message input";
 pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
@@ -167,6 +169,7 @@ pub const FOOTER_TAB_PARTY: &str = "Tab: Party";
 pub const FOOTER_TAB_SWITCH_PARTY: &str = "Tab: Switch Party";
 pub const FOOTER_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve";
+pub const FOOTER_SHIFT_R_RECOVER: &str = "Shift+R: Recover";
 pub const FOOTER_SHIFT_I_DISABLE: &str = "Shift+I: Disable";
 pub const FOOTER_SHIFT_I_ENABLE: &str = "Shift+I: Enable";
 pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
