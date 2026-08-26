@@ -1671,12 +1671,10 @@ mod admin_dispute_new_tests {
             .await
             .expect("delete");
         assert_eq!(affected, 1);
-        assert!(
-            AdminDispute::get_by_dispute_id(&pool, "dispute-to-delete")
-                .await
-                .expect("query")
-                .is_none()
-        );
+        assert!(AdminDispute::get_by_dispute_id(&pool, "dispute-to-delete")
+            .await
+            .expect("query")
+            .is_none());
         assert_eq!(
             AdminDispute::delete_by_dispute_id(&pool, "dispute-to-delete")
                 .await

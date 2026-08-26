@@ -42,8 +42,8 @@ use std::str::FromStr;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
-    execute_finalize_dispute_action, execute_recover_taken_disputes_action,
-    execute_delete_admin_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+    execute_delete_admin_dispute_action, execute_finalize_dispute_action,
+    execute_recover_taken_disputes_action, execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,

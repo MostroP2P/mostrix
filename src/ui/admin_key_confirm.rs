@@ -232,7 +232,7 @@ pub fn render_recover_taken_disputes_confirm(
         Direction::Vertical,
         [
             Constraint::Length(1), // spacer
-            Constraint::Min(5),   // centered body
+            Constraint::Min(5),    // centered body
             Constraint::Length(1), // spacer
             Constraint::Length(3), // buttons
             Constraint::Length(1), // help

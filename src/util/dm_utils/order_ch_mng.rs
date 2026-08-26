@@ -5,8 +5,8 @@ use crate::ui::orders::{
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
-    AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
-    OperationResult, UiMode, UserMode,
+    AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection,
+    MessageNotification, OperationResult, UiMode, UserMode,
 };
 use mostro_core::prelude::Action;
 use uuid::Uuid;

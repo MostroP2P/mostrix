@@ -30,11 +30,9 @@ pub const HELP_DIP_SELECT_DISPUTE: &str = "↑↓: Select dispute (sidebar)";
 pub const HELP_DIP_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
 pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
-pub const HELP_DIP_SHIFT_R_RECOVER: &str =
-    "Shift+R: Recover taken disputes missing from local DB";
+pub const HELP_DIP_SHIFT_R_RECOVER: &str = "Shift+R: Recover taken disputes missing from local DB";
 pub const HELP_DIP_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable message input";
-pub const HELP_DIP_DELETE_LOCAL: &str =
-    "Delete: Remove selected dispute from local DB (sidebar)";
+pub const HELP_DIP_DELETE_LOCAL: &str = "Delete: Remove selected dispute from local DB (sidebar)";
 pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
 #[cfg(any(
     target_os = "linux",
@@ -45,7 +43,8 @@ pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)"
 pub const HELP_DIP_PASTE_CHAT: &str =
     "Ctrl+Shift+V / Shift+Insert / right-click: Paste into message input";
 #[cfg(target_os = "windows")]
-pub const HELP_DIP_PASTE_CHAT: &str = "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+pub const HELP_DIP_PASTE_CHAT: &str =
+    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
 #[cfg(target_os = "macos")]
 pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message input";
 #[cfg(not(any(
@@ -56,7 +55,8 @@ pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message i
     target_os = "windows",
     target_os = "macos"
 )))]
-pub const HELP_DIP_PASTE_CHAT: &str = "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+pub const HELP_DIP_PASTE_CHAT: &str =
+    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 
 // Help popup lines (Disputes Pending)

@@ -193,9 +193,7 @@ pub async fn execute_take_dispute(
             }
         } else if inner_message.action == Action::CantDo {
             let reason = match &inner_message.payload {
-                Some(Payload::CantDo(Some(r))) => {
-                    crate::util::types::get_cant_do_description(r)
-                }
+                Some(Payload::CantDo(Some(r))) => crate::util::types::get_cant_do_description(r),
                 Some(Payload::CantDo(None)) => "rejected (no reason)".to_string(),
                 _ => "rejected".to_string(),
             };

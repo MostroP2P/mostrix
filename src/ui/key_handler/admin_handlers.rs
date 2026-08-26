@@ -1,13 +1,13 @@
 use crate::models::AdminDispute;
 use crate::shared::permissions::SolverPermission;
-use crate::ui::helpers::selected_filtered_dispute;
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
+use crate::ui::helpers::selected_filtered_dispute;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
-use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
+use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::orders::OperationResult;
 use crate::ui::{AddSolverState, AdminMode, AppState, UiMode, UserRole};
 use crate::util::chat_listener::untrack_dispute_chat_parties;
@@ -246,9 +246,7 @@ pub(crate) fn execute_recover_taken_disputes_action(
         }
 
         let mut summary = if recovered > 0 {
-            format!(
-                "✅ Recovered {recovered} · ⛔ skipped {rejected} · ❌ failed {failed}"
-            )
+            format!("✅ Recovered {recovered} · ⛔ skipped {rejected} · ❌ failed {failed}")
         } else {
             format!("ℹ️ No disputes recovered · ⛔ skipped {rejected} · ❌ failed {failed}")
         };
