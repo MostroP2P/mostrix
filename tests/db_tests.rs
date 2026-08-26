@@ -196,6 +196,16 @@ async fn test_order_get_by_id_not_found() {
 }
 
 #[tokio::test]
+async fn test_order_try_get_by_id_returns_none_when_missing() {
+    let pool = create_test_db().await.unwrap();
+    let result = Order::try_get_by_id(&pool, "nonexistent-id")
+        .await
+        .expect("db query");
+
+    assert!(result.is_none());
+}
+
+#[tokio::test]
 async fn test_order_persists_user_solver_chat_metadata() {
     let pool = create_test_db().await.unwrap();
     let trade_keys = Keys::generate();

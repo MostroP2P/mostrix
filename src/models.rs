@@ -552,7 +552,8 @@ impl Order {
         }
     }
 
-    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
+    /// Load an order when present; missing rows are `Ok(None)` (not an error).
+    pub async fn try_get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Order>> {
         let order = sqlx::query_as::<_, Order>(
             r#"
             SELECT * FROM orders WHERE id = ?
@@ -560,14 +561,17 @@ impl Order {
             "#,
         )
         .bind(id)
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await?;
 
-        if order.id.is_none() {
-            return Err(anyhow::anyhow!("Order not found"));
-        }
+        Ok(order.filter(|o| o.id.is_some()))
+    }
 
-        Ok(order)
+    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
+        match Self::try_get_by_id(pool, id).await? {
+            Some(order) => Ok(order),
+            None => Err(anyhow::anyhow!("Order not found")),
+        }
     }
 
     /// Update only the status field of an existing order by id.
