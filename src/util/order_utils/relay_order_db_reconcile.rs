@@ -103,6 +103,20 @@ pub async fn run_targeted_relay_order_db_reconcile_tick(
     Ok(())
 }
 
+/// True when a local `orders` lookup failed because the row does not exist (expected for
+/// most relay book events). Real SQLite failures should still be logged.
+fn is_expected_missing_local_order(err: &anyhow::Error) -> bool {
+    if err.to_string() == "Order not found" {
+        return true;
+    }
+    err.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::RowNotFound)
+        )
+    })
+}
+
 /// If `relay_order` carries a terminal status and the local row exists, update SQLite when allowed.
 pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &SmallOrder) {
     let Some(candidate_status) = relay_order.status else {
@@ -117,7 +131,13 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
 
     let row = match Order::get_by_id(pool, &order_id.to_string()).await {
         Ok(row) => row,
-        Err(_) => {
+        Err(e) if is_expected_missing_local_order(&e) => return,
+        Err(e) => {
+            log::warn!(
+                "Relay reconcile: failed to load local order {}: {}",
+                order_id,
+                e
+            );
             return;
         }
     };
@@ -152,6 +172,24 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool")
+    }
+
+    #[test]
+    fn expected_missing_local_order_includes_row_not_found() {
+        let err: anyhow::Error = sqlx::Error::RowNotFound.into();
+        assert!(is_expected_missing_local_order(&err));
+    }
+
+    #[test]
+    fn expected_missing_local_order_includes_custom_not_found() {
+        let err = anyhow::anyhow!("Order not found");
+        assert!(is_expected_missing_local_order(&err));
+    }
+
+    #[test]
+    fn expected_missing_local_order_excludes_other_db_errors() {
+        let err: anyhow::Error = sqlx::Error::PoolClosed.into();
+        assert!(!is_expected_missing_local_order(&err));
     }
 
     #[tokio::test]
