@@ -115,10 +115,15 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
         return;
     };
 
-    let row = match Order::get_by_id(pool, &order_id.to_string()).await {
-        Ok(row) => row,
+    let row = match Order::try_get_by_id(pool, &order_id.to_string()).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return,
         Err(e) => {
-            log::warn!("Failed to get order by id: {}", e);
+            log::warn!(
+                "Relay reconcile: failed to load local order {}: {}",
+                order_id,
+                e
+            );
             return;
         }
     };

@@ -350,11 +350,16 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_SCROLL_CHAT.to_string(),
                 HELP_DIP_END_BOTTOM.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
+                HELP_DIP_SHIFT_R_RECOVER.to_string(),
             ];
             if !is_finalized {
                 lines.push(HELP_DIP_SHIFT_I_INPUT.to_string());
                 lines.push(HELP_DIP_ENTER_SEND.to_string());
+                lines.push(HELP_DIP_PASTE_CHAT.to_string());
+                lines.push(HELP_DIP_DELETE_LOCAL.to_string());
                 lines.push(HELP_DIP_CTRL_S_ATTACH.to_string());
+            } else {
+                lines.push(HELP_DIP_DELETE_LOCAL.to_string());
             }
             (HELP_TITLE_DISPUTES_IN_PROGRESS.to_string(), lines)
         }

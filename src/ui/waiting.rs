@@ -12,7 +12,9 @@ pub fn render_waiting(f: &mut ratatui::Frame) {
 pub fn render_waiting_with_message(f: &mut ratatui::Frame, message: &str) {
     let area = f.area();
     let popup_width = 50;
-    let popup_height = 7;
+    let message_lines: Vec<Line> = message.lines().map(Line::from).collect();
+    let message_rows = (message_lines.len() as u16).clamp(1, 3);
+    let popup_height = 6 + message_rows;
     // Center the popup using Flex::Center
     let popup = {
         let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
@@ -36,15 +38,15 @@ pub fn render_waiting_with_message(f: &mut ratatui::Frame, message: &str) {
     let inner_chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // message
-            Constraint::Length(1), // spinner
+            Constraint::Length(1),            // spacer
+            Constraint::Length(message_rows), // message (1–3 lines)
+            Constraint::Length(1),            // spinner
         ],
     )
     .split(popup);
 
     f.render_widget(
-        Paragraph::new(Line::from(message)).alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(message_lines).alignment(ratatui::layout::Alignment::Center),
         inner_chunks[1],
     );
 
@@ -107,5 +109,22 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Waiting for Mostro"));
         assert!(buffer_contains(buf, "Custom wait message"));
+    }
+
+    #[test]
+    fn render_waiting_with_multiline_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_waiting_with_message(
+                    f,
+                    "Recovering taken disputes...\nWaiting for Mostro...",
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Recovering taken disputes..."));
+        assert!(buffer_contains(buf, "Waiting for Mostro..."));
     }
 }

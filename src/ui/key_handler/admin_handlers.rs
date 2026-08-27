@@ -1,21 +1,24 @@
+use crate::models::AdminDispute;
 use crate::shared::permissions::SolverPermission;
-use crate::ui::key_handler::EnterKeyContext;
-use crate::ui::{AddSolverState, AdminMode, AppState, UiMode};
-use crate::util::fatal::request_fatal_restart;
-use crate::util::order_utils::{
-    execute_admin_add_solver, execute_finalize_dispute, AdminFinalizeAck, BondSlashChoice,
-};
-use uuid::Uuid;
-
 use crate::ui::helpers::hydrate_app_admin_keys_from_privkey;
+use crate::ui::helpers::selected_filtered_dispute;
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
 };
 use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
+use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::orders::OperationResult;
-use crate::ui::UserRole;
-use crate::util::order_utils::execute_take_dispute;
+use crate::ui::{AddSolverState, AdminMode, AppState, UiMode, UserRole};
+use crate::util::fatal::request_fatal_restart;
+use crate::util::order_utils::{
+    execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
+    orphan_in_progress_dispute_ids, AdminFinalizeAck, BondSlashChoice,
+};
+use mostro_core::prelude::Dispute;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 /// Helper function to execute taking a dispute.
 ///
@@ -66,10 +69,246 @@ pub(crate) fn execute_take_dispute_action(
                 )));
             }
             Err(e) => {
-                log::error!("Failed to take dispute: {}", e);
+                log::error!("Failed to take dispute {}: {}", dispute_id, e);
                 let _ = result_tx.send(OperationResult::Error(e.to_string()));
             }
         }
+    });
+}
+
+/// Open Shift+R orphan picker when relay has `in-progress` disputes missing from local DB.
+pub(crate) fn begin_recover_taken_disputes(
+    app: &mut AppState,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+) {
+    let Ok(relay) = disputes.lock() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Failed to read live disputes list".to_string(),
+        ));
+        return;
+    };
+    let local_ids: HashSet<String> = app
+        .admin_disputes_in_progress
+        .iter()
+        .map(|d| d.dispute_id.clone())
+        .collect();
+    let orphans = orphan_in_progress_dispute_ids(&relay, &local_ids);
+    drop(relay);
+
+    if orphans.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No missing taken disputes to recover (relay in-progress matches local DB)."
+                .to_string(),
+        ));
+        return;
+    }
+
+    let checked = vec![false; orphans.len()];
+    app.mode = UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates: orphans,
+        cursor: 0,
+        checked,
+    });
+}
+
+/// Advance from the orphan picker into a Yes/No confirm for the selected IDs.
+pub(crate) fn begin_confirm_recover_selection(
+    app: &mut AppState,
+    candidates: Vec<Uuid>,
+    cursor: usize,
+    checked: Vec<bool>,
+) {
+    let recover_ids = crate::ui::recover_disputes_picker::recover_ids_from_selection(
+        &candidates,
+        cursor,
+        &checked,
+    );
+    if recover_ids.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No dispute selected to recover.".to_string(),
+        ));
+        return;
+    }
+    app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+        candidates,
+        cursor,
+        checked,
+        recover_ids,
+        selected_button: true,
+    });
+}
+
+/// Confirm Delete: remove selected dispute from local `admin_disputes` only.
+pub(crate) fn begin_delete_admin_dispute(app: &mut AppState) {
+    let Some(dispute) = selected_filtered_dispute(app) else {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "Select a dispute in the sidebar to delete from local database.".to_string(),
+        ));
+        return;
+    };
+    app.mode = UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+        dispute_id: dispute.dispute_id.clone(),
+        selected_button: true,
+    });
+}
+
+/// Delete the confirmed dispute from SQLite; UI list refreshes via [`OperationResult::AdminDisputeDeleted`].
+pub(crate) fn execute_delete_admin_dispute_action(
+    app: &mut AppState,
+    dispute_id: String,
+    ctx: &EnterKeyContext<'_>,
+) {
+    let pool = ctx.pool.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
+
+    tokio::spawn(async move {
+        match AdminDispute::delete_by_dispute_id(&pool, &dispute_id).await {
+            Ok(affected) if affected > 0 => {
+                let _ = result_tx.send(OperationResult::AdminDisputeDeleted {
+                    dispute_id: dispute_id.clone(),
+                    message: format!(
+                        "Deleted dispute {dispute_id} from local database.\n(Use Shift+R to re-fetch if Mostro still assigns it to you.)"
+                    ),
+                });
+            }
+            Ok(_) => {
+                let _ = result_tx.send(OperationResult::Error(format!(
+                    "Dispute {dispute_id} was not found in local database."
+                )));
+            }
+            Err(e) => {
+                let _ = result_tx.send(OperationResult::Error(format!(
+                    "Failed to delete dispute {dispute_id} from local database: {e}"
+                )));
+            }
+        }
+    });
+}
+
+/// Re-send `AdminTakeDispute` for the explicitly selected orphan dispute IDs.
+pub(crate) fn execute_recover_taken_disputes_action(
+    app: &mut AppState,
+    recover_ids: Vec<Uuid>,
+    ctx: &EnterKeyContext<'_>,
+) {
+    if recover_ids.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No dispute selected to recover.".to_string(),
+        ));
+        return;
+    }
+
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+        return;
+    };
+    let current_mostro_pubkey = if let Ok(active_pubkey) = ctx.current_mostro_pubkey.lock() {
+        *active_pubkey
+    } else {
+        request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
+        return;
+    };
+
+    app.mode = UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes);
+    let client_clone = ctx.client.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    let pool_clone = ctx.pool.clone();
+    let mostro_info = ctx.mostro_info.clone();
+    let recover_count = recover_ids.len();
+    tokio::spawn(async move {
+        let mut recovered = 0usize;
+        let mut rejected = 0usize;
+        let mut failed = 0usize;
+        let mut recovered_ids: Vec<String> = Vec::new();
+        let mut rejected_lines: Vec<String> = Vec::new();
+        let mut failed_lines: Vec<String> = Vec::new();
+
+        for dispute_id in recover_ids {
+            match execute_take_dispute(
+                &dispute_id,
+                &admin_keys,
+                &client_clone,
+                current_mostro_pubkey,
+                &pool_clone,
+                mostro_info.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => {
+                    recovered += 1;
+                    recovered_ids.push(dispute_id.to_string());
+                    log::info!(
+                        "✅ Recovered dispute {} taken successfully and saved locally",
+                        dispute_id
+                    );
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    log::error!("Failed to recover dispute {}: {}", dispute_id, msg);
+                    if let Some(reason) =
+                        msg.strip_prefix(&format!("Mostro rejected take dispute {}: ", dispute_id))
+                    {
+                        rejected += 1;
+                        rejected_lines.push(format!("⛔ {dispute_id}\n   {reason}"));
+                    } else if msg.contains("Mostro rejected take dispute") {
+                        rejected += 1;
+                        rejected_lines.push(format!("⛔ {dispute_id}\n   {msg}"));
+                    } else {
+                        failed += 1;
+                        failed_lines.push(format!("❌ {dispute_id}\n   {msg}"));
+                    }
+                }
+            }
+        }
+
+        let mut summary = if recovered > 0 {
+            format!(
+                "✅ Recovered {recovered}/{recover_count} · ⛔ rejected {rejected} · ❌ failed {failed}"
+            )
+        } else if rejected > 0 && failed == 0 {
+            format!("⛔ Mostro rejected all {recover_count} selected dispute(s)")
+        } else {
+            format!(
+                "ℹ️ No disputes recovered ({recover_count} requested) · ⛔ rejected {rejected} · ❌ failed {failed}"
+            )
+        };
+        if !recovered_ids.is_empty() {
+            summary.push_str("\n\nRecovered:");
+            for id in &recovered_ids {
+                summary.push_str(&format!("\n✨ {id}"));
+            }
+        }
+        if !rejected_lines.is_empty() {
+            summary.push_str("\n\nRejected by Mostro:");
+            for line in &rejected_lines {
+                summary.push('\n');
+                summary.push_str(line);
+            }
+        }
+        if !failed_lines.is_empty() {
+            summary.push_str("\n\nFailed:");
+            for line in &failed_lines {
+                summary.push('\n');
+                summary.push_str(line);
+            }
+        }
+        // Keep "taken successfully" wording when anything was restored so the
+        // admin disputes list reloads via apply_order_result.
+        if recovered > 0 {
+            summary.push_str("\n\nDispute(s) taken successfully and saved locally.");
+        }
+        let result = if recovered == 0 && (rejected > 0 || failed > 0) {
+            OperationResult::Error(summary)
+        } else {
+            OperationResult::Info(summary)
+        };
+        let _ = result_tx.send(result);
     });
 }
 
@@ -287,6 +526,48 @@ pub(crate) fn handle_enter_admin_mode(
         _ => {
             // This should not happen, but handle gracefully
             app.mode = default_mode;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{AdminTab, Tab};
+
+    #[test]
+    fn begin_confirm_recover_selection_opens_yes_no_with_selected_ids() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        begin_confirm_recover_selection(&mut app, vec![a, b], 0, vec![false, true]);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+                recover_ids,
+                selected_button,
+                ..
+            }) => {
+                assert_eq!(recover_ids, &vec![b]);
+                assert!(*selected_button);
+            }
+            other => panic!("expected confirm mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn begin_confirm_recover_falls_back_to_cursor_when_none_checked() {
+        let mut app = AppState::new(UserRole::Admin);
+        let a = Uuid::from_u128(10);
+        let b = Uuid::from_u128(20);
+        begin_confirm_recover_selection(&mut app, vec![a, b], 1, vec![false, false]);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { recover_ids, .. }) => {
+                assert_eq!(recover_ids, &vec![b]);
+            }
+            other => panic!("expected confirm mode, got {other:?}"),
         }
     }
 }

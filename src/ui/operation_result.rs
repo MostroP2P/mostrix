@@ -215,10 +215,11 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::ObserverChatLoaded { .. }
         | OperationResult::ObserverChatError { .. } => 8,
         OperationResult::Info(message) => info_popup_height(message, popup_width),
-        OperationResult::Error(_)
-        | OperationResult::InvoiceSubmitted { .. }
+        OperationResult::Error(message) => info_popup_height(message, popup_width),
+        OperationResult::InvoiceSubmitted { .. }
         | OperationResult::TradeClosed { .. }
         | OperationResult::OrderHistoryDeleted { .. }
+        | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
@@ -359,7 +360,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         OperationResult::Info(message)
         | OperationResult::InvoiceSubmitted { message, .. }
         | OperationResult::TradeClosed { message, .. }
-        | OperationResult::OrderHistoryDeleted { message, .. } => {
+        | OperationResult::OrderHistoryDeleted { message, .. }
+        | OperationResult::AdminDisputeDeleted { message, .. } => {
             let block = Block::default()
                 .title("✅ Operation Successful")
                 .borders(Borders::ALL)

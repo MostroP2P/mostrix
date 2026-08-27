@@ -190,6 +190,37 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _)) => {
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. }) => {
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            candidates,
+            cursor,
+            checked,
+            ..
+        }) => {
+            app.mode = UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+                candidates: candidates.clone(),
+                cursor: *cursor,
+                checked: checked.clone(),
+            });
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. }) => {
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
+        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) => {
+            // Can't cancel while waiting for Mostro / local DB
+            true
+        }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             slash_submenu_open,
             dispute_id,
@@ -239,5 +270,64 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // ESC should never exit the application (use Exit tab instead)
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_esc_key;
+    use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
+
+    #[test]
+    fn esc_closes_recover_taken_disputes_picker() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+            candidates: vec![uuid::Uuid::nil()],
+            cursor: 0,
+            checked: vec![false],
+        });
+
+        assert!(handle_esc_key(&mut app));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+    }
+
+    #[test]
+    fn esc_from_recover_confirm_returns_to_picker() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        let id = uuid::Uuid::nil();
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            candidates: vec![id],
+            cursor: 0,
+            checked: vec![true],
+            recover_ids: vec![id],
+            selected_button: true,
+        });
+
+        assert!(handle_esc_key(&mut app));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        ));
+    }
+
+    #[test]
+    fn esc_closes_delete_admin_dispute_confirm() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            dispute_id: "dispute-abc".to_string(),
+            selected_button: true,
+        });
+
+        assert!(handle_esc_key(&mut app));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
     }
 }

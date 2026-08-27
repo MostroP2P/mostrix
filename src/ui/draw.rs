@@ -217,6 +217,15 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) = &app.mode {
         waiting::render_waiting(f);
     }
+    if let UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) = &app.mode {
+        waiting::render_waiting_with_message(
+            f,
+            "Recovering selected dispute(s)...\nWaiting for Mostro reply...",
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) = &app.mode {
+        waiting::render_waiting_with_message(f, "Deleting dispute from local database...");
+    }
     // Waiting for add solver popup overlay (admin mode only)
     if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
         waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");
@@ -422,6 +431,39 @@ No: paste BOLT11 or Lightning address manually."
                 "Do you want to take the dispute with id: {}?",
                 dispute_id
             )),
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates,
+        cursor,
+        checked,
+    }) = &app.mode
+    {
+        recover_disputes_picker::render_recover_taken_disputes_picker(
+            f, candidates, *cursor, checked,
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+        recover_ids,
+        selected_button,
+        ..
+    }) = &app.mode
+    {
+        admin_key_confirm::render_recover_taken_disputes_confirm(f, recover_ids, *selected_button);
+    }
+    if let UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+        dispute_id,
+        selected_button,
+    }) = &app.mode
+    {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🗑 Delete Local Dispute",
+            dispute_id,
+            *selected_button,
+            Some(
+                "Remove this dispute from local database and the In Progress list?\nDoes not cancel/settle on Mostro. Shift+R can re-fetch if still assigned.",
+            ),
         );
     }
     if let UiMode::AdminMode(AdminMode::ConfirmAddSolver {

@@ -34,8 +34,9 @@ pub use helper::{
     AdminFinalizeAck,
 };
 pub use relay_dispute_db_reconcile::{
-    apply_terminal_relay_statuses_to_admin_disputes, reconcile_one_admin_dispute_if_terminal,
-    reconcile_terminal_admin_disputes_from_relay, run_targeted_relay_dispute_db_reconcile_tick,
+    apply_terminal_relay_statuses_to_admin_disputes, orphan_in_progress_dispute_ids,
+    reconcile_one_admin_dispute_if_terminal, reconcile_terminal_admin_disputes_from_relay,
+    run_targeted_relay_dispute_db_reconcile_tick,
 };
 pub use relay_order_db_reconcile::{
     reconcile_one_order_if_terminal, reconcile_terminal_order_statuses_from_relay,

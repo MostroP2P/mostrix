@@ -74,6 +74,15 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            ref mut selected_button,
+            ..
+        })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
             ..
@@ -145,6 +154,15 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            ref mut selected_button,
+            ..
+        })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute {
             ref mut selected_button,
             ..
@@ -174,6 +192,15 @@ fn handle_up_key(
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
 ) {
+    if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates,
+        ref mut cursor,
+        ..
+    }) = &mut app.mode
+    {
+        crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), false);
+        return;
+    }
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
@@ -263,6 +290,11 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
+        | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
+        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute)
         | UiMode::AdminMode(AdminMode::WaitingAddSolver)
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })
@@ -297,6 +329,15 @@ fn handle_down_key(
     orders: &Arc<Mutex<Vec<SmallOrder>>>,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
 ) {
+    if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates,
+        ref mut cursor,
+        ..
+    }) = &mut app.mode
+    {
+        crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), true);
+        return;
+    }
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
@@ -398,6 +439,11 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
+        | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
+        | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
+        | UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute)
         | UiMode::AdminMode(AdminMode::WaitingAddSolver)
         | UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization { .. })
         | UiMode::AdminMode(AdminMode::ConfirmFinalizeDispute { .. })

@@ -181,8 +181,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
             let input_height = (input_lines.min(10) as u16) + 2;
-            // Reserve two lines for footer when wide (two-line hints) or when attachment toast is shown
-            let use_two_line_footer = main_area.width >= 90;
+            // Mid (50–89) and wide (≥90) active footers use two hint lines; toast adds a third.
+            let use_two_line_footer = main_area.width >= 50;
             let footer_height = if app.attachment_toast.is_some() {
                 if use_two_line_footer {
                     3
@@ -202,7 +202,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Constraint::Length(3),             // Party Tabs
                     Constraint::Min(0),                // Chat
                     Constraint::Length(input_height),  // Input (dynamic!)
-                    Constraint::Length(footer_height), // Footer (2 when toast visible)
+                    Constraint::Length(footer_height), // Footer (2 mid/wide; +1 toast)
                 ],
             )
             .split(main_area)
@@ -699,38 +699,51 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let footer_area = main_chunks[footer_chunk_idx];
         let footer_width = footer_area.width;
 
-        // When wide (>=90) and not finalized, use two lines to avoid overflow
+        // Mid (50–89) and wide (≥90): two lines when active so Delete/party/filter/Ctrl+S are not clipped
         let (footer_line1, footer_line2) = if footer_width < 50 {
             (HELP_KEY.to_string(), None)
         } else if footer_width < 90 {
-            let one = if is_finalized {
-                format!("{} | {} | {}", HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT)
-            } else {
-                let is_input_focused =
-                    matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-                let short = if is_input_focused && app.admin_chat_input_enabled {
-                    format!(
-                        "{} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_ENTER_SEND,
-                        FOOTER_TAB_PARTY,
-                        FOOTER_SHIFT_F_RESOLVE,
-                        filter_hint
-                    )
-                } else {
+            let is_input_focused =
+                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+            if is_finalized {
+                (
                     format!(
                         "{} | {} | {} | {}",
-                        HELP_KEY, FOOTER_TAB_PARTY, FOOTER_SHIFT_F_RESOLVE, filter_hint
-                    )
-                };
-                format!("{}{}", short, ctrl_s_hint)
-            };
-            (one, None)
+                        HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
+                    ),
+                    None,
+                )
+            } else if is_input_focused && app.admin_chat_input_enabled {
+                (
+                    format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY, FOOTER_ENTER_SEND, FOOTER_SHIFT_F_RESOLVE, FOOTER_SHIFT_R_RECOVER
+                    ),
+                    Some(format!(
+                        "{} | {} | {}{}",
+                        FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
+                    )),
+                )
+            } else {
+                (
+                    format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_SHIFT_F_RESOLVE,
+                        FOOTER_SHIFT_R_RECOVER,
+                        FOOTER_DELETE_LOCAL
+                    ),
+                    Some(format!(
+                        "{} | {}{}",
+                        FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
+                    )),
+                )
+            }
         } else if is_finalized {
             (
                 format!(
-                    "{} | {} | {}",
-                    HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+                    "{} | {} | {} | {}",
+                    HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
                 ),
                 None,
             )
@@ -742,16 +755,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 if is_input_enabled {
                     (
                         format!(
-                            "{} | {} | {} | {} | {} | {}",
+                            "{} | {} | {} | {} | {} | {} | {}",
                             HELP_KEY,
                             FOOTER_TAB_SWITCH_PARTY,
                             FOOTER_ENTER_SEND,
                             FOOTER_SHIFT_I_DISABLE,
                             FOOTER_SHIFT_F_RESOLVE,
+                            FOOTER_SHIFT_R_RECOVER,
                             filter_hint
                         ),
                         format!(
-                            "{} | {} | {}{}",
+                            "{} | {} | {} | {}{}",
+                            FOOTER_DELETE_LOCAL,
                             FOOTER_PGUP_PGDN_SCROLL,
                             FOOTER_END_BOTTOM,
                             FOOTER_UP_DOWN_SELECT_DISPUTE,
@@ -761,16 +776,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 } else {
                     (
                         format!(
-                            "{} | {} | {} | {} | {}{}",
+                            "{} | {} | {} | {} | {} | {}{}",
                             HELP_KEY,
                             FOOTER_TAB_SWITCH_PARTY,
                             FOOTER_SHIFT_I_ENABLE,
                             FOOTER_SHIFT_F_RESOLVE,
+                            FOOTER_SHIFT_R_RECOVER,
                             filter_hint,
                             ctrl_s_hint
                         ),
                         format!(
-                            "{} | {} | {} | {}",
+                            "{} | {} | {} | {} | {}",
+                            FOOTER_DELETE_LOCAL,
                             FOOTER_PGUP_PGDN_SCROLL,
                             FOOTER_NAV_CHAT,
                             FOOTER_END_BOTTOM,
@@ -781,10 +798,11 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 (
                     format!(
-                        "{} | {} | {} | {} | {}",
+                        "{} | {} | {} | {} | {} | {}",
                         HELP_KEY,
                         FOOTER_TAB_SWITCH_PARTY,
                         FOOTER_SHIFT_F_RESOLVE,
+                        FOOTER_SHIFT_R_RECOVER,
                         filter_hint,
                         FOOTER_UP_DOWN_SELECT_DISPUTE
                     ),
@@ -865,8 +883,8 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             HELP_KEY.to_string()
         } else {
             format!(
-                "{} | {} | {}",
-                HELP_KEY, filter_hint, FOOTER_UP_DOWN_SELECT_DISPUTE
+                "{} | {} | {} | {}",
+                HELP_KEY, filter_hint, FOOTER_SHIFT_R_RECOVER, FOOTER_UP_DOWN_SELECT_DISPUTE
             )
         };
         let footer = Paragraph::new(footer_text);
@@ -880,7 +898,10 @@ mod tests {
     use super::should_auto_scroll_chat;
     use super::truncate_dispute_id_label;
     use crate::models::AdminDispute;
-    use crate::ui::{AppState, ChatParty, UserRole};
+    use crate::ui::constants::{
+        FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY,
+    };
+    use crate::ui::{AdminMode, AppState, ChatParty, UiMode, UserRole};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1050,6 +1071,67 @@ mod tests {
         assert!(
             !buffer_contains(buf, "dip-19"),
             "last dispute should not appear while scrolled to the top"
+        );
+    }
+
+    /// Mid-width main panel (50–89) reserves two footer rows so Delete / Tab /
+    /// filter hints from `footer_line2` are not clipped into a one-row footer.
+    #[test]
+    fn mid_width_active_footer_keeps_second_line_hints_visible() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![dispute("dip-mid", "in-progress")];
+        app.selected_dispute_id = Some("dip-mid".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+
+        // Total 80 → main ~64 (in 50–89 mid band). Tall enough for header/chat/2-line footer.
+        let backend = TestBackend::new(80, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, FOOTER_DELETE_LOCAL),
+            "Delete hint must stay visible on mid-width two-line footer"
+        );
+        assert!(
+            buffer_contains(buf, FOOTER_TAB_PARTY),
+            "Tab party hint must stay visible on mid-width footer line 2"
+        );
+        assert!(
+            buffer_contains(buf, FILTER_VIEW_FINALIZED)
+                || buffer_contains(buf, FILTER_VIEW_IN_PROGRESS),
+            "filter toggle hint must stay visible on mid-width footer line 2"
+        );
+    }
+
+    #[test]
+    fn mid_width_active_footer_with_toast_keeps_hints_and_toast() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![dispute("dip-mid", "in-progress")];
+        app.selected_dispute_id = Some("dip-mid".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.attachment_toast = Some(("File saved".to_string(), std::time::Instant::now()));
+
+        let backend = TestBackend::new(80, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "File saved"),
+            "attachment toast must reserve its own footer row"
+        );
+        assert!(
+            buffer_contains(buf, FOOTER_DELETE_LOCAL),
+            "Delete hint must remain visible with toast + two hint lines"
+        );
+        assert!(
+            buffer_contains(buf, FOOTER_TAB_PARTY),
+            "Tab party hint must remain visible with toast + two hint lines"
         );
     }
 }

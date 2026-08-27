@@ -552,7 +552,8 @@ impl Order {
         }
     }
 
-    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
+    /// Load an order when present; missing rows are `Ok(None)` (not an error).
+    pub async fn try_get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Order>> {
         let order = sqlx::query_as::<_, Order>(
             r#"
             SELECT * FROM orders WHERE id = ?
@@ -560,14 +561,17 @@ impl Order {
             "#,
         )
         .bind(id)
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await?;
 
-        if order.id.is_none() {
-            return Err(anyhow::anyhow!("Order not found"));
-        }
+        Ok(order.filter(|o| o.id.is_some()))
+    }
 
-        Ok(order)
+    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Order> {
+        match Self::try_get_by_id(pool, id).await? {
+            Some(order) => Ok(order),
+            None => Err(anyhow::anyhow!("Order not found")),
+        }
     }
 
     /// Update only the status field of an existing order by id.
@@ -1084,6 +1088,17 @@ impl AdminDispute {
         .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Delete one local `admin_disputes` row by Mostro dispute UUID.
+    ///
+    /// Local-only: does not cancel/settle on Mostro. Returns rows affected (0 if missing).
+    pub async fn delete_by_dispute_id(pool: &SqlitePool, dispute_id: &str) -> Result<u64> {
+        let result = sqlx::query(r#"DELETE FROM admin_disputes WHERE dispute_id = ?"#)
+            .bind(dispute_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
     /// Helper method to deserialize JSON UserInfo fields
@@ -1632,5 +1647,43 @@ mod admin_dispute_new_tests {
         assert_eq!(updated.dispute_id, "dispute-new");
         assert_eq!(updated.payment_method, "updated pm");
         assert_eq!(updated.fiat_code, "EUR");
+    }
+
+    #[tokio::test]
+    async fn delete_by_dispute_id_removes_local_row() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, kind, status, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, buyer_invoice, invoice_held_at, taken_at, created_at
+            ) VALUES (?, 'dispute-to-delete', 'sell', 'in-progress', ?, 0, 0, 1,
+                'pm', 50000, 75, 'USD', 250, 3, NULL, 1700000000, 1700000100, 1700000000)"#,
+        )
+        .bind(order_id.to_string())
+        .bind("02".repeat(32))
+        .execute(&pool)
+        .await
+        .expect("insert row");
+
+        let affected = AdminDispute::delete_by_dispute_id(&pool, "dispute-to-delete")
+            .await
+            .expect("delete");
+        assert_eq!(affected, 1);
+        assert!(AdminDispute::get_by_dispute_id(&pool, "dispute-to-delete")
+            .await
+            .expect("query")
+            .is_none());
+        assert_eq!(
+            AdminDispute::delete_by_dispute_id(&pool, "dispute-to-delete")
+                .await
+                .expect("idempotent"),
+            0
+        );
     }
 }

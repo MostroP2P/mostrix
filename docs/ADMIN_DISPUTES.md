@@ -88,6 +88,7 @@ The interface is divided into three main sections:
 - **Type**: Start composing message (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
+- **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
 - **PageUp/PageDown**: Scroll chat history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -321,8 +322,23 @@ sequenceDiagram
 - Only the `admin_privkey` can sign dispute resolution actions
 - The dispute is assigned to the admin who takes it
 - Other admins cannot take a dispute that's already been taken
+- On success, Mostrix persists `SolverDisputeInfo` into local `admin_disputes` (In Progress list)
 - The admin becomes responsible for resolving the dispute
 - Upon taking a dispute, the admin receives a `SolverDisputeInfo` struct with all dispute details
+
+#### Recovering a missing taken dispute (Shift+R)
+
+If Mostro accepted the take (`AdminTookDispute` DM sent) but Mostrix never saved the row (timeout, missed DM, restart), the dispute disappears from **Pending** (relay status is `in-progress`) and never appears under **In Progress**.
+
+On the **Disputes in Progress** tab, press **Shift+R**:
+
+1. Mostrix lists relay `in-progress` dispute IDs that are missing from local `admin_disputes` (kind-38386 does not publish the assigned solver, so this list can include disputes taken by others)
+2. Use **↑↓** to move the highlight, **Space** to toggle checkboxes (no Select-All — probing must stay explicit)
+3. **Enter** opens a Yes/No confirm for the checked IDs, or for the highlighted row if none are checked
+4. On Yes, Mostrix re-sends `AdminTakeDispute` **only for those selected IDs**
+5. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved; `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
+
+Relay events alone cannot hydrate In Progress: kind 38386 does not carry `SolverDisputeInfo`.
 
 ### Dispute Information Structure
 
@@ -546,6 +562,8 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 **Input Handling**:
 
 - **Direct typing**: Start typing to add text to input (when input is enabled)
+- **Paste**: Bracketed paste, **right-click**, and **Ctrl+V** / **Ctrl+Shift+V** / **Shift+Insert** (platform help text varies) append clipboard text into the message box when input is enabled. Ctrl/Alt/Cmd chords are never inserted as literal characters, so shortcuts like **Ctrl+H**, **Ctrl+S**, **Shift+F/I/R/C** keep working.
+- **Delete (local)**: Press **Delete** on a selected dispute to remove it from the local `admin_disputes` table and the left sidebar (same idea as My Trades **Delete** for terminal order history). This does **not** cancel or settle on Mostro; **Shift+R** can re-fetch if the dispute is still assigned to you.
 - **Input toggle**: Press **Shift+I** to enable/disable chat input
   - When disabled, prevents accidental typing while navigating
   - Visual indicator shows "disabled - Shift+I to enable" in input title
@@ -712,6 +730,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Type**: Start typing message directly (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the currently selected dispute
+- **Shift+R**: Recover missing taken disputes — orphan picker (↑↓ / Space), then `AdminTakeDispute` for selected IDs only
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)

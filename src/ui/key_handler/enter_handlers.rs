@@ -42,7 +42,9 @@ use std::str::FromStr;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
-    execute_finalize_dispute_action, execute_take_dispute_action, handle_enter_admin_mode,
+    begin_confirm_recover_selection, execute_delete_admin_dispute_action,
+    execute_finalize_dispute_action, execute_recover_taken_disputes_action,
+    execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -695,9 +697,55 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
+        UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+            candidates,
+            cursor,
+            checked,
+        }) => {
+            begin_confirm_recover_selection(app, candidates, cursor, checked);
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+            candidates,
+            cursor,
+            checked,
+            recover_ids,
+            selected_button,
+        }) => {
+            if selected_button {
+                execute_recover_taken_disputes_action(app, recover_ids, ctx);
+            } else {
+                app.mode = UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+                    candidates,
+                    cursor,
+                    checked,
+                });
+            }
+            true
+        }
+        UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+            dispute_id,
+            selected_button,
+        }) => {
+            if selected_button {
+                execute_delete_admin_dispute_action(app, dispute_id, ctx);
+            } else {
+                app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            }
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingTakeDispute(_)) => {
             // No action while waiting
             app.mode = default_mode;
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) => {
+            // Stay on waiting overlay until the async task reports a result.
+            app.mode = UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes);
+            true
+        }
+        UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) => {
+            app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
             true
         }
         UiMode::AdminMode(AdminMode::WaitingAddSolver) => {
