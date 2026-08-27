@@ -70,8 +70,9 @@ pub fn submit_add_invoice(
             Ok(_) => {
                 let _ = order_result_tx_clone.send(OperationResult::InvoiceSubmitted {
                     message: "Invoice sent successfully".to_string(),
+                    order_id,
                     remember_buyer_saved_ln_address_for_order:
-                        remember_buyer_saved_ln_address_on_success,
+                        remember_buyer_saved_ln_address_on_success.is_some(),
                 });
             }
             Err(e) => {
@@ -121,7 +122,8 @@ pub fn submit_add_bond_invoice(
             Ok(None) => {
                 let _ = order_result_tx_clone.send(OperationResult::InvoiceSubmitted {
                     message: "Bond payout invoice sent successfully".to_string(),
-                    remember_buyer_saved_ln_address_for_order: None,
+                    order_id,
+                    remember_buyer_saved_ln_address_for_order: false,
                 });
             }
             Err(e) => {
@@ -147,6 +149,7 @@ fn spawn_cancel_from_notification(
 
     // Drop per-order invoice preference so a later trade / retake can show the LN confirm again.
     app.buyer_invoice_preference.remove(&order_id);
+    app.orders_needing_replacement_invoice.remove(&order_id);
 
     app.mode = role_waiting_mode(app.user_role);
     let pool_clone = ctx.pool.clone();
@@ -435,6 +438,10 @@ pub fn handle_enter_message_notification(
                 spawn_cancel_from_notification(app, ctx, order_id);
                 return;
             }
+            app.mode = role_default_mode(app.user_role);
+        }
+        // Informational only (no send): Enter dismisses the payment-failed popup.
+        Action::PaymentFailed => {
             app.mode = role_default_mode(app.user_role);
         }
         _ => {

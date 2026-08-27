@@ -60,8 +60,12 @@ fn handle_text_input<T: TextInputState>(
 
 /// Handle invoice input for AddInvoice notifications
 /// Returns true if the key was handled and should skip further processing
+///
+/// Does **not** swallow Enter after paste: bracketed paste / clipboard paste
+/// already strip newlines from the pasted text, so the next Enter is the user's
+/// intentional submit. Swallowing it forced a double-Enter regression.
 pub fn handle_invoice_input(code: KeyCode, invoice_state: &mut InvoiceInputState) -> bool {
-    handle_text_input(code, invoice_state, true)
+    handle_text_input(code, invoice_state, false)
 }
 
 /// Handle key input for admin key input popups (AddSolver, SetupAdminKey)
@@ -159,4 +163,43 @@ pub fn send_admin_chat_message_via_shared_key(
             ),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_invoice_input;
+    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crossterm::event::KeyCode;
+
+    fn focused_invoice(input: &str) -> InvoiceInputState {
+        InvoiceInputState {
+            invoice_input: input.to_string(),
+            focused: true,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+        }
+    }
+
+    #[test]
+    fn enter_is_not_swallowed_after_paste_flag() {
+        // Paste paths used to set `just_pasted`, which made the next Enter a no-op
+        // (double-Enter to submit). Enter must fall through to the submit handler.
+        let mut state = focused_invoice("lnbc1...");
+        state.just_pasted = true;
+        assert!(
+            !handle_invoice_input(KeyCode::Enter, &mut state),
+            "Enter after paste must not be consumed by invoice input handling"
+        );
+    }
+
+    #[test]
+    fn chars_and_backspace_still_handled() {
+        let mut state = focused_invoice("ab");
+        assert!(handle_invoice_input(KeyCode::Char('c'), &mut state));
+        assert_eq!(state.invoice_input, "abc");
+        assert!(handle_invoice_input(KeyCode::Backspace, &mut state));
+        assert_eq!(state.invoice_input, "ab");
+    }
 }

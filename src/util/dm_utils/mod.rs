@@ -29,7 +29,9 @@ use uuid::Uuid;
 use crate::models::{Order, User};
 use crate::ui::helpers::user_dispute_chat_since_from_file;
 use crate::ui::order_message_to_notification;
-use crate::ui::orders::{merge_order_snapshots, small_order_from_payload};
+use crate::ui::orders::{
+    add_invoice_is_after_failed_payment, merge_order_snapshots, small_order_from_payload,
+};
 use crate::ui::{MessageNotification, OrderMessage};
 use crate::util::chat_listener::{
     maybe_track_order_chat, track_user_dispute_chat, untrack_order_chat, untrack_user_dispute_chat,
@@ -1017,7 +1019,12 @@ async fn handle_trade_dm_for_order(
     let baseline_status = status_from_db.or(prior_order_status);
     let should_accept_candidate = status_candidate
         .map(|candidate| {
-            should_apply_status_transition(baseline_status, candidate, effective_order_kind)
+            should_apply_status_transition(
+                baseline_status,
+                candidate,
+                effective_order_kind,
+                Some(&action),
+            )
         })
         .unwrap_or(false);
     let effective_order_status = if should_accept_candidate {
@@ -1111,7 +1118,18 @@ async fn handle_trade_dm_for_order(
             let existing_timestamp = prior.timestamp;
             let existing_action = &prior.action;
             let existing_order_status = prior.order_status;
-            if new_order_would_regress_messages_row(&action, existing_action) {
+            // Post-retry `add-invoice` must win over `released` / `payment-failed` even when
+            // GiftWrap rumor timestamps are out of order — Mostro will not resend it, and
+            // Enter on Messages must be able to reopen the invoice popup from this row.
+            let force_post_retry_add_invoice = matches!(action, Action::AddInvoice)
+                && add_invoice_is_after_failed_payment(
+                    status_candidate
+                        .or(effective_order_status)
+                        .or(existing_order_status),
+                );
+            if force_post_retry_add_invoice {
+                true
+            } else if new_order_would_regress_messages_row(&action, existing_action) {
                 false
             } else if timestamp > existing_timestamp {
                 true
@@ -1122,7 +1140,12 @@ async fn handle_trade_dm_for_order(
                 // the status already shown on the row (not merely equal; `should_accept_candidate`
                 // allows equality vs baseline for DB updates).
                 status_candidate.is_some_and(|c| {
-                    should_strictly_advance_status(existing_order_status, c, effective_order_kind)
+                    should_strictly_advance_status(
+                        existing_order_status,
+                        c,
+                        effective_order_kind,
+                        Some(&action),
+                    )
                 })
             }
         }

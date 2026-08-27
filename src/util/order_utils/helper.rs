@@ -85,12 +85,14 @@ pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
         Action::PayBondInvoice => Some(Status::WaitingTakerBond),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::FiatSent),
-        // Release ACK to seller (`hold-invoice-payment-settled`), buyer `released` /
-        // `purchase-completed`: trade complete from Mostro's view → Success / Rate column.
-        Action::Release
-        | Action::Released
-        | Action::HoldInvoicePaymentSettled
-        | Action::PurchaseCompleted => Some(Status::Success),
+        // Seller `release` settles the hold invoice and starts the buyer payout.
+        // Mostro stays on `settled-hold-invoice` until Lightning actually succeeds
+        // (`purchase-completed`). Inferring Success here hid the later `add-invoice`
+        // after failed payout retries.
+        Action::Release | Action::Released | Action::HoldInvoicePaymentSettled => {
+            Some(Status::SettledHoldInvoice)
+        }
+        Action::PurchaseCompleted => Some(Status::Success),
         _ => None,
     }
 }
@@ -123,14 +125,16 @@ fn status_phase_rank_for_actor(
             Some(mostro_core::order::Kind::Sell) => Some(2),
             None => None,
         },
-        Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => match kind {
+        Status::WaitingBuyerInvoice => match kind {
             Some(mostro_core::order::Kind::Buy) => Some(2),
             Some(mostro_core::order::Kind::Sell) => Some(1),
             None => None,
         },
         Status::InProgress | Status::Active => Some(3),
         Status::FiatSent => Some(4),
-        Status::Success => Some(5),
+        // After seller release: hold invoice is settled, buyer payout is in flight.
+        Status::SettledHoldInvoice => Some(5),
+        Status::Success => Some(6),
         _ => None,
     }
 }
@@ -174,11 +178,17 @@ pub(super) fn admin_finalize_ack(action: Action, expected: Action) -> Result<Adm
 /// Guard status writes against backward transitions from stale/out-of-order DMs.
 ///
 /// Returns `true` when `candidate` is equal/newer than `current` in the actor-aware phase graph.
-/// Terminal states are sticky: once terminal, only the same terminal status is accepted.
+/// Terminal states are sticky: once terminal, only the same terminal status is accepted —
+/// except post-retry [`Action::AddInvoice`], which may reopen `Success` → `SettledHoldInvoice`
+/// when an older client wrongly promoted `released` to Success before the replacement invoice.
+///
+/// Pass `action` from the DM being applied. Relay reconcile (no action) must pass `None` so
+/// completed orders are never reopened from snapshots alone.
 pub fn should_apply_status_transition(
     current: Option<Status>,
     candidate: Status,
     kind: Option<mostro_core::order::Kind>,
+    action: Option<&Action>,
 ) -> bool {
     let Some(current) = current else {
         return true;
@@ -187,7 +197,11 @@ pub fn should_apply_status_transition(
         return true;
     }
     if is_terminal_trade_status(current) {
-        return false;
+        // Only the post-retry replacement-invoice DM may reopen Success → SettledHoldInvoice.
+        // Action::Release / Released / HoldInvoicePaymentSettled must stay blocked.
+        return matches!(action, Some(Action::AddInvoice))
+            && current == Status::Success
+            && candidate == Status::SettledHoldInvoice;
     }
     if is_terminal_trade_status(candidate) {
         return true;
@@ -206,17 +220,20 @@ pub fn should_apply_status_transition(
 ///
 /// Use when an **older** Nostr `timestamp` must not replace the Messages row unless the payload
 /// status is strictly newer than what the current row already shows.
+///
+/// `action` is forwarded unchanged (needed for the post-retry [`Action::AddInvoice`] reopen).
 pub fn should_strictly_advance_status(
     current: Option<Status>,
     candidate: Status,
     kind: Option<mostro_core::order::Kind>,
+    action: Option<&Action>,
 ) -> bool {
     if let Some(cur) = current {
         if cur == candidate {
             return false;
         }
     }
-    should_apply_status_transition(current, candidate, kind)
+    should_apply_status_transition(current, candidate, kind, action)
 }
 
 /// Validates the range amount input against min/max limits.
@@ -916,15 +933,66 @@ mod tests {
     }
 
     #[test]
-    fn hold_invoice_payment_settled_and_purchase_completed_infer_success() {
+    fn release_infers_settled_hold_invoice_until_payout_succeeds() {
+        assert_eq!(
+            inferred_status_from_trade_action(&Action::Released),
+            Some(Status::SettledHoldInvoice)
+        );
         assert_eq!(
             inferred_status_from_trade_action(&Action::HoldInvoicePaymentSettled),
-            Some(Status::Success)
+            Some(Status::SettledHoldInvoice)
         );
         assert_eq!(
             inferred_status_from_trade_action(&Action::PurchaseCompleted),
             Some(Status::Success)
         );
+    }
+
+    #[test]
+    fn fiat_sent_can_advance_to_settled_hold_invoice() {
+        assert!(should_apply_status_transition(
+            Some(Status::FiatSent),
+            Status::SettledHoldInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            None,
+        ));
+    }
+
+    #[test]
+    fn add_invoice_can_reopen_success_to_settled_hold_invoice() {
+        assert!(should_apply_status_transition(
+            Some(Status::Success),
+            Status::SettledHoldInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(&Action::AddInvoice),
+        ));
+    }
+
+    #[test]
+    fn release_actions_cannot_reopen_success_to_settled_hold_invoice() {
+        let kind = Some(mostro_core::order::Kind::Sell);
+        for action in [
+            Action::Release,
+            Action::Released,
+            Action::HoldInvoicePaymentSettled,
+        ] {
+            assert!(
+                !should_apply_status_transition(
+                    Some(Status::Success),
+                    Status::SettledHoldInvoice,
+                    kind,
+                    Some(&action),
+                ),
+                "{action:?} must not reopen a completed order"
+            );
+        }
+        // Relay reconcile has no action context — also blocked.
+        assert!(!should_apply_status_transition(
+            Some(Status::Success),
+            Status::SettledHoldInvoice,
+            kind,
+            None,
+        ));
     }
 
     #[test]
@@ -975,6 +1043,7 @@ mod tests {
             Some(Status::WaitingBuyerInvoice),
             Status::WaitingPayment,
             Some(mostro_core::order::Kind::Buy),
+            None,
         );
         assert!(!allow);
     }
@@ -985,6 +1054,7 @@ mod tests {
             Some(Status::WaitingBuyerInvoice),
             Status::WaitingPayment,
             Some(mostro_core::order::Kind::Sell),
+            None,
         );
         assert!(allow);
     }
@@ -995,6 +1065,7 @@ mod tests {
             Some(Status::CooperativelyCanceled),
             Status::WaitingPayment,
             Some(mostro_core::order::Kind::Buy),
+            None,
         );
         assert!(!allow);
     }
@@ -1006,6 +1077,7 @@ mod tests {
             Some(Status::WaitingTakerBond),
             Status::Pending,
             kind,
+            None,
         ));
     }
 
@@ -1016,11 +1088,13 @@ mod tests {
             Some(Status::WaitingPayment),
             Status::WaitingPayment,
             kind,
+            None,
         ));
         assert!(!should_strictly_advance_status(
             Some(Status::WaitingPayment),
             Status::WaitingPayment,
             kind,
+            None,
         ));
     }
 

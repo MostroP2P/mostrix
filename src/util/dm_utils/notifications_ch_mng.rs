@@ -80,6 +80,68 @@ fn check_if_popup_should_be_shown(notification: &MessageNotification, app: &AppS
     true
 }
 
+/// Whether the informational `payment-failed` popup should auto-open.
+///
+/// Mirrors the startup-floor and once-per-message dedup of
+/// [`check_if_popup_should_be_shown`], but skips the invoice-input gating
+/// ([`invoice_popup_allowed_for_order_status`] returns `false` for
+/// `PaymentFailed`). Instead it gates to the buyer: Mostro only sends
+/// `payment-failed` to the buyer, and the buyer is exactly the party who acts on
+/// `AddInvoice`, so we reuse [`local_user_must_act_on_invoice_popup`] with
+/// `Action::AddInvoice` as the buyer test.
+fn check_if_payment_failed_popup_should_be_shown(
+    notification: &MessageNotification,
+    app: &AppState,
+) -> bool {
+    if let Some(order_id) = notification.order_id {
+        if let Some(floor_ts) = app.startup_popup_floor_ts.get(&order_id) {
+            if notification.timestamp <= *floor_ts {
+                log::debug!(
+                    "[popup] suppressed historical payment-failed popup for order_id={} (notification_ts={} <= startup_floor_ts={})",
+                    order_id,
+                    notification.timestamp,
+                    floor_ts
+                );
+                return false;
+            }
+        }
+    }
+
+    let Some(order_id) = notification.order_id else {
+        return true;
+    };
+
+    let mut messages = match app.messages.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+            return false;
+        }
+    };
+    let Some(order_msg) = messages.iter_mut().find(|m| m.order_id == Some(order_id)) else {
+        return false;
+    };
+
+    if !local_user_must_act_on_invoice_popup(order_msg, &Action::AddInvoice) {
+        log::debug!(
+            "[popup] suppressed payment-failed popup for order_id={order_id}: local user is not the buyer",
+        );
+        return false;
+    }
+
+    if order_msg.auto_popup_shown {
+        false
+    } else {
+        // Same-action dedup only: a later `AddInvoice` carries a different action, so it
+        // will not inherit this flag (see `prior_auto_popup_shown` in the trade-DM path)
+        // and the buyer still gets the invoice popup once all retries fail.
+        order_msg.auto_popup_shown = true;
+        true
+    }
+}
+
 fn invoice_state_for_add_invoice(invoice_input: String, focused: bool) -> InvoiceInputState {
     InvoiceInputState {
         invoice_input,
@@ -287,6 +349,14 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
         | Action::PayBondInvoice
         | Action::AddInvoice
         | Action::AddBondInvoice => {
+            // Remember post-retry replacement-invoice asks so Enter can reopen the popup
+            // after Esc (Mostro does not resend `add-invoice`).
+            if matches!(notification.action, Action::AddInvoice) && notification.body.is_some() {
+                if let Some(order_id) = notification.order_id {
+                    app.orders_needing_replacement_invoice.insert(order_id);
+                }
+            }
+
             let should_show_popup = check_if_popup_should_be_shown(&notification, app);
             if !should_show_popup {
                 return;
@@ -318,6 +388,18 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
             }
         }
+        // Informational only: `payment-failed` does not change order status and needs no
+        // input. Show a dismissible popup explaining the automatic retries to the buyer.
+        Action::PaymentFailed => {
+            if !check_if_payment_failed_popup_should_be_shown(&notification, app) {
+                return;
+            }
+            app.mode = UiMode::NewMessageNotification(
+                notification,
+                Action::PaymentFailed,
+                invoice_state_for_add_invoice(String::new(), false),
+            );
+        }
         _ => {}
     }
 }
@@ -325,8 +407,10 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
 #[cfg(test)]
 mod tests {
     use super::handle_message_notification;
-    use crate::ui::{AppState, MessageNotification, OrderChatStaticHeader, UserRole};
-    use mostro_core::prelude::{Action, Kind};
+    use crate::ui::orders::OrderMessage;
+    use crate::ui::{AppState, MessageNotification, OrderChatStaticHeader, UiMode, UserRole};
+    use mostro_core::prelude::{Action, Kind, Message, Payload, PaymentFailedInfo, Status};
+    use nostr_sdk::prelude::Keys;
     use uuid::Uuid;
 
     fn notification(
@@ -347,6 +431,294 @@ mod tests {
             solver_pubkey: solver_pubkey.map(str::to_string),
             dispute_id: dispute_id.map(str::to_string),
         }
+    }
+
+    /// A stored `payment-failed` row for `order_id`, at `settled-hold-invoice`.
+    /// `kind` + `is_mine` decide whether the local user is the buyer.
+    fn payment_failed_row(order_id: Uuid, kind: Kind, is_mine: bool) -> OrderMessage {
+        let keys = Keys::generate();
+        OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                None,
+                Action::PaymentFailed,
+                Some(Payload::PaymentFailed(PaymentFailedInfo {
+                    payment_attempts: 3,
+                    payment_retries_interval: 5,
+                })),
+            ),
+            timestamp: 10,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(kind),
+            is_mine: Some(is_mine),
+            order_status: Some(Status::SettledHoldInvoice),
+            order_snapshot: None,
+            auto_popup_shown: false,
+        }
+    }
+
+    fn payment_failed_notification(order_id: Uuid) -> MessageNotification {
+        let mut n = notification(order_id, Action::PaymentFailed, None, None);
+        n.timestamp = 10;
+        n.body = Some("It will retry automatically.".to_string());
+        n
+    }
+
+    fn is_payment_failed_popup(mode: &UiMode) -> bool {
+        matches!(
+            mode,
+            UiMode::NewMessageNotification(_, Action::PaymentFailed, _)
+        )
+    }
+
+    #[test]
+    fn payment_failed_opens_popup_for_buy_maker_buyer() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Buy listing + we are maker => we are the buyer.
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Buy, true));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+
+        assert!(is_payment_failed_popup(&app.mode));
+    }
+
+    #[test]
+    fn payment_failed_opens_popup_for_sell_taker_buyer() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Sell listing + we are taker => we are the buyer.
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Sell, false));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+
+        assert!(is_payment_failed_popup(&app.mode));
+    }
+
+    #[test]
+    fn payment_failed_suppressed_for_seller() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        let baseline = std::mem::discriminant(&app.mode);
+        // Buy listing + we are taker => we are the seller, not the buyer.
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Buy, false));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+
+        assert!(!is_payment_failed_popup(&app.mode));
+        assert_eq!(std::mem::discriminant(&app.mode), baseline);
+    }
+
+    #[test]
+    fn payment_failed_popup_deduplicates_repeated_dms() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Sell, false));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+        assert!(is_payment_failed_popup(&app.mode));
+
+        // Dismiss, then a duplicate/replayed DM must not reopen the popup.
+        app.mode = UiMode::Normal;
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+        assert!(!is_payment_failed_popup(&app.mode));
+    }
+
+    #[test]
+    fn payment_failed_suppressed_below_startup_floor() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Sell, false));
+        // Historical DM at/below the startup floor must not auto-open a popup.
+        app.startup_popup_floor_ts.insert(order_id, 10);
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+
+        assert!(!is_payment_failed_popup(&app.mode));
+    }
+
+    fn is_add_invoice_popup(mode: &UiMode) -> bool {
+        matches!(
+            mode,
+            UiMode::NewMessageNotification(_, Action::AddInvoice, _)
+                | UiMode::ConfirmSavedLnAddressForInvoice(_, _)
+        )
+    }
+
+    /// Canonical post-retry state: order stays `settled-hold-invoice` while Mostro
+    /// asks the buyer for a replacement Lightning invoice.
+    fn add_invoice_row_at_settled(
+        order_id: Uuid,
+        kind: Kind,
+        is_mine: bool,
+        auto_popup_shown: bool,
+    ) -> OrderMessage {
+        let keys = Keys::generate();
+        OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                None,
+                Action::AddInvoice,
+                Some(Payload::Order(mostro_core::prelude::SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(kind),
+                    status: Some(Status::SettledHoldInvoice),
+                    amount: 50_000,
+                    fiat_code: "EUR".to_string(),
+                    fiat_amount: 100,
+                    payment_method: "sepa".to_string(),
+                    ..Default::default()
+                })),
+            ),
+            timestamp: 20,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: Some(50_000),
+            buyer_invoice: None,
+            order_kind: Some(kind),
+            is_mine: Some(is_mine),
+            order_status: Some(Status::SettledHoldInvoice),
+            order_snapshot: None,
+            auto_popup_shown,
+        }
+    }
+
+    #[test]
+    fn add_invoice_at_settled_hold_invoice_opens_popup_for_buyer() {
+        // Protocol happy path after all payment retries fail: Mostro sends
+        // `add-invoice` while status remains `settled-hold-invoice`.
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Sell listing + taker = buyer.
+        app.messages
+            .lock()
+            .unwrap()
+            .push(add_invoice_row_at_settled(
+                order_id,
+                Kind::Sell,
+                false,
+                false,
+            ));
+
+        let mut n = notification(order_id, Action::AddInvoice, None, None);
+        n.timestamp = 20;
+        n.sat_amount = Some(50_000);
+        handle_message_notification(n, &mut app);
+
+        assert!(
+            is_add_invoice_popup(&app.mode),
+            "AddInvoice at SettledHoldInvoice must open the invoice popup for the buyer"
+        );
+    }
+
+    #[test]
+    fn add_invoice_after_payment_failed_still_opens_for_buyer() {
+        // After the informational payment-failed popup was shown, a later
+        // `add-invoice` (different action) must still open — `auto_popup_shown`
+        // must not carry across actions.
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Sell, false));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+        assert!(is_payment_failed_popup(&app.mode));
+
+        // Simulate the trade-DM path replacing the row with AddInvoice and
+        // resetting auto_popup_shown (same-action-only preserve).
+        app.mode = UiMode::Normal;
+        {
+            let mut messages = app.messages.lock().unwrap();
+            messages.retain(|m| m.order_id != Some(order_id));
+            messages.push(add_invoice_row_at_settled(
+                order_id,
+                Kind::Sell,
+                false,
+                false,
+            ));
+        }
+
+        let mut n = notification(order_id, Action::AddInvoice, None, None);
+        n.timestamp = 20;
+        n.sat_amount = Some(50_000);
+        handle_message_notification(n, &mut app);
+
+        assert!(
+            is_add_invoice_popup(&app.mode),
+            "AddInvoice after payment-failed must still open for the buyer"
+        );
+    }
+
+    #[test]
+    fn add_invoice_after_retries_opens_popup_even_if_local_status_is_success() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        let keys = Keys::generate();
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                None,
+                Action::AddInvoice,
+                Some(Payload::Order(mostro_core::prelude::SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(Kind::Sell),
+                    status: Some(Status::SettledHoldInvoice),
+                    amount: 139_859,
+                    fiat_code: "EUR".to_string(),
+                    fiat_amount: 100,
+                    payment_method: "Bizum".to_string(),
+                    ..Default::default()
+                })),
+            ),
+            timestamp: 20,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: Some(139_859),
+            buyer_invoice: None,
+            order_kind: Some(Kind::Sell),
+            is_mine: Some(false),
+            // `released` used to be stored as Success; the payout-retry
+            // `add-invoice` must still open for the buyer.
+            order_status: Some(Status::Success),
+            order_snapshot: None,
+            auto_popup_shown: false,
+        });
+
+        handle_message_notification(
+            notification(order_id, Action::AddInvoice, None, None),
+            &mut app,
+        );
+
+        assert!(is_add_invoice_popup(&app.mode));
     }
 
     #[test]

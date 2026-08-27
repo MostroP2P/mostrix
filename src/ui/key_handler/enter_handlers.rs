@@ -15,7 +15,7 @@ use crate::ui::key_handler::input_helpers::{
 use crate::ui::orders::{
     invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
     message_action_compact_label_for_message, order_message_to_waiting_notification,
-    strip_new_order_messages_and_clamp_selected,
+    strip_new_order_messages_and_clamp_selected, OrderMessage,
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
@@ -77,6 +77,23 @@ fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
         Action::PayBondInvoice => Some(Action::PayBondInvoice),
         _ => None,
     }
+}
+
+/// Whether Messages-tab Enter should reopen the post-retry AddInvoice popup.
+///
+/// Mostro accepts a replacement buyer invoice while the order is
+/// `settled-hold-invoice`, and will not resend `add-invoice` after Esc.
+///
+/// Reopen only when the order is in [`AppState::orders_needing_replacement_invoice`]
+/// (set when the post-retry AddInvoice arrives or on Esc). Rows whose action is
+/// already [`Action::AddInvoice`] use the normal invoice Enter path instead.
+#[must_use]
+pub(crate) fn should_reopen_replacement_invoice(app: &AppState, msg: &OrderMessage) -> bool {
+    if !local_user_must_act_on_invoice_popup(msg, &Action::AddInvoice) {
+        return false;
+    }
+    msg.order_id
+        .is_some_and(|id| app.orders_needing_replacement_invoice.contains(&id))
 }
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
@@ -1146,6 +1163,8 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         if let Some(msg) = messages_lock.get(app.selected_message_idx) {
             let inner_message_kind = msg.message.get_inner_message_kind();
             let action = inner_message_kind.action.clone();
+            let needs_replacement_invoice = should_reopen_replacement_invoice(app, msg);
+
             if let Some(invoice_popup_action) = invoice_popup_action_for_message_action(&action) {
                 if invoice_popup_allowed_for_order_status(&invoice_popup_action, msg.order_status) {
                     let invoice_state = InvoiceInputState {
@@ -1208,6 +1227,29 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     };
                     app.mode = UiMode::operation_result(OperationResult::Info(info));
                 }
+            } else if needs_replacement_invoice
+                && invoice_popup_allowed_for_order_status(&Action::AddInvoice, msg.order_status)
+            {
+                // Post-retry replacement invoice: Mostro will not resend `add-invoice`.
+                // Reopen the popup even if the Messages row still shows Released /
+                // "Waiting for Payout" after Esc (GiftWrap timestamp skew).
+                if let Some(oid) = msg.order_id {
+                    app.orders_needing_replacement_invoice.insert(oid);
+                }
+                let mut notification = order_message_to_notification(msg);
+                notification.action = Action::AddInvoice;
+                notification.message_preview = "New Invoice After Failed Payment".to_string();
+                if notification.body.is_none() {
+                    notification.body = Some(
+                        "Lightning payout failed after all retries.\nPaste a new invoice to receive your escrow sats."
+                            .to_string(),
+                    );
+                }
+                if notification.sat_amount.is_none() {
+                    notification.sat_amount = msg.order_snapshot.as_ref().map(|o| o.amount);
+                }
+                app.mode =
+                    present_add_invoice_popup(&mut app.buyer_invoice_preference, notification);
             } else if matches!(
                 action,
                 Action::HoldInvoicePaymentAccepted
@@ -1357,14 +1399,114 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_local_user_chat_message, run_enter_chat_send_flow, EnterChatSendConfig,
-        OrderChatTarget,
+        persist_local_user_chat_message, run_enter_chat_send_flow,
+        should_reopen_replacement_invoice, EnterChatSendConfig, OrderChatTarget,
     };
+    use crate::ui::orders::OrderMessage;
     use crate::ui::{
         AppState, OperationResult, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage,
         UserRole,
     };
+    use mostro_core::prelude::{Action, Kind, Message, Status};
+    use nostr_sdk::prelude::Keys;
     use std::cell::Cell;
+    use uuid::Uuid;
+
+    fn sample_order_message(
+        action: Action,
+        kind: Option<Kind>,
+        is_mine: Option<bool>,
+        status: Option<Status>,
+    ) -> OrderMessage {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        OrderMessage {
+            message: Message::new_order(Some(order_id), None, None, action, None),
+            timestamp: 1,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: Some(1000),
+            buyer_invoice: None,
+            order_kind: kind,
+            is_mine,
+            order_status: status,
+            order_snapshot: None,
+            auto_popup_shown: false,
+        }
+    }
+
+    #[test]
+    fn released_at_settled_hold_does_not_reopen_without_sticky_marker() {
+        let app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::Released,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+    }
+
+    #[test]
+    fn released_at_settled_hold_reopens_when_sticky_marker_set() {
+        let mut app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::Released,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let oid = msg.order_id.unwrap();
+        app.orders_needing_replacement_invoice.insert(oid);
+        assert!(should_reopen_replacement_invoice(&app, &msg));
+    }
+
+    #[test]
+    fn payment_failed_row_does_not_reopen_replacement_invoice_by_status_alone() {
+        // While Mostro is still retrying, Enter on a PaymentFailed row must not
+        // open AddInvoice — that only happens after a real add-invoice ask (or sticky).
+        let mut app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::PaymentFailed,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+
+        // Sticky set still recovers Esc of a real post-retry AddInvoice popup.
+        let oid = msg.order_id.unwrap();
+        app.orders_needing_replacement_invoice.insert(oid);
+        assert!(should_reopen_replacement_invoice(&app, &msg));
+    }
+
+    #[test]
+    fn reopen_replacement_invoice_respects_sticky_set_for_buyer() {
+        let mut app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::Released,
+            Some(Kind::Buy),
+            Some(false), // buy taker = seller — must not reopen
+            Some(Status::SettledHoldInvoice),
+        );
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+        let oid = msg.order_id.unwrap();
+        app.orders_needing_replacement_invoice.insert(oid);
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+
+        let buyer = sample_order_message(
+            Action::Released,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::Active), // not settled — sticky alone should still reopen for buyer
+        );
+        let buyer_oid = buyer.order_id.unwrap();
+        assert!(!should_reopen_replacement_invoice(&app, &buyer));
+        app.orders_needing_replacement_invoice.insert(buyer_oid);
+        assert!(should_reopen_replacement_invoice(&app, &buyer));
+    }
 
     #[test]
     fn failed_user_chat_persistence_keeps_input_and_aborts_send() {

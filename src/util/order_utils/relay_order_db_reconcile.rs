@@ -104,6 +104,9 @@ pub async fn run_targeted_relay_order_db_reconcile_tick(
 }
 
 /// If `relay_order` carries a terminal status and the local row exists, update SQLite when allowed.
+///
+/// Uses [`should_apply_status_transition`] with `action = None` so relay snapshots cannot
+/// reopen a completed order (the Success → SettledHoldInvoice exception is DM/`AddInvoice` only).
 pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &SmallOrder) {
     let Some(candidate_status) = relay_order.status else {
         return;
@@ -134,7 +137,7 @@ pub async fn reconcile_one_order_if_terminal(pool: &SqlitePool, relay_order: &Sm
             .as_deref()
             .and_then(|k| mostro_core::order::Kind::from_str(k).ok())
     });
-    if !should_apply_status_transition(current, candidate_status, kind) {
+    if !should_apply_status_transition(current, candidate_status, kind, None) {
         return;
     }
     if let Err(e) = Order::update_status(pool, &order_id.to_string(), candidate_status).await {

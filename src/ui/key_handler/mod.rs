@@ -562,7 +562,7 @@ pub fn handle_mouse_invoice_paste_fallback(event: &Event, app: &mut AppState) ->
                 filtered_text.chars().count()
             );
             invoice_state.invoice_input.push_str(&filtered_text);
-            invoice_state.just_pasted = true;
+            // Do not set `just_pasted` — first Enter must submit (newlines already stripped).
         } else {
             log::debug!("Right-click paste fallback found only control characters");
         }
@@ -697,7 +697,7 @@ pub fn handle_key_event(
                 let filtered_text: String = text.chars().filter(|c| !c.is_control()).collect();
                 if !filtered_text.is_empty() {
                     invoice_state.invoice_input.push_str(&filtered_text);
-                    invoice_state.just_pasted = true;
+                    // Do not set `just_pasted` — first Enter must submit (newlines already stripped).
                     return Some(true);
                 }
             }

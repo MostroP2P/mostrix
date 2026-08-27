@@ -204,6 +204,11 @@ pub struct AppState {
     /// In-memory only; used by Messages/AddInvoice flows to decide how to
     /// source the buyer invoice for a specific trade.
     pub buyer_invoice_preference: HashMap<uuid::Uuid, BuyerInvoicePreference>,
+    /// Orders where Mostro asked for a **replacement** invoice after payout retries
+    /// failed. Sticky until the buyer submits (or cancels the trade) so Enter on
+    /// Messages can reopen the AddInvoice popup even if the sidebar row did not
+    /// update to `AddInvoice` (out-of-order GiftWrap timestamps).
+    pub orders_needing_replacement_invoice: HashSet<uuid::Uuid>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
     pub order_chat_input: String,
@@ -313,6 +318,7 @@ impl AppState {
             dropped_user_history_order_ids: Arc::new(Mutex::new(HashSet::new())),
             startup_popup_floor_ts: HashMap::new(),
             buyer_invoice_preference: HashMap::new(),
+            orders_needing_replacement_invoice: HashSet::new(),
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),

@@ -523,7 +523,7 @@ Mostrix can align local **`orders.status`** with **terminal** states published o
 | **Bulk** | Orders updater tick (~30s) + **startup** | `fetch_mostro_order_events` → `aggregate_latest_orders_by_id` → `reconcile_terminal_order_statuses_from_relay` |
 | **Targeted** | Same tick + **startup** | `Order::list_ids_for_targeted_relay_reconcile` (non-terminal rows with `trade_keys`) → round-robin up to **`TARGETED_RELAY_RECONCILE_MAX_PER_TICK`** (5) per-order fetches → `reconcile_one_order_if_terminal` |
 
-`reconcile_one_order_if_terminal` only writes when the relay snapshot status is **terminal** (`is_terminal_trade_status`) and passes **`should_apply_status_transition`** (same monotonic rules as DM updates). Pending orders on the book are not “healed” from relay unless the relay reports a terminal outcome (e.g. **Expired**).
+`reconcile_one_order_if_terminal` only writes when the relay snapshot status is **terminal** (`is_terminal_trade_status`) and passes **`should_apply_status_transition`** with `action = None` (same monotonic rules as DM updates, but without the post-retry `AddInvoice` Success → SettledHoldInvoice reopen). Pending orders on the book are not “healed” from relay unless the relay reports a terminal outcome (e.g. **Expired**).
 
 ## Messages tab: trade timeline stepper (buy and sell listings)
 

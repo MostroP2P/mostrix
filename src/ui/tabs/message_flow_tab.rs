@@ -15,6 +15,9 @@ use crate::ui::orders::{
     message_action_emoji_for_message, message_order_kind_label, message_status_presentation,
     message_trade_timeline_step, order_status_badge, FlowStep, StepLabel,
 };
+use std::collections::HashSet;
+use uuid::Uuid;
+
 use crate::ui::{OrderMessage, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the order-message list and the selected trade timeline.
@@ -23,6 +26,7 @@ pub fn render_messages_tab(
     area: Rect,
     messages: &[OrderMessage],
     selected_idx: usize,
+    replacement_invoice_order_ids: &HashSet<Uuid>,
 ) {
     let block = Block::default()
         .title(sidebar_title(messages))
@@ -78,7 +82,7 @@ pub fn render_messages_tab(
     .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(footer, left_chunks[1]);
 
-    render_message_timeline_panel(f, columns[1], selected_msg);
+    render_message_timeline_panel(f, columns[1], selected_msg, replacement_invoice_order_ids);
 }
 
 /// Sidebar title with total trade count and, when present, an unread badge.
@@ -254,7 +258,12 @@ fn style_mailbox_art(line: &str) -> Vec<Span<'static>> {
     )]
 }
 
-fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_msg: &OrderMessage) {
+fn render_message_timeline_panel(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    selected_msg: &OrderMessage,
+    replacement_invoice_order_ids: &HashSet<Uuid>,
+) {
     // Panel order mirrors the target mockup: header, progress stepper, TRADE
     // snapshot (fills the freed space), then the STATUS banner at the bottom.
     // Heights shrink on short terminals so TRADE keeps a usable receipt (Hermeme:
@@ -283,7 +292,14 @@ fn render_message_timeline_panel(f: &mut ratatui::Frame, area: Rect, selected_ms
     );
 
     render_trade_snapshot_card(f, right_chunks[2], selected_msg);
-    render_status_card(f, right_chunks[3], selected_msg);
+    render_status_card(
+        f,
+        right_chunks[3],
+        selected_msg,
+        selected_msg
+            .order_id
+            .is_some_and(|id| replacement_invoice_order_ids.contains(&id)),
+    );
 }
 
 /// Allocate header / progress / status heights so TRADE retains a usable minimum
@@ -320,7 +336,12 @@ fn right_panel_heights(area_height: u16, narrow: bool) -> (u16, u16, u16) {
 /// STATUS banner: a one-line status (normal path / canceled / dispute) and, when
 /// appropriate, a `👉 Next:` callout. Replaces the old "State" box and the
 /// redundant numbered timeline. Text wraps, so it stays readable on narrow panels.
-fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
+fn render_status_card(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    msg: &OrderMessage,
+    replacement_invoice_pending: bool,
+) {
     let block = Block::default()
         .title(Span::styled(
             " STATUS ",
@@ -335,7 +356,7 @@ fn render_status_card(f: &mut ratatui::Frame, area: Rect, msg: &OrderMessage) {
     let inner = block.inner(area);
     f.render_widget(&block, area);
 
-    let presentation = message_status_presentation(msg);
+    let presentation = message_status_presentation(msg, replacement_invoice_pending);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             format!("{} ", presentation.emoji),
@@ -1011,20 +1032,25 @@ mod trade_snapshot_tests {
         // Unknown role defaults to taker for buy PayInvoice → actionable.
         let mut m = message_with(Action::PayInvoice, Some(Status::WaitingPayment));
         m.order_kind = Some(mostro_core::order::Kind::Buy);
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.next, Some("Pay the hold invoice to continue."));
     }
 
     #[test]
     fn status_presentation_flags_canceled_and_dispute_without_next() {
         use mostro_core::prelude::Action;
-        let p =
-            message_status_presentation(&message_with(Action::Canceled, Some(Status::Canceled)));
+        let p = message_status_presentation(
+            &message_with(Action::Canceled, Some(Status::Canceled)),
+            false,
+        );
         assert_eq!(p.emoji, "❌");
         assert_eq!(p.color, Color::Red);
         assert!(p.next.is_none());
 
-        let p = message_status_presentation(&message_with(Action::Dispute, Some(Status::Dispute)));
+        let p = message_status_presentation(
+            &message_with(Action::Dispute, Some(Status::Dispute)),
+            false,
+        );
         assert_eq!(p.emoji, "⚖️");
         assert_eq!(p.color, Color::Magenta);
         assert!(p.next.is_none());
@@ -1106,7 +1132,7 @@ mod layout_and_render_tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let messages = vec![rich_message()];
         terminal
-            .draw(|f| render_messages_tab(f, f.area(), &messages, 0))
+            .draw(|f| render_messages_tab(f, f.area(), &messages, 0, &HashSet::new()))
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "TRADE"), "missing TRADE title");
@@ -1121,7 +1147,7 @@ mod layout_and_render_tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let messages = vec![rich_message()];
         terminal
-            .draw(|f| render_messages_tab(f, f.area(), &messages, 0))
+            .draw(|f| render_messages_tab(f, f.area(), &messages, 0, &HashSet::new()))
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "TRADE"));

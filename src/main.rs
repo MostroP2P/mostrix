@@ -142,7 +142,7 @@ async fn drain_order_result_queue(
     }
 }
 
-use crate::ui::{AdminMode, AppState, ChatAttachment, UiMode, UserRole};
+use crate::ui::{AdminMode, AppState, ChatAttachment, KeyInputState, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -180,33 +180,24 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
                 .filter(|c| !c.is_control() || *c == '\t')
                 .collect();
             invoice_state.invoice_input.push_str(&filtered_text);
-            invoice_state.just_pasted = true;
+            // Do not set `just_pasted`: Enter must submit on the first press.
+            // Newlines are already stripped from `Event::Paste` content above.
         }
     }
 
-    // Handle paste for admin key input popups
-    if let UiMode::AdminMode(AdminMode::AddSolver(ref mut add_solver_state)) = app.mode {
-        if add_solver_state.key_input.focused {
-            let filtered_text: String = pasted_text
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\t')
-                .collect();
-            add_solver_state
-                .key_input
-                .key_input
-                .push_str(&filtered_text);
-            add_solver_state.key_input.just_pasted = true;
-        }
-    } else if let UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut key_state)) = app.mode {
-        if key_state.focused {
-            let filtered_text: String = pasted_text
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\t')
-                .collect();
-            key_state.key_input.push_str(&filtered_text);
-            key_state.just_pasted = true;
-        }
-    } else if let UiMode::AddLnAddress(ref mut key_state) = app.mode {
+    // Handle paste for settings and admin key-input popups. Mirrors the
+    // char-by-char input path (handle_key_input) so terminals with bracketed
+    // paste (Event::Paste) fill the same field the user would type into.
+    let key_input_state: Option<&mut KeyInputState> = match app.mode {
+        UiMode::AddMostroPubkey(ref mut ks)
+        | UiMode::AddRelay(ref mut ks)
+        | UiMode::AddLnAddress(ref mut ks)
+        | UiMode::AddCurrency(ref mut ks)
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
+        UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
+        _ => None,
+    };
+    if let Some(key_state) = key_input_state {
         if key_state.focused {
             let filtered_text: String = pasted_text
                 .chars()
@@ -820,4 +811,70 @@ async fn main() -> Result<(), anyhow::Error> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod paste_routing_tests {
+    use super::*;
+    use crate::ui::UserRole;
+
+    fn focused_key_input(value: &str) -> KeyInputState {
+        KeyInputState {
+            key_input: value.to_string(),
+            focused: true,
+            just_pasted: false,
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_fills_mostro_pubkey_input() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::AddMostroPubkey(focused_key_input(""));
+
+        apply_pasted_text_to_active_input(&mut app, "npub1abc\n");
+
+        match app.mode {
+            UiMode::AddMostroPubkey(ks) => {
+                assert_eq!(ks.key_input, "npub1abc");
+                assert!(ks.just_pasted);
+            }
+            other => panic!("unexpected mode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_fills_relay_and_currency_inputs() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::AddRelay(focused_key_input("wss://"));
+        apply_pasted_text_to_active_input(&mut app, "relay.example");
+        match &app.mode {
+            UiMode::AddRelay(ks) => assert_eq!(ks.key_input, "wss://relay.example"),
+            other => panic!("unexpected mode: {other:?}"),
+        }
+
+        app.mode = UiMode::AddCurrency(focused_key_input(""));
+        apply_pasted_text_to_active_input(&mut app, "usd");
+        match &app.mode {
+            UiMode::AddCurrency(ks) => assert_eq!(ks.key_input, "usd"),
+            other => panic!("unexpected mode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_ignored_when_input_not_focused() {
+        let mut app = AppState::new(UserRole::User);
+        let mut ks = focused_key_input("keep");
+        ks.focused = false;
+        app.mode = UiMode::AddMostroPubkey(ks);
+
+        apply_pasted_text_to_active_input(&mut app, "dropped");
+
+        match &app.mode {
+            UiMode::AddMostroPubkey(ks) => {
+                assert_eq!(ks.key_input, "keep");
+                assert!(!ks.just_pasted);
+            }
+            other => panic!("unexpected mode: {other:?}"),
+        }
+    }
 }
