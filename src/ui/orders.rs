@@ -764,11 +764,12 @@ fn bond_payout_notification_body(slashed_at: i64) -> String {
     format!("Slash recorded: {anchor}. Claim deadline = anchor + instance payout window.")
 }
 
-/// True when an [`Action::AddInvoice`] DM is Mostro asking for a **replacement** invoice
-/// after Lightning payout retries failed (order is still `settled-hold-invoice`).
+/// True when order status is in the post-release payout / replacement-invoice phase
+/// (`settled-hold-invoice`, or legacy `success` before a post-retry `add-invoice`).
 ///
-/// [`Status::Success`] is included only as a recovery path for older sessions that
-/// incorrectly promoted `released` to Success before the post-retry `add-invoice` arrived.
+/// This is a **status** helper only. Callers that reopen an invoice popup must also
+/// require a sticky id and/or a legacy reopen action (`Released` / `AddInvoice`, …) —
+/// not [`Action::PaymentFailed`], which is informational while Mostro still retries.
 #[must_use]
 pub fn add_invoice_is_after_failed_payment(order_status: Option<Status>) -> bool {
     matches!(

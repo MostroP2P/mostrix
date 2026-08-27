@@ -84,14 +84,31 @@ fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
 ///
 /// Mostro accepts a replacement buyer invoice while the order is
 /// `settled-hold-invoice`, and will not resend `add-invoice` after Esc.
+///
+/// Reopen when:
+/// - the order is in [`AppState::orders_needing_replacement_invoice`] (set when the
+///   post-retry AddInvoice arrives / on Esc), or
+/// - status is post-failed **and** the Messages row is a legacy reopen shape
+///   (`Released` / `Release` / `HoldInvoicePaymentSettled` / `AddInvoice`) —
+///   not [`Action::PaymentFailed`], which is informational while Mostro still retries.
 #[must_use]
 pub(crate) fn should_reopen_replacement_invoice(app: &AppState, msg: &OrderMessage) -> bool {
     if !local_user_must_act_on_invoice_popup(msg, &Action::AddInvoice) {
         return false;
     }
-    msg.order_id
+    if msg
+        .order_id
         .is_some_and(|id| app.orders_needing_replacement_invoice.contains(&id))
-        || add_invoice_is_after_failed_payment(msg.order_status)
+    {
+        return true;
+    }
+    if !add_invoice_is_after_failed_payment(msg.order_status) {
+        return false;
+    }
+    matches!(
+        msg.message.get_inner_message_kind().action,
+        Action::Released | Action::Release | Action::HoldInvoicePaymentSettled | Action::AddInvoice
+    )
 }
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
@@ -1444,6 +1461,25 @@ mod tests {
             Some(false),
             Some(Status::SettledHoldInvoice),
         );
+        assert!(should_reopen_replacement_invoice(&app, &msg));
+    }
+
+    #[test]
+    fn payment_failed_row_does_not_reopen_replacement_invoice_by_status_alone() {
+        // While Mostro is still retrying, Enter on a PaymentFailed row must not
+        // open AddInvoice — that only happens after a real add-invoice ask (or sticky).
+        let mut app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::PaymentFailed,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+
+        // Sticky set still recovers Esc of a real post-retry AddInvoice popup.
+        let oid = msg.order_id.unwrap();
+        app.orders_needing_replacement_invoice.insert(oid);
         assert!(should_reopen_replacement_invoice(&app, &msg));
     }
 
