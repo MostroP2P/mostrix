@@ -112,17 +112,16 @@ pub(crate) fn begin_recover_taken_disputes(
 }
 
 /// Advance from the orphan picker into a Yes/No confirm for the selected IDs.
-pub(crate) fn begin_confirm_recover_selection(app: &mut AppState) {
-    let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
-        candidates,
-        cursor,
-        checked,
-    }) = &app.mode
-    else {
-        return;
-    };
+pub(crate) fn begin_confirm_recover_selection(
+    app: &mut AppState,
+    candidates: Vec<Uuid>,
+    cursor: usize,
+    checked: Vec<bool>,
+) {
     let recover_ids = crate::ui::recover_disputes_picker::recover_ids_from_selection(
-        candidates, *cursor, checked,
+        &candidates,
+        cursor,
+        &checked,
     );
     if recover_ids.is_empty() {
         app.mode = UiMode::operation_result(OperationResult::Info(
@@ -131,9 +130,9 @@ pub(crate) fn begin_confirm_recover_selection(app: &mut AppState) {
         return;
     }
     app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
-        candidates: candidates.clone(),
-        cursor: *cursor,
-        checked: checked.clone(),
+        candidates,
+        cursor,
+        checked,
         recover_ids,
         selected_button: true,
     });
@@ -221,11 +220,14 @@ pub(crate) fn execute_recover_taken_disputes_action(
     let result_tx = ctx.order_result_tx.clone();
     let pool_clone = ctx.pool.clone();
     let mostro_info = ctx.mostro_info.clone();
+    let recover_count = recover_ids.len();
     tokio::spawn(async move {
         let mut recovered = 0usize;
         let mut rejected = 0usize;
         let mut failed = 0usize;
         let mut recovered_ids: Vec<String> = Vec::new();
+        let mut rejected_lines: Vec<String> = Vec::new();
+        let mut failed_lines: Vec<String> = Vec::new();
 
         for dispute_id in recover_ids {
             match execute_take_dispute(
@@ -249,36 +251,59 @@ pub(crate) fn execute_recover_taken_disputes_action(
                 Err(e) => {
                     let msg = e.to_string();
                     log::error!("Failed to recover dispute {}: {}", dispute_id, msg);
-                    if msg.contains("Mostro rejected take dispute") {
+                    if let Some(reason) =
+                        msg.strip_prefix(&format!("Mostro rejected take dispute {}: ", dispute_id))
+                    {
                         rejected += 1;
+                        rejected_lines.push(format!("⛔ {dispute_id}\n   {reason}"));
+                    } else if msg.contains("Mostro rejected take dispute") {
+                        rejected += 1;
+                        rejected_lines.push(format!("⛔ {dispute_id}\n   {msg}"));
                     } else {
                         failed += 1;
+                        failed_lines.push(format!("❌ {dispute_id}\n   {msg}"));
                     }
                 }
             }
         }
 
         let mut summary = if recovered > 0 {
-            format!("✅ Recovered {recovered} · ⛔ skipped {rejected} · ❌ failed {failed}")
+            format!(
+                "✅ Recovered {recovered}/{recover_count} · ⛔ rejected {rejected} · ❌ failed {failed}"
+            )
+        } else if rejected > 0 && failed == 0 {
+            format!("⛔ Mostro rejected all {recover_count} selected dispute(s)")
         } else {
-            format!("ℹ️ No disputes recovered · ⛔ skipped {rejected} · ❌ failed {failed}")
+            format!(
+                "ℹ️ No disputes recovered ({recover_count} requested) · ⛔ rejected {rejected} · ❌ failed {failed}"
+            )
         };
         if !recovered_ids.is_empty() {
-            summary.push('\n');
-            summary.push_str(
-                &recovered_ids
-                    .iter()
-                    .map(|id| format!("✨ {id}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+            summary.push_str("\n\nRecovered:");
+            for id in &recovered_ids {
+                summary.push_str(&format!("\n✨ {id}"));
+            }
+        }
+        if !rejected_lines.is_empty() {
+            summary.push_str("\n\nRejected by Mostro:");
+            for line in &rejected_lines {
+                summary.push('\n');
+                summary.push_str(line);
+            }
+        }
+        if !failed_lines.is_empty() {
+            summary.push_str("\n\nFailed:");
+            for line in &failed_lines {
+                summary.push('\n');
+                summary.push_str(line);
+            }
         }
         // Keep "taken successfully" wording when anything was restored so the
         // admin disputes list reloads via apply_order_result.
         if recovered > 0 {
             summary.push_str("\n\nDispute(s) taken successfully and saved locally.");
         }
-        let result = if failed > 0 && recovered == 0 {
+        let result = if recovered == 0 && (rejected > 0 || failed > 0) {
             OperationResult::Error(summary)
         } else {
             OperationResult::Info(summary)
@@ -501,6 +526,48 @@ pub(crate) fn handle_enter_admin_mode(
         _ => {
             // This should not happen, but handle gracefully
             app.mode = default_mode;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{AdminTab, Tab};
+
+    #[test]
+    fn begin_confirm_recover_selection_opens_yes_no_with_selected_ids() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        begin_confirm_recover_selection(&mut app, vec![a, b], 0, vec![false, true]);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+                recover_ids,
+                selected_button,
+                ..
+            }) => {
+                assert_eq!(recover_ids, &vec![b]);
+                assert!(*selected_button);
+            }
+            other => panic!("expected confirm mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn begin_confirm_recover_falls_back_to_cursor_when_none_checked() {
+        let mut app = AppState::new(UserRole::Admin);
+        let a = Uuid::from_u128(10);
+        let b = Uuid::from_u128(20);
+        begin_confirm_recover_selection(&mut app, vec![a, b], 1, vec![false, false]);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { recover_ids, .. }) => {
+                assert_eq!(recover_ids, &vec![b]);
+            }
+            other => panic!("expected confirm mode, got {other:?}"),
         }
     }
 }

@@ -220,7 +220,7 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes) = &app.mode {
         waiting::render_waiting_with_message(
             f,
-            "Recovering taken disputes...\nWaiting for Mostro...",
+            "Recovering selected dispute(s)...\nWaiting for Mostro reply...",
         );
     }
     if let UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) = &app.mode {
@@ -449,11 +449,7 @@ No: paste BOLT11 or Lightning address manually."
         ..
     }) = &app.mode
     {
-        admin_key_confirm::render_recover_taken_disputes_confirm(
-            f,
-            recover_ids.len(),
-            *selected_button,
-        );
+        admin_key_confirm::render_recover_taken_disputes_confirm(f, recover_ids, *selected_button);
     }
     if let UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
         dispute_id,

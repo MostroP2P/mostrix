@@ -210,15 +210,16 @@ pub fn render_admin_key_confirm_with_message(
     );
 }
 
-/// Confirm Shift+R recovery of relay `in-progress` disputes missing from local DB.
+/// Confirm Shift+R recovery of the selected orphan dispute IDs.
 pub fn render_recover_taken_disputes_confirm(
     f: &mut ratatui::Frame,
-    count: usize,
+    recover_ids: &[uuid::Uuid],
     selected_button: bool,
 ) {
+    let count = recover_ids.len();
     let area = f.area();
     let popup_width = 72.min(area.width);
-    let popup_height = 14.min(area.height);
+    let popup_height = 16.min(area.height);
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
@@ -258,6 +259,24 @@ pub fn render_recover_taken_disputes_confirm(
     };
 
     let noun = if count == 1 { "dispute" } else { "disputes" };
+    let preview: String = recover_ids
+        .iter()
+        .take(3)
+        .map(|id| {
+            let s = id.to_string();
+            if s.len() > 13 {
+                format!("{}…{}", &s[..8], &s[s.len().saturating_sub(4)..])
+            } else {
+                s
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if count > 3 {
+        format!(" (+{})", count - 3)
+    } else {
+        String::new()
+    };
     let body = if compact {
         vec![Line::from(Span::styled(
             format!("📡 Re-request AdminTookDispute for {count} selected {noun}?"),
@@ -275,12 +294,12 @@ pub fn render_recover_taken_disputes_confirm(
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "💾 Re-request AdminTookDispute for these IDs only",
+                format!("🆔 {preview}{more}"),
                 Style::default().fg(Color::Gray),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "✨ Continue?",
+                "✨ Mostro will accept only if this admin owns them",
                 Style::default().fg(PRIMARY_COLOR),
             )),
         ]
@@ -584,13 +603,13 @@ mod tests {
     fn recover_confirm_shows_centered_count_and_actions() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        let ids: Vec<uuid::Uuid> = (0..39).map(|n| uuid::Uuid::from_u128(n + 1)).collect();
         terminal
-            .draw(|f| render_recover_taken_disputes_confirm(f, 39, true))
+            .draw(|f| render_recover_taken_disputes_confirm(f, &ids, true))
             .expect("draw");
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Recover Taken Disputes"));
         assert!(buffer_contains(buf, "Recover 39 selected disputes"));
-        assert!(buffer_contains(buf, "these IDs only"));
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
     }
@@ -599,8 +618,9 @@ mod tests {
     fn recover_confirm_keeps_actions_visible_on_narrow_short_terminal() {
         let backend = TestBackend::new(30, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        let ids = vec![uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2)];
         terminal
-            .draw(|f| render_recover_taken_disputes_confirm(f, 2, true))
+            .draw(|f| render_recover_taken_disputes_confirm(f, &ids, true))
             .expect("draw");
         let buf = terminal.backend().buffer();
         assert!(

@@ -697,8 +697,12 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             }
             true
         }
-        UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. }) => {
-            begin_confirm_recover_selection(app);
+        UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+            candidates,
+            cursor,
+            checked,
+        }) => {
+            begin_confirm_recover_selection(app, candidates, cursor, checked);
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
