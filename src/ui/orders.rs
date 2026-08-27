@@ -791,7 +791,7 @@ fn payment_failed_notification_body(info: Option<&PaymentFailedInfo>) -> String 
 
     match info {
         Some(info) => lines.push(format!(
-            "\nMostro will retry automatically:\n  • Up to {} attempt(s), every {} second(s) apart",
+            "\nMostro will retry automatically:\nUp to {} attempt(s), every {} second(s) apart",
             info.payment_attempts, info.payment_retries_interval
         )),
         None => lines.push("\nMostro will retry automatically.".to_string()),

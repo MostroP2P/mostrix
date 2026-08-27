@@ -954,7 +954,7 @@ fn render_payment_failed(
     f.render_widget(
         Paragraph::new(body)
             .wrap(Wrap { trim: true })
-            .alignment(ratatui::layout::Alignment::Left)
+            .alignment(ratatui::layout::Alignment::Center)
             .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White)),
         inset_horizontal(chunks[3], 2),
     );
@@ -1126,7 +1126,7 @@ mod tests {
             sat_amount: None,
             invoice: None,
             body: Some(
-                "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+                "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\nUp to 3 attempt(s), every 5 second(s) apart\n\n\
                  Your sats remain locked in escrow.\nNo action needed yet."
                     .to_string(),
             ),
@@ -1206,7 +1206,7 @@ mod tests {
 
     #[test]
     fn payment_failed_popup_wraps_body_on_narrow_terminal() {
-        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\nUp to 3 attempt(s), every 5 second(s) apart\n\n\
              Your sats remain locked in escrow.\nNo action needed yet.";
         let notification = MessageNotification {
             order_id: Some(Uuid::new_v4()),
@@ -1243,7 +1243,7 @@ mod tests {
 
     #[test]
     fn payment_failed_popup_fits_short_terminal() {
-        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\nUp to 3 attempt(s), every 5 second(s) apart\n\n\
              Your sats remain locked in escrow.\nNo action needed yet.";
         let notification = MessageNotification {
             order_id: Some(Uuid::new_v4()),
