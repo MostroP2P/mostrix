@@ -22,9 +22,20 @@ pub enum AdminMode {
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
     ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
-    /// Confirm re-requesting `AdminTakeDispute` for relay in-progress disputes missing locally.
+    /// Pick which relay in-progress orphans to recover (↑↓ / Space / Enter).
+    SelectRecoverTakenDisputes {
+        candidates: Vec<uuid::Uuid>,
+        cursor: usize,
+        checked: Vec<bool>,
+    },
+    /// Confirm re-requesting `AdminTakeDispute` for the selected orphan IDs.
     ConfirmRecoverTakenDisputes {
-        count: usize,
+        /// Full picker state so Esc/No can return to the list.
+        candidates: Vec<uuid::Uuid>,
+        cursor: usize,
+        checked: Vec<bool>,
+        /// Explicit IDs to recover on Yes (never the full orphan set unless selected).
+        recover_ids: Vec<uuid::Uuid>,
         selected_button: bool, // true=Yes, false=No
     },
     WaitingRecoverTakenDisputes,

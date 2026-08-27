@@ -1197,7 +1197,7 @@ pub fn handle_key_event(
             return Some(true);
         }
 
-        // Shift+R: recover relay in-progress disputes missing from local admin_disputes
+        // Shift+R: open orphan picker for relay in-progress disputes missing locally
         if has_shift && (code == KeyCode::Char('r') || code == KeyCode::Char('R')) {
             let can_recover = matches!(
                 app.mode,
@@ -1206,6 +1206,19 @@ pub fn handle_key_event(
             );
             if can_recover {
                 admin_handlers::begin_recover_taken_disputes(app, disputes);
+                return Some(true);
+            }
+        }
+
+        // Space: toggle checkbox in Shift+R orphan picker
+        if code == KeyCode::Char(' ') {
+            if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+                ref mut checked,
+                cursor,
+                ..
+            }) = app.mode
+            {
+                crate::ui::recover_disputes_picker::toggle_recover_checked(checked, cursor);
                 return Some(true);
             }
         }

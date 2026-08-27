@@ -433,12 +433,27 @@ No: paste BOLT11 or Lightning address manually."
             )),
         );
     }
-    if let UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
-        count,
-        selected_button,
+    if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates,
+        cursor,
+        checked,
     }) = &app.mode
     {
-        admin_key_confirm::render_recover_taken_disputes_confirm(f, *count, *selected_button);
+        recover_disputes_picker::render_recover_taken_disputes_picker(
+            f, candidates, *cursor, checked,
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
+        recover_ids,
+        selected_button,
+        ..
+    }) = &app.mode
+    {
+        admin_key_confirm::render_recover_taken_disputes_confirm(
+            f,
+            recover_ids.len(),
+            *selected_button,
+        );
     }
     if let UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
         dispute_id,

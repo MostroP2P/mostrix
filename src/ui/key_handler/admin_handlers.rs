@@ -76,7 +76,7 @@ pub(crate) fn execute_take_dispute_action(
     });
 }
 
-/// Open Shift+R confirm when relay has `in-progress` disputes missing from local DB.
+/// Open Shift+R orphan picker when relay has `in-progress` disputes missing from local DB.
 pub(crate) fn begin_recover_taken_disputes(
     app: &mut AppState,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
@@ -103,8 +103,38 @@ pub(crate) fn begin_recover_taken_disputes(
         return;
     }
 
+    let checked = vec![false; orphans.len()];
+    app.mode = UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates: orphans,
+        cursor: 0,
+        checked,
+    });
+}
+
+/// Advance from the orphan picker into a Yes/No confirm for the selected IDs.
+pub(crate) fn begin_confirm_recover_selection(app: &mut AppState) {
+    let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
+        candidates,
+        cursor,
+        checked,
+    }) = &app.mode
+    else {
+        return;
+    };
+    let recover_ids = crate::ui::recover_disputes_picker::recover_ids_from_selection(
+        candidates, *cursor, checked,
+    );
+    if recover_ids.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "No dispute selected to recover.".to_string(),
+        ));
+        return;
+    }
     app.mode = UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
-        count: orphans.len(),
+        candidates: candidates.clone(),
+        cursor: *cursor,
+        checked: checked.clone(),
+        recover_ids,
         selected_button: true,
     });
 }
@@ -157,29 +187,15 @@ pub(crate) fn execute_delete_admin_dispute_action(
     });
 }
 
-/// Re-send `AdminTakeDispute` for each relay in-progress dispute missing locally.
+/// Re-send `AdminTakeDispute` for the explicitly selected orphan dispute IDs.
 pub(crate) fn execute_recover_taken_disputes_action(
     app: &mut AppState,
-    disputes: &Arc<Mutex<Vec<Dispute>>>,
+    recover_ids: Vec<Uuid>,
     ctx: &EnterKeyContext<'_>,
 ) {
-    let Ok(relay) = disputes.lock() else {
-        app.mode = UiMode::operation_result(OperationResult::Error(
-            "Failed to read live disputes list".to_string(),
-        ));
-        return;
-    };
-    let local_ids: HashSet<String> = app
-        .admin_disputes_in_progress
-        .iter()
-        .map(|d| d.dispute_id.clone())
-        .collect();
-    let orphans = orphan_in_progress_dispute_ids(&relay, &local_ids);
-    drop(relay);
-
-    if orphans.is_empty() {
+    if recover_ids.is_empty() {
         app.mode = UiMode::operation_result(OperationResult::Info(
-            "No missing taken disputes to recover.".to_string(),
+            "No dispute selected to recover.".to_string(),
         ));
         return;
     }
@@ -211,7 +227,7 @@ pub(crate) fn execute_recover_taken_disputes_action(
         let mut failed = 0usize;
         let mut recovered_ids: Vec<String> = Vec::new();
 
-        for dispute_id in orphans {
+        for dispute_id in recover_ids {
             match execute_take_dispute(
                 &dispute_id,
                 &admin_keys,

@@ -88,7 +88,7 @@ The interface is divided into three main sections:
 - **Type**: Start composing message (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
-- **Shift+R**: Recover taken disputes missing locally (re-sends `AdminTakeDispute` for relay `in-progress` ids not in `admin_disputes`)
+- **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
 - **PageUp/PageDown**: Scroll chat history
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -332,10 +332,11 @@ If Mostro accepted the take (`AdminTookDispute` DM sent) but Mostrix never saved
 
 On the **Disputes in Progress** tab, press **Shift+R**:
 
-1. Mostrix compares the live kind-38386 snapshot to local `admin_disputes`
-2. For each relay `in-progress` id missing locally, it re-sends `AdminTakeDispute`
-3. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved
-4. `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
+1. Mostrix lists relay `in-progress` dispute IDs that are missing from local `admin_disputes` (kind-38386 does not publish the assigned solver, so this list can include disputes taken by others)
+2. Use **↑↓** to move the highlight, **Space** to toggle checkboxes (no Select-All — probing must stay explicit)
+3. **Enter** opens a Yes/No confirm for the checked IDs, or for the highlighted row if none are checked
+4. On Yes, Mostrix re-sends `AdminTakeDispute` **only for those selected IDs**
+5. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved; `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
 
 Relay events alone cannot hydrate In Progress: kind 38386 does not carry `SolverDisputeInfo`.
 
@@ -729,7 +730,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Type**: Start typing message directly (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the currently selected dispute
-- **Shift+R**: Recover missing taken disputes (relay `in-progress` without a local row) via `AdminTakeDispute`
+- **Shift+R**: Recover missing taken disputes — orphan picker (↑↓ / Space), then `AdminTakeDispute` for selected IDs only
 - **Tab**: Switch between Buyer and Seller chat views
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)

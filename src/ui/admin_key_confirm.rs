@@ -260,7 +260,7 @@ pub fn render_recover_taken_disputes_confirm(
     let noun = if count == 1 { "dispute" } else { "disputes" };
     let body = if compact {
         vec![Line::from(Span::styled(
-            format!("📡 {count} taken {noun} on relays, missing locally."),
+            format!("📡 Re-request AdminTookDispute for {count} selected {noun}?"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -268,19 +268,19 @@ pub fn render_recover_taken_disputes_confirm(
     } else {
         vec![
             Line::from(Span::styled(
-                format!("📡 Found {count} taken {noun} on relays"),
+                format!("📡 Recover {count} selected {noun}"),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "💾 missing from your local database",
+                "💾 Re-request AdminTookDispute for these IDs only",
                 Style::default().fg(Color::Gray),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "✨ Re-request AdminTookDispute to restore them?",
+                "✨ Continue?",
                 Style::default().fg(PRIMARY_COLOR),
             )),
         ]
@@ -589,8 +589,8 @@ mod tests {
             .expect("draw");
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Recover Taken Disputes"));
-        assert!(buffer_contains(buf, "Found 39 taken disputes on relays"));
-        assert!(buffer_contains(buf, "missing from your local database"));
+        assert!(buffer_contains(buf, "Recover 39 selected disputes"));
+        assert!(buffer_contains(buf, "these IDs only"));
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
     }
