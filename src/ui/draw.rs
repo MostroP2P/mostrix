@@ -125,6 +125,7 @@ pub fn ui_draw(
                 content_area,
                 &messages,
                 app.selected_message_idx,
+                &app.orders_needing_replacement_invoice,
             )
         }
         (Tab::User(UserTab::MostroInfo), UserRole::User) => {

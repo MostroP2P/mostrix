@@ -993,7 +993,15 @@ pub struct MessageStatusPresentation {
 /// Prefer persisted [`OrderMessage::order_status`], then fall back to the last
 /// DM action. Actionable invoice phases get explicit "do X" copy; waiting phases
 /// reuse [`waiting_phase_description`]; terminal/warning states omit Next.
-pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentation {
+///
+/// `replacement_invoice_pending` is true when the order id is in
+/// [`AppState::orders_needing_replacement_invoice`] (post-retry AddInvoice received
+/// or Esc'd), so the STATUS panel can still prompt after dismiss without treating
+/// every `Released` row at `settled-hold-invoice` as a replacement ask.
+pub fn message_status_presentation(
+    msg: &OrderMessage,
+    replacement_invoice_pending: bool,
+) -> MessageStatusPresentation {
     let action = msg.message.get_inner_message_kind().action.clone();
     if let Some(text) = message_timeline_warning_for_order_status(msg.order_status)
         .or_else(|| message_timeline_warning(&action))
@@ -1050,17 +1058,12 @@ pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentat
         };
     }
 
-    // After release / exhausted retries the buyer can (re)submit an invoice while
-    // status is still `settled-hold-invoice`. Surface that so Esc'd popups are not a dead end.
+    // Post-retry replacement invoice: only when Mostro sent `add-invoice` (row
+    // action) or Esc marked the order sticky — not for normal payout-in-flight
+    // `Released` rows at `settled-hold-invoice`.
     if add_invoice_is_after_failed_payment(msg.order_status)
         && local_user_must_act_on_invoice_popup(msg, &Action::AddInvoice)
-        && matches!(
-            action,
-            Action::Released
-                | Action::Release
-                | Action::AddInvoice
-                | Action::HoldInvoicePaymentSettled
-        )
+        && (matches!(action, Action::AddInvoice) || replacement_invoice_pending)
     {
         return MessageStatusPresentation {
             emoji: "🧾",
@@ -1632,7 +1635,7 @@ mod message_emoji_and_badge_tests {
             "Payment Failed"
         );
         assert_eq!(message_action_emoji_for_message(&msg), "⚠️");
-        let p = message_status_presentation(&msg);
+        let p = message_status_presentation(&msg, false);
         assert_eq!(p.title, "Lightning payout failed");
         assert!(p.next.is_some_and(|n| n.to_lowercase().contains("retry")));
     }
@@ -1649,6 +1652,42 @@ mod message_emoji_and_badge_tests {
             message_trade_timeline_step(&msg),
             FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
         );
+    }
+
+    #[test]
+    fn released_at_settled_hold_status_does_not_advertise_replacement_invoice() {
+        let msg = sample_msg(
+            Action::Released,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let p = message_status_presentation(&msg, false);
+        assert_ne!(p.title, "New invoice required");
+    }
+
+    #[test]
+    fn add_invoice_at_settled_hold_status_advertises_replacement_invoice() {
+        let msg = sample_msg(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let p = message_status_presentation(&msg, false);
+        assert_eq!(p.title, "New invoice required");
+    }
+
+    #[test]
+    fn released_with_sticky_marker_advertises_replacement_invoice() {
+        let msg = sample_msg(
+            Action::Released,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let p = message_status_presentation(&msg, true);
+        assert_eq!(p.title, "New invoice required");
     }
 
     #[test]
@@ -1918,7 +1957,7 @@ mod message_emoji_and_badge_tests {
             Some(true),
             Some(Status::WaitingBuyerInvoice),
         );
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.title, "Invoice required");
         assert_eq!(p.next, Some("Add your Lightning invoice to continue."));
     }
@@ -1934,7 +1973,7 @@ mod message_emoji_and_badge_tests {
             Some(true),
             Some(Status::Active),
         );
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.emoji, "💸");
         assert_eq!(p.title, "Confirm fiat sent");
         assert_eq!(
@@ -1953,7 +1992,7 @@ mod message_emoji_and_badge_tests {
             Some(true),
             Some(Status::Active),
         );
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.emoji, "⚠️");
         assert_eq!(p.title, "Cancel requested");
         assert_eq!(
@@ -1972,7 +2011,7 @@ mod message_emoji_and_badge_tests {
             Some(true),
             Some(Status::Active),
         );
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.title, "Trade is on the normal path");
         assert_eq!(
             p.next,
@@ -1988,7 +2027,7 @@ mod message_emoji_and_badge_tests {
             Some(true),
             Some(Status::Success),
         );
-        let p = message_status_presentation(&m);
+        let p = message_status_presentation(&m, false);
         assert_eq!(p.title, "Trade completed");
         assert!(p.next.is_none());
     }

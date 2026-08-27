@@ -13,10 +13,9 @@ use crate::ui::key_handler::input_helpers::{
     prepare_admin_chat_message, send_admin_chat_message_via_shared_key,
 };
 use crate::ui::orders::{
-    add_invoice_is_after_failed_payment, invoice_popup_allowed_for_order_status,
-    local_user_must_act_on_invoice_popup, message_action_compact_label_for_message,
-    order_message_to_waiting_notification, strip_new_order_messages_and_clamp_selected,
-    OrderMessage,
+    invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
+    message_action_compact_label_for_message, order_message_to_waiting_notification,
+    strip_new_order_messages_and_clamp_selected, OrderMessage,
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
@@ -85,30 +84,16 @@ fn invoice_popup_action_for_message_action(action: &Action) -> Option<Action> {
 /// Mostro accepts a replacement buyer invoice while the order is
 /// `settled-hold-invoice`, and will not resend `add-invoice` after Esc.
 ///
-/// Reopen when:
-/// - the order is in [`AppState::orders_needing_replacement_invoice`] (set when the
-///   post-retry AddInvoice arrives / on Esc), or
-/// - status is post-failed **and** the Messages row is a legacy reopen shape
-///   (`Released` / `Release` / `HoldInvoicePaymentSettled` / `AddInvoice`) —
-///   not [`Action::PaymentFailed`], which is informational while Mostro still retries.
+/// Reopen only when the order is in [`AppState::orders_needing_replacement_invoice`]
+/// (set when the post-retry AddInvoice arrives or on Esc). Rows whose action is
+/// already [`Action::AddInvoice`] use the normal invoice Enter path instead.
 #[must_use]
 pub(crate) fn should_reopen_replacement_invoice(app: &AppState, msg: &OrderMessage) -> bool {
     if !local_user_must_act_on_invoice_popup(msg, &Action::AddInvoice) {
         return false;
     }
-    if msg
-        .order_id
+    msg.order_id
         .is_some_and(|id| app.orders_needing_replacement_invoice.contains(&id))
-    {
-        return true;
-    }
-    if !add_invoice_is_after_failed_payment(msg.order_status) {
-        return false;
-    }
-    matches!(
-        msg.message.get_inner_message_kind().action,
-        Action::Released | Action::Release | Action::HoldInvoicePaymentSettled | Action::AddInvoice
-    )
 }
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
@@ -1453,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn reopen_replacement_invoice_for_sell_taker_on_settled_hold() {
+    fn released_at_settled_hold_does_not_reopen_without_sticky_marker() {
         let app = AppState::new(UserRole::User);
         let msg = sample_order_message(
             Action::Released,
@@ -1461,6 +1446,20 @@ mod tests {
             Some(false),
             Some(Status::SettledHoldInvoice),
         );
+        assert!(!should_reopen_replacement_invoice(&app, &msg));
+    }
+
+    #[test]
+    fn released_at_settled_hold_reopens_when_sticky_marker_set() {
+        let mut app = AppState::new(UserRole::User);
+        let msg = sample_order_message(
+            Action::Released,
+            Some(Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let oid = msg.order_id.unwrap();
+        app.orders_needing_replacement_invoice.insert(oid);
         assert!(should_reopen_replacement_invoice(&app, &msg));
     }
 
