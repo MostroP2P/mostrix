@@ -558,6 +558,123 @@ mod tests {
         assert!(!is_payment_failed_popup(&app.mode));
     }
 
+    fn is_add_invoice_popup(mode: &UiMode) -> bool {
+        matches!(
+            mode,
+            UiMode::NewMessageNotification(_, Action::AddInvoice, _)
+                | UiMode::ConfirmSavedLnAddressForInvoice(_, _)
+        )
+    }
+
+    /// Canonical post-retry state: order stays `settled-hold-invoice` while Mostro
+    /// asks the buyer for a replacement Lightning invoice.
+    fn add_invoice_row_at_settled(
+        order_id: Uuid,
+        kind: Kind,
+        is_mine: bool,
+        auto_popup_shown: bool,
+    ) -> OrderMessage {
+        let keys = Keys::generate();
+        OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                None,
+                Action::AddInvoice,
+                Some(Payload::Order(mostro_core::prelude::SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(kind),
+                    status: Some(Status::SettledHoldInvoice),
+                    amount: 50_000,
+                    fiat_code: "EUR".to_string(),
+                    fiat_amount: 100,
+                    payment_method: "sepa".to_string(),
+                    ..Default::default()
+                })),
+            ),
+            timestamp: 20,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: Some(50_000),
+            buyer_invoice: None,
+            order_kind: Some(kind),
+            is_mine: Some(is_mine),
+            order_status: Some(Status::SettledHoldInvoice),
+            order_snapshot: None,
+            auto_popup_shown,
+        }
+    }
+
+    #[test]
+    fn add_invoice_at_settled_hold_invoice_opens_popup_for_buyer() {
+        // Protocol happy path after all payment retries fail: Mostro sends
+        // `add-invoice` while status remains `settled-hold-invoice`.
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Sell listing + taker = buyer.
+        app.messages
+            .lock()
+            .unwrap()
+            .push(add_invoice_row_at_settled(
+                order_id,
+                Kind::Sell,
+                false,
+                false,
+            ));
+
+        let mut n = notification(order_id, Action::AddInvoice, None, None);
+        n.timestamp = 20;
+        n.sat_amount = Some(50_000);
+        handle_message_notification(n, &mut app);
+
+        assert!(
+            is_add_invoice_popup(&app.mode),
+            "AddInvoice at SettledHoldInvoice must open the invoice popup for the buyer"
+        );
+    }
+
+    #[test]
+    fn add_invoice_after_payment_failed_still_opens_for_buyer() {
+        // After the informational payment-failed popup was shown, a later
+        // `add-invoice` (different action) must still open — `auto_popup_shown`
+        // must not carry across actions.
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.messages
+            .lock()
+            .unwrap()
+            .push(payment_failed_row(order_id, Kind::Sell, false));
+
+        handle_message_notification(payment_failed_notification(order_id), &mut app);
+        assert!(is_payment_failed_popup(&app.mode));
+
+        // Simulate the trade-DM path replacing the row with AddInvoice and
+        // resetting auto_popup_shown (same-action-only preserve).
+        app.mode = UiMode::Normal;
+        {
+            let mut messages = app.messages.lock().unwrap();
+            messages.retain(|m| m.order_id != Some(order_id));
+            messages.push(add_invoice_row_at_settled(
+                order_id,
+                Kind::Sell,
+                false,
+                false,
+            ));
+        }
+
+        let mut n = notification(order_id, Action::AddInvoice, None, None);
+        n.timestamp = 20;
+        n.sat_amount = Some(50_000);
+        handle_message_notification(n, &mut app);
+
+        assert!(
+            is_add_invoice_popup(&app.mode),
+            "AddInvoice after payment-failed must still open for the buyer"
+        );
+    }
+
     #[test]
     fn add_invoice_after_retries_opens_popup_even_if_local_status_is_success() {
         let order_id = Uuid::new_v4();
@@ -601,11 +718,7 @@ mod tests {
             &mut app,
         );
 
-        assert!(matches!(
-            app.mode,
-            UiMode::NewMessageNotification(_, Action::AddInvoice, _)
-                | UiMode::ConfirmSavedLnAddressForInvoice(_, _)
-        ));
+        assert!(is_add_invoice_popup(&app.mode));
     }
 
     #[test]
