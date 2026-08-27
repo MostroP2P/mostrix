@@ -437,6 +437,10 @@ pub fn handle_enter_message_notification(
             }
             app.mode = role_default_mode(app.user_role);
         }
+        // Informational only (no send): Enter dismisses the payment-failed popup.
+        Action::PaymentFailed => {
+            app.mode = role_default_mode(app.user_role);
+        }
         _ => {
             let _ = ctx
                 .order_result_tx

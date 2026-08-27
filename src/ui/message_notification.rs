@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{
     helpers, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification,
@@ -766,6 +766,63 @@ fn render_default_notification(
     );
 }
 
+/// Renders the informational `payment-failed` popup: order id, the retry
+/// explanation carried in `notification.body`, and a dismiss hint. No input:
+/// `payment-failed` is a notification only and Enter/Esc simply close it.
+fn render_payment_failed(f: &mut ratatui::Frame, popup: Rect, notification: &MessageNotification) {
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // order id
+            Constraint::Length(1), // spacer
+            Constraint::Min(3),    // wrapped retry explanation
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // dismiss hint
+        ],
+    )
+    .split(popup);
+
+    render_order_id_header(
+        f,
+        chunks[1],
+        &helpers::format_order_id(notification.order_id),
+    );
+
+    let body = notification.body.clone().unwrap_or_else(|| {
+        "Mostro could not pay your Lightning invoice. It will retry automatically.".to_string()
+    });
+    f.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: true })
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White)),
+        create_input_area(chunks[3]),
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" or ", Style::default()),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to dismiss", Style::default()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        chunks[5],
+    );
+}
+
 /// Main function to render message notification popup
 pub fn render_message_notification(
     f: &mut ratatui::Frame,
@@ -789,6 +846,8 @@ pub fn render_message_notification(
         mostro_core::prelude::Action::PayBondInvoice => (90, 20),
         mostro_core::prelude::Action::WaitingSellerToPay
         | mostro_core::prelude::Action::WaitingBuyerInvoice => (90, 16),
+        // Informational payment-failed popup: wider/taller to fit the wrapped retry text.
+        mostro_core::prelude::Action::PaymentFailed => (76, 13),
         _ => (70, 8),
     };
 
@@ -802,6 +861,7 @@ pub fn render_message_notification(
         mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
         mostro_core::prelude::Action::WaitingSellerToPay
         | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status",
+        mostro_core::prelude::Action::PaymentFailed => "⚠️ Payment Failed",
         _ => "📨 New Message",
     };
 
@@ -828,8 +888,77 @@ pub fn render_message_notification(
         | mostro_core::prelude::Action::WaitingBuyerInvoice => {
             render_waiting_phase_popup(f, popup, notification, invoice_state);
         }
+        mostro_core::prelude::Action::PaymentFailed => {
+            render_payment_failed(f, popup, notification);
+        }
         _ => {
             render_default_notification(f, popup, notification);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_message_notification;
+    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification};
+    use mostro_core::prelude::Action;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use uuid::Uuid;
+
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+        }
+        flat
+    }
+
+    fn display_only_state() -> InvoiceInputState {
+        InvoiceInputState {
+            invoice_input: String::new(),
+            focused: false,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+        }
+    }
+
+    #[test]
+    fn payment_failed_popup_shows_retry_body_and_dismiss_hint() {
+        let notification = MessageNotification {
+            order_id: Some(Uuid::new_v4()),
+            message_preview: "Payment Failed".to_string(),
+            timestamp: 1,
+            action: Action::PaymentFailed,
+            sat_amount: None,
+            invoice: None,
+            body: Some(
+                "Mostro could not pay your Lightning invoice. It will retry automatically \
+                 up to 3 time(s), about 5 second(s) apart."
+                    .to_string(),
+            ),
+            maker_bond_publish: false,
+            solver_pubkey: None,
+            dispute_id: None,
+        };
+        let state = display_only_state();
+
+        let backend = TestBackend::new(90, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_message_notification(f, &notification, Action::PaymentFailed, &state))
+            .unwrap();
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Payment Failed"), "title missing: {text}");
+        assert!(
+            text.contains("retry automatically"),
+            "retry body missing: {text}"
+        );
+        assert!(text.contains("to dismiss"), "dismiss hint missing: {text}");
     }
 }
