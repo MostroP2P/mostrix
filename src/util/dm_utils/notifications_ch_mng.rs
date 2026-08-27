@@ -588,7 +588,10 @@ mod tests {
             auto_popup_shown: false,
         });
 
-        handle_message_notification(notification(order_id, Action::AddInvoice, None, None), &mut app);
+        handle_message_notification(
+            notification(order_id, Action::AddInvoice, None, None),
+            &mut app,
+        );
 
         assert!(matches!(
             app.mode,
