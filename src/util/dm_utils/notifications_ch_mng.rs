@@ -349,6 +349,14 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
         | Action::PayBondInvoice
         | Action::AddInvoice
         | Action::AddBondInvoice => {
+            // Remember post-retry replacement-invoice asks so Enter can reopen the popup
+            // after Esc (Mostro does not resend `add-invoice`).
+            if matches!(notification.action, Action::AddInvoice) && notification.body.is_some() {
+                if let Some(order_id) = notification.order_id {
+                    app.orders_needing_replacement_invoice.insert(order_id);
+                }
+            }
+
             let should_show_popup = check_if_popup_should_be_shown(&notification, app);
             if !should_show_popup {
                 return;

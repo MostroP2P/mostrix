@@ -157,13 +157,15 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
     }
     if let OperationResult::InvoiceSubmitted {
         message,
+        order_id,
         remember_buyer_saved_ln_address_for_order,
     } = result
     {
-        if let Some(order_id) = remember_buyer_saved_ln_address_for_order {
+        if remember_buyer_saved_ln_address_for_order {
             app.buyer_invoice_preference
                 .insert(order_id, BuyerInvoicePreference::UseSavedLnAddress);
         }
+        app.orders_needing_replacement_invoice.remove(&order_id);
         result = OperationResult::Info(message);
     }
     if let OperationResult::OrderChatAttachmentSent {

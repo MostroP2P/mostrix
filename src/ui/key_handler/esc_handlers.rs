@@ -73,7 +73,19 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             }
             true
         }
-        UiMode::NewMessageNotification(_, _, _) => {
+        UiMode::NewMessageNotification(ref notification, ref action, _) => {
+            // Keep post-retry replacement-invoice asks reopenable after Esc — Mostro
+            // will not resend `add-invoice`.
+            if matches!(action, mostro_core::prelude::Action::AddInvoice)
+                && (notification.body.is_some()
+                    || notification
+                        .order_id
+                        .is_some_and(|id| app.orders_needing_replacement_invoice.contains(&id)))
+            {
+                if let Some(oid) = notification.order_id {
+                    app.orders_needing_replacement_invoice.insert(oid);
+                }
+            }
             // Dismiss notification; if take-order finished while this popup was open, show that result now.
             app.mode = if let Some(r) = app.pending_post_take_operation_result.take() {
                 UiMode::operation_result(r)

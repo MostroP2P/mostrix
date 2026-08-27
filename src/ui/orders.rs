@@ -60,9 +60,9 @@ fn placeholder_action_for_order_success(os: &OrderSuccess) -> Option<Action> {
     match os.status {
         Some(Status::WaitingTakerBond) => Some(Action::PayBondInvoice),
         Some(Status::WaitingPayment) => Some(Action::WaitingSellerToPay),
-        Some(Status::WaitingBuyerInvoice) | Some(Status::SettledHoldInvoice) => {
-            Some(Action::WaitingBuyerInvoice)
-        }
+        Some(Status::WaitingBuyerInvoice) => Some(Action::WaitingBuyerInvoice),
+        // Post-release: hold invoice settled, buyer payout in flight.
+        Some(Status::SettledHoldInvoice) => Some(Action::Released),
         Some(Status::FiatSent) => Some(Action::FiatSent),
         _ => Some(Action::BuyerTookOrder),
     }
@@ -150,11 +150,17 @@ pub enum OperationResult {
     },
     /// Generic informational popup (e.g. AddInvoice confirmation)
     Info(String),
-    /// AddInvoice DM succeeded; optionally persist [`BuyerInvoicePreference::UseSavedLnAddress`]
-    /// for this order after send (main loop normalizes to [`Self::Info`] for display).
+    /// AddInvoice (or bond-payout invoice) send succeeded.
+    ///
+    /// Always includes `order_id` so the operation-result handler can clear sticky
+    /// replacement-invoice tracking. When `remember_buyer_saved_ln_address_for_order`
+    /// is true, persist [`BuyerInvoicePreference::UseSavedLnAddress`] for that trade
+    /// (handler then normalizes to [`Self::Info`] for display).
     InvoiceSubmitted {
         message: String,
-        remember_buyer_saved_ln_address_for_order: Option<uuid::Uuid>,
+        /// Trade that was updated — clear sticky replacement-invoice tracking.
+        order_id: uuid::Uuid,
+        remember_buyer_saved_ln_address_for_order: bool,
     },
     Error(String),
     /// Observer chat loaded successfully from relays.
@@ -763,7 +769,8 @@ fn bond_payout_notification_body(slashed_at: i64) -> String {
 ///
 /// [`Status::Success`] is included only as a recovery path for older sessions that
 /// incorrectly promoted `released` to Success before the post-retry `add-invoice` arrived.
-fn add_invoice_is_after_failed_payment(order_status: Option<Status>) -> bool {
+#[must_use]
+pub fn add_invoice_is_after_failed_payment(order_status: Option<Status>) -> bool {
     matches!(
         order_status,
         Some(Status::SettledHoldInvoice | Status::Success)
@@ -771,7 +778,7 @@ fn add_invoice_is_after_failed_payment(order_status: Option<Status>) -> bool {
 }
 
 fn add_invoice_after_failed_payment_body() -> String {
-    "Previous Lightning payout failed after all retries. Paste a new invoice for your escrow sats."
+    "Lightning payout failed after all retries.\nPaste a new invoice to receive your escrow sats."
         .to_string()
 }
 
@@ -817,6 +824,7 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
         Action::AdminCanceled => "Admin Canceled",
         Action::Rate => "Rate Counterparty",
         Action::RateReceived => "Rating Received",
+        Action::PaymentFailed => "Payment Failed",
         Action::CooperativeCancelInitiatedByPeer => "Cooperative Cancel Initiated by Peer",
         Action::CooperativeCancelInitiatedByYou => "Cooperative Cancel Initiated by You",
         Action::NewOrder => "New Order Created",
@@ -838,6 +846,12 @@ pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static 
         Some(Status::Dispute) => "Trade in Dispute",
         Some(Status::WaitingBuyerInvoice) => "Waiting Buyer Invoice",
         Some(Status::WaitingPayment) => "Waiting Seller Payment",
+        // Post-release payout phase (Mostro still paying / retrying the buyer).
+        Some(Status::SettledHoldInvoice) => match msg.message.get_inner_message_kind().action {
+            Action::PaymentFailed => "Payment Failed",
+            Action::AddInvoice => "New Invoice Required",
+            _ => "Waiting for Payout",
+        },
         Some(Status::Expired) => "Expired",
         Some(_) | None => {
             message_action_compact_label(&msg.message.get_inner_message_kind().action)
@@ -865,6 +879,7 @@ pub fn message_action_emoji(action: &Action) -> &'static str {
         Action::AdminCanceled => "🛑",
         Action::Rate => "⭐",
         Action::RateReceived => "🌟",
+        Action::PaymentFailed => "⚠️",
         Action::CooperativeCancelInitiatedByPeer | Action::CooperativeCancelInitiatedByYou => "✋",
         Action::NewOrder => "🆕",
         _ => "✉️",
@@ -888,7 +903,9 @@ pub fn message_action_emoji_for_message(msg: &OrderMessage) -> &'static str {
         | Some(Status::WaitingBuyerInvoice)
         | Some(Status::WaitingTakerBond)
         | Some(Status::WaitingMakerBond) => "⏳",
-        Some(Status::InProgress) | Some(Status::Active) | Some(Status::SettledHoldInvoice) => "💬",
+        // Hold invoice settled: payout in flight (or retrying) — not early chat/active.
+        Some(Status::SettledHoldInvoice) => "⚡",
+        Some(Status::InProgress) | Some(Status::Active) => "💬",
         None => message_action_emoji(&msg.message.get_inner_message_kind().action),
     }
 }
@@ -910,10 +927,8 @@ pub fn order_status_badge(status: Option<Status>) -> (&'static str, Color) {
         | Some(Status::WaitingBuyerInvoice)
         | Some(Status::WaitingTakerBond)
         | Some(Status::WaitingMakerBond) => ("⏳", Color::Yellow),
-        Some(Status::InProgress)
-        | Some(Status::Active)
-        | Some(Status::SettledHoldInvoice)
-        | None => ("💬", PRIMARY_COLOR),
+        Some(Status::SettledHoldInvoice) => ("⚡", Color::Yellow),
+        Some(Status::InProgress) | Some(Status::Active) | None => ("💬", PRIMARY_COLOR),
     }
 }
 
@@ -1017,6 +1032,37 @@ pub fn message_status_presentation(msg: &OrderMessage) -> MessageStatusPresentat
             };
         }
         _ => {}
+    }
+
+    // Informational: Mostro failed to pay the buyer and is retrying. Keep the
+    // timeline on Wait for Sats; do not look like a normal "no action" wait.
+    if matches!(action, Action::PaymentFailed) {
+        return MessageStatusPresentation {
+            emoji: "⚠️",
+            title: "Lightning payout failed",
+            color: Color::Yellow,
+            next: Some("Mostro is retrying automatically. No action needed yet."),
+        };
+    }
+
+    // After release / exhausted retries the buyer can (re)submit an invoice while
+    // status is still `settled-hold-invoice`. Surface that so Esc'd popups are not a dead end.
+    if add_invoice_is_after_failed_payment(msg.order_status)
+        && local_user_must_act_on_invoice_popup(msg, &Action::AddInvoice)
+        && matches!(
+            action,
+            Action::Released
+                | Action::Release
+                | Action::AddInvoice
+                | Action::HoldInvoicePaymentSettled
+        )
+    {
+        return MessageStatusPresentation {
+            emoji: "🧾",
+            title: "New invoice required",
+            color: Color::Yellow,
+            next: Some("Press Enter to paste a new Lightning invoice."),
+        };
     }
 
     if let Some(next) = actionable_next_step(msg, &action) {
@@ -1214,7 +1260,7 @@ pub fn buy_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     }
     if matches!(
         &action,
-        Action::FiatSentOk | Action::Release | Action::Released
+        Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed
     ) && !timeline_blocks_post_fiat_action_override(msg.order_status, true)
     {
         return FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats);
@@ -1248,7 +1294,7 @@ pub fn sell_listing_flow_step(msg: &OrderMessage) -> FlowStep {
     }
     if matches!(
         &action,
-        Action::FiatSentOk | Action::Release | Action::Released
+        Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed
     ) && !timeline_blocks_post_fiat_action_override(msg.order_status, true)
     {
         return FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats);
@@ -1292,8 +1338,12 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             }
             // `WaitingTakerBond` / `WaitingMakerBond`: pre-active bond phases; treat like `Pending`.
             Status::WaitingPayment => Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepSellerPayment)),
-            Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
+            Status::WaitingBuyerInvoice => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice))
+            }
+            // After seller release: payout in flight (or retrying / new invoice).
+            Status::SettledHoldInvoice => {
+                Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats))
             }
             Status::InProgress | Status::Active => {
                 Some(FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder))
@@ -1321,8 +1371,12 @@ fn listing_step_from_status(kind: mostro_core::order::Kind, status: Status) -> O
             Status::WaitingPayment => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepSellerPayment))
             }
-            Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => {
+            Status::WaitingBuyerInvoice => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepBuyerInvoice))
+            }
+            // After seller release: payout in flight (or retrying / new invoice).
+            Status::SettledHoldInvoice => {
+                Some(FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats))
             }
             Status::InProgress | Status::Active => {
                 Some(FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder))
@@ -1358,7 +1412,7 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
                 FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
-            Action::FiatSentOk | Action::Release | Action::Released => {
+            Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
             }
             Action::Rate
@@ -1382,7 +1436,7 @@ fn sell_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSt
                 FlowStep::SellFlowStep(StepLabelsSell::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::SellFlowStep(StepLabelsSell::StepSendFiat),
-            Action::FiatSentOk | Action::Release | Action::Released => {
+            Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed => {
                 FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
             }
             Action::Rate
@@ -1409,7 +1463,7 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
             }
             Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
-            Action::FiatSentOk | Action::Release | Action::Released => {
+            Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
             }
             Action::Rate
@@ -1433,7 +1487,7 @@ fn buy_listing_flow_step_from_action(action: &Action, is_maker: bool) -> FlowSte
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepBuyerInvoice)
             }
             Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
-            Action::FiatSentOk | Action::Release | Action::Released => {
+            Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed => {
                 FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
             }
             Action::Rate
@@ -1464,7 +1518,7 @@ pub fn message_buy_flow_step_fallback(action: &Action) -> FlowStep {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepChatActiveOrder)
         }
         Action::FiatSent => FlowStep::BuyFlowStep(StepLabelsBuy::StepSendFiat),
-        Action::FiatSentOk | Action::Release | Action::Released => {
+        Action::FiatSentOk | Action::Release | Action::Released | Action::PaymentFailed => {
             FlowStep::BuyFlowStep(StepLabelsBuy::StepReleaseSats)
         }
         Action::Rate
@@ -1552,6 +1606,42 @@ mod message_emoji_and_badge_tests {
         assert_eq!(
             message_action_compact_label(&Action::DisputeInitiatedByYou),
             "Dispute"
+        );
+    }
+
+    #[test]
+    fn payment_failed_is_labelled_and_not_unknown() {
+        assert_eq!(
+            message_action_compact_label(&Action::PaymentFailed),
+            "Payment Failed"
+        );
+        assert_eq!(message_action_emoji(&Action::PaymentFailed), "⚠️");
+        let msg = sample_msg(
+            Action::PaymentFailed,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        assert_eq!(
+            message_action_compact_label_for_message(&msg),
+            "Payment Failed"
+        );
+        let p = message_status_presentation(&msg);
+        assert_eq!(p.title, "Lightning payout failed");
+        assert!(p.next.is_some_and(|n| n.to_lowercase().contains("retry")));
+    }
+
+    #[test]
+    fn settled_hold_invoice_stays_on_wait_for_sats_not_add_invoice() {
+        let msg = sample_msg(
+            Action::PaymentFailed,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        assert_eq!(
+            message_trade_timeline_step(&msg),
+            FlowStep::SellFlowStep(StepLabelsSell::StepReleaseSats)
         );
     }
 
@@ -1836,7 +1926,7 @@ mod message_emoji_and_badge_tests {
             Action::HoldInvoicePaymentAccepted,
             Some(mostro_core::order::Kind::Buy),
             Some(true),
-            Some(Status::SettledHoldInvoice),
+            Some(Status::Active),
         );
         let p = message_status_presentation(&m);
         assert_eq!(p.emoji, "💸");

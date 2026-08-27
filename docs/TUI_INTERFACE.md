@@ -174,7 +174,7 @@ When the popup is closed (**Esc** or **Enter**) from the **Disputes in Progress*
 | `Success` | My Trades placeholder + `order_chat_static` |
 | `PaymentRequestRequired` | Opens Pay / bond invoice popup (`NewMessageNotification`) |
 | `OpenInvoicePopup` | Opens Add Invoice or waiting popup from synchronous execute (bond payout reply); does **not** show the operation-result modal |
-| `InvoiceSubmitted` | Normalized to `Info` toast after optional buyer LN-address preference |
+| `InvoiceSubmitted` | Clears sticky replacement-invoice tracking for `order_id`; optional buyer LN-address preference; then normalized to `Info` toast |
 | `TradeClosed` / `OrderHistoryDeleted` | Side effects on Messages list, then `Info` toast |
 | `OrderChatAttachmentSent` | Appends **You** chat row + JSON transcript save; clears `pending_order_attachment_sends` and `sending_attachment_order_id` when `order_id` matches; then normalized to `Info` (`Attachment sent: …`) |
 | `OrderChatAttachmentError` | Early send failure (validate / encrypt / upload before DM); clears `sending_attachment_order_id` when `order_id` matches; normalized to `Error` popup. Generic `OperationResult::Error` from other tasks does **not** clear the in-flight send guard. |
