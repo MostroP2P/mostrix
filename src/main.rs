@@ -180,7 +180,8 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
                 .filter(|c| !c.is_control() || *c == '\t')
                 .collect();
             invoice_state.invoice_input.push_str(&filtered_text);
-            invoice_state.just_pasted = true;
+            // Do not set `just_pasted`: Enter must submit on the first press.
+            // Newlines are already stripped from `Event::Paste` content above.
         }
     }
 

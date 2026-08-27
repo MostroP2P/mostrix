@@ -430,6 +430,9 @@ pub fn invoice_popup_allowed_for_order_status(
             Some(
                 mostro_core::order::Status::WaitingBuyerInvoice
                     | mostro_core::order::Status::SettledHoldInvoice
+                    // `released` used to jump straight to Success; still accept the
+                    // post-retry `add-invoice` if local status was already Success.
+                    | mostro_core::order::Status::Success
             ) | None
         ),
         Action::AddBondInvoice => !matches!(
@@ -675,7 +678,13 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
 
     let action_str = match action {
         Action::NewOrder => "New Order created",
-        Action::AddInvoice => "Invoice Request",
+        Action::AddInvoice => {
+            if add_invoice_is_after_failed_payment(msg.order_status) {
+                "New Invoice After Failed Payment"
+            } else {
+                "Invoice Request"
+            }
+        }
         Action::AddBondInvoice => "Bond Payout Invoice",
         Action::PayInvoice => "Payment Request",
         Action::PayBondInvoice => "Bond Invoice",
@@ -708,6 +717,10 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
             }
             _ => None,
         },
+        // Post-retry `add-invoice`: Mostro exhausted payout attempts and needs a fresh invoice.
+        Action::AddInvoice if add_invoice_is_after_failed_payment(msg.order_status) => {
+            Some(add_invoice_after_failed_payment_body())
+        }
         // `payment-failed` is a notification only (order stays `settled-hold-invoice`);
         // surface the retry configuration so the buyer knows no action is needed yet.
         Action::PaymentFailed => Some(match inner_message_kind.payload.as_ref() {
@@ -743,6 +756,23 @@ fn bond_payout_notification_body(slashed_at: i64) -> String {
     let anchor = crate::ui::helpers::format_local_timestamp(slashed_at, "%Y-%m-%d %H:%M")
         .unwrap_or_else(|| "unknown".to_string());
     format!("Slash recorded: {anchor}. Claim deadline = anchor + instance payout window.")
+}
+
+/// True when an [`Action::AddInvoice`] DM is Mostro asking for a **replacement** invoice
+/// after Lightning payout retries failed (order is still `settled-hold-invoice`).
+///
+/// [`Status::Success`] is included only as a recovery path for older sessions that
+/// incorrectly promoted `released` to Success before the post-retry `add-invoice` arrived.
+fn add_invoice_is_after_failed_payment(order_status: Option<Status>) -> bool {
+    matches!(
+        order_status,
+        Some(Status::SettledHoldInvoice | Status::Success)
+    )
+}
+
+fn add_invoice_after_failed_payment_body() -> String {
+    "Previous Lightning payout failed after all retries. Paste a new invoice for your escrow sats."
+        .to_string()
 }
 
 /// Buyer-facing body for an [`Action::PaymentFailed`] notification. The Lightning payment
@@ -1640,6 +1670,42 @@ mod message_emoji_and_badge_tests {
     }
 
     #[test]
+    fn add_invoice_after_failed_payment_has_distinct_preview_and_body() {
+        let msg = sample_msg(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::SettledHoldInvoice),
+        );
+        let notification = order_message_to_notification(&msg);
+        assert_eq!(
+            notification.message_preview,
+            "New Invoice After Failed Payment"
+        );
+        let body = notification
+            .body
+            .expect("post-retry add-invoice should explain why");
+        assert!(
+            body.to_lowercase().contains("retries") || body.to_lowercase().contains("retry"),
+            "{body}"
+        );
+        assert!(body.to_lowercase().contains("new invoice"), "{body}");
+    }
+
+    #[test]
+    fn normal_add_invoice_keeps_generic_preview_without_body() {
+        let msg = sample_msg(
+            Action::AddInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::WaitingBuyerInvoice),
+        );
+        let notification = order_message_to_notification(&msg);
+        assert_eq!(notification.message_preview, "Invoice Request");
+        assert!(notification.body.is_none());
+    }
+
+    #[test]
     fn peer_initiated_dispute_warns_in_the_timeline() {
         assert_eq!(
             message_timeline_warning(&Action::DisputeInitiatedByPeer),
@@ -2467,6 +2533,18 @@ mod invoice_popup_role_tests {
         assert!(invoice_popup_allowed_for_order_status(
             &Action::PayBondInvoice,
             Some(Status::WaitingMakerBond),
+        ));
+    }
+
+    #[test]
+    fn add_invoice_popup_allowed_after_premature_success() {
+        assert!(invoice_popup_allowed_for_order_status(
+            &Action::AddInvoice,
+            Some(Status::Success),
+        ));
+        assert!(invoice_popup_allowed_for_order_status(
+            &Action::AddInvoice,
+            Some(Status::SettledHoldInvoice),
         ));
     }
 

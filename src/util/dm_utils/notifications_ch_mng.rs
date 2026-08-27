@@ -551,6 +551,53 @@ mod tests {
     }
 
     #[test]
+    fn add_invoice_after_retries_opens_popup_even_if_local_status_is_success() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        let keys = Keys::generate();
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                None,
+                Action::AddInvoice,
+                Some(Payload::Order(mostro_core::prelude::SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(Kind::Sell),
+                    status: Some(Status::SettledHoldInvoice),
+                    amount: 139_859,
+                    fiat_code: "EUR".to_string(),
+                    fiat_amount: 100,
+                    payment_method: "Bizum".to_string(),
+                    ..Default::default()
+                })),
+            ),
+            timestamp: 20,
+            sender: keys.public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            read: false,
+            sat_amount: Some(139_859),
+            buyer_invoice: None,
+            order_kind: Some(Kind::Sell),
+            is_mine: Some(false),
+            // `released` used to be stored as Success; the payout-retry
+            // `add-invoice` must still open for the buyer.
+            order_status: Some(Status::Success),
+            order_snapshot: None,
+            auto_popup_shown: false,
+        });
+
+        handle_message_notification(notification(order_id, Action::AddInvoice, None, None), &mut app);
+
+        assert!(matches!(
+            app.mode,
+            UiMode::NewMessageNotification(_, Action::AddInvoice, _)
+                | UiMode::ConfirmSavedLnAddressForInvoice(_, _)
+        ));
+    }
+
+    #[test]
     fn dispute_metadata_survives_later_notifications() {
         let order_id = Uuid::new_v4();
         let mut app = AppState::new(UserRole::User);

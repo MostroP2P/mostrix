@@ -85,12 +85,14 @@ pub fn inferred_status_from_trade_action(action: &Action) -> Option<Status> {
         Action::PayBondInvoice => Some(Status::WaitingTakerBond),
         Action::AdminCanceled => Some(Status::CanceledByAdmin),
         Action::FiatSentOk => Some(Status::FiatSent),
-        // Release ACK to seller (`hold-invoice-payment-settled`), buyer `released` /
-        // `purchase-completed`: trade complete from Mostro's view → Success / Rate column.
-        Action::Release
-        | Action::Released
-        | Action::HoldInvoicePaymentSettled
-        | Action::PurchaseCompleted => Some(Status::Success),
+        // Seller `release` settles the hold invoice and starts the buyer payout.
+        // Mostro stays on `settled-hold-invoice` until Lightning actually succeeds
+        // (`purchase-completed`). Inferring Success here hid the later `add-invoice`
+        // after failed payout retries.
+        Action::Release | Action::Released | Action::HoldInvoicePaymentSettled => {
+            Some(Status::SettledHoldInvoice)
+        }
+        Action::PurchaseCompleted => Some(Status::Success),
         _ => None,
     }
 }
@@ -123,14 +125,16 @@ fn status_phase_rank_for_actor(
             Some(mostro_core::order::Kind::Sell) => Some(2),
             None => None,
         },
-        Status::WaitingBuyerInvoice | Status::SettledHoldInvoice => match kind {
+        Status::WaitingBuyerInvoice => match kind {
             Some(mostro_core::order::Kind::Buy) => Some(2),
             Some(mostro_core::order::Kind::Sell) => Some(1),
             None => None,
         },
         Status::InProgress | Status::Active => Some(3),
         Status::FiatSent => Some(4),
-        Status::Success => Some(5),
+        // After seller release: hold invoice is settled, buyer payout is in flight.
+        Status::SettledHoldInvoice => Some(5),
+        Status::Success => Some(6),
         _ => None,
     }
 }
@@ -187,7 +191,10 @@ pub fn should_apply_status_transition(
         return true;
     }
     if is_terminal_trade_status(current) {
-        return false;
+        // `released` used to be inferred as Success; a later `add-invoice` after
+        // exhausted payout retries still carries `settled-hold-invoice` and must
+        // reopen that phase so the buyer can supply a new invoice.
+        return current == Status::Success && candidate == Status::SettledHoldInvoice;
     }
     if is_terminal_trade_status(candidate) {
         return true;
@@ -916,15 +923,37 @@ mod tests {
     }
 
     #[test]
-    fn hold_invoice_payment_settled_and_purchase_completed_infer_success() {
+    fn release_infers_settled_hold_invoice_until_payout_succeeds() {
+        assert_eq!(
+            inferred_status_from_trade_action(&Action::Released),
+            Some(Status::SettledHoldInvoice)
+        );
         assert_eq!(
             inferred_status_from_trade_action(&Action::HoldInvoicePaymentSettled),
-            Some(Status::Success)
+            Some(Status::SettledHoldInvoice)
         );
         assert_eq!(
             inferred_status_from_trade_action(&Action::PurchaseCompleted),
             Some(Status::Success)
         );
+    }
+
+    #[test]
+    fn fiat_sent_can_advance_to_settled_hold_invoice() {
+        assert!(should_apply_status_transition(
+            Some(Status::FiatSent),
+            Status::SettledHoldInvoice,
+            Some(mostro_core::order::Kind::Sell),
+        ));
+    }
+
+    #[test]
+    fn success_can_reopen_settled_hold_invoice_for_failed_payout() {
+        assert!(should_apply_status_transition(
+            Some(Status::Success),
+            Status::SettledHoldInvoice,
+            Some(mostro_core::order::Kind::Sell),
+        ));
     }
 
     #[test]

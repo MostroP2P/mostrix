@@ -238,7 +238,7 @@ fn render_add_invoice(
             Constraint::Length(1), // spacer
             Constraint::Length(1), // order id
             Constraint::Length(1), // message preview
-            Constraint::Length(1), // spacer
+            Constraint::Length(1), // body (failed-payment explanation) or spacer
             Constraint::Length(1), // label
             Constraint::Length(6), // invoice input field
             Constraint::Length(1), // spacer
@@ -252,6 +252,9 @@ fn render_add_invoice(
     let order_id_str = helpers::format_order_id(notification.order_id);
     render_order_id_header(f, chunks[1], &order_id_str);
     render_message_preview(f, chunks[2], &notification.message_preview, false);
+    if let Some(body) = notification.body.as_deref() {
+        render_message_preview(f, chunks[3], body, true);
+    }
 
     let amt: i64 = notification.sat_amount.unwrap_or_default();
     let input_label = format!("Paste your {} sats Lightning invoice:", amt);
@@ -832,16 +835,13 @@ pub fn render_message_notification(
 ) {
     let area = f.area();
     let (popup_width, popup_height) = match action {
-        mostro_core::prelude::Action::AddInvoice
-        | mostro_core::prelude::Action::AddBondInvoice
-        | mostro_core::prelude::Action::PayInvoice => (
-            90,
-            if matches!(action, mostro_core::prelude::Action::AddBondInvoice) {
-                21
-            } else {
-                19
-            },
-        ),
+        mostro_core::prelude::Action::AddInvoice => {
+            // Extra height when explaining a post-retry replacement invoice.
+            let height = if notification.body.is_some() { 21 } else { 19 };
+            (90, height)
+        }
+        mostro_core::prelude::Action::AddBondInvoice => (90, 21),
+        mostro_core::prelude::Action::PayInvoice => (90, 19),
         // Bond popup is one row taller for the "Locked, not spent" explanation line.
         mostro_core::prelude::Action::PayBondInvoice => (90, 20),
         mostro_core::prelude::Action::WaitingSellerToPay
@@ -855,7 +855,13 @@ pub fn render_message_notification(
     f.render_widget(Clear, popup);
 
     let title = match action {
-        mostro_core::prelude::Action::AddInvoice => "📝 Invoice Request",
+        mostro_core::prelude::Action::AddInvoice => {
+            if notification.body.is_some() {
+                "⚠️ New Invoice After Payment Failed"
+            } else {
+                "📝 Invoice Request"
+            }
+        }
         mostro_core::prelude::Action::AddBondInvoice => "⚔️ Bond Payout Invoice",
         mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
         mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
@@ -960,5 +966,48 @@ mod tests {
             "retry body missing: {text}"
         );
         assert!(text.contains("to dismiss"), "dismiss hint missing: {text}");
+    }
+
+    #[test]
+    fn add_invoice_after_failed_payment_popup_shows_title_and_body() {
+        let notification = MessageNotification {
+            order_id: Some(Uuid::new_v4()),
+            message_preview: "New Invoice After Failed Payment".to_string(),
+            timestamp: 1,
+            action: Action::AddInvoice,
+            sat_amount: Some(1000),
+            invoice: None,
+            body: Some(
+                "Previous Lightning payout failed after all retries. Paste a new invoice for your escrow sats."
+                    .to_string(),
+            ),
+            maker_bond_publish: false,
+            solver_pubkey: None,
+            dispute_id: None,
+        };
+        let state = InvoiceInputState {
+            invoice_input: String::new(),
+            focused: true,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+        };
+
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_message_notification(f, &notification, Action::AddInvoice, &state))
+            .expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("New Invoice After Payment Failed"),
+            "title should mark failed-payment invoice: {text}"
+        );
+        assert!(
+            text.contains("retries") || text.contains("previous Lightning"),
+            "body should explain retries: {text}"
+        );
+        assert!(text.contains("Submit Invoice"), "{text}");
     }
 }
