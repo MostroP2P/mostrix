@@ -903,8 +903,12 @@ pub fn message_action_emoji_for_message(msg: &OrderMessage) -> &'static str {
         | Some(Status::WaitingBuyerInvoice)
         | Some(Status::WaitingTakerBond)
         | Some(Status::WaitingMakerBond) => "⏳",
-        // Hold invoice settled: payout in flight (or retrying) — not early chat/active.
-        Some(Status::SettledHoldInvoice) => "⚡",
+        // Hold invoice settled: payout in flight, retrying, or awaiting a new invoice.
+        Some(Status::SettledHoldInvoice) => match msg.message.get_inner_message_kind().action {
+            Action::PaymentFailed => "⚠️",
+            Action::AddInvoice => "🧾",
+            _ => "⚡",
+        },
         Some(Status::InProgress) | Some(Status::Active) => "💬",
         None => message_action_emoji(&msg.message.get_inner_message_kind().action),
     }
@@ -1626,6 +1630,7 @@ mod message_emoji_and_badge_tests {
             message_action_compact_label_for_message(&msg),
             "Payment Failed"
         );
+        assert_eq!(message_action_emoji_for_message(&msg), "⚠️");
         let p = message_status_presentation(&msg);
         assert_eq!(p.title, "Lightning payout failed");
         assert!(p.next.is_some_and(|n| n.to_lowercase().contains("retry")));
