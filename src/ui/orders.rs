@@ -697,18 +697,24 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         Action::Rate => "Rate Counterparty",
         Action::RateReceived | Action::PurchaseCompleted => "Rate Counterparty completed",
         Action::Release | Action::Released => "Release",
+        Action::PaymentFailed => "Payment Failed",
         _ => "Message",
     };
 
-    let body = if matches!(action, Action::AddBondInvoice) {
-        match inner_message_kind.payload.as_ref() {
+    let body = match action {
+        Action::AddBondInvoice => match inner_message_kind.payload.as_ref() {
             Some(Payload::BondPayoutRequest(req)) => {
                 Some(bond_payout_notification_body(req.slashed_at))
             }
             _ => None,
-        }
-    } else {
-        None
+        },
+        // `payment-failed` is a notification only (order stays `settled-hold-invoice`);
+        // surface the retry configuration so the buyer knows no action is needed yet.
+        Action::PaymentFailed => Some(match inner_message_kind.payload.as_ref() {
+            Some(Payload::PaymentFailed(info)) => payment_failed_notification_body(Some(info)),
+            _ => payment_failed_notification_body(None),
+        }),
+        _ => None,
     };
     let solver_pubkey = match (&action, inner_message_kind.payload.as_ref()) {
         (Action::AdminTookDispute, Some(Payload::Peer(peer))) => Some(peer.pubkey.clone()),
@@ -737,6 +743,26 @@ fn bond_payout_notification_body(slashed_at: i64) -> String {
     let anchor = crate::ui::helpers::format_local_timestamp(slashed_at, "%Y-%m-%d %H:%M")
         .unwrap_or_else(|| "unknown".to_string());
     format!("Slash recorded: {anchor}. Claim deadline = anchor + instance payout window.")
+}
+
+/// Buyer-facing body for an [`Action::PaymentFailed`] notification. The Lightning payment
+/// to the buyer failed; Mostro retries automatically and the order remains
+/// `settled-hold-invoice`. If every retry fails, Mostro later sends `add-invoice`.
+fn payment_failed_notification_body(info: Option<&PaymentFailedInfo>) -> String {
+    let mut body = String::from("Mostro could not pay your Lightning invoice.");
+    if let Some(info) = info {
+        body.push_str(&format!(
+            " It will retry automatically up to {} time(s), about {} second(s) apart.",
+            info.payment_attempts, info.payment_retries_interval
+        ));
+    } else {
+        body.push_str(" It will retry automatically.");
+    }
+    body.push_str(
+        " Your sats stay safely locked in escrow. No action is needed yet - if every retry fails, \
+         you will be asked to provide a new invoice.",
+    );
+    body
 }
 
 /// Short, UI-friendly action label for the messages sidebar.
@@ -1558,6 +1584,59 @@ mod message_emoji_and_badge_tests {
             message_action_compact_label_for_message(&msg),
             "Trade in Dispute"
         );
+    }
+
+    #[test]
+    fn payment_failed_notification_has_preview_and_retry_body() {
+        let order_id = uuid::Uuid::new_v4();
+        let mut msg = sample_msg(
+            Action::PaymentFailed,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            // Order stays settled-hold-invoice while Mostro retries.
+            Some(Status::SettledHoldInvoice),
+        );
+        msg.order_id = Some(order_id);
+        msg.message = Message::new_order(
+            Some(order_id),
+            None,
+            None,
+            Action::PaymentFailed,
+            Some(Payload::PaymentFailed(PaymentFailedInfo {
+                payment_attempts: 3,
+                payment_retries_interval: 5,
+            })),
+        );
+
+        let notification = order_message_to_notification(&msg);
+        assert_eq!(notification.message_preview, "Payment Failed");
+        assert_eq!(notification.action, Action::PaymentFailed);
+
+        let body = notification
+            .body
+            .expect("payment-failed notification should carry an explanatory body");
+        assert!(body.contains('3'), "body should mention attempts: {body}");
+        assert!(body.contains('5'), "body should mention interval: {body}");
+        assert!(
+            body.to_lowercase().contains("retry"),
+            "body should explain retries: {body}"
+        );
+        assert!(
+            body.to_lowercase().contains("new invoice"),
+            "body should tell the buyer a new invoice may be requested: {body}"
+        );
+    }
+
+    #[test]
+    fn payment_failed_notification_has_generic_body_without_payload() {
+        // Defensive: a `payment-failed` DM missing its payload still surfaces a body.
+        let msg = sample_msg(Action::PaymentFailed, None, Some(false), None);
+        let notification = order_message_to_notification(&msg);
+        assert_eq!(notification.message_preview, "Payment Failed");
+        let body = notification
+            .body
+            .expect("payment-failed notification should always carry a body");
+        assert!(body.to_lowercase().contains("retry"), "{body}");
     }
 
     #[test]

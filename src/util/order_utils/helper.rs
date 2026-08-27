@@ -928,6 +928,16 @@ mod tests {
     }
 
     #[test]
+    fn payment_failed_does_not_infer_a_status() {
+        // `payment-failed` is a notification only; the order must stay in its current
+        // status (`settled-hold-invoice`) while Mostro retries, so no status is inferred.
+        assert_eq!(
+            inferred_status_from_trade_action(&Action::PaymentFailed),
+            None
+        );
+    }
+
+    #[test]
     fn terminal_order_history_statuses_match_is_terminal_trade_status() {
         let terminal_variants = [
             Status::Success,
