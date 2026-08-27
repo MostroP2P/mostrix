@@ -947,14 +947,16 @@ fn render_payment_failed(
     );
 
     let body = notification.body.clone().unwrap_or_else(|| {
-        "Mostro could not pay your Lightning invoice. It will retry automatically.".to_string()
+        "Lightning payout to your invoice failed.\n\nMostro will retry automatically.\n\n\
+         Your sats remain locked in escrow.\nNo action needed yet."
+            .to_string()
     });
     f.render_widget(
         Paragraph::new(body)
             .wrap(Wrap { trim: true })
-            .alignment(ratatui::layout::Alignment::Center)
+            .alignment(ratatui::layout::Alignment::Left)
             .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::White)),
-        create_input_area(chunks[3]),
+        inset_horizontal(chunks[3], 2),
     );
 
     f.render_widget(
@@ -1008,7 +1010,8 @@ pub fn render_message_notification(
             | mostro_core::prelude::Action::WaitingBuyerInvoice => (90, 16, 0, 6, 0),
             mostro_core::prelude::Action::PaymentFailed => {
                 let body = notification.body.as_deref().unwrap_or(
-                    "Mostro could not pay your Lightning invoice. It will retry automatically.",
+                    "Lightning payout to your invoice failed.\n\nMostro will retry automatically.\n\n\
+                     Your sats remain locked in escrow.\nNo action needed yet.",
                 );
                 let (w, h, body_rows) = payment_failed_popup_layout(area, body);
                 (w, h, 0, 6, body_rows)
@@ -1123,8 +1126,8 @@ mod tests {
             sat_amount: None,
             invoice: None,
             body: Some(
-                "Mostro could not pay your Lightning invoice. It will retry automatically \
-                 up to 3 time(s), about 5 second(s) apart."
+                "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+                 Your sats remain locked in escrow.\nNo action needed yet."
                     .to_string(),
             ),
             maker_bond_publish: false,
@@ -1203,8 +1206,8 @@ mod tests {
 
     #[test]
     fn payment_failed_popup_wraps_body_on_narrow_terminal() {
-        let body = "Mostro could not pay your Lightning invoice. It will retry automatically \
-             up to 3 time(s), about 5 second(s) apart.";
+        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+             Your sats remain locked in escrow.\nNo action needed yet.";
         let notification = MessageNotification {
             order_id: Some(Uuid::new_v4()),
             message_preview: "Payment Failed".to_string(),
@@ -1240,8 +1243,8 @@ mod tests {
 
     #[test]
     fn payment_failed_popup_fits_short_terminal() {
-        let body = "Mostro could not pay your Lightning invoice. It will retry automatically \
-             up to 3 time(s), about 5 second(s) apart.";
+        let body = "Lightning payout to your invoice failed.\n\nMostro will retry automatically:\n  • Up to 3 attempt(s), every 5 second(s) apart\n\n\
+             Your sats remain locked in escrow.\nNo action needed yet.";
         let notification = MessageNotification {
             order_id: Some(Uuid::new_v4()),
             message_preview: "Payment Failed".to_string(),

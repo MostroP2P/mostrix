@@ -787,20 +787,20 @@ fn add_invoice_after_failed_payment_body() -> String {
 /// to the buyer failed; Mostro retries automatically and the order remains
 /// `settled-hold-invoice`. If every retry fails, Mostro later sends `add-invoice`.
 fn payment_failed_notification_body(info: Option<&PaymentFailedInfo>) -> String {
-    let mut body = String::from("Mostro could not pay your Lightning invoice.");
-    if let Some(info) = info {
-        body.push_str(&format!(
-            " It will retry automatically up to {} time(s), about {} second(s) apart.",
+    let mut lines = vec!["Lightning payout to your invoice failed.".to_string()];
+
+    match info {
+        Some(info) => lines.push(format!(
+            "\nMostro will retry automatically:\n  • Up to {} attempt(s), every {} second(s) apart",
             info.payment_attempts, info.payment_retries_interval
-        ));
-    } else {
-        body.push_str(" It will retry automatically.");
+        )),
+        None => lines.push("\nMostro will retry automatically.".to_string()),
     }
-    body.push_str(
-        " Your sats stay safely locked in escrow. No action is needed yet - if every retry fails, \
-         you will be asked to provide a new invoice.",
-    );
-    body
+
+    lines.push("\nYour sats remain locked in escrow.\nNo action needed yet.".to_string());
+    lines.push("\nIf all retries fail, you will be asked for a new invoice.".to_string());
+
+    lines.join("")
 }
 
 /// Short, UI-friendly action label for the messages sidebar.
