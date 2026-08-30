@@ -12,6 +12,7 @@ pub mod mostro_info;
 pub mod network;
 pub mod order_utils;
 pub mod send_attachment;
+pub mod session_wipe;
 pub mod types;
 
 // Re-export commonly used items
@@ -58,4 +59,5 @@ pub use send_attachment::{
     blossom_servers_from_settings, send_prepared_order_chat_attachment,
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
+pub use session_wipe::clear_local_session_state;
 pub use types::{get_cant_do_description, Event, ListKind};
