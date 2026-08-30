@@ -193,7 +193,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = UiMode::ImportSeedWords(create_key_input_state(mnemonic.as_str()));
             true
         }
-        UiMode::BackupNewKeys(_) => {
+        UiMode::BackupNewKeys { .. } => {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
                 app.pending_key_reload = true;
@@ -202,7 +202,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
                 ));
                 true
             } else {
-                // First-launch backup flow: no runtime key swap happened.
+                // First-launch backup flow / View Seed Words: no runtime key swap.
                 app.mode = default_mode.clone();
                 true
             }

@@ -68,7 +68,12 @@ pub enum UiMode {
 
     // Generate new keys flow (Settings tab)
     ConfirmGenerateNewKeys(bool), // (selected_button: true=Yes, false=No)
-    BackupNewKeys(Zeroizing<String>), // mnemonic words (zeroized on drop)
+    /// Seed words display (View Seed Words / Generate New Keys backup).
+    /// `copied_to_clipboard` drives the same "Press C to copy" UX as PayInvoice.
+    BackupNewKeys {
+        mnemonic: Zeroizing<String>,
+        copied_to_clipboard: bool,
+    },
 
     /// User Settings: paste/type BIP-39 words to import an identity from another client.
     ImportSeedWords(KeyInputState),
@@ -161,7 +166,10 @@ impl Clone for UiMode {
             UiMode::ConfirmExit(selected) => UiMode::ConfirmExit(*selected),
             UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
             // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.
-            UiMode::BackupNewKeys(_) => UiMode::BackupNewKeys(Zeroizing::new(String::new())),
+            UiMode::BackupNewKeys { .. } => UiMode::BackupNewKeys {
+                mnemonic: Zeroizing::new(String::new()),
+                copied_to_clipboard: false,
+            },
             UiMode::ImportSeedWords(state) => UiMode::ImportSeedWords(state.clone()),
             UiMode::ConfirmImportSeed(_, selected) => {
                 UiMode::ConfirmImportSeed(Zeroizing::new(String::new()), *selected)

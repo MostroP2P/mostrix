@@ -127,7 +127,10 @@ pub async fn run_post_terminal_startup(
         match User::get(input.pool).await {
             Ok(user) => {
                 app.backup_requires_restart = false;
-                app.mode = UiMode::BackupNewKeys(Zeroizing::new(user.mnemonic));
+                app.mode = UiMode::BackupNewKeys {
+                    mnemonic: Zeroizing::new(user.mnemonic),
+                    copied_to_clipboard: false,
+                };
             }
             Err(e) => {
                 log::error!(

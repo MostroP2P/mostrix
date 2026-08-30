@@ -35,10 +35,10 @@ Save backup and restart Mostrix after saving."
     );
 }
 
-pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
+pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str, copied_to_clipboard: bool) {
     let area = f.area();
     let popup_width = 90u16;
-    // Needs to fit: comment (2 lines) + mnemonic (1 line) + help line.
+    // Needs to fit: comment (2 lines) + mnemonic rows + copied/help line.
     let popup_height = 20u16;
 
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
@@ -83,7 +83,7 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
             Constraint::Length(2),                   // spacer
             Constraint::Length(mnemonic_rows_count), // mnemonic rows
             Constraint::Min(0),                      // remaining spacing
-            Constraint::Length(1),                   // help
+            Constraint::Length(1),                   // help / copied
         ],
     )
     .split(inner);
@@ -102,27 +102,47 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
         chunks[3],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::White)),
-            Span::styled(
-                "Esc",
+    if copied_to_clipboard {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ Seed words copied to clipboard!",
                 Style::default()
-                    .fg(PRIMARY_COLOR)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" or "),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" to close"),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[5],
-    );
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[5],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::White)),
+                Span::styled(
+                    "C",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" to copy, "),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" or "),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" to close"),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[5],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -173,13 +193,28 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_backup_new_keys(f, mnemonic))
+            .draw(|f| render_backup_new_keys(f, mnemonic, false))
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Save Backup"));
         assert!(buffer_contains(buf, "Esc"));
+        assert!(buffer_contains(buf, "C"));
+        assert!(buffer_contains(buf, "copy"));
         for word in mnemonic.split_whitespace() {
             assert!(buffer_contains(buf, word), "missing mnemonic word: {word}");
         }
+    }
+
+    #[test]
+    fn backup_new_keys_shows_copied_confirmation() {
+        let mnemonic =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_backup_new_keys(f, mnemonic, true))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Seed words copied to clipboard"));
     }
 }

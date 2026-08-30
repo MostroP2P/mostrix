@@ -1206,6 +1206,21 @@ pub fn handle_key_event(
         }
     }
 
+    // Same "copied" indicator reset for View Seed Words / Generate New Keys backup.
+    if let UiMode::BackupNewKeys {
+        ref mut copied_to_clipboard,
+        ..
+    } = app.mode
+    {
+        let is_plain_c = matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+            && !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if !is_plain_c {
+            *copied_to_clipboard = false;
+        }
+    }
+
     // Same "copied" indicator reset for the Shift+K Shared key disclosure popup.
     reset_disclosure_copied_indicator(&mut app.mode, &key_event);
 
@@ -1737,6 +1752,21 @@ pub fn handle_key_event(
             {
                 if let Some(invoice) = &notification.invoice {
                     invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
+                }
+            }
+
+            // View Seed Words / Generate New Keys backup: copy mnemonic with C.
+            if !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                if let UiMode::BackupNewKeys {
+                    ref mnemonic,
+                    ref mut copied_to_clipboard,
+                } = app.mode
+                {
+                    let text = mnemonic.to_string();
+                    *copied_to_clipboard = handle_clipboard_copy(text);
                 }
             }
             Some(true)

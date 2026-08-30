@@ -792,7 +792,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             ));
             true
         }
-        UiMode::BackupNewKeys(_) => {
+        UiMode::BackupNewKeys { .. } => {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
                 app.pending_key_reload = true;
@@ -801,7 +801,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 ));
                 true
             } else {
-                // First-launch backup flow: no runtime key swap happened.
+                // First-launch backup flow / View Seed Words: no runtime key swap.
                 app.mode = default_mode;
                 true
             }

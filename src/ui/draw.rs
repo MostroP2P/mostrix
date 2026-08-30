@@ -245,8 +245,12 @@ pub fn ui_draw(
             *selected_button,
         );
     }
-    if let UiMode::BackupNewKeys(mnemonic) = &app.mode {
-        generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str());
+    if let UiMode::BackupNewKeys {
+        mnemonic,
+        copied_to_clipboard,
+    } = &app.mode
+    {
+        generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str(), *copied_to_clipboard);
     }
     if let UiMode::ImportSeedWords(key_state) = &app.mode {
         crate::ui::import_seed_popup::render_import_seed_input(f, key_state);

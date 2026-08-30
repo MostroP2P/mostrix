@@ -518,7 +518,10 @@ async fn main() -> Result<(), anyhow::Error> {
                                 }
                             } else {
                                 app.backup_requires_restart = true;
-                                app.mode = UiMode::BackupNewKeys(mnemonic);
+                                app.mode = UiMode::BackupNewKeys {
+                                    mnemonic,
+                                    copied_to_clipboard: false,
+                                };
                             }
                         }
                         Err(error_msg) => {
@@ -534,7 +537,10 @@ async fn main() -> Result<(), anyhow::Error> {
                     match res {
                         Ok(mnemonic) => {
                             app.backup_requires_restart = false;
-                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                            app.mode = UiMode::BackupNewKeys {
+                                mnemonic,
+                                copied_to_clipboard: false,
+                            };
                         }
                         Err(error_msg) => {
                             app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
