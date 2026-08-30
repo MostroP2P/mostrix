@@ -15,8 +15,9 @@ use crate::ui::helpers::{
     sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
-    append_paste_to_admin_dispute_chat, apply_pending_runtime_reloads, create_app_channels,
-    handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
+    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
+    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
@@ -155,7 +156,7 @@ async fn drain_order_result_queue(
     }
 }
 
-use crate::ui::{AdminMode, AppState, ChatAttachment, KeyInputState, UiMode, UserRole};
+use crate::ui::{AppState, ChatAttachment, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -198,29 +199,8 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         }
     }
 
-    // Handle paste for settings and admin key-input popups. Mirrors the
-    // char-by-char input path (handle_key_input) so terminals with bracketed
-    // paste (Event::Paste) fill the same field the user would type into.
-    let key_input_state: Option<&mut KeyInputState> = match app.mode {
-        UiMode::AddMostroPubkey(ref mut ks)
-        | UiMode::AddRelay(ref mut ks)
-        | UiMode::AddLnAddress(ref mut ks)
-        | UiMode::AddCurrency(ref mut ks)
-        | UiMode::ImportSeedWords(ref mut ks)
-        | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
-        UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
-        _ => None,
-    };
-    if let Some(key_state) = key_input_state {
-        if key_state.focused {
-            let filtered_text: String = pasted_text
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\t')
-                .collect();
-            key_state.key_input.push_str(&filtered_text);
-            key_state.just_pasted = true;
-        }
-    }
+    // Settings / admin / Import Seed key-input popups (incl. multi-line seed normalize).
+    let _ = apply_paste_to_focused_key_input(app, pasted_text);
 
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
@@ -907,7 +887,7 @@ async fn main() -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod paste_routing_tests {
     use super::*;
-    use crate::ui::UserRole;
+    use crate::ui::{KeyInputState, UserRole};
 
     fn focused_key_input(value: &str) -> KeyInputState {
         KeyInputState {
@@ -927,7 +907,10 @@ mod paste_routing_tests {
         match app.mode {
             UiMode::AddMostroPubkey(ks) => {
                 assert_eq!(ks.key_input, "npub1abc");
-                assert!(ks.just_pasted);
+                assert!(
+                    !ks.just_pasted,
+                    "Enter must submit on first press after paste"
+                );
             }
             other => panic!("unexpected mode: {other:?}"),
         }
@@ -947,6 +930,28 @@ mod paste_routing_tests {
         apply_pasted_text_to_active_input(&mut app, "usd");
         match &app.mode {
             UiMode::AddCurrency(ks) => assert_eq!(ks.key_input, "usd"),
+            other => panic!("unexpected mode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_normalizes_multiline_seed_and_replaces_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::ImportSeedWords(focused_key_input("partial"));
+
+        apply_pasted_text_to_active_input(
+            &mut app,
+            "abandon abandon abandon\nabandon abandon abandon\nabandon abandon abandon abandon abandon about",
+        );
+
+        match app.mode {
+            UiMode::ImportSeedWords(ks) => {
+                assert_eq!(
+                    ks.key_input,
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                );
+                assert!(!ks.just_pasted);
+            }
             other => panic!("unexpected mode: {other:?}"),
         }
     }

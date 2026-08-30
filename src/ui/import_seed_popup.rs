@@ -103,7 +103,14 @@ fn key_input_popup_with_wrap(
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::White)),
+            Span::styled("Paste ", Style::default().fg(Color::White)),
+            Span::styled(
+                "Ctrl+V",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" / right-click, "),
             Span::styled(
                 "Enter",
                 Style::default()
@@ -169,6 +176,7 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Import Seed Words"));
         assert!(buffer_contains(buf, "wipes local"));
+        assert!(buffer_contains(buf, "Ctrl+V"));
     }
 
     #[test]
