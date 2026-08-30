@@ -17,6 +17,7 @@ pub mod exit_confirm;
 pub mod generate_keys_popup;
 pub mod help_popup;
 pub mod helpers;
+pub mod import_seed_popup;
 pub mod key_handler;
 pub mod key_input_popup;
 pub mod message_notification;

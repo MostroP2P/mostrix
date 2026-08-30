@@ -98,6 +98,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
+        | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -180,6 +181,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
+        | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -322,6 +324,8 @@ fn handle_up_key(
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmRestoreSession(_)
         | UiMode::ConfirmGenerateNewKeys(_)
+        | UiMode::ImportSeedWords(_)
+        | UiMode::ConfirmImportSeed(_, _)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
@@ -472,6 +476,8 @@ fn handle_down_key(
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmRestoreSession(_)
         | UiMode::ConfirmGenerateNewKeys(_)
+        | UiMode::ImportSeedWords(_)
+        | UiMode::ConfirmImportSeed(_, _)
         | UiMode::BackupNewKeys(_)
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
@@ -631,7 +637,9 @@ mod confirm_toggle_tests {
 
     fn selected(app: &AppState) -> bool {
         match app.mode {
-            UiMode::ConfirmGenerateNewKeys(v) | UiMode::ConfirmRestoreSession(v) => v,
+            UiMode::ConfirmGenerateNewKeys(v)
+            | UiMode::ConfirmRestoreSession(v)
+            | UiMode::ConfirmImportSeed(_, v) => v,
             _ => panic!("unexpected mode"),
         }
     }

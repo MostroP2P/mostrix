@@ -1114,6 +1114,7 @@ pub fn handle_key_event(
             | UiMode::AddRelay(_)
             | UiMode::AddLnAddress(_)
             | UiMode::AddCurrency(_)
+            | UiMode::ImportSeedWords(_)
             | UiMode::AdminMode(AdminMode::AddSolver(_))
             | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
     ) {
@@ -1122,6 +1123,7 @@ pub fn handle_key_event(
             UiMode::AddRelay(ref mut ks) => Some(ks),
             UiMode::AddLnAddress(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
+            UiMode::ImportSeedWords(ref mut ks) => Some(ks),
             UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
             UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
             _ => None,
@@ -1440,6 +1442,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
                 | UiMode::ConfirmRestoreSession(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
+                | UiMode::ConfirmImportSeed(_, ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);

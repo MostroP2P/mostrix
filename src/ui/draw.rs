@@ -248,6 +248,12 @@ pub fn ui_draw(
     if let UiMode::BackupNewKeys(mnemonic) = &app.mode {
         generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str());
     }
+    if let UiMode::ImportSeedWords(key_state) = &app.mode {
+        crate::ui::import_seed_popup::render_import_seed_input(f, key_state);
+    }
+    if let UiMode::ConfirmImportSeed(_, selected_button) = &app.mode {
+        crate::ui::import_seed_popup::render_confirm_import_seed(f, *selected_button);
+    }
 
     // Help popup (Ctrl+H)
     if let UiMode::HelpPopup(tab, _) = &app.mode {

@@ -25,7 +25,7 @@ use crate::ui::{
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
-    spawn_key_rotation_task, spawn_load_seed_words_task,
+    spawn_import_seed_task, spawn_key_rotation_task, spawn_load_seed_words_task,
     spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
     spawn_send_new_order_task, spawn_verify_and_save_ln_address_task,
 };
@@ -39,6 +39,7 @@ use nostr_sdk::prelude::ToBech32;
 use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 use std::collections::HashSet;
 use std::str::FromStr;
+use zeroize::Zeroizing;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
@@ -102,6 +103,16 @@ fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
     Mnemonic::generate(12)
         .map(|m| m.to_string())
         .map_err(|e| e.to_string())
+}
+
+/// Normalize whitespace and validate a BIP-39 mnemonic for seed import.
+pub(crate) fn normalize_and_parse_mnemonic(raw: &str) -> std::result::Result<String, String> {
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return Err("Seed words cannot be empty.".to_string());
+    }
+    let mnemonic = Mnemonic::parse(&normalized).map_err(|e| format!("Invalid seed words: {e}"))?;
+    Ok(mnemonic.to_string())
 }
 
 fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<String, String> {
@@ -732,6 +743,53 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
 
             app.mode =
                 UiMode::operation_result(OperationResult::Info("Saving new keys...".to_string()));
+            true
+        }
+        UiMode::ImportSeedWords(key_state) => {
+            match normalize_and_parse_mnemonic(&key_state.key_input) {
+                Ok(mnemonic) => {
+                    app.mode = UiMode::ConfirmImportSeed(Zeroizing::new(mnemonic), true);
+                }
+                Err(e) => {
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
+                }
+            }
+            true
+        }
+        UiMode::ConfirmImportSeed(mnemonic, selected_button) => {
+            if !selected_button {
+                app.mode = UiMode::ImportSeedWords(create_key_input_state(mnemonic.as_str()));
+                return true;
+            }
+            if matches!(app.user_role, UserRole::Admin) {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "Import Seed Words is User-mode only.".to_string(),
+                ));
+                return true;
+            }
+
+            let mnemonic_str = mnemonic.as_str().to_string();
+            let derived_nsec = match derive_identity_nsec_from_mnemonic(&mnemonic_str) {
+                Ok(nsec) => nsec,
+                Err(e) => {
+                    app.mode = UiMode::operation_result(OperationResult::Error(format!(
+                        "Failed to derive nsec from mnemonic: {}",
+                        e
+                    )));
+                    return true;
+                }
+            };
+
+            app.awaiting_seed_import = true;
+            spawn_import_seed_task(
+                ctx.pool.clone(),
+                mnemonic_str,
+                derived_nsec,
+                ctx.key_rotation_tx.clone(),
+            );
+            app.mode = UiMode::operation_result(OperationResult::Info(
+                "Importing seed and wiping local session...".to_string(),
+            ));
             true
         }
         UiMode::BackupNewKeys(_) => {
@@ -1423,6 +1481,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     "Loading seed words...".to_string(),
                 ));
             }
+            Some(SettingsMenuAction::ImportSeedWords) => {
+                app.mode = UiMode::ImportSeedWords(create_key_input_state(""));
+            }
             Some(SettingsMenuAction::AddDisputeSolver) => {
                 app.mode = UiMode::AdminMode(AdminMode::AddSolver(AddSolverState {
                     key_input: key_state,
@@ -1459,6 +1520,8 @@ mod tests {
     use std::cell::Cell;
     use uuid::Uuid;
 
+    use super::normalize_and_parse_mnemonic;
+
     fn sample_order_message(
         action: Action,
         kind: Option<Kind>,
@@ -1482,6 +1545,23 @@ mod tests {
             order_snapshot: None,
             auto_popup_shown: false,
         }
+    }
+
+    #[test]
+    fn normalize_and_parse_mnemonic_accepts_extra_whitespace() {
+        let raw = "  abandon  abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about  ";
+        let parsed = normalize_and_parse_mnemonic(raw).expect("valid mnemonic");
+        assert_eq!(
+            parsed,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        );
+    }
+
+    #[test]
+    fn normalize_and_parse_mnemonic_rejects_invalid() {
+        assert!(normalize_and_parse_mnemonic("not a real seed phrase here").is_err());
+        assert!(normalize_and_parse_mnemonic("").is_err());
+        assert!(normalize_and_parse_mnemonic("   ").is_err());
     }
 
     #[test]

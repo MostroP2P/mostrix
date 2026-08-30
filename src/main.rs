@@ -21,10 +21,11 @@ use crate::ui::key_handler::{
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    blossom_servers_from_settings, handle_message_notification, handle_operation_result,
-    install_background_panic_hook, order_utils::validate_range_amount, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    spawn_send_order_chat_attachment, untrack_dispute_chat_parties,
+    blossom_servers_from_settings, execute_restore_session, handle_message_notification,
+    handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
+    restore_completion_result, set_chat_router_cmd_tx, set_dm_router_cmd_tx, set_fatal_error_tx,
+    set_order_result_tx, spawn_save_attachment, spawn_send_order_chat_attachment,
+    untrack_dispute_chat_parties,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -205,6 +206,7 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         | UiMode::AddRelay(ref mut ks)
         | UiMode::AddLnAddress(ref mut ks)
         | UiMode::AddCurrency(ref mut ks)
+        | UiMode::ImportSeedWords(ref mut ks)
         | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
         UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
         _ => None,
@@ -461,10 +463,87 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(res) = key_rotation_result {
                     match res {
                         Ok(mnemonic) => {
-                            app.backup_requires_restart = true;
-                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                            if app.awaiting_seed_import {
+                                app.awaiting_seed_import = false;
+                                app.pending_key_reload = true;
+                                app.pending_import_restore = true;
+                                apply_pending_runtime_reloads(
+                                    &mut app,
+                                    &mut client,
+                                    &mut mostro_pubkey,
+                                    &current_mostro_pubkey,
+                                    &pool,
+                                    &mut message_listener_handle,
+                                    &message_notification_tx,
+                                    &orders,
+                                    &disputes,
+                                    &mut order_task,
+                                    &mut dispute_task,
+                                    &mut dm_subscription_tx,
+                                    settings,
+                                )
+                                .await;
+                                if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
+                                    if let Err(e) = respawn_chat_listener(
+                                        &app,
+                                        &client,
+                                        &pool,
+                                        &mut chat_listener_handle,
+                                        &mut chat_router_cmd_tx,
+                                        &admin_chat_updates_tx,
+                                        &user_order_chat_updates_tx,
+                                    )
+                                    .await
+                                    {
+                                        log::error!(
+                                            "Failed to respawn chat listener after seed import: {e}"
+                                        );
+                                    }
+                                }
+                                if app.pending_import_restore {
+                                    app.pending_import_restore = false;
+                                    let reload_failed = matches!(
+                                        &app.mode,
+                                        UiMode::OperationResult(result)
+                                            if matches!(result.as_ref(), OperationResult::Error(_))
+                                    );
+                                    if !reload_failed {
+                                        app.mode = UiMode::operation_result(OperationResult::Info(
+                                            "Restoring session from Mostro...".to_string(),
+                                        ));
+                                        let pool = pool.clone();
+                                        let client = client.clone();
+                                        let mostro_pubkey = mostro_pubkey;
+                                        let mostro_info = app.mostro_info.clone();
+                                        let result_tx = order_result_tx.clone();
+                                        let dm_subscription_tx = dm_subscription_tx.clone();
+                                        tokio::spawn(async move {
+                                            let outcome = execute_restore_session(
+                                                &pool,
+                                                &client,
+                                                mostro_pubkey,
+                                                mostro_info.as_ref(),
+                                                dm_subscription_tx,
+                                            )
+                                            .await;
+                                            if let Err(e) = &outcome {
+                                                log::error!(
+                                                    "Session restore after seed import failed: {e}"
+                                                );
+                                            }
+                                            let _ = result_tx
+                                                .send(restore_completion_result(&outcome));
+                                        });
+                                    }
+                                }
+                            } else {
+                                app.backup_requires_restart = true;
+                                app.mode = UiMode::BackupNewKeys(mnemonic);
+                            }
                         }
                         Err(error_msg) => {
+                            app.awaiting_seed_import = false;
+                            app.pending_import_restore = false;
                             app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
                         }
                     }

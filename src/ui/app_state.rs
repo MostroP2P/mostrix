@@ -70,6 +70,11 @@ pub enum UiMode {
     ConfirmGenerateNewKeys(bool), // (selected_button: true=Yes, false=No)
     BackupNewKeys(Zeroizing<String>), // mnemonic words (zeroized on drop)
 
+    /// User Settings: paste/type BIP-39 words to import an identity from another client.
+    ImportSeedWords(KeyInputState),
+    /// Confirm destructive wipe + import (mnemonic held until Yes/No; cleared on clone).
+    ConfirmImportSeed(Zeroizing<String>, bool), // (mnemonic, selected_button: true=Yes)
+
     // User-specific modes
     UserMode(UserMode),
 
@@ -157,6 +162,10 @@ impl Clone for UiMode {
             UiMode::ConfirmGenerateNewKeys(selected) => UiMode::ConfirmGenerateNewKeys(*selected),
             // Clamp cloning of secret mnemonic to avoid duplicating sensitive seed words.
             UiMode::BackupNewKeys(_) => UiMode::BackupNewKeys(Zeroizing::new(String::new())),
+            UiMode::ImportSeedWords(state) => UiMode::ImportSeedWords(state.clone()),
+            UiMode::ConfirmImportSeed(_, selected) => {
+                UiMode::ConfirmImportSeed(Zeroizing::new(String::new()), *selected)
+            }
             UiMode::UserMode(mode) => UiMode::UserMode(mode.clone()),
             UiMode::AdminMode(mode) => UiMode::AdminMode(mode.clone()),
         }
@@ -278,6 +287,13 @@ pub struct AppState {
     /// Set when the user dismisses BackupNewKeys after runtime rotation.
     /// Main loop performs an in-process runtime reload and clears session state.
     pub pending_key_reload: bool,
+    /// Set after a successful seed import so the main loop auto-runs restore
+    /// once [`Self::pending_key_reload`] completes.
+    pub pending_import_restore: bool,
+    /// True while `spawn_import_seed_task` is in flight (distinguishes
+    /// [`crate::ui::key_handler::async_tasks::spawn_key_rotation_task`] results
+    /// from import results on the shared key-rotation channel).
+    pub awaiting_seed_import: bool,
     /// Set when Mostro pubkey or currency filters change: respawn order/dispute subscriptions and
     /// DM listener without rotating identity keys or clearing the Messages tab.
     pub pending_fetch_scheduler_reload: bool,
@@ -359,6 +375,8 @@ impl AppState {
             offline_overlay_message: None,
             backup_requires_restart: false,
             pending_key_reload: false,
+            pending_import_restore: false,
+            awaiting_seed_import: false,
             pending_fetch_scheduler_reload: false,
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,

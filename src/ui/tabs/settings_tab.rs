@@ -16,6 +16,7 @@ pub enum SettingsMenuAction {
     ClearCurrencyFilters,
     ViewSeedWords,
     RestoreSession,
+    ImportSeedWords,
     AddDisputeSolver,
     ChangeAdminKey,
     GenerateNewKeys,
@@ -49,7 +50,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 8] = [
 
 /// Single source of truth for User Settings rows (action + list label).
 #[allow(clippy::redundant_static_lifetimes)]
-const USER_SETTINGS: [SettingsMenuRow; 10] = [
+const USER_SETTINGS: [SettingsMenuRow; 11] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -70,6 +71,7 @@ const USER_SETTINGS: [SettingsMenuRow; 10] = [
         "Clear Currency Filters",
     ),
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
+    (SettingsMenuAction::ImportSeedWords, "Import Seed Words"),
     (SettingsMenuAction::RestoreSession, "Restore Session"),
     (SettingsMenuAction::GenerateNewKeys, "Generate New Keys"),
 ];
@@ -337,11 +339,25 @@ mod tests {
     fn user_menu_keeps_restore_next_to_the_key_management_rows() {
         let labels: Vec<&str> = USER_SETTINGS.iter().map(|(_, l)| *l).collect();
         let seed = labels.iter().position(|l| *l == "View Seed Words").unwrap();
+        let import = labels
+            .iter()
+            .position(|l| *l == "Import Seed Words")
+            .unwrap();
         let restore = labels.iter().position(|l| *l == "Restore Session").unwrap();
         let generate = labels
             .iter()
             .position(|l| *l == "Generate New Keys")
             .unwrap();
-        assert!(seed < restore && restore < generate);
+        assert!(seed < import && import < restore && restore < generate);
+    }
+
+    #[test]
+    fn import_seed_words_is_user_only() {
+        assert!(USER_SETTINGS
+            .iter()
+            .any(|(a, _)| *a == SettingsMenuAction::ImportSeedWords));
+        assert!(!ADMIN_SETTINGS
+            .iter()
+            .any(|(a, _)| *a == SettingsMenuAction::ImportSeedWords));
     }
 }

@@ -185,6 +185,14 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
+        UiMode::ImportSeedWords(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::ConfirmImportSeed(mnemonic, _) => {
+            app.mode = UiMode::ImportSeedWords(create_key_input_state(mnemonic.as_str()));
+            true
+        }
         UiMode::BackupNewKeys(_) => {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
