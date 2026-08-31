@@ -3,8 +3,10 @@ use anyhow::Result;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
 
 use crate::models::{Order, User};
 use crate::ui::helpers::user_dispute_chat_since_from_file;
@@ -16,7 +18,9 @@ use crate::util::dm_utils::{
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::types::get_cant_do_description;
 
-use super::helper::{fetch_small_order_by_id_from_relay, is_terminal_trade_status};
+use super::helper::{
+    fetch_small_order_by_id_from_relay, handle_mostro_response, is_terminal_trade_status,
+};
 
 /// Outcome of a session restore, for the result popup.
 #[derive(Debug, Default)]
@@ -169,6 +173,40 @@ pub async fn execute_restore_session(
         return Err(anyhow::anyhow!("No restore data payload in response"));
     };
 
+    log::info!(
+        "Restore stage 1: received {} order(s), {} dispute(s) from Mostro",
+        restore_data.restore_orders.len(),
+        restore_data.restore_disputes.len()
+    );
+
+    // Stage 2 (mobile-aligned): batch-fetch authoritative order details from Mostro
+    // so buyer/seller trade pubkeys are available for role + peer chat resolution.
+    let order_ids: Vec<Uuid> = restore_data
+        .restore_orders
+        .iter()
+        .map(|o| o.order_id)
+        .collect();
+    let mostro_order_details = fetch_order_details_from_mostro(
+        client,
+        &identity_keys,
+        mostro_pubkey,
+        &order_ids,
+        mostro_instance,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        log::warn!(
+            "Restore stage 2: Action::Orders fetch failed ({e}); falling back to relay lookup per order"
+        );
+        HashMap::new()
+    });
+    if !mostro_order_details.is_empty() {
+        log::info!(
+            "Restore stage 2: loaded details for {} order(s) from Mostro",
+            mostro_order_details.len()
+        );
+    }
+
     let mut summary = RestoreSummary {
         disputes: restore_data.restore_disputes.len(),
         ..Default::default()
@@ -191,7 +229,17 @@ pub async fn execute_restore_session(
     }
 
     for info in &restore_data.restore_orders {
-        match restore_one_order(pool, client, mostro_pubkey, &user, info).await {
+        let mostro_detail = mostro_order_details.get(&info.order_id).cloned();
+        match restore_one_order(
+            pool,
+            client,
+            mostro_pubkey,
+            &user,
+            info,
+            mostro_detail.as_ref(),
+        )
+        .await
+        {
             Ok(RestoredAs::Inserted {
                 with_details,
                 role_unknown,
@@ -301,6 +349,79 @@ pub async fn execute_restore_session(
     Ok(summary)
 }
 
+/// Stage 2: `Action::Orders` with `Payload::Ids` — same batch detail fetch mobile uses
+/// after `restore-session` returns order ids + trade indices.
+async fn fetch_order_details_from_mostro(
+    client: &Client,
+    identity_keys: &Keys,
+    mostro_pubkey: PublicKey,
+    order_ids: &[Uuid],
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<HashMap<Uuid, SmallOrder>> {
+    if order_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let request_id = Uuid::new_v4().as_u128() as u64;
+    let message = Message::new_order(
+        None,
+        Some(request_id),
+        None,
+        Action::Orders,
+        Some(Payload::Ids(order_ids.to_vec())),
+    );
+    let message_json = message
+        .as_json()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize orders request: {e}"))?;
+
+    log::info!(
+        "Restore stage 2: requesting details for {} order(s) from {mostro_pubkey}",
+        order_ids.len()
+    );
+
+    let sent_message = send_dm(
+        client,
+        Some(identity_keys),
+        identity_keys,
+        &mostro_pubkey,
+        message_json,
+        None,
+        mostro_instance,
+    );
+
+    let recv_event = wait_for_dm(identity_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let messages = parse_dm_events(recv_event, identity_keys, None).await;
+
+    let Some((response_message, _, sender)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received for Action::Orders"));
+    };
+    if sender != &mostro_pubkey {
+        return Err(anyhow::anyhow!(
+            "Orders response signed by {sender}, expected the configured Mostro instance"
+        ));
+    }
+
+    let inner = handle_mostro_response(response_message, request_id)?;
+    if inner.action != Action::Orders {
+        return Err(anyhow::anyhow!(
+            "Unexpected action in orders response: {:?}",
+            inner.action
+        ));
+    }
+
+    let Some(Payload::Orders(orders)) = &inner.payload else {
+        return Err(anyhow::anyhow!("Orders response missing Payload::Orders"));
+    };
+
+    let mut map = HashMap::with_capacity(orders.len());
+    for order in orders {
+        if let Some(id) = order.id {
+            map.insert(id, order.clone());
+        }
+    }
+    Ok(map)
+}
+
 enum RestoredAs {
     Inserted {
         with_details: bool,
@@ -337,12 +458,33 @@ fn restored_order_role(status: Option<Status>) -> RestoredRole {
     }
 }
 
+/// When Mostro returns full `SmallOrder` details, infer maker vs taker from trade pubkeys.
+fn is_maker_from_mostro_details(order: &SmallOrder, trade_keys: &Keys) -> Option<bool> {
+    let my_pk = trade_keys.public_key();
+    let kind = order.kind?;
+    let buyer_s = order.buyer_trade_pubkey.as_deref()?;
+    let seller_s = order.seller_trade_pubkey.as_deref()?;
+    if buyer_s.is_empty() || seller_s.is_empty() {
+        return None;
+    }
+    let buyer_pk = PublicKey::parse(buyer_s).ok()?;
+    let seller_pk = PublicKey::parse(seller_s).ok()?;
+    if my_pk == buyer_pk {
+        return Some(matches!(kind, mostro_core::order::Kind::Buy));
+    }
+    if my_pk == seller_pk {
+        return Some(matches!(kind, mostro_core::order::Kind::Sell));
+    }
+    None
+}
+
 async fn restore_one_order(
     pool: &SqlitePool,
     client: &Client,
     mostro_pubkey: PublicKey,
     user: &User,
     info: &RestoredOrdersInfo,
+    mostro_detail: Option<&SmallOrder>,
 ) -> Result<RestoredAs> {
     let id_str = info.order_id.to_string();
 
@@ -364,9 +506,15 @@ async fn restore_one_order(
 
     let trade_keys = user.derive_trade_keys(info.trade_index)?;
 
-    // A relay lookup *error* is not "not found": log it so a flaky relay is
-    // visible, but still persist the minimal row so the trade key is not lost.
-    let relay_order =
+    // Prefer stage-2 Mostro details (trade pubkeys), then relay, then minimal row.
+    let small_order = if let Some(detail) = mostro_detail {
+        let mut o = detail.clone();
+        o.id = Some(info.order_id);
+        if let Ok(status) = Status::from_str(&info.status) {
+            o.status = Some(status);
+        }
+        Some(o)
+    } else {
         match fetch_small_order_by_id_from_relay(client, mostro_pubkey, info.order_id).await {
             Ok(found) => found,
             Err(e) => {
@@ -376,14 +524,26 @@ async fn restore_one_order(
                 );
                 None
             }
-        };
-    let with_details = relay_order.is_some();
-    let mut small_order = relay_order.unwrap_or_default();
+        }
+    };
+    let with_details = small_order.is_some();
+    let mut small_order = small_order.unwrap_or_default();
     small_order.id = Some(info.order_id);
     // Mostro's database is authoritative for the status; relay events may lag.
     if let Ok(status) = Status::from_str(&info.status) {
         small_order.status = Some(status);
     }
+
+    let (is_maker, role_unknown) = match is_maker_from_mostro_details(&small_order, &trade_keys) {
+        Some(maker) => (maker, false),
+        None => {
+            let heuristic = restored_order_role(small_order.status);
+            (
+                matches!(heuristic, RestoredRole::Maker),
+                matches!(heuristic, RestoredRole::UnknownAsTaker),
+            )
+        }
+    };
 
     if placeholder {
         // Rehydrate through the upsert that merges onto the existing row.
@@ -396,34 +556,88 @@ async fn restore_one_order(
             .await?;
         return Ok(RestoredAs::Inserted {
             with_details,
-            role_unknown: false,
+            role_unknown,
         });
     }
 
-    let role = restored_order_role(small_order.status);
     Order::new(
         pool,
         small_order,
         &trade_keys,
         None,
         info.trade_index,
-        matches!(role, RestoredRole::Maker),
+        is_maker,
     )
     .await?;
     Ok(RestoredAs::Inserted {
         with_details,
-        role_unknown: matches!(role, RestoredRole::UnknownAsTaker),
+        role_unknown,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        is_minimal_placeholder, restore_completion_result, restored_order_role, RestoreSummary,
-        RestoredRole,
+        is_maker_from_mostro_details, is_minimal_placeholder, restore_completion_result,
+        restored_order_role, RestoreSummary, RestoredRole,
     };
     use crate::ui::OperationResult;
-    use mostro_core::prelude::Status;
+    use mostro_core::prelude::{Kind, SmallOrder, Status};
+    use nostr_sdk::prelude::Keys;
+    use uuid::Uuid;
+
+    fn sample_small_order(kind: Kind, buyer_hex: &str, seller_hex: &str) -> SmallOrder {
+        SmallOrder {
+            id: Some(Uuid::new_v4()),
+            kind: Some(kind),
+            buyer_trade_pubkey: Some(buyer_hex.to_string()),
+            seller_trade_pubkey: Some(seller_hex.to_string()),
+            fiat_code: "USD".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_maker_from_mostro_details_matches_buyer_on_buy_order() {
+        let trade_keys = Keys::generate();
+        let order = sample_small_order(
+            Kind::Buy,
+            &trade_keys.public_key().to_string(),
+            &Keys::generate().public_key().to_string(),
+        );
+        assert_eq!(
+            is_maker_from_mostro_details(&order, &trade_keys),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn is_maker_from_mostro_details_matches_seller_on_sell_order() {
+        let trade_keys = Keys::generate();
+        let order = sample_small_order(
+            Kind::Sell,
+            &Keys::generate().public_key().to_string(),
+            &trade_keys.public_key().to_string(),
+        );
+        assert_eq!(
+            is_maker_from_mostro_details(&order, &trade_keys),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn is_maker_from_mostro_details_taker_when_buyer_on_sell_order() {
+        let trade_keys = Keys::generate();
+        let order = sample_small_order(
+            Kind::Sell,
+            &trade_keys.public_key().to_string(),
+            &Keys::generate().public_key().to_string(),
+        );
+        assert_eq!(
+            is_maker_from_mostro_details(&order, &trade_keys),
+            Some(false)
+        );
+    }
 
     #[test]
     fn successful_restore_emits_session_restored_not_info() {
