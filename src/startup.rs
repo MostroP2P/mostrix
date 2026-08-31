@@ -154,16 +154,12 @@ pub async fn run_post_terminal_startup(
     } else if matches!(input.user_role, UserRole::User) {
         // Mobile parity: silently align local trade index with Mostro on startup.
         if User::get(input.pool).await.is_ok() {
-            let pool = input.pool.clone();
-            let client = client.clone();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    sync_trade_index_from_mostro_and_persist(&pool, &client, mostro_pubkey, None)
-                        .await
-                {
-                    log::warn!("Startup trade index sync failed: {e}");
-                }
-            });
+            if let Err(e) =
+                sync_trade_index_from_mostro_and_persist(input.pool, &client, mostro_pubkey, None)
+                    .await
+            {
+                log::warn!("Startup trade index sync failed: {e}");
+            }
         }
     }
 
