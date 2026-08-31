@@ -192,7 +192,9 @@ pub enum OperationResult {
     MyTradesMakerBookChanged,
     /// Session restore finished: resync My Trades/Messages projections from
     /// SQLite (same DB-to-UI sync as startup), then show `message`.
-    SessionRestored { message: String },
+    SessionRestored {
+        message: String,
+    },
     /// Orders refreshed from Mostro (`Action::Orders`): resync the My Trades and
     /// Messages projections from SQLite, then show `message`.
     OrdersRefreshed {
