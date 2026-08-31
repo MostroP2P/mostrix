@@ -186,8 +186,10 @@ Several background tasks are spawned to keep the UI and data in sync:
    - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.
    - `listen_for_order_messages(client, mostro_pubkey, transport, pool, …, order_last_seen_dm_ts, …, dm_subscription_rx)` runs as the single router loop consuming:
      - `TrackOrder` commands for long-lived trade subscriptions.
+     - `HydrateActiveTradeDms` after session restore: ensure subscriptions for the active-order map, then the same one-shot `fetch_events` replay as cold start (so Messages/My Trades rehydrate without restarting).
      - `RegisterWaiter` commands for one-shot request/response waits.
    - After bootstrapping per-order protocol-DM subscriptions (`ensure_order_dm_subscription`), the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
+   - **Post-restore hydrate:** when restore completes (`OperationResult::SessionRestored`), `hydrate_ui_after_session_restore` reloads disk chat + synthetic Messages rows, seeds `active_order_trade_indices`, calls `track_startup_chats` for peer/solver shared-key chat, and sends `HydrateActiveTradeDms` for Mostro trade-DM replay.
    - **Startup transport:** `startup.rs` awaits instance info when relays are reachable, then spawns the listener with resolved `app.transport`.
    - **Reload / reconnect transport:** [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) re-fetches instance info and updates `app.transport` **before** respawning the listener (key reload, fetch-scheduler reload, network reconnect).
    - This unifies in-flight response handling and background trade notifications on top of one notification stream.

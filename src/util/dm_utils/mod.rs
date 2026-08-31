@@ -91,6 +91,12 @@ pub enum DmRouterCmd {
         order_id: Uuid,
         trade_index: i64,
     },
+    /// Ensure active-order protocol DM subscriptions exist, then one-shot
+    /// `fetch_events` replay (same path as cold start). Used after session
+    /// restore so Messages can rehydrate without restarting Mostrix.
+    HydrateActiveTradeDms {
+        order_last_seen_dm_ts: HashMap<Uuid, i64>,
+    },
     RegisterWaiter {
         trade_keys: Keys,
         response_tx: oneshot::Sender<Event>,
@@ -1814,6 +1820,95 @@ pub async fn listen_for_order_messages(
                         {
                             continue;
                         }
+                    }
+                    DmRouterCmd::HydrateActiveTradeDms {
+                        order_last_seen_dm_ts,
+                    } => {
+                        // Re-read identity in case keys were rotated/imported before restore.
+                        let user = match User::get(&pool).await {
+                            Ok(u) => u,
+                            Err(e) => {
+                                log::error!(
+                                    "[dm_listener] HydrateActiveTradeDms: failed to load user: {e}"
+                                );
+                                continue;
+                            }
+                        };
+                        let startup_active_orders = {
+                            match active_order_trade_indices.lock() {
+                                Ok(indices) => indices.clone(),
+                                Err(e) => {
+                                    crate::util::request_fatal_restart(format!(
+                                        "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
+                                    ));
+                                    return;
+                                }
+                            }
+                        };
+                        log::info!(
+                            "[dm_listener] HydrateActiveTradeDms: ensuring {} active order subscription(s) then replaying",
+                            startup_active_orders.len()
+                        );
+                        for (&order_id, &trade_index) in startup_active_orders.iter() {
+                            let trade_keys = match user.derive_trade_keys(trade_index) {
+                                Ok(k) => k,
+                                Err(e) => {
+                                    log::error!(
+                                        "HydrateActiveTradeDms: failed to derive trade keys for index {trade_index}: {e}"
+                                    );
+                                    continue;
+                                }
+                            };
+                            let pubkey = trade_keys.public_key();
+                            let already_live = subscribed_pubkeys.contains(&pubkey);
+                            let mode = if already_live {
+                                dm_helpers::DmSubscriptionMode::LiveOnly
+                            } else {
+                                match order_last_seen_dm_ts.get(&order_id).copied() {
+                                    Some(ts) => dm_helpers::DmSubscriptionMode::StartupSince(ts),
+                                    None => dm_helpers::DmSubscriptionMode::StartupCatchUp,
+                                }
+                            };
+                            let _ = dm_helpers::ensure_order_dm_subscription(
+                                &client,
+                                transport,
+                                mostro_pubkey,
+                                &mut subscribed_pubkeys,
+                                &mut subscription_to_order,
+                                &mut pubkey_to_subscription,
+                                pubkey,
+                                dm_helpers::DmOrderSubscription {
+                                    order_id,
+                                    trade_index,
+                                    error_label: "Failed hydrate subscribe for trade pubkey",
+                                    info_label: Some(
+                                        "[dm_listener] Hydrate subscribed protocol DM:",
+                                    ),
+                                    mode,
+                                },
+                            )
+                            .await;
+                        }
+                        fetch_and_replay_startup_trade_dms(
+                            DmListenerStartupReplay {
+                                client: &client,
+                                mostro_pubkey,
+                                transport,
+                                pool: &pool,
+                                user: &user,
+                                messages: &messages,
+                                pending_notifications: &pending_notifications,
+                                message_notification_tx: &message_notification_tx,
+                                active_order_trade_indices: &active_order_trade_indices,
+                                subscribed_pubkeys: &mut subscribed_pubkeys,
+                                subscription_to_order: &mut subscription_to_order,
+                                pubkey_to_subscription: &pubkey_to_subscription,
+                                dropped_user_history_order_ids: &dropped_user_history_order_ids,
+                            },
+                            &startup_active_orders,
+                            &order_last_seen_dm_ts,
+                        )
+                        .await;
                     }
                     DmRouterCmd::RegisterWaiter {
                         trade_keys,

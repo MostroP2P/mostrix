@@ -108,11 +108,14 @@ pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui:
 /// user's mnemonic at the reported trade index, full details are fetched from
 /// the relays when available, and the row is inserted locally. Non-terminal
 /// orders are handed to the DM router (`TrackOrder`) so their messages route
-/// live without a restart. Disputes restore their id and, when a solver is
-/// already assigned, the user↔solver chat secret (re-derived from the restored
-/// trade keys) so an in-flight dispute stays readable. Stage 3 fetches
-/// `Action::LastTradeIndex` from Mostro; `last_trade_index` advances to
-/// `max(restore indices, mostro_last)` so future trades never reuse a key.
+/// live without a restart. Peer chat + Messages tab history are rehydrated when
+/// the UI handles [`crate::ui::OperationResult::SessionRestored`] (see
+/// [`crate::ui::helpers::hydrate_ui_after_session_restore`]). Disputes restore
+/// their id and, when a solver is already assigned, the user↔solver chat secret
+/// (re-derived from the restored trade keys) so an in-flight dispute stays
+/// readable. Stage 3 fetches `Action::LastTradeIndex` from Mostro;
+/// `last_trade_index` advances to `max(restore indices, mostro_last)` so future
+/// trades never reuse a key.
 pub async fn execute_restore_session(
     pool: &SqlitePool,
     client: &Client,

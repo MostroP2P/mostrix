@@ -329,6 +329,58 @@ pub async fn refresh_my_trades_maker_book_cache(pool: &SqlitePool, app: &mut App
         .collect();
 }
 
+/// After a successful session restore, rehydrate the same chat surfaces cold start uses.
+///
+/// Restore itself persists SQLite rows and sends `TrackOrder` for live Mostro DMs, but does
+/// not (1) seed peer-chat router tracks / on-disk transcripts into [`AppState`], or (2)
+/// one-shot replay historical trade DMs into the Messages tab. Without this, Active trades
+/// stay chat-empty until Mostrix is restarted.
+pub async fn hydrate_ui_after_session_restore(
+    pool: &SqlitePool,
+    app: &mut AppState,
+    dm_subscription_tx: &tokio::sync::mpsc::UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
+) {
+    if app.user_role != UserRole::User {
+        return;
+    }
+
+    // Disk transcripts (usually empty after wipe) + synthetic Messages rows + maker book.
+    load_user_order_chats_at_startup(pool, app).await;
+
+    let startup_dm = match crate::util::hydrate_startup_active_order_dm_state(pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("Post-restore: failed to load active-order DM map from DB: {e}");
+            track_startup_chats(pool, app).await;
+            return;
+        }
+    };
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm.active_order_trade_indices.clone();
+    } else {
+        log::warn!("Post-restore: failed to update active order map (poisoned lock)");
+    }
+    for (order_id, ts) in &startup_dm.order_last_seen_dm_ts {
+        app.startup_popup_floor_ts.entry(*order_id).or_insert(*ts);
+    }
+
+    // Peer (+ solver) shared-key chat subscribe + relay history hydrate via chat router.
+    track_startup_chats(pool, app).await;
+
+    let active_count = startup_dm.active_order_trade_indices.len();
+    if let Err(e) =
+        dm_subscription_tx.send(crate::util::OrderDmSubscriptionCmd::HydrateActiveTradeDms {
+            order_last_seen_dm_ts: startup_dm.order_last_seen_dm_ts,
+        })
+    {
+        log::warn!("Post-restore: failed to request trade DM replay: {e}");
+    } else {
+        log::info!(
+            "Post-restore: requested Messages trade-DM replay for {active_count} active order(s)"
+        );
+    }
+}
+
 fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
@@ -840,4 +892,100 @@ pub async fn apply_admin_chat_updates(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod post_restore_hydrate_tests {
+    use super::hydrate_ui_after_session_restore;
+    use crate::models::User;
+    use crate::ui::{AppState, UserRole};
+    use crate::util::OrderDmSubscriptionCmd;
+    use uuid::Uuid;
+
+    async fn pool_with_active_order() -> (sqlx::SqlitePool, Uuid, i64) {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("db");
+        sqlx::query(
+            r#"
+            CREATE TABLE users (
+                i0_pubkey TEXT PRIMARY KEY,
+                mnemonic TEXT NOT NULL,
+                last_trade_index INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("schema");
+
+        let mnemonic =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string();
+        let user = User::new(mnemonic, &pool).await.expect("user");
+        let trade_index = 2_i64;
+        let trade_keys = user.derive_trade_keys(trade_index).expect("trade keys");
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO orders (
+                id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium,
+                trade_keys, is_mine, trade_index, created_at
+            ) VALUES (?, 'sell', 'active', 1000, 'USD', 50, 'ln', 0, ?, 0, ?, ?)
+            "#,
+        )
+        .bind(order_id.to_string())
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .bind(trade_index)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("order");
+
+        (pool, order_id, trade_index)
+    }
+
+    #[tokio::test]
+    async fn post_restore_hydrate_seeds_active_map_and_requests_dm_replay() {
+        let (pool, order_id, trade_index) = pool_with_active_order().await;
+        let mut app = AppState::new(UserRole::User);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        hydrate_ui_after_session_restore(&pool, &mut app, &tx).await;
+
+        let indices = app.active_order_trade_indices.lock().expect("lock");
+        assert_eq!(indices.get(&order_id), Some(&trade_index));
+
+        match rx.try_recv().expect("hydrate cmd") {
+            OrderDmSubscriptionCmd::HydrateActiveTradeDms { .. } => {}
+            other => panic!("expected HydrateActiveTradeDms, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn post_restore_hydrate_is_noop_for_admin() {
+        let (pool, _, _) = pool_with_active_order().await;
+        let mut app = AppState::new(UserRole::Admin);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        hydrate_ui_after_session_restore(&pool, &mut app, &tx).await;
+
+        assert!(rx.try_recv().is_err());
+        assert!(app
+            .active_order_trade_indices
+            .lock()
+            .expect("lock")
+            .is_empty());
+    }
 }
