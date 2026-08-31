@@ -62,5 +62,5 @@ pub use send_attachment::{
     blossom_servers_from_settings, send_prepared_order_chat_attachment,
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
-pub use session_wipe::clear_local_session_state;
+pub use session_wipe::{clear_local_session_state, import_seed_and_wipe_session};
 pub use types::{get_cant_do_description, Event, ListKind};

@@ -9,8 +9,10 @@ use sqlx::sqlite::SqlitePool;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::models::{AdminDispute, Order};
-use crate::settings::{load_settings_from_disk, save_settings, Settings};
+use crate::models::{AdminDispute, Order, User};
+use crate::settings::{
+    load_settings_from_disk, replace_settings_file_atomically, settings_file_path, Settings,
+};
 
 /// Subdirectories under the Mostrix data dir removed on session wipe.
 pub const SESSION_WIPE_DATA_SUBDIRS: &[&str] = &[
@@ -19,6 +21,59 @@ pub const SESSION_WIPE_DATA_SUBDIRS: &[&str] = &[
     "disputes_chat",
     "downloads",
 ];
+
+#[cfg(test)]
+type InjectionHook = Option<fn() -> Result<()>>;
+
+#[cfg(test)]
+fn inject_settings_replace_fail() -> Result<()> {
+    Err(anyhow::anyhow!("injected settings replace failure"))
+}
+
+#[cfg(test)]
+fn inject_db_commit_fail() -> Result<()> {
+    Err(anyhow::anyhow!("injected db commit failure"))
+}
+
+#[cfg(not(test))]
+fn replace_settings_atomically_checked(path: &Path, toml_string: &str) -> Result<()> {
+    replace_settings_file_atomically(path, toml_string)
+}
+
+#[cfg(test)]
+fn replace_settings_atomically_checked_inner(
+    path: &Path,
+    toml_string: &str,
+    inject_fail: InjectionHook,
+) -> Result<()> {
+    if let Some(hook) = inject_fail {
+        hook()?;
+    }
+    replace_settings_file_atomically(path, toml_string)
+}
+
+#[cfg(test)]
+fn replace_settings_atomically_checked(path: &Path, toml_string: &str) -> Result<()> {
+    replace_settings_atomically_checked_inner(path, toml_string, None)
+}
+
+#[cfg(not(test))]
+fn maybe_fail_db_commit_injection() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn maybe_fail_db_commit_inner(inject_fail: InjectionHook) -> Result<()> {
+    if let Some(hook) = inject_fail {
+        hook()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn maybe_fail_db_commit_injection() -> Result<()> {
+    maybe_fail_db_commit_inner(None)
+}
 
 /// Session chat/download dirs moved aside during a wipe until the caller commits
 /// or rolls back.
@@ -96,6 +151,118 @@ impl StagedSessionWipe {
     }
 }
 
+/// On-disk copy of `settings.toml` taken before a destructive session mutation.
+struct SettingsSnapshot {
+    path: PathBuf,
+    backup_path: PathBuf,
+}
+
+impl SettingsSnapshot {
+    fn capture(settings_path: &Path, staging_dir: &Path) -> Result<Option<Self>> {
+        if !settings_path.exists() {
+            return Ok(None);
+        }
+        fs::create_dir_all(staging_dir).with_context(|| {
+            format!(
+                "Failed to create settings staging dir {}",
+                staging_dir.display()
+            )
+        })?;
+        let backup_path = staging_dir.join("settings.toml.bak");
+        fs::copy(settings_path, &backup_path).with_context(|| {
+            format!(
+                "Failed to back up settings file {}",
+                settings_path.display()
+            )
+        })?;
+        Ok(Some(Self {
+            path: settings_path.to_path_buf(),
+            backup_path,
+        }))
+    }
+
+    fn restore(self) -> Result<()> {
+        fs::copy(&self.backup_path, &self.path)
+            .with_context(|| format!("Failed to restore settings file {}", self.path.display()))?;
+        let _ = fs::remove_file(&self.backup_path);
+        Ok(())
+    }
+
+    fn discard(self) -> Result<()> {
+        if self.backup_path.exists() {
+            fs::remove_file(&self.backup_path).with_context(|| {
+                format!(
+                    "Failed to remove settings backup {}",
+                    self.backup_path.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// Stages session files and settings so DB/settings/files can be rolled back together.
+struct SessionMutationScope {
+    files: StagedSessionWipe,
+    settings: Option<SettingsSnapshot>,
+    staging_dir: PathBuf,
+}
+
+impl SessionMutationScope {
+    fn begin(base: &Path) -> Result<Self> {
+        let staging_dir = base.join(format!(".session-mutation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&staging_dir).with_context(|| {
+            format!(
+                "Failed to create session mutation staging dir {}",
+                staging_dir.display()
+            )
+        })?;
+        let files = StagedSessionWipe::begin(base)?;
+        let settings_path = settings_file_path()?;
+        let settings = SettingsSnapshot::capture(&settings_path, &staging_dir)?;
+        Ok(Self {
+            files,
+            settings,
+            staging_dir,
+        })
+    }
+
+    #[cfg(test)]
+    fn begin_with_settings_path(base: &Path, settings_path: &Path) -> Result<Self> {
+        let staging_dir = base.join(format!(".session-mutation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&staging_dir)?;
+        let files = StagedSessionWipe::begin(base)?;
+        let settings = SettingsSnapshot::capture(settings_path, &staging_dir)?;
+        Ok(Self {
+            files,
+            settings,
+            staging_dir,
+        })
+    }
+
+    fn rollback(mut self) -> Result<()> {
+        if let Some(settings) = self.settings.take() {
+            settings.restore()?;
+        }
+        self.files.rollback()?;
+        if self.staging_dir.exists() {
+            fs::remove_dir_all(&self.staging_dir).ok();
+        }
+        Ok(())
+    }
+
+    fn commit(mut self) -> Result<()> {
+        if let Some(settings) = self.settings.take() {
+            settings.discard()?;
+        }
+        self.files.commit()?;
+        if self.staging_dir.exists() {
+            fs::remove_dir_all(&self.staging_dir).ok();
+        }
+        Ok(())
+    }
+}
+
 /// Resolve `~/.mostrix` (i.e. `~/.{CARGO_PKG_NAME}`).
 pub fn mostrix_data_dir() -> Result<PathBuf> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
@@ -135,6 +302,7 @@ pub fn clear_ln_address(settings: &mut Settings) {
 
 /// Persist an empty `ln_address` while keeping relays, Mostro pubkey, and admin key.
 pub fn clear_ln_address_in_settings() -> Result<()> {
+    let settings_path = settings_file_path()?;
     let mut settings = match load_settings_from_disk() {
         Ok(s) => s,
         Err(e) => {
@@ -146,8 +314,9 @@ pub fn clear_ln_address_in_settings() -> Result<()> {
         return Ok(());
     }
     clear_ln_address(&mut settings);
-    save_settings(&settings)?;
-    Ok(())
+    let toml_string = toml::to_string_pretty(&settings)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
+    replace_settings_atomically_checked(&settings_path, &toml_string)
 }
 
 /// Wipe all local session state: database rows, chat/download files, and `ln_address`.
@@ -155,33 +324,81 @@ pub fn clear_ln_address_in_settings() -> Result<()> {
 /// Does **not** rotate identity keys or update `nsec_privkey` — callers insert a new
 /// user (e.g. via [`crate::models::User::replace_all_atomic`]) after this returns.
 ///
-/// Session directories are staged first and only replaced after database and settings
-/// updates succeed, so a mid-wipe failure can roll back the on-disk session.
+/// Settings are updated before the database commit; on any failure the settings backup,
+/// database transaction, and staged session directories are rolled back together.
 pub async fn clear_local_session_state(pool: &SqlitePool) -> Result<()> {
     let base = mostrix_data_dir()?;
-    let staged = StagedSessionWipe::begin(&base)?;
+    let scope = SessionMutationScope::begin(&base)?;
 
-    if let Err(e) = (async {
+    let outcome = async {
+        clear_ln_address_in_settings()?;
+        maybe_fail_db_commit_injection()?;
+
         let mut tx = pool.begin().await?;
         clear_session_tables_in_tx(&mut tx).await?;
         tx.commit().await?;
         Ok::<(), anyhow::Error>(())
-    })
-    .await
-    {
-        staged.rollback()?;
-        return Err(e);
     }
+    .await;
 
-    if let Err(e) = clear_ln_address_in_settings() {
-        staged.rollback()?;
-        return Err(e);
+    match outcome {
+        Ok(()) => {
+            scope.commit()?;
+            log::info!("Cleared local session state (database, chat files, downloads, ln_address)");
+            Ok(())
+        }
+        Err(e) => {
+            scope.rollback()?;
+            Err(e)
+        }
     }
+}
 
-    staged.commit()?;
+/// Import a BIP-39 mnemonic: wipe local session tables, insert the new user, and
+/// atomically update `nsec_privkey` (clearing `ln_address`) in settings.toml.
+///
+/// Settings are replaced before the database transaction commits so a late settings
+/// failure cannot strand a wiped database behind the old `nsec_privkey`.
+pub async fn import_seed_and_wipe_session(
+    pool: &SqlitePool,
+    mnemonic: String,
+    derived_nsec: String,
+) -> Result<()> {
+    let base = mostrix_data_dir()?;
+    let scope = SessionMutationScope::begin(&base)?;
 
-    log::info!("Cleared local session state (database, chat files, downloads, ln_address)");
-    Ok(())
+    let outcome = async {
+        let new_user = User::from_mnemonic(mnemonic)?;
+        let mut tx = pool.begin().await?;
+        clear_session_tables_in_tx(&mut tx).await?;
+        User::replace_all_in_tx(&new_user, &mut tx).await?;
+
+        let settings_path = settings_file_path()?;
+        let mut settings = load_settings_from_disk()?;
+        settings.nsec_privkey = derived_nsec;
+        clear_ln_address(&mut settings);
+        let toml_string = toml::to_string_pretty(&settings)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
+        replace_settings_atomically_checked(&settings_path, &toml_string)?;
+
+        maybe_fail_db_commit_injection()?;
+        tx.commit().await?;
+
+        log::info!(
+            "Imported seed for identity {}; local session wiped",
+            new_user.i0_pubkey
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    match outcome {
+        Ok(()) => scope.commit(),
+        Err(e) => {
+            scope.rollback()?;
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +507,107 @@ mod tests {
         pool
     }
 
+    async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
+        let query = format!("SELECT COUNT(*) FROM {table}");
+        let (count,): (i64,) = sqlx::query_as(&query)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|e| panic!("count {table}: {e}"));
+        count
+    }
+
+    const SAMPLE_SETTINGS: &str = r#"
+mostro_pubkey = "npub-old"
+nsec_privkey = "nsec-old"
+admin_privkey = ""
+relays = ["wss://relay.example.com"]
+log_level = "info"
+currencies_filter = ["USD"]
+user_mode = "user"
+ln_address = "user@domain.com"
+"#;
+
+    async fn import_seed_with_paths(
+        pool: &SqlitePool,
+        base: &Path,
+        settings_path: &Path,
+        derived_nsec: &str,
+        settings_inject: InjectionHook,
+        db_inject: InjectionHook,
+    ) -> Result<()> {
+        let scope = SessionMutationScope::begin_with_settings_path(base, settings_path)?;
+        let outcome = async {
+            let new_user = User::from_mnemonic(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                    .to_string(),
+            )?;
+            let mut tx = pool.begin().await?;
+            clear_session_tables_in_tx(&mut tx).await?;
+            User::replace_all_in_tx(&new_user, &mut tx).await?;
+
+            let mut settings: Settings =
+                toml::from_str(&fs::read_to_string(settings_path)?)?;
+            settings.nsec_privkey = derived_nsec.to_string();
+            clear_ln_address(&mut settings);
+            let toml_string = toml::to_string_pretty(&settings)?;
+            replace_settings_atomically_checked_inner(
+                settings_path,
+                &toml_string,
+                settings_inject,
+            )?;
+
+            maybe_fail_db_commit_inner(db_inject)?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match outcome {
+            Ok(()) => scope.commit(),
+            Err(e) => {
+                scope.rollback()?;
+                Err(e)
+            }
+        }
+    }
+
+    async fn clear_session_with_paths(
+        pool: &SqlitePool,
+        base: &Path,
+        settings_path: &Path,
+        settings_inject: InjectionHook,
+        db_inject: InjectionHook,
+    ) -> Result<()> {
+        let scope = SessionMutationScope::begin_with_settings_path(base, settings_path)?;
+        let outcome = async {
+            let mut settings: Settings =
+                toml::from_str(fs::read_to_string(settings_path)?.as_str())?;
+            if !settings.ln_address.is_empty() {
+                clear_ln_address(&mut settings);
+                let toml_string = toml::to_string_pretty(&settings)?;
+                replace_settings_atomically_checked_inner(
+                    settings_path,
+                    &toml_string,
+                    settings_inject,
+                )?;
+            }
+            maybe_fail_db_commit_inner(db_inject)?;
+            let mut tx = pool.begin().await?;
+            clear_session_tables_in_tx(&mut tx).await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match outcome {
+            Ok(()) => scope.commit(),
+            Err(e) => {
+                scope.rollback()?;
+                Err(e)
+            }
+        }
+    }
+
     #[tokio::test]
     async fn clear_session_tables_in_tx_removes_all_rows() {
         let pool = create_wipe_test_pool().await;
@@ -299,22 +617,9 @@ mod tests {
             .expect("wipe tables");
         tx.commit().await.expect("commit");
 
-        let (users,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-            .fetch_one(&pool)
-            .await
-            .expect("users count");
-        let (orders,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orders")
-            .fetch_one(&pool)
-            .await
-            .expect("orders count");
-        let (disputes,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM admin_disputes")
-            .fetch_one(&pool)
-            .await
-            .expect("disputes count");
-
-        assert_eq!(users, 0);
-        assert_eq!(orders, 0);
-        assert_eq!(disputes, 0);
+        assert_eq!(count_rows(&pool, "users").await, 0);
+        assert_eq!(count_rows(&pool, "orders").await, 0);
+        assert_eq!(count_rows(&pool, "admin_disputes").await, 0);
     }
 
     #[test]
@@ -381,5 +686,123 @@ mod tests {
         assert!(settings.ln_address.is_empty());
         assert_eq!(settings.mostro_pubkey, "npub");
         assert_eq!(settings.relays, vec!["wss://relay.example"]);
+    }
+
+    #[tokio::test]
+    async fn import_rollback_keeps_db_and_settings_when_settings_replace_fails() {
+        let base = std::env::temp_dir().join(format!("mostrix-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).expect("base");
+        let settings_path = base.join("settings.toml");
+        fs::write(&settings_path, SAMPLE_SETTINGS).expect("settings");
+
+        let pool = create_wipe_test_pool().await;
+
+        let err = import_seed_with_paths(
+            &pool,
+            &base,
+            &settings_path,
+            "nsec-new",
+            Some(inject_settings_replace_fail),
+            None,
+        )
+        .await
+        .expect_err("settings failure should abort import");
+        assert!(err
+            .to_string()
+            .contains("injected settings replace failure"));
+
+        assert_eq!(count_rows(&pool, "users").await, 1);
+        assert_eq!(count_rows(&pool, "orders").await, 1);
+        let restored = fs::read_to_string(&settings_path).expect("settings");
+        assert!(restored.contains("nsec-old"));
+        assert!(restored.contains("user@domain.com"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn import_rollback_restores_settings_when_db_commit_fails() {
+        let base = std::env::temp_dir().join(format!("mostrix-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).expect("base");
+        let settings_path = base.join("settings.toml");
+        fs::write(&settings_path, SAMPLE_SETTINGS).expect("settings");
+
+        let pool = create_wipe_test_pool().await;
+
+        let err = import_seed_with_paths(
+            &pool,
+            &base,
+            &settings_path,
+            "nsec-new",
+            None,
+            Some(inject_db_commit_fail),
+        )
+        .await
+        .expect_err("db failure should abort import");
+        assert!(err.to_string().contains("injected db commit failure"));
+
+        assert_eq!(count_rows(&pool, "users").await, 1);
+        assert_eq!(count_rows(&pool, "orders").await, 1);
+        let restored = fs::read_to_string(&settings_path).expect("settings");
+        assert!(restored.contains("nsec-old"));
+        assert!(restored.contains("user@domain.com"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn clear_session_rollback_restores_settings_when_db_commit_fails() {
+        let base = std::env::temp_dir().join(format!("mostrix-wipe-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).expect("base");
+        let settings_path = base.join("settings.toml");
+        fs::write(&settings_path, SAMPLE_SETTINGS).expect("settings");
+
+        let pool = create_wipe_test_pool().await;
+
+        let err = clear_session_with_paths(
+            &pool,
+            &base,
+            &settings_path,
+            None,
+            Some(inject_db_commit_fail),
+        )
+        .await
+        .expect_err("db failure should abort wipe");
+        assert!(err.to_string().contains("injected db commit failure"));
+
+        assert_eq!(count_rows(&pool, "users").await, 1);
+        let restored = fs::read_to_string(&settings_path).expect("settings");
+        assert!(restored.contains("user@domain.com"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn clear_session_rollback_restores_settings_when_settings_replace_fails() {
+        let base = std::env::temp_dir().join(format!("mostrix-wipe-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).expect("base");
+        let settings_path = base.join("settings.toml");
+        fs::write(&settings_path, SAMPLE_SETTINGS).expect("settings");
+
+        let pool = create_wipe_test_pool().await;
+
+        let err = clear_session_with_paths(
+            &pool,
+            &base,
+            &settings_path,
+            Some(inject_settings_replace_fail),
+            None,
+        )
+        .await
+        .expect_err("settings failure should abort wipe");
+        assert!(err
+            .to_string()
+            .contains("injected settings replace failure"));
+
+        assert_eq!(count_rows(&pool, "users").await, 1);
+        let restored = fs::read_to_string(&settings_path).expect("settings");
+        assert!(restored.contains("user@domain.com"));
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
