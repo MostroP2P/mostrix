@@ -195,6 +195,11 @@ pub enum OperationResult {
     SessionRestored {
         message: String,
     },
+    /// Orders refreshed from Mostro (`Action::Orders`): resync the My Trades and
+    /// Messages projections from SQLite, then show `message`.
+    OrdersRefreshed {
+        message: String,
+    },
     /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).
     OpenInvoicePopup {
         notification: MessageNotification,

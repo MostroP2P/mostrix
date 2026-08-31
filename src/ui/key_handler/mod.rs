@@ -14,7 +14,7 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
-    resolve_selected_mytrades_order_status,
+    resolve_selected_mytrades_order_id, resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
     helpers::{
@@ -152,6 +152,53 @@ fn dispute_shortcut_next_mode(
         crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG.to_string(),
     );
     Some(UiMode::ViewingMessage(view_state))
+}
+
+/// Ask Mostro for the selected order's authoritative details and merge them
+/// into SQLite, then let the main loop resync the projections.
+///
+/// Uses the live Mostro pubkey (not a settings snapshot) and the cached
+/// kind-38385 info, which carries the PoW difficulty the instance requires —
+/// without it the request is rejected outright by instances that enforce PoW.
+fn spawn_orders_info(
+    order_id: uuid::Uuid,
+    pool: &SqlitePool,
+    client: &Client,
+    current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
+    mostro_info: Option<MostroInstanceInfo>,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    let Ok(mostro_pubkey) = current_mostro_pubkey.lock().map(|pk| *pk) else {
+        crate::util::request_fatal_restart(
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string(),
+        );
+        return;
+    };
+    let pool = pool.clone();
+    let client = client.clone();
+    let result_tx = order_result_tx.clone();
+    tokio::spawn(async move {
+        match crate::util::order_utils::execute_orders_info(
+            &[order_id],
+            &pool,
+            &client,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            Ok(summary) => {
+                let _ = result_tx.send(OperationResult::OrdersRefreshed {
+                    message: summary.to_user_message(),
+                });
+            }
+            Err(e) => {
+                log::error!("Orders info failed for {order_id}: {e}");
+                let _ = result_tx.send(OperationResult::Error(format!("Refresh failed: {e}")));
+            }
+        }
+    });
 }
 
 // Re-export public functions
@@ -1377,6 +1424,22 @@ pub fn handle_key_event(
                         trade_action_shortcut_next_mode(&app.mode, selected, Action::Release)
                     {
                         app.mode = next_mode;
+                        return Some(true);
+                    }
+                }
+                KeyCode::Char('u') | KeyCode::Char('U') => {
+                    if !app.mode.user_my_trades_interactive() {
+                        return Some(true);
+                    }
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        spawn_orders_info(
+                            order_id,
+                            pool,
+                            client,
+                            current_mostro_pubkey,
+                            app.mostro_info.clone(),
+                            order_result_tx,
+                        );
                         return Some(true);
                     }
                 }
