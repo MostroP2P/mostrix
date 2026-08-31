@@ -15,16 +15,18 @@ use crate::ui::helpers::{
     sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
-    append_paste_to_admin_dispute_chat, apply_pending_runtime_reloads, create_app_channels,
-    handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
+    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
+    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
 use crate::util::{
-    blossom_servers_from_settings, handle_message_notification, handle_operation_result,
-    install_background_panic_hook, order_utils::validate_range_amount, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    spawn_send_order_chat_attachment, untrack_dispute_chat_parties,
+    blossom_servers_from_settings, execute_restore_session, handle_message_notification,
+    handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
+    restore_completion_result, set_chat_router_cmd_tx, set_dm_router_cmd_tx, set_fatal_error_tx,
+    set_order_result_tx, spawn_save_attachment, spawn_send_order_chat_attachment,
+    untrack_dispute_chat_parties,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -57,6 +59,16 @@ use tokio::time::{interval, Duration};
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+/// Results that must re-run the startup DB-to-UI sync (maker book cache +
+/// order history messages) because background work changed SQLite rows the
+/// in-memory projections are built from.
+fn requires_db_projection_resync(result: &OperationResult) -> bool {
+    matches!(
+        result,
+        OperationResult::OrderHistoryDeleted { .. } | OperationResult::SessionRestored { .. }
+    )
+}
+
 async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: OperationResult) {
     let is_dispute_related = match &result {
         OperationResult::AdminDisputeDeleted { .. } => true,
@@ -66,10 +78,12 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
         }
         _ => false,
     };
-    let resync_my_trades_from_db = matches!(&result, OperationResult::OrderHistoryDeleted { .. });
+    let resync_my_trades_from_db = requires_db_projection_resync(&result);
     let refresh_maker_book_cache = matches!(
         &result,
-        OperationResult::MyTradesMakerBookChanged | OperationResult::Success(_)
+        OperationResult::MyTradesMakerBookChanged
+            | OperationResult::Success(_)
+            | OperationResult::SessionRestored { .. }
     );
 
     if refresh_maker_book_cache && app.user_role == UserRole::User {
@@ -142,7 +156,7 @@ async fn drain_order_result_queue(
     }
 }
 
-use crate::ui::{AdminMode, AppState, ChatAttachment, KeyInputState, UiMode, UserRole};
+use crate::ui::{AppState, ChatAttachment, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -185,28 +199,8 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         }
     }
 
-    // Handle paste for settings and admin key-input popups. Mirrors the
-    // char-by-char input path (handle_key_input) so terminals with bracketed
-    // paste (Event::Paste) fill the same field the user would type into.
-    let key_input_state: Option<&mut KeyInputState> = match app.mode {
-        UiMode::AddMostroPubkey(ref mut ks)
-        | UiMode::AddRelay(ref mut ks)
-        | UiMode::AddLnAddress(ref mut ks)
-        | UiMode::AddCurrency(ref mut ks)
-        | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
-        UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
-        _ => None,
-    };
-    if let Some(key_state) = key_input_state {
-        if key_state.focused {
-            let filtered_text: String = pasted_text
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\t')
-                .collect();
-            key_state.key_input.push_str(&filtered_text);
-            key_state.just_pasted = true;
-        }
-    }
+    // Settings / admin / Import Seed key-input popups (incl. multi-line seed normalize).
+    let _ = apply_paste_to_focused_key_input(app, pasted_text);
 
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
@@ -449,10 +443,90 @@ async fn main() -> Result<(), anyhow::Error> {
                 if let Some(res) = key_rotation_result {
                     match res {
                         Ok(mnemonic) => {
-                            app.backup_requires_restart = true;
-                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                            if app.awaiting_seed_import {
+                                app.awaiting_seed_import = false;
+                                app.pending_key_reload = true;
+                                app.pending_import_restore = true;
+                                apply_pending_runtime_reloads(
+                                    &mut app,
+                                    &mut client,
+                                    &mut mostro_pubkey,
+                                    &current_mostro_pubkey,
+                                    &pool,
+                                    &mut message_listener_handle,
+                                    &message_notification_tx,
+                                    &orders,
+                                    &disputes,
+                                    &mut order_task,
+                                    &mut dispute_task,
+                                    &mut dm_subscription_tx,
+                                    settings,
+                                )
+                                .await;
+                                if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
+                                    if let Err(e) = respawn_chat_listener(
+                                        &app,
+                                        &client,
+                                        &pool,
+                                        &mut chat_listener_handle,
+                                        &mut chat_router_cmd_tx,
+                                        &admin_chat_updates_tx,
+                                        &user_order_chat_updates_tx,
+                                    )
+                                    .await
+                                    {
+                                        log::error!(
+                                            "Failed to respawn chat listener after seed import: {e}"
+                                        );
+                                    }
+                                }
+                                if app.pending_import_restore {
+                                    app.pending_import_restore = false;
+                                    let reload_failed = matches!(
+                                        &app.mode,
+                                        UiMode::OperationResult(result)
+                                            if matches!(result.as_ref(), OperationResult::Error(_))
+                                    );
+                                    if !reload_failed {
+                                        app.mode = UiMode::operation_result(OperationResult::Info(
+                                            "Restoring session from Mostro...".to_string(),
+                                        ));
+                                        let pool = pool.clone();
+                                        let client = client.clone();
+                                        let mostro_pubkey = mostro_pubkey;
+                                        let mostro_info = app.mostro_info.clone();
+                                        let result_tx = order_result_tx.clone();
+                                        let dm_subscription_tx = dm_subscription_tx.clone();
+                                        tokio::spawn(async move {
+                                            let outcome = execute_restore_session(
+                                                &pool,
+                                                &client,
+                                                mostro_pubkey,
+                                                mostro_info.as_ref(),
+                                                dm_subscription_tx,
+                                            )
+                                            .await;
+                                            if let Err(e) = &outcome {
+                                                log::error!(
+                                                    "Session restore after seed import failed: {e}"
+                                                );
+                                            }
+                                            let _ = result_tx
+                                                .send(restore_completion_result(&outcome));
+                                        });
+                                    }
+                                }
+                            } else {
+                                app.backup_requires_restart = true;
+                                app.mode = UiMode::BackupNewKeys {
+                                    mnemonic,
+                                    copied_to_clipboard: false,
+                                };
+                            }
                         }
                         Err(error_msg) => {
+                            app.awaiting_seed_import = false;
+                            app.pending_import_restore = false;
                             app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
                         }
                     }
@@ -463,7 +537,10 @@ async fn main() -> Result<(), anyhow::Error> {
                     match res {
                         Ok(mnemonic) => {
                             app.backup_requires_restart = false;
-                            app.mode = UiMode::BackupNewKeys(mnemonic);
+                            app.mode = UiMode::BackupNewKeys {
+                                mnemonic,
+                                copied_to_clipboard: false,
+                            };
                         }
                         Err(error_msg) => {
                             app.mode = UiMode::operation_result(OperationResult::Error(error_msg));
@@ -816,7 +893,7 @@ async fn main() -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod paste_routing_tests {
     use super::*;
-    use crate::ui::UserRole;
+    use crate::ui::{KeyInputState, UserRole};
 
     fn focused_key_input(value: &str) -> KeyInputState {
         KeyInputState {
@@ -836,7 +913,10 @@ mod paste_routing_tests {
         match app.mode {
             UiMode::AddMostroPubkey(ks) => {
                 assert_eq!(ks.key_input, "npub1abc");
-                assert!(ks.just_pasted);
+                assert!(
+                    !ks.just_pasted,
+                    "Enter must submit on first press after paste"
+                );
             }
             other => panic!("unexpected mode: {other:?}"),
         }
@@ -861,6 +941,28 @@ mod paste_routing_tests {
     }
 
     #[test]
+    fn bracketed_paste_normalizes_multiline_seed_and_replaces_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::ImportSeedWords(focused_key_input("partial"));
+
+        apply_pasted_text_to_active_input(
+            &mut app,
+            "abandon abandon abandon\nabandon abandon abandon\nabandon abandon abandon abandon abandon about",
+        );
+
+        match app.mode {
+            UiMode::ImportSeedWords(ks) => {
+                assert_eq!(
+                    ks.key_input,
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                );
+                assert!(!ks.just_pasted);
+            }
+            other => panic!("unexpected mode: {other:?}"),
+        }
+    }
+
+    #[test]
     fn bracketed_paste_ignored_when_input_not_focused() {
         let mut app = AppState::new(UserRole::User);
         let mut ks = focused_key_input("keep");
@@ -876,5 +978,31 @@ mod paste_routing_tests {
             }
             other => panic!("unexpected mode: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod apply_order_result_tests {
+    use super::requires_db_projection_resync;
+    use crate::ui::OperationResult;
+
+    #[test]
+    fn session_restore_triggers_the_startup_db_resync() {
+        // Regression: a restore rewrites SQLite from a background task; without
+        // the resync the recovered orders stay invisible until app restart.
+        assert!(requires_db_projection_resync(
+            &OperationResult::SessionRestored {
+                message: String::new()
+            }
+        ));
+        assert!(requires_db_projection_resync(
+            &OperationResult::OrderHistoryDeleted {
+                deleted_order_ids: vec![],
+                message: String::new()
+            }
+        ));
+        assert!(!requires_db_projection_resync(&OperationResult::Info(
+            String::new()
+        )));
     }
 }

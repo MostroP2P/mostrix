@@ -525,6 +525,55 @@ fn read_clipboard_text_best_effort() -> Option<String> {
     }
 }
 
+/// Normalize a clipboard paste for the Import Seed popup: collapse any whitespace
+/// (including newlines from multi-line notes) into single spaces between words.
+pub fn normalize_seed_paste(pasted_text: &str) -> String {
+    pasted_text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Append (or replace, for seed import) pasted text into the focused settings /
+/// admin key-input popup. Returns `true` when the paste was applied.
+pub fn apply_paste_to_focused_key_input(app: &mut AppState, pasted_text: &str) -> bool {
+    let is_seed_import = matches!(app.mode, UiMode::ImportSeedWords(_));
+    let key_state = match &mut app.mode {
+        UiMode::AddMostroPubkey(ref mut ks)
+        | UiMode::AddRelay(ref mut ks)
+        | UiMode::AddLnAddress(ref mut ks)
+        | UiMode::AddCurrency(ref mut ks)
+        | UiMode::ImportSeedWords(ref mut ks)
+        | UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
+        UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
+        _ => None,
+    };
+    let Some(key_state) = key_state else {
+        return false;
+    };
+    if !key_state.focused {
+        return false;
+    }
+
+    let filtered_text = if is_seed_import {
+        normalize_seed_paste(pasted_text)
+    } else {
+        pasted_text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\t')
+            .collect::<String>()
+    };
+    if filtered_text.is_empty() {
+        return false;
+    }
+
+    if is_seed_import {
+        // Full-seed paste should replace a partial mistype, not append to it.
+        key_state.key_input = filtered_text;
+    } else {
+        key_state.key_input.push_str(&filtered_text);
+    }
+    // Do not set `just_pasted`: first Enter must submit (same as invoice paste).
+    true
+}
+
 /// Mouse right-click paste fallback for AddInvoice notification popup.
 ///
 /// Returns `true` when the event is fully handled and should be consumed by the caller.
@@ -700,6 +749,15 @@ pub fn handle_key_event(
                     // Do not set `just_pasted` — first Enter must submit (newlines already stripped).
                     return Some(true);
                 }
+            }
+        }
+    }
+
+    // Settings / admin / Import Seed key-input paste (Ctrl/Cmd+V, Shift+Insert).
+    if is_paste_shortcut(&key_event) {
+        if let Some(text) = read_clipboard_text_best_effort() {
+            if apply_paste_to_focused_key_input(app, &text) {
+                return Some(true);
             }
         }
     }
@@ -1114,6 +1172,7 @@ pub fn handle_key_event(
             | UiMode::AddRelay(_)
             | UiMode::AddLnAddress(_)
             | UiMode::AddCurrency(_)
+            | UiMode::ImportSeedWords(_)
             | UiMode::AdminMode(AdminMode::AddSolver(_))
             | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
     ) {
@@ -1122,6 +1181,7 @@ pub fn handle_key_event(
             UiMode::AddRelay(ref mut ks) => Some(ks),
             UiMode::AddLnAddress(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
+            UiMode::ImportSeedWords(ref mut ks) => Some(ks),
             UiMode::AdminMode(AdminMode::AddSolver(ref mut state)) => Some(&mut state.key_input),
             UiMode::AdminMode(AdminMode::SetupAdminKey(ref mut ks)) => Some(ks),
             _ => None,
@@ -1143,6 +1203,21 @@ pub fn handle_key_event(
     {
         if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
             invoice_state.copied_to_clipboard = false;
+        }
+    }
+
+    // Same "copied" indicator reset for View Seed Words / Generate New Keys backup.
+    if let UiMode::BackupNewKeys {
+        ref mut copied_to_clipboard,
+        ..
+    } = app.mode
+    {
+        let is_plain_c = matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+            && !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if !is_plain_c {
+            *copied_to_clipboard = false;
         }
     }
 
@@ -1438,7 +1513,9 @@ pub fn handle_key_event(
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
+                | UiMode::ConfirmRestoreSession(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
+                | UiMode::ConfirmImportSeed(_, ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);
@@ -1677,6 +1754,21 @@ pub fn handle_key_event(
                     invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
                 }
             }
+
+            // View Seed Words / Generate New Keys backup: copy mnemonic with C.
+            if !key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                if let UiMode::BackupNewKeys {
+                    ref mnemonic,
+                    ref mut copied_to_clipboard,
+                } = app.mode
+                {
+                    let text = mnemonic.to_string();
+                    *copied_to_clipboard = handle_clipboard_copy(text);
+                }
+            }
             Some(true)
         }
         KeyCode::Char(_) | KeyCode::Backspace => {
@@ -1861,6 +1953,35 @@ mod key_handler_tests {
         app.admin_chat_input_enabled = false;
         assert!(!append_paste_to_admin_dispute_chat(&mut app, "nope"));
         assert_eq!(app.admin_chat_input, "hi pasted\nline\n");
+    }
+
+    #[test]
+    fn normalize_seed_paste_collapses_newlines_to_spaces() {
+        assert_eq!(
+            normalize_seed_paste("one\ntwo\r\nthree  four"),
+            "one two three four"
+        );
+        assert!(normalize_seed_paste("  \n\t  ").is_empty());
+    }
+
+    #[test]
+    fn apply_paste_to_import_seed_replaces_and_normalizes() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::ImportSeedWords(crate::ui::KeyInputState {
+            key_input: "old".to_string(),
+            focused: true,
+            just_pasted: false,
+        });
+        assert!(apply_paste_to_focused_key_input(
+            &mut app,
+            "abandon  abandon\nabandon"
+        ));
+        match app.mode {
+            UiMode::ImportSeedWords(ks) => {
+                assert_eq!(ks.key_input, "abandon abandon abandon");
+            }
+            other => panic!("unexpected mode: {other:?}"),
+        }
     }
 
     #[test]

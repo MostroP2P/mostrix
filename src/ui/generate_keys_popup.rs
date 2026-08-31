@@ -35,11 +35,34 @@ Save backup and restart Mostrix after saving."
     );
 }
 
-pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
+pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str, copied_to_clipboard: bool) {
     let area = f.area();
-    let popup_width = 90u16;
-    // Needs to fit: comment (2 lines) + mnemonic (1 line) + help line.
-    let popup_height = 20u16;
+    let popup_width = area.width.saturating_sub(2).clamp(20, 90);
+    let compact = area.height < 16 || popup_width < 44;
+
+    let words: Vec<&str> = mnemonic.split_whitespace().collect();
+    let words_per_row = if popup_width < 50 { 4 } else { 6 };
+    let mnemonic_rows: Vec<String> = words
+        .chunks(words_per_row)
+        .map(|chunk| chunk.join(" "))
+        .collect();
+    let mnemonic_rows_count = mnemonic_rows.len().max(1) as u16;
+    let mnemonic_text = if mnemonic_rows.is_empty() {
+        mnemonic.to_string()
+    } else {
+        mnemonic_rows.join("\n")
+    };
+
+    let comment_text = if compact {
+        "Write down these 12 words and keep them safe."
+    } else {
+        "Write down these 12 words and keep them safe.\nYou will need them to restore keys."
+    };
+    let comment_rows = if compact { 1 } else { 2 };
+
+    let popup_height = (comment_rows + mnemonic_rows_count + 5)
+        .min(area.height.max(1))
+        .max(8);
 
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
@@ -57,33 +80,15 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
     f.render_widget(block, popup);
 
     // Render mnemonic in multiple rows to avoid clipping on long 12-word seeds.
-    // Default grouping: 6 words per row (2 rows for standard 12-word mnemonics).
-    let words: Vec<&str> = mnemonic.split_whitespace().collect();
-    let words_per_row = 6usize;
-    let mnemonic_rows: Vec<String> = words
-        .chunks(words_per_row)
-        .map(|chunk| chunk.join(" "))
-        .collect();
-    let mnemonic_rows_count = mnemonic_rows.len().max(1) as u16;
-    let mnemonic_text = if mnemonic_rows.is_empty() {
-        mnemonic.to_string()
-    } else {
-        mnemonic_rows.join("\n")
-    };
-
-    let comment_text =
-        "Write down these 12 words and keep them safe.\nYou will need them to restore keys.";
-
-    // Dynamic layout: mnemonic area grows with row count to keep all words visible.
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Length(2),                   // top padding
-            Constraint::Length(2),                   // comment (2 lines)
-            Constraint::Length(2),                   // spacer
-            Constraint::Length(mnemonic_rows_count), // mnemonic rows
-            Constraint::Min(0),                      // remaining spacing
-            Constraint::Length(1),                   // help
+            Constraint::Length(1),
+            Constraint::Length(comment_rows),
+            Constraint::Length(1),
+            Constraint::Length(mnemonic_rows_count),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ],
     )
     .split(inner);
@@ -102,27 +107,73 @@ pub fn render_backup_new_keys(f: &mut ratatui::Frame, mnemonic: &str) {
         chunks[3],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::White)),
-            Span::styled(
-                "Esc",
+    if copied_to_clipboard {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ Seed words copied to clipboard!",
                 Style::default()
-                    .fg(PRIMARY_COLOR)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" or "),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" to close"),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[5],
-    );
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[5],
+        );
+    } else {
+        let help = if compact {
+            Line::from(vec![
+                Span::styled(
+                    "C",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" copy · "),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("/"),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" close"),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::White)),
+                Span::styled(
+                    "C",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" to copy, "),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" or "),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" to close"),
+            ])
+        };
+        f.render_widget(
+            Paragraph::new(help).alignment(ratatui::layout::Alignment::Center),
+            chunks[5],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -173,12 +224,43 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_backup_new_keys(f, mnemonic))
+            .draw(|f| render_backup_new_keys(f, mnemonic, false))
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Save Backup"));
         assert!(buffer_contains(buf, "Esc"));
+        assert!(buffer_contains(buf, "C"));
+        assert!(buffer_contains(buf, "copy"));
         for word in mnemonic.split_whitespace() {
+            assert!(buffer_contains(buf, word), "missing mnemonic word: {word}");
+        }
+    }
+
+    #[test]
+    fn backup_new_keys_shows_copied_confirmation() {
+        let mnemonic =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_backup_new_keys(f, mnemonic, true))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Seed words copied to clipboard"));
+    }
+
+    #[test]
+    fn backup_new_keys_fits_narrow_short_terminal() {
+        let mnemonic =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_backup_new_keys(f, mnemonic, false))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Save Backup"));
+        for word in mnemonic.split_whitespace().take(4) {
             assert!(buffer_contains(buf, word), "missing mnemonic word: {word}");
         }
     }

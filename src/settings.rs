@@ -1,7 +1,10 @@
 use crate::SETTINGS;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 /// Embedded default `settings.toml` used to bootstrap configuration on first run.
 /// This is generated at compile time from the repository root `settings.toml`.
@@ -321,8 +324,8 @@ pub fn load_settings_from_disk() -> Result<Settings, anyhow::Error> {
     Ok(init_or_load_settings_from_disk(None)?.0)
 }
 
-/// Save settings to file
-pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
+/// Resolve the active `settings.toml` path (executable dir when present, else `~/.mostrix`).
+pub fn settings_file_path() -> Result<PathBuf, anyhow::Error> {
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let package_name = env!("CARGO_PKG_NAME");
@@ -332,17 +335,77 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
     let executable_file_path = env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|dir| dir.join("settings.toml")));
-    let target_settings_file = executable_file_path
+    Ok(executable_file_path
         .filter(|p| p.exists())
-        .unwrap_or(hidden_file_path);
+        .unwrap_or(hidden_file_path))
+}
 
+/// Atomically replace `settings.toml` (write temp file, then rename).
+pub fn replace_settings_file_atomically(
+    target_settings_file: &std::path::Path,
+    toml_string: &str,
+) -> Result<(), anyhow::Error> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_path = target_settings_file.with_extension(format!("tmp-{}", nanos));
+    write_restrictive_settings_temp(&tmp_path, toml_string)?;
+    fs::rename(&tmp_path, target_settings_file).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        anyhow::anyhow!("Failed to atomically replace settings: {}", e)
+    })?;
+    Ok(())
+}
+
+fn write_restrictive_settings_temp(
+    tmp_path: &Path,
+    toml_string: &str,
+) -> Result<(), anyhow::Error> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp_path)
+            .map_err(|e| anyhow::anyhow!("Failed to write temporary settings file: {}", e))?;
+        if let Err(e) = file.write_all(toml_string.as_bytes()) {
+            let _ = fs::remove_file(tmp_path);
+            Err(anyhow::anyhow!(
+                "Failed to write temporary settings file: {}",
+                e
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = fs::write(tmp_path, toml_string) {
+            let _ = fs::remove_file(tmp_path);
+            Err(anyhow::anyhow!(
+                "Failed to write temporary settings file: {}",
+                e
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Save settings to file
+pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
+    let target_settings_file = settings_file_path()?;
     let toml_string = toml::to_string_pretty(settings)
         .map_err(|e| anyhow::anyhow!("Failed to serialize settings: {}", e))?;
-
-    fs::write(&target_settings_file, toml_string)
-        .map_err(|e| anyhow::anyhow!("Failed to write settings file: {}", e))?;
-
-    Ok(())
+    replace_settings_file_atomically(&target_settings_file, &toml_string)
 }
 
 #[cfg(test)]

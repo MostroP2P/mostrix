@@ -97,6 +97,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
+        | UiMode::ConfirmRestoreSession(ref mut selected_button)
+        | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -178,6 +180,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
         | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
+        | UiMode::ConfirmRestoreSession(ref mut selected_button)
+        | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -318,8 +322,11 @@ fn handle_up_key(
         | UiMode::ConfirmClearCurrencies(_)
         | UiMode::ConfirmDeleteHistoryOrder(_, _)
         | UiMode::ConfirmBulkDeleteHistory(_)
+        | UiMode::ConfirmRestoreSession(_)
         | UiMode::ConfirmGenerateNewKeys(_)
-        | UiMode::BackupNewKeys(_)
+        | UiMode::ImportSeedWords(_)
+        | UiMode::ConfirmImportSeed(_, _)
+        | UiMode::BackupNewKeys { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -467,8 +474,11 @@ fn handle_down_key(
         | UiMode::ConfirmClearCurrencies(_)
         | UiMode::ConfirmDeleteHistoryOrder(_, _)
         | UiMode::ConfirmBulkDeleteHistory(_)
+        | UiMode::ConfirmRestoreSession(_)
         | UiMode::ConfirmGenerateNewKeys(_)
-        | UiMode::BackupNewKeys(_)
+        | UiMode::ImportSeedWords(_)
+        | UiMode::ConfirmImportSeed(_, _)
+        | UiMode::BackupNewKeys { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -619,24 +629,39 @@ mod confirm_toggle_tests {
     use super::*;
     use crate::ui::UserRole;
 
+    fn app_in(mode: UiMode) -> AppState {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = mode;
+        app
+    }
+
+    fn selected(app: &AppState) -> bool {
+        match app.mode {
+            UiMode::ConfirmGenerateNewKeys(v)
+            | UiMode::ConfirmRestoreSession(v)
+            | UiMode::ConfirmImportSeed(_, v) => v,
+            _ => panic!("unexpected mode"),
+        }
+    }
+
     #[test]
     fn generate_new_keys_confirmation_can_be_moved_to_no() {
-        // Rotating keys replaces the user row and clears the orders table, so
-        // this confirmation must be selectable. It was missing from both
-        // Left/Right groups: arrowing to NO did nothing and Enter rotated.
+        // Regression: this destructive confirmation (rotating keys wipes the
+        // identity and the orders table) was missing from the Left/Right
+        // groups, so arrowing to NO did nothing and Enter still rotated.
         let orders = Arc::new(Mutex::new(Vec::new()));
-        let mut app = AppState::new(UserRole::User);
-        app.mode = UiMode::ConfirmGenerateNewKeys(true);
-
+        let mut app = app_in(UiMode::ConfirmGenerateNewKeys(true));
         handle_right_key(&mut app, &orders);
-        assert!(
-            matches!(app.mode, UiMode::ConfirmGenerateNewKeys(false)),
-            "Right must select NO"
-        );
+        assert!(!selected(&app), "Right must select NO");
         handle_left_key(&mut app, &orders);
-        assert!(
-            matches!(app.mode, UiMode::ConfirmGenerateNewKeys(true)),
-            "Left must select YES"
-        );
+        assert!(selected(&app), "Left must select YES");
+    }
+
+    #[test]
+    fn restore_session_confirmation_toggles_too() {
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = app_in(UiMode::ConfirmRestoreSession(true));
+        handle_right_key(&mut app, &orders);
+        assert!(!selected(&app));
     }
 }

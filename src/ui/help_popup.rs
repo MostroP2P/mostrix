@@ -271,7 +271,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "View Seed Words",
-            "Show your BIP-39 mnemonic from the local database. Treat as highly sensitive.",
+            "Show your BIP-39 mnemonic from the local database. Press C to copy. Treat as highly sensitive.",
         ),
         (
             "Add Dispute Solver",
@@ -314,7 +314,15 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "View Seed Words",
-            "Show your BIP-39 mnemonic from the local database. Treat as highly sensitive.",
+            "Show your BIP-39 mnemonic from the local database. Press C to copy. Treat as highly sensitive.",
+        ),
+        (
+            "Import Seed Words",
+            "Wipe local session state and import a 12-word seed from another Mostro client, then restore orders from Mostro.",
+        ),
+        (
+            "Restore Session",
+            "Recover this identity's orders and disputes from Mostro after a reinstall or on a new machine.",
         ),
         (
             "Generate New Keys",

@@ -245,8 +245,18 @@ pub fn ui_draw(
             *selected_button,
         );
     }
-    if let UiMode::BackupNewKeys(mnemonic) = &app.mode {
-        generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str());
+    if let UiMode::BackupNewKeys {
+        mnemonic,
+        copied_to_clipboard,
+    } = &app.mode
+    {
+        generate_keys_popup::render_backup_new_keys(f, mnemonic.as_str(), *copied_to_clipboard);
+    }
+    if let UiMode::ImportSeedWords(key_state) = &app.mode {
+        crate::ui::import_seed_popup::render_import_seed_input(f, key_state);
+    }
+    if let UiMode::ConfirmImportSeed(_, selected_button) = &app.mode {
+        crate::ui::import_seed_popup::render_confirm_import_seed(f, *selected_button);
     }
 
     // Help popup (Ctrl+H)
@@ -393,6 +403,15 @@ No: paste BOLT11 or Lightning address manually."
             &order_id.to_string(),
             *selected_button,
             Some("Delete selected terminal order from local database history?"),
+        );
+    }
+    if let UiMode::ConfirmRestoreSession(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "\u{1F504} Restore Session",
+            "",
+            *selected_button,
+            Some("Ask Mostro to restore this identity's orders and disputes into the local database?"),
         );
     }
     if let UiMode::ConfirmBulkDeleteHistory(selected_button) = &app.mode {

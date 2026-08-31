@@ -1187,6 +1187,36 @@ pub fn spawn_key_rotation_task(
     });
 }
 
+/// Import a BIP-39 mnemonic: wipe local session state, insert the new user, and
+/// atomically update `nsec_privkey` (clearing `ln_address`) in settings.toml.
+///
+/// On success the caller should set `pending_key_reload` and
+/// `pending_import_restore` so the main loop reloads identity and runs restore.
+pub fn spawn_import_seed_task(
+    pool: SqlitePool,
+    mnemonic: String,
+    derived_nsec: String,
+    import_tx: UnboundedSender<Result<Zeroizing<String>, String>>,
+) {
+    tokio::spawn(async move {
+        match crate::util::session_wipe::import_seed_and_wipe_session(
+            &pool,
+            mnemonic.clone(),
+            derived_nsec,
+        )
+        .await
+        {
+            Ok(()) => {
+                let _ = import_tx.send(Ok(Zeroizing::new(mnemonic)));
+            }
+            Err(e) => {
+                log::error!("Failed to import seed words: {}", e);
+                let _ = import_tx.send(Err(format!("Failed to import seed: {}", e)));
+            }
+        }
+    });
+}
+
 pub fn spawn_load_seed_words_task(
     pool: SqlitePool,
     tx: UnboundedSender<Result<Zeroizing<String>, String>>,

@@ -174,7 +174,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::ConfirmDeleteHistoryOrder(_, _) | UiMode::ConfirmBulkDeleteHistory(_) => {
+        UiMode::ConfirmDeleteHistoryOrder(_, _)
+        | UiMode::ConfirmBulkDeleteHistory(_)
+        | UiMode::ConfirmRestoreSession(_) => {
             app.mode = default_mode.clone();
             true
         }
@@ -183,7 +185,15 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::BackupNewKeys(_) => {
+        UiMode::ImportSeedWords(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::ConfirmImportSeed(mnemonic, _) => {
+            app.mode = UiMode::ImportSeedWords(create_key_input_state(mnemonic.as_str()));
+            true
+        }
+        UiMode::BackupNewKeys { .. } => {
             if app.backup_requires_restart {
                 // Trigger in-process runtime reload handled by main loop.
                 app.pending_key_reload = true;
@@ -192,7 +202,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
                 ));
                 true
             } else {
-                // First-launch backup flow: no runtime key swap happened.
+                // First-launch backup flow / View Seed Words: no runtime key swap.
                 app.mode = default_mode.clone();
                 true
             }

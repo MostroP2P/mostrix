@@ -12,6 +12,7 @@ pub mod mostro_info;
 pub mod network;
 pub mod order_utils;
 pub mod send_attachment;
+pub mod session_wipe;
 pub mod types;
 
 // Re-export commonly used items
@@ -53,9 +54,13 @@ pub use mostro_info::{
     transport_from_instance, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
 };
 pub use network::{any_relay_reachable, connect_client_safely};
-pub use order_utils::{fetch_events_list, get_disputes, get_orders, send_new_order, take_order};
+pub use order_utils::{
+    execute_restore_session, fetch_events_list, get_disputes, get_orders,
+    restore_completion_result, send_new_order, take_order,
+};
 pub use send_attachment::{
     blossom_servers_from_settings, send_prepared_order_chat_attachment,
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
+pub use session_wipe::{clear_local_session_state, import_seed_and_wipe_session};
 pub use types::{get_cant_do_description, Event, ListKind};

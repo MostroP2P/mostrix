@@ -1090,6 +1090,17 @@ impl AdminDispute {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    /// Delete every row in `admin_disputes`. Used when wiping local session state
+    /// before seed import or a full factory reset.
+    pub async fn delete_all_in_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(r#"DELETE FROM admin_disputes"#)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
     /// Delete one local `admin_disputes` row by Mostro dispute UUID.
     ///
     /// Local-only: does not cancel/settle on Mostro. Returns rows affected (0 if missing).
