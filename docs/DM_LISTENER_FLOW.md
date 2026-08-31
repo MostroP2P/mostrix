@@ -107,9 +107,9 @@ Relay subscriptions alone often **do not** deliver enough stored history into th
 
 **Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
 
-## Command “preferences”: TrackOrder vs Waiter
+## Command “preferences”: TrackOrder vs Waiter vs Hydrate
 
-The listener consumes a command channel (`dm_subscription_rx`) with two variants:
+The listener consumes a command channel (`dm_subscription_rx`) with three variants:
 
 ### 1) `TrackOrder { order_id, trade_index }`
 
@@ -123,9 +123,21 @@ What happens:
 - Ensure a protocol-DM subscription exists for that trade pubkey (via `filter_protocol_dm_from_mostro`). If already subscribed (possibly via a waiter), TrackOrder will reuse it.
 - Update routing tables so future relay events with that `subscription_id` are routed directly to `(order_id, trade_index)`.
 
-**Conceptually:** TrackOrder is long-lived; it binds the pubkey to a concrete order and makes the tracked-order path reliable and O(1).
+**Conceptually:** TrackOrder is long-lived; it binds the pubkey to a concrete order and makes the tracked-order path reliable and O(1). Live flows use **`LiveOnly`** (no history replay).
 
-### 2) `RegisterWaiter { trade_keys, response_tx }`
+### 2) `HydrateActiveTradeDms { order_last_seen_dm_ts }`
+
+Use case: “session restore just rewrote SQLite; rehydrate Messages like cold start without restarting the listener”.
+
+What happens:
+
+- Re-reads the identity user (safe after seed import / key reload).
+- For each entry in the shared `active_order_trade_indices` map, ensures a protocol-DM subscription (`StartupCatchUp` / `StartupSince` when new; `LiveOnly` remapping when already subscribed).
+- Runs the same one-shot **`fetch_and_replay_startup_trade_dms`** path as listener bootstrap so historical trade DMs populate the in-memory Messages list (`notify: false`).
+
+Emitted by [`hydrate_ui_after_session_restore`](../src/ui/helpers/startup.rs) after `OperationResult::SessionRestored` (alongside peer-chat `track_startup_chats`).
+
+### 3) `RegisterWaiter { trade_keys, response_tx }`
 
 Use case: “I’m about to send a request DM; wait for the first decryptable response for these trade keys”.
 
@@ -316,6 +328,7 @@ flowchart TD
   D -->|tick| GC[Prune closed waiters]
   D -->|cmd| CMD{DmRouterCmd}
   CMD -->|TrackOrder| TO[Update active_order_trade_indices; ensure subscription; bind subscription_id -> order]
+  CMD -->|HydrateActiveTradeDms| HY[Ensure active subs; fetch_and_replay_startup_trade_dms]
   CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; push PendingDmWaiter]
 
   D -->|relay event| E[protocol DM event arrives]

@@ -58,10 +58,9 @@ use tokio::time::{interval, Duration};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
-/// Results that must re-run the startup DB-to-UI sync (maker book cache +
-/// order history messages) because background work changed SQLite rows the
-/// in-memory projections are built from.
+/// Whether [`apply_order_result`] should re-run the startup DB-to-UI sync
+/// (maker book cache + order history messages) because background work changed
+/// SQLite rows the in-memory projections are built from.
 fn requires_db_projection_resync(result: &OperationResult) -> bool {
     matches!(
         result,
@@ -69,6 +68,11 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
     )
 }
 
+/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+///
+/// For [`OperationResult::SessionRestored`], also runs
+/// [`hydrate_ui_after_session_restore`] so peer chat and Messages trade-DM history
+/// rehydrate without restarting Mostrix.
 async fn apply_order_result(
     pool: &SqlitePool,
     app: &mut AppState,

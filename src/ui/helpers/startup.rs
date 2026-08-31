@@ -146,6 +146,9 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
 
 /// Emit initial chat-router track commands for the active set (option B).
 ///
+/// Also invoked after session restore via [`hydrate_ui_after_session_restore`]
+/// so peer/solver chats resubscribe without restarting Mostrix.
+///
 /// - **User**: every [`Order::get_startup_active_orders`] row (active states + `success`;
 ///   excludes [`crate::models::TERMINAL_DM_STATUSES`]) with a resolvable shared key —
 ///   persisted `order_chat_shared_key_hex`, else ECDH from `trade_keys` + `counterparty_pubkey`.
@@ -271,10 +274,12 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
     }
 }
 
-/// Load user order chat at startup from on-disk transcripts.
+/// Load user order chat from on-disk transcripts into [`AppState`].
 ///
-/// Relay history is **not** polled here — [`track_startup_chats`] seeds the shared-key chat
-/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch).
+/// Used at cold start and again after session restore
+/// ([`hydrate_ui_after_session_restore`]). Relay history is **not** polled here —
+/// [`track_startup_chats`] seeds the shared-key chat router, which hydrates once
+/// per key on `TrackChatKey` (avoids a duplicate fetch).
 pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::User {
         return;

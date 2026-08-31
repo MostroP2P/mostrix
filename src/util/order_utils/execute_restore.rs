@@ -84,8 +84,10 @@ impl RestoreSummary {
 /// Map the outcome of [`execute_restore_session`] to the operation result the
 /// restore task must emit. `Ok` MUST become [`OperationResult::SessionRestored`]
 /// — not a plain `Info` — because only that variant makes `apply_order_result`
-/// re-run the DB-to-UI projection sync; with `Info` the restored rows stay
-/// invisible until a later sync or restart.
+/// re-run the DB-to-UI projection sync **and**
+/// [`crate::ui::helpers::hydrate_ui_after_session_restore`] (peer chat + Messages
+/// trade-DM replay). With `Info` the restored rows stay invisible / unchatted
+/// until a later sync or restart.
 pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui::OperationResult {
     match outcome {
         Ok(summary) => crate::ui::OperationResult::SessionRestored {
@@ -656,9 +658,9 @@ mod tests {
 
     #[test]
     fn successful_restore_emits_session_restored_not_info() {
-        // Regression (#114 review, twice): only SessionRestored makes
-        // apply_order_result re-run the DB-to-UI sync. A plain Info here means
-        // the restored rows stay invisible until restart.
+        // Regression (#114 / post-restore hydrate): only SessionRestored makes
+        // apply_order_result re-run the DB-to-UI sync and chat hydrate. A plain
+        // Info here means restored rows stay invisible / unchatted until restart.
         let summary = RestoreSummary {
             restored: 2,
             ..Default::default()

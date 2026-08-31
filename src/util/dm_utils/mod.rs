@@ -1354,8 +1354,11 @@ struct DmListenerStartupReplay<'a> {
     dropped_user_history_order_ids: &'a Arc<Mutex<HashSet<Uuid>>>,
 }
 
-/// One-shot relay query + replay so restart shows trade DMs. `subscribe` alone often does not
-/// replay enough stored events into the notification stream for the UI to hydrate.
+/// One-shot relay query + replay so the Messages tab shows trade DMs.
+///
+/// Used at cold-start bootstrap and for [`DmRouterCmd::HydrateActiveTradeDms`]
+/// after session restore. `subscribe` alone often does not replay enough stored
+/// events into the notification stream for the UI to hydrate.
 async fn fetch_and_replay_startup_trade_dms(
     replay: DmListenerStartupReplay<'_>,
     startup_active_orders: &HashMap<Uuid, i64>,
@@ -1620,6 +1623,8 @@ async fn resolve_order_for_event(
 /// Responsibilities:
 /// - maintain relay subscriptions for tracked orders (`TrackOrder`) and temporary
 ///   request/response waiters (`RegisterWaiter` / `wait_for_dm`)
+/// - on `HydrateActiveTradeDms` (post session restore): ensure active-order
+///   subscriptions exist, then one-shot `fetch_events` replay into Messages
 /// - route each incoming protocol DM through two complementary paths:
 ///   1) waiter path: satisfy in-flight `wait_for_dm` calls
 ///   2) tracked-order path: parse and dispatch updates to the order/UI pipeline

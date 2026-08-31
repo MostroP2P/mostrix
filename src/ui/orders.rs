@@ -195,7 +195,8 @@ pub enum OperationResult {
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
     /// Session restore finished: resync My Trades/Messages projections from
-    /// SQLite (same DB-to-UI sync as startup), then show `message`.
+    /// SQLite, then run [`crate::ui::helpers::hydrate_ui_after_session_restore`]
+    /// (peer chat tracks + Mostro trade-DM replay), then show `message`.
     SessionRestored {
         message: String,
     },
