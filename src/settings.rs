@@ -1,7 +1,10 @@
 use crate::SETTINGS;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 /// Embedded default `settings.toml` used to bootstrap configuration on first run.
 /// This is generated at compile time from the repository root `settings.toml`.
@@ -349,13 +352,52 @@ pub fn replace_settings_file_atomically(
         .unwrap_or_default()
         .as_nanos();
     let tmp_path = target_settings_file.with_extension(format!("tmp-{}", nanos));
-    fs::write(&tmp_path, toml_string)
-        .map_err(|e| anyhow::anyhow!("Failed to write temporary settings file: {}", e))?;
+    write_restrictive_settings_temp(&tmp_path, toml_string)?;
     fs::rename(&tmp_path, target_settings_file).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         anyhow::anyhow!("Failed to atomically replace settings: {}", e)
     })?;
     Ok(())
+}
+
+fn write_restrictive_settings_temp(
+    tmp_path: &Path,
+    toml_string: &str,
+) -> Result<(), anyhow::Error> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp_path)
+            .map_err(|e| anyhow::anyhow!("Failed to write temporary settings file: {}", e))?;
+        if let Err(e) = file.write_all(toml_string.as_bytes()) {
+            let _ = fs::remove_file(tmp_path);
+            Err(anyhow::anyhow!(
+                "Failed to write temporary settings file: {}",
+                e
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = fs::write(tmp_path, toml_string) {
+            let _ = fs::remove_file(tmp_path);
+            Err(anyhow::anyhow!(
+                "Failed to write temporary settings file: {}",
+                e
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Save settings to file

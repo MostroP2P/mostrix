@@ -218,13 +218,20 @@ impl SessionMutationScope {
             )
         })?;
         let files = StagedSessionWipe::begin(base)?;
-        let settings_path = settings_file_path()?;
-        let settings = SettingsSnapshot::capture(&settings_path, &staging_dir)?;
-        Ok(Self {
-            files,
-            settings,
-            staging_dir,
-        })
+        match (|| -> Result<Option<SettingsSnapshot>> {
+            let settings_path = settings_file_path()?;
+            SettingsSnapshot::capture(&settings_path, &staging_dir)
+        })() {
+            Ok(settings) => Ok(Self {
+                files,
+                settings,
+                staging_dir,
+            }),
+            Err(e) => {
+                files.rollback()?;
+                Err(e)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -232,22 +239,30 @@ impl SessionMutationScope {
         let staging_dir = base.join(format!(".session-mutation-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&staging_dir)?;
         let files = StagedSessionWipe::begin(base)?;
-        let settings = SettingsSnapshot::capture(settings_path, &staging_dir)?;
-        Ok(Self {
-            files,
-            settings,
-            staging_dir,
-        })
+        match SettingsSnapshot::capture(settings_path, &staging_dir) {
+            Ok(settings) => Ok(Self {
+                files,
+                settings,
+                staging_dir,
+            }),
+            Err(e) => {
+                files.rollback()?;
+                Err(e)
+            }
+        }
     }
 
     fn rollback(mut self) -> Result<()> {
-        if let Some(settings) = self.settings.take() {
-            settings.restore()?;
-        }
-        self.files.rollback()?;
+        let settings_result = match self.settings.take() {
+            Some(settings) => settings.restore(),
+            None => Ok(()),
+        };
+        let files_result = self.files.rollback();
         if self.staging_dir.exists() {
             fs::remove_dir_all(&self.staging_dir).ok();
         }
+        settings_result?;
+        files_result?;
         Ok(())
     }
 
@@ -260,6 +275,15 @@ impl SessionMutationScope {
             fs::remove_dir_all(&self.staging_dir).ok();
         }
         Ok(())
+    }
+
+    /// Finalize staged dirs/backups after DB/settings succeeded; log cleanup errors only.
+    fn commit_best_effort(self, context: &str) {
+        if let Err(e) = self.commit() {
+            log::warn!(
+                "{context}: staged session cleanup failed after successful state update: {e}"
+            );
+        }
     }
 }
 
@@ -343,7 +367,7 @@ pub async fn clear_local_session_state(pool: &SqlitePool) -> Result<()> {
 
     match outcome {
         Ok(()) => {
-            scope.commit()?;
+            scope.commit_best_effort("clear_local_session_state");
             log::info!("Cleared local session state (database, chat files, downloads, ln_address)");
             Ok(())
         }
@@ -393,7 +417,10 @@ pub async fn import_seed_and_wipe_session(
     .await;
 
     match outcome {
-        Ok(()) => scope.commit(),
+        Ok(()) => {
+            scope.commit_best_effort("import_seed_and_wipe_session");
+            Ok(())
+        }
         Err(e) => {
             scope.rollback()?;
             Err(e)
