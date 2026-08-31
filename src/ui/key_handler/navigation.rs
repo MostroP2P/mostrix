@@ -99,6 +99,7 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
         | UiMode::ConfirmImportSeed(_, ref mut selected_button)
+        | UiMode::ConfirmTradeIndexSync(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -182,6 +183,7 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
         | UiMode::ConfirmImportSeed(_, ref mut selected_button)
+        | UiMode::ConfirmTradeIndexSync(_, ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -326,6 +328,7 @@ fn handle_up_key(
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::ImportSeedWords(_)
         | UiMode::ConfirmImportSeed(_, _)
+        | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
@@ -478,6 +481,7 @@ fn handle_down_key(
         | UiMode::ConfirmGenerateNewKeys(_)
         | UiMode::ImportSeedWords(_)
         | UiMode::ConfirmImportSeed(_, _)
+        | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
@@ -639,7 +643,8 @@ mod confirm_toggle_tests {
         match app.mode {
             UiMode::ConfirmGenerateNewKeys(v)
             | UiMode::ConfirmRestoreSession(v)
-            | UiMode::ConfirmImportSeed(_, v) => v,
+            | UiMode::ConfirmImportSeed(_, v)
+            | UiMode::ConfirmTradeIndexSync(_, v) => v,
             _ => panic!("unexpected mode"),
         }
     }

@@ -65,6 +65,9 @@ pub use send_attachment::{
 };
 pub use session_wipe::{clear_local_session_state, import_seed_and_wipe_session};
 pub use sync_trade_index::{
-    effective_last_trade_index, fetch_last_trade_index_from_mostro, LastTradeIndexSync,
+    effective_last_trade_index, fetch_last_trade_index_from_mostro,
+    sync_trade_index_from_mostro_and_persist, LastTradeIndexSync,
 };
-pub use types::{get_cant_do_description, Event, ListKind};
+pub use types::{
+    get_cant_do_description, is_invalid_trade_index_error, Event, ListKind, MostroCantDoError,
+};

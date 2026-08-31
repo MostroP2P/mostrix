@@ -10,7 +10,7 @@ use crate::ui::state::{OperationResult, OrderChatStaticHeader, OrderSuccess, Tak
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
 use crate::util::filters::create_filter;
-use crate::util::types::{get_cant_do_description, Event, ListKind};
+use crate::util::types::{get_cant_do_description, Event, ListKind, MostroCantDoError};
 use crate::util::OrderDmSubscriptionCmd;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
@@ -783,12 +783,14 @@ pub(super) fn handle_mostro_response(
 
     // Check for CantDo payload first (error response)
     if let Some(Payload::CantDo(reason)) = &inner_message.payload {
-        let error_msg = match reason {
-            Some(r) => get_cant_do_description(r),
-            None => "Unknown error - Mostro couldn't process your request".to_string(),
-        };
-        log::error!("Received CantDo error: {}", error_msg);
-        return Err(anyhow::anyhow!(error_msg));
+        if let Some(r) = reason {
+            log::error!("Received CantDo error: {}", get_cant_do_description(r));
+            return Err(MostroCantDoError { reason: r.clone() }.into());
+        }
+        log::error!("Received CantDo error without reason");
+        return Err(anyhow::anyhow!(
+            "Unknown error - Mostro couldn't process your request"
+        ));
     }
 
     // Waiter path: every response must carry the in-flight request_id (see take_order.rs).

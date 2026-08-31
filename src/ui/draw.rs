@@ -258,6 +258,9 @@ pub fn ui_draw(
     if let UiMode::ConfirmImportSeed(_, selected_button) = &app.mode {
         crate::ui::import_seed_popup::render_confirm_import_seed(f, *selected_button);
     }
+    if let UiMode::ConfirmTradeIndexSync(_, selected_button) = &app.mode {
+        crate::ui::trade_index_sync_popup::render_trade_index_sync_confirm(f, *selected_button);
+    }
 
     // Help popup (Ctrl+H)
     if let UiMode::HelpPopup(tab, _) = &app.mode {

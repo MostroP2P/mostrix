@@ -130,6 +130,33 @@ fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSy
     })
 }
 
+/// Fetch Mostro's last trade index and raise local `users.last_trade_index` when behind.
+pub async fn sync_trade_index_from_mostro_and_persist(
+    pool: &sqlx::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<i64> {
+    use crate::models::User;
+
+    let identity_keys = User::get_identity_keys(pool).await?;
+    let sync =
+        fetch_last_trade_index_from_mostro(client, &identity_keys, mostro_pubkey, mostro_instance)
+            .await?;
+    let user = User::get(pool).await?;
+    let current = user.last_trade_index.unwrap_or(0);
+    if sync.last_used_index > current {
+        User::update_last_trade_index(pool, sync.last_used_index).await?;
+        log::info!(
+            "Trade index synced from Mostro: {current} -> {}",
+            sync.last_used_index
+        );
+    } else if sync.no_history {
+        log::info!("Trade index sync: Mostro reports no prior trade history");
+    }
+    Ok(sync.last_used_index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

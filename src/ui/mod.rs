@@ -29,6 +29,7 @@ pub mod order_confirm;
 pub mod order_form;
 pub mod order_take;
 pub(crate) mod orders;
+pub mod pending_trade_index_retry;
 pub mod recover_disputes_picker;
 pub mod save_attachment_popup;
 pub mod send_attachment_picker;
@@ -36,6 +37,7 @@ pub mod startup_splash;
 pub mod state;
 pub mod status;
 pub mod tabs;
+pub mod trade_index_sync_popup;
 pub mod user_state;
 pub mod waiting;
 

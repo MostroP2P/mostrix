@@ -135,6 +135,10 @@ fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSucce
 
 /// Handle order result from the order result channel
 pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
+    if let OperationResult::TradeIndexOutOfSync { retry } = result {
+        app.mode = UiMode::ConfirmTradeIndexSync(retry, true);
+        return;
+    }
     if let OperationResult::TradeClosed { order_id, message } = result {
         remove_closed_trade_from_messages_tab(app, order_id);
         result = OperationResult::Info(message);
