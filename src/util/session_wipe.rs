@@ -20,6 +20,82 @@ pub const SESSION_WIPE_DATA_SUBDIRS: &[&str] = &[
     "downloads",
 ];
 
+/// Session chat/download dirs moved aside during a wipe until the caller commits
+/// or rolls back.
+pub struct StagedSessionWipe {
+    base: PathBuf,
+    backup_dir: PathBuf,
+}
+
+impl StagedSessionWipe {
+    /// Move session directories aside so they can be restored if later steps fail.
+    pub fn begin(base: &Path) -> Result<Self> {
+        let backup_dir = base.join(format!(".session-wipe-staging-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&backup_dir)
+            .with_context(|| format!("Failed to create staging dir {}", backup_dir.display()))?;
+
+        for subdir in SESSION_WIPE_DATA_SUBDIRS {
+            let path = base.join(subdir);
+            if path.exists() {
+                fs::rename(&path, backup_dir.join(subdir)).with_context(|| {
+                    format!("Failed to stage {} for session wipe", path.display())
+                })?;
+            }
+        }
+
+        Ok(Self {
+            base: base.to_path_buf(),
+            backup_dir,
+        })
+    }
+
+    /// Replace session dirs with fresh empty directories and delete the staging copy.
+    pub fn commit(self) -> Result<()> {
+        for subdir in SESSION_WIPE_DATA_SUBDIRS {
+            let path = self.base.join(subdir);
+            if path.exists() {
+                fs::remove_dir_all(&path).with_context(|| {
+                    format!("Failed to remove staged session dir {}", path.display())
+                })?;
+            }
+            fs::create_dir_all(&path)
+                .with_context(|| format!("Failed to recreate session dir {}", path.display()))?;
+        }
+        if self.backup_dir.exists() {
+            fs::remove_dir_all(&self.backup_dir).with_context(|| {
+                format!(
+                    "Failed to remove session wipe staging dir {}",
+                    self.backup_dir.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Restore the pre-wipe session directories after a failed import/wipe step.
+    pub fn rollback(self) -> Result<()> {
+        for subdir in SESSION_WIPE_DATA_SUBDIRS {
+            let path = self.base.join(subdir);
+            if path.exists() {
+                fs::remove_dir_all(&path).ok();
+            }
+            let backup = self.backup_dir.join(subdir);
+            if backup.exists() {
+                fs::rename(&backup, &path).with_context(|| {
+                    format!(
+                        "Failed to restore {} from session wipe staging",
+                        path.display()
+                    )
+                })?;
+            }
+        }
+        if self.backup_dir.exists() {
+            fs::remove_dir_all(&self.backup_dir).ok();
+        }
+        Ok(())
+    }
+}
+
 /// Resolve `~/.mostrix` (i.e. `~/.{CARGO_PKG_NAME}`).
 pub fn mostrix_data_dir() -> Result<PathBuf> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
@@ -78,14 +154,31 @@ pub fn clear_ln_address_in_settings() -> Result<()> {
 ///
 /// Does **not** rotate identity keys or update `nsec_privkey` — callers insert a new
 /// user (e.g. via [`crate::models::User::replace_all_atomic`]) after this returns.
+///
+/// Session directories are staged first and only replaced after database and settings
+/// updates succeed, so a mid-wipe failure can roll back the on-disk session.
 pub async fn clear_local_session_state(pool: &SqlitePool) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    clear_session_tables_in_tx(&mut tx).await?;
-    tx.commit().await?;
-
     let base = mostrix_data_dir()?;
-    clear_session_files_at(&base)?;
-    clear_ln_address_in_settings()?;
+    let staged = StagedSessionWipe::begin(&base)?;
+
+    if let Err(e) = (async {
+        let mut tx = pool.begin().await?;
+        clear_session_tables_in_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    {
+        staged.rollback()?;
+        return Err(e);
+    }
+
+    if let Err(e) = clear_ln_address_in_settings() {
+        staged.rollback()?;
+        return Err(e);
+    }
+
+    staged.commit()?;
 
     log::info!("Cleared local session state (database, chat files, downloads, ln_address)");
     Ok(())
@@ -222,6 +315,25 @@ mod tests {
         assert_eq!(users, 0);
         assert_eq!(orders, 0);
         assert_eq!(disputes, 0);
+    }
+
+    #[test]
+    fn staged_session_wipe_rollback_restores_files() {
+        let base = std::env::temp_dir().join(format!("mostrix-staged-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).expect("base dir");
+        let chat_dir = base.join("orders_chat");
+        fs::create_dir_all(&chat_dir).expect("chat dir");
+        let marker = chat_dir.join("keep.txt");
+        fs::write(&marker, "restore-me").expect("marker");
+
+        let staged = StagedSessionWipe::begin(&base).expect("stage");
+        assert!(!chat_dir.exists());
+        staged.rollback().expect("rollback");
+
+        assert!(marker.is_file());
+        assert_eq!(fs::read_to_string(&marker).expect("read"), "restore-me");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -24,8 +24,13 @@ fn key_input_popup_with_wrap(
     key_state: &KeyInputState,
 ) {
     let area = f.area();
-    let popup_width = 86;
-    let popup_height = 14;
+    let compact = area.height < 14 || area.width < 50;
+    let popup_width = area.width.saturating_sub(2).clamp(24, 86);
+    let popup_height = if compact {
+        10.min(area.height.max(1))
+    } else {
+        14.min(area.height.max(1))
+    };
 
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
@@ -36,9 +41,15 @@ fn key_input_popup_with_wrap(
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     f.render_widget(block, popup);
 
-    let chunks = ratatui::layout::Layout::new(
-        ratatui::layout::Direction::Vertical,
-        [
+    let constraints: Vec<ratatui::layout::Constraint> = if compact {
+        vec![
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Length(3),
+            ratatui::layout::Constraint::Length(1),
+        ]
+    } else {
+        vec![
             ratatui::layout::Constraint::Length(1),
             ratatui::layout::Constraint::Length(2),
             ratatui::layout::Constraint::Length(1),
@@ -46,29 +57,38 @@ fn key_input_popup_with_wrap(
             ratatui::layout::Constraint::Length(1),
             ratatui::layout::Constraint::Length(1),
             ratatui::layout::Constraint::Length(1),
-        ],
-    )
-    .split(popup);
+        ]
+    };
+    let chunks = ratatui::layout::Layout::new(ratatui::layout::Direction::Vertical, constraints)
+        .split(popup);
+
+    let warning = if compact {
+        "Import wipes local session data."
+    } else {
+        "\u{26A0}  Importing replaces this identity and wipes local orders, chats, and LN address."
+    };
 
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "\u{26A0}  Importing replaces this identity and wipes local orders, chats, and LN address.",
+            warning,
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )]))
         .alignment(ratatui::layout::Alignment::Center),
         chunks[1],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            label,
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[2],
-    );
+    if !compact {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                label,
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[2],
+        );
+    }
 
     let input_display = if key_state.key_input.is_empty() {
         placeholder.to_string()
@@ -85,6 +105,7 @@ fn key_input_popup_with_wrap(
         Style::default().fg(Color::White)
     };
 
+    let input_chunk = if compact { chunks[2] } else { chunks[3] };
     f.render_widget(
         Paragraph::new(input_display)
             .style(input_style)
@@ -98,11 +119,29 @@ fn key_input_popup_with_wrap(
                         Style::default()
                     }),
             ),
-        chunks[3],
+        input_chunk,
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
+    let help_chunk = if compact { chunks[3] } else { chunks[5] };
+    let help = if compact {
+        Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" continue · "),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" cancel"),
+        ])
+    } else {
+        Line::from(vec![
             Span::styled("Paste ", Style::default().fg(Color::White)),
             Span::styled(
                 "Ctrl+V",
@@ -125,9 +164,11 @@ fn key_input_popup_with_wrap(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" to cancel"),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[5],
+        ])
+    };
+    f.render_widget(
+        Paragraph::new(help).alignment(ratatui::layout::Alignment::Center),
+        help_chunk,
     );
 }
 
@@ -189,5 +230,22 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Confirm Import Seed"));
         assert!(buffer_contains(buf, "WARNING"));
+    }
+
+    #[test]
+    fn import_seed_input_fits_narrow_short_terminal() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = KeyInputState {
+            key_input: String::new(),
+            focused: true,
+            just_pasted: false,
+        };
+        terminal
+            .draw(|f| render_import_seed_input(f, &state))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Import Seed"));
+        assert!(buffer_contains(buf, "wipes"));
     }
 }

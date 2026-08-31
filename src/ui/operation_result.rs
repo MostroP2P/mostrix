@@ -9,7 +9,7 @@ use crate::ui::orders::OrderSuccess;
 
 /// Split on newlines, then wrap each paragraph at word boundaries.
 fn wrap_message_lines(message: &str, width: usize) -> Vec<Line<'static>> {
-    let wrap_width = width.max(10);
+    let wrap_width = width.max(1);
     let mut lines = Vec::new();
 
     for paragraph in message.split('\n') {
@@ -38,11 +38,86 @@ fn wrap_message_lines(message: &str, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn info_popup_height(message: &str, popup_width: u16) -> u16 {
+fn info_popup_height(message: &str, popup_width: u16, max_height: u16) -> u16 {
     let inner_width = popup_width.saturating_sub(2) as usize;
-    let content_lines = wrap_message_lines(message, inner_width).len();
-    // content + blank line + footer + top/bottom border padding
-    (content_lines + 4).clamp(8, 22) as u16
+    let (_, height) = info_message_popup_layout(message, inner_width, max_height);
+    height
+}
+
+fn close_footer_line() -> Line<'static> {
+    Line::from(vec![Span::styled(
+        "Press ESC or ENTER to close",
+        Style::default().fg(Color::DarkGray),
+    )])
+}
+
+fn info_message_lines(message: &str, inner_width: usize, compact: bool) -> Vec<Line<'static>> {
+    let mut lines = wrap_message_lines(message, inner_width);
+    if !compact {
+        lines.push(Line::from(""));
+    }
+    lines.push(close_footer_line());
+    lines
+}
+
+/// Pick full or compact info-popup content that fits `max_height` popup rows.
+fn info_message_popup_layout(
+    message: &str,
+    inner_width: usize,
+    max_height: u16,
+) -> (Vec<Line<'static>>, u16) {
+    let full = info_message_lines(message, inner_width, false);
+    let full_height = full.len() as u16 + 2;
+    if full_height <= max_height {
+        return (full, full_height);
+    }
+
+    let compact = info_message_lines(message, inner_width, true);
+    let compact_height = (compact.len() as u16 + 2).min(max_height);
+    (compact, compact_height)
+}
+
+fn trim_info_lines_to_inner_height(
+    mut lines: Vec<Line<'static>>,
+    max_inner_rows: usize,
+) -> Vec<Line<'static>> {
+    if lines.len() <= max_inner_rows || max_inner_rows == 0 {
+        return lines;
+    }
+    let footer = lines.pop().unwrap_or_else(close_footer_line);
+    let budget = max_inner_rows.saturating_sub(1);
+    if budget == 0 {
+        return vec![footer];
+    }
+    let start = lines.len().saturating_sub(budget);
+    let mut trimmed: Vec<Line<'static>> = lines.into_iter().skip(start).collect();
+    trimmed.push(footer);
+    trimmed
+}
+
+fn render_info_message_block(
+    f: &mut ratatui::Frame,
+    popup: Rect,
+    title: &str,
+    title_color: Color,
+    message: &str,
+    max_popup_height: u16,
+) {
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(BACKGROUND_COLOR).fg(title_color));
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let inner_width = inner.width.max(1) as usize;
+    let max_inner_rows = inner.height.max(1) as usize;
+    let (lines, _) = info_message_popup_layout(message, inner_width, max_popup_height);
+    let lines = trim_info_lines_to_inner_height(lines, max_inner_rows);
+
+    let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(paragraph, inner);
 }
 
 /// Split a plain hex string into fixed-width chunks so it never gets silently
@@ -206,17 +281,22 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
     } else {
         None
     };
+    let max_popup_height = area.height.max(1);
     let popup_height = match result {
-        OperationResult::Success(_) => 18,
+        OperationResult::Success(_) => 18.min(max_popup_height),
         OperationResult::ConversationDisclosure { .. } => {
             disclosure_layout.as_ref().map(|(_, h)| *h).unwrap_or(16)
         }
         OperationResult::PaymentRequestRequired { .. }
         | OperationResult::ObserverChatLoaded { .. }
-        | OperationResult::ObserverChatError { .. } => 8,
-        OperationResult::Info(message) => info_popup_height(message, popup_width),
-        OperationResult::SessionRestored { message } => info_popup_height(message, popup_width),
-        OperationResult::Error(message) => info_popup_height(message, popup_width),
+        | OperationResult::ObserverChatError { .. } => 8.min(max_popup_height),
+        OperationResult::Info(message) => info_popup_height(message, popup_width, max_popup_height),
+        OperationResult::SessionRestored { message } => {
+            info_popup_height(message, popup_width, max_popup_height)
+        }
+        OperationResult::Error(message) => {
+            info_popup_height(message, popup_width, max_popup_height)
+        }
         OperationResult::InvoiceSubmitted { .. }
         | OperationResult::TradeClosed { .. }
         | OperationResult::OrderHistoryDeleted { .. }
@@ -339,24 +419,14 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, content_area);
         }
         OperationResult::Error(error_msg) => {
-            let block = Block::default()
-                .title("❌ Operation Failed")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Red));
-
-            // Calculate inner area (excluding borders)
-            let inner = block.inner(popup);
-            f.render_widget(block, popup);
-
-            let mut lines = wrap_message_lines(error_msg, inner.width as usize);
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                "Press ESC or ENTER to close",
-                Style::default().fg(Color::DarkGray),
-            )]));
-
-            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(paragraph, inner);
+            render_info_message_block(
+                f,
+                popup,
+                "❌ Operation Failed",
+                Color::Red,
+                error_msg,
+                max_popup_height,
+            );
         }
         OperationResult::Info(message)
         | OperationResult::SessionRestored { message }
@@ -364,24 +434,14 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::TradeClosed { message, .. }
         | OperationResult::OrderHistoryDeleted { message, .. }
         | OperationResult::AdminDisputeDeleted { message, .. } => {
-            let block = Block::default()
-                .title("✅ Operation Successful")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(BACKGROUND_COLOR).fg(Color::Green));
-
-            // Calculate inner area (excluding borders)
-            let inner = block.inner(popup);
-            f.render_widget(block, popup);
-
-            let mut lines = wrap_message_lines(message, inner.width as usize);
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                "Press ESC or ENTER to close",
-                Style::default().fg(Color::DarkGray),
-            )]));
-
-            let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(paragraph, inner);
+            render_info_message_block(
+                f,
+                popup,
+                "✅ Operation Successful",
+                Color::Green,
+                message,
+                max_popup_height,
+            );
         }
         OperationResult::ConversationDisclosure { .. } => {
             let block = Block::default()
@@ -622,5 +682,31 @@ mod tests {
     fn restore_summary_keeps_counts_visible_on_a_short_terminal() {
         let buf = render_restore_summary(40, 12);
         assert!(buffer_contains(&buf, "Session restored:"));
+        assert!(buffer_contains(&buf, "Press ESC or ENTER to close"));
+    }
+
+    #[test]
+    fn restore_summary_keeps_close_hint_on_a_very_short_terminal() {
+        let buf = render_restore_summary(40, 8);
+        assert!(buffer_contains(&buf, "Session restored:"));
+        assert!(buffer_contains(&buf, "Press ESC or ENTER to close"));
+    }
+
+    #[test]
+    fn restore_summary_wraps_on_ultra_narrow_width() {
+        let buf = render_restore_summary(12, 24);
+        assert!(buffer_contains(&buf, "Session"));
+        assert!(buffer_contains(&buf, "ESC") || buffer_contains(&buf, "ENTER"));
+    }
+
+    #[test]
+    fn info_message_layout_prefers_compact_on_short_height() {
+        let (full, _) = info_message_popup_layout(RESTORE_SUMMARY, 36, 24);
+        let (compact, compact_height) = info_message_popup_layout(RESTORE_SUMMARY, 36, 8);
+        assert!(
+            compact.len() < full.len(),
+            "compact layout should drop the spacer before the footer"
+        );
+        assert!(compact_height <= 8);
     }
 }

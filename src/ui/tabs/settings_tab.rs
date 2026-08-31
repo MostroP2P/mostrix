@@ -187,11 +187,21 @@ pub fn render_settings_tab(
     };
 
     let rows = settings_rows(user_role);
+    let visible_rows = list_chunk.height.max(1) as usize;
+    let offset = if rows.len() > visible_rows {
+        selected_option.saturating_sub(visible_rows.saturating_sub(1))
+    } else {
+        0
+    };
+
     let list_items: Vec<ListItem> = rows
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible_rows)
         .map(|(i, (_, label))| {
-            let style = if i == selected_option {
+            let row_idx = offset + i;
+            let style = if row_idx == selected_option {
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD)
@@ -359,5 +369,22 @@ mod tests {
         assert!(!ADMIN_SETTINGS
             .iter()
             .any(|(a, _)| *a == SettingsMenuAction::ImportSeedWords));
+    }
+
+    #[test]
+    fn render_keeps_selected_import_seed_visible_on_short_terminal() {
+        let import_idx = USER_SETTINGS
+            .iter()
+            .position(|(a, _)| *a == SettingsMenuAction::ImportSeedWords)
+            .expect("import row");
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_settings_tab(f, f.area(), UserRole::User, import_idx);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Import Seed Words"));
     }
 }
