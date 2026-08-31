@@ -2,6 +2,7 @@
 use anyhow::Result;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
+use uuid::Uuid;
 
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
@@ -35,7 +36,8 @@ pub async fn fetch_last_trade_index_from_mostro(
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<LastTradeIndexSync> {
-    let kind = MessageKind::new(None, None, None, Action::LastTradeIndex, None);
+    let request_id = Uuid::new_v4().as_u128() as u64;
+    let kind = MessageKind::new(None, Some(request_id), None, Action::LastTradeIndex, None);
     let message = Message::Restore(kind);
     let message_json = message
         .as_json()
@@ -67,7 +69,21 @@ pub async fn fetch_last_trade_index_from_mostro(
         ));
     }
 
+    validate_correlated_response(response_message, request_id)?;
     parse_last_trade_index_response(response_message)
+}
+
+/// Reject replayed or unrelated waiter responses before applying the trade index.
+fn validate_correlated_response(message: &Message, expected_request_id: u64) -> Result<()> {
+    match message.get_inner_message_kind().request_id {
+        Some(id) if id == expected_request_id => Ok(()),
+        Some(id) => Err(anyhow::anyhow!(
+            "Last-trade-index response request_id mismatch: expected {expected_request_id}, got {id}"
+        )),
+        None => Err(anyhow::anyhow!(
+            "Last-trade-index response omitted request_id (expected {expected_request_id})"
+        )),
+    }
 }
 
 fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSync> {
@@ -116,7 +132,10 @@ fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSy
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_last_trade_index, parse_last_trade_index_response, LastTradeIndexSync};
+    use super::{
+        effective_last_trade_index, parse_last_trade_index_response,
+        validate_correlated_response, LastTradeIndexSync,
+    };
     use mostro_core::prelude::*;
 
     #[test]
@@ -128,8 +147,9 @@ mod tests {
 
     #[test]
     fn parse_last_trade_index_response_reads_trade_index_field() {
-        let kind = MessageKind::new(None, None, Some(12), Action::LastTradeIndex, None);
+        let kind = MessageKind::new(None, Some(42), Some(12), Action::LastTradeIndex, None);
         let message = Message::Restore(kind);
+        validate_correlated_response(&message, 42).expect("request_id");
         assert_eq!(
             parse_last_trade_index_response(&message).expect("parse"),
             LastTradeIndexSync {
@@ -143,12 +163,13 @@ mod tests {
     fn parse_last_trade_index_response_maps_not_found_to_empty_history() {
         let kind = MessageKind::new(
             None,
-            None,
+            Some(7),
             None,
             Action::CantDo,
             Some(Payload::CantDo(Some(CantDoReason::NotFound))),
         );
         let message = Message::CantDo(kind);
+        validate_correlated_response(&message, 7).expect("request_id");
         assert_eq!(
             parse_last_trade_index_response(&message).expect("parse"),
             LastTradeIndexSync {
@@ -193,5 +214,21 @@ mod tests {
         );
         let message = Message::CantDo(kind);
         assert!(parse_last_trade_index_response(&message).is_err());
+    }
+
+    #[test]
+    fn validate_correlated_response_rejects_mismatched_request_id() {
+        let kind = MessageKind::new(None, Some(9), Some(3), Action::LastTradeIndex, None);
+        let message = Message::Restore(kind);
+        let err = validate_correlated_response(&message, 1).expect_err("mismatch");
+        assert!(err.to_string().contains("request_id mismatch"));
+    }
+
+    #[test]
+    fn validate_correlated_response_rejects_null_request_id() {
+        let kind = MessageKind::new(None, None, Some(3), Action::LastTradeIndex, None);
+        let message = Message::Restore(kind);
+        let err = validate_correlated_response(&message, 1).expect_err("missing rid");
+        assert!(err.to_string().contains("omitted request_id"));
     }
 }
