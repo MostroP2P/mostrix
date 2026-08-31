@@ -31,7 +31,12 @@ pub struct OrderChatListItem {
     pub dispute_id: Option<String>,
 }
 
-/// Maker listings back on the book (`pending`) with no active trade-DM row in Messages.
+/// Maker listings the user still owns and that have no active trade-DM row in
+/// Messages: back on the book (`pending`), or created but with the maker bond
+/// still unpaid (`waiting-maker-bond`). The second is what Mostro actually
+/// reports for a bond-gated listing (restore, `Action::Orders`); without it
+/// those rows vanish from the sidebar even though the user can still act on
+/// them (pay the bond, cancel).
 #[must_use]
 pub fn order_chat_list_item_from_db_order(order: &Order) -> Option<OrderChatListItem> {
     if !order.is_mine {
@@ -41,7 +46,10 @@ pub fn order_chat_list_item_from_db_order(order: &Order) -> Option<OrderChatList
         .status
         .as_deref()
         .and_then(|s| Status::from_str(s).ok());
-    if status != Some(Status::Pending) {
+    if !matches!(
+        status,
+        Some(Status::Pending) | Some(Status::WaitingMakerBond)
+    ) {
         return None;
     }
     let order_id = order.id.as_deref()?.to_string();
@@ -236,6 +244,62 @@ pub fn active_order_chat_list_snapshot(app: &AppState) -> Vec<OrderChatListItem>
             fatal_on_poisoned_messages_lock(e);
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod db_order_row_tests {
+    use super::*;
+
+    fn maker_order(status: &str) -> Order {
+        Order {
+            id: Some("11111111-2222-4333-8444-555555555555".into()),
+            kind: Some("buy".into()),
+            status: Some(status.into()),
+            amount: 0,
+            fiat_code: "EUR".into(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 20,
+            payment_method: "sepa".into(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: true,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(4),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        }
+    }
+
+    #[test]
+    fn bond_gated_maker_listing_stays_in_the_sidebar() {
+        // Verified against the live instance: a maker order whose bond is unpaid
+        // is `waiting-maker-bond` on Mostro's side, and that is what restore and
+        // `Action::Orders` write locally. It must remain selectable so the user
+        // can pay the bond or cancel — and so the Shift shortcuts have a target.
+        assert!(order_chat_list_item_from_db_order(&maker_order("waiting-maker-bond")).is_some());
+        assert!(order_chat_list_item_from_db_order(&maker_order("pending")).is_some());
+    }
+
+    #[test]
+    fn active_and_terminal_rows_are_still_left_to_messages() {
+        for status in ["active", "fiat-sent", "success", "canceled"] {
+            assert!(
+                order_chat_list_item_from_db_order(&maker_order(status)).is_none(),
+                "{status} must not be a sidebar listing row"
+            );
+        }
+        let mut taker = maker_order("waiting-maker-bond");
+        taker.is_mine = false;
+        assert!(order_chat_list_item_from_db_order(&taker).is_none());
     }
 }
 
