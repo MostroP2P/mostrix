@@ -96,7 +96,18 @@ fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSy
         ));
     }
 
-    let last_used_index = inner.trade_index();
+    let (has_trade_index, last_used_index) = inner.has_trade_index();
+    if !has_trade_index {
+        return Err(anyhow::anyhow!(
+            "Last-trade-index response from Mostro omitted trade_index"
+        ));
+    }
+    if last_used_index <= 0 {
+        return Err(anyhow::anyhow!(
+            "Last-trade-index response from Mostro returned invalid trade index: {last_used_index}"
+        ));
+    }
+
     Ok(LastTradeIndexSync {
         last_used_index,
         no_history: false,
@@ -144,6 +155,30 @@ mod tests {
                 last_used_index: 0,
                 no_history: true,
             }
+        );
+    }
+
+    #[test]
+    fn parse_last_trade_index_response_rejects_missing_trade_index() {
+        let kind = MessageKind::new(None, None, None, Action::LastTradeIndex, None);
+        let message = Message::Restore(kind);
+        let err = parse_last_trade_index_response(&message)
+            .expect_err("missing trade_index must fail closed");
+        assert!(
+            err.to_string().contains("omitted trade_index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_last_trade_index_response_rejects_non_positive_trade_index() {
+        let kind = MessageKind::new(None, None, Some(0), Action::LastTradeIndex, None);
+        let message = Message::Restore(kind);
+        let err = parse_last_trade_index_response(&message)
+            .expect_err("zero trade_index must fail closed");
+        assert!(
+            err.to_string().contains("invalid trade index"),
+            "unexpected error: {err}"
         );
     }
 
