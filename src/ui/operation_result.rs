@@ -305,7 +305,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }
-        | OperationResult::OrderChatAttachmentError { .. } => 8,
+        | OperationResult::OrderChatAttachmentError { .. }
+        | OperationResult::TradeIndexOutOfSync { .. } => 8,
     };
     // Clamp to the available area so the popup never exceeds narrow/short terminals.
     let popup = create_centered_popup(area, popup_width, popup_height);
@@ -494,7 +495,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }
-        | OperationResult::OrderChatAttachmentError { .. } => {}
+        | OperationResult::OrderChatAttachmentError { .. }
+        | OperationResult::TradeIndexOutOfSync { .. } => {}
     }
 }
 

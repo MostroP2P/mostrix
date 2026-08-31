@@ -122,12 +122,28 @@ impl User {
     /// already commit the index at reservation time and must not write a stale value
     /// after a delayed order save.
     pub async fn update_last_trade_index(pool: &SqlitePool, idx: i64) -> Result<()> {
-        sqlx::query(
-            r#"UPDATE users SET last_trade_index = MAX(COALESCE(last_trade_index, 0), ?) WHERE i0_pubkey = (SELECT i0_pubkey FROM users LIMIT 1)"#,
+        let user = Self::get(pool).await?;
+        Self::update_last_trade_index_for(pool, &user.i0_pubkey, idx).await
+    }
+
+    /// Raise `last_trade_index` for a specific identity row without re-querying the singleton.
+    pub async fn update_last_trade_index_for(
+        pool: &SqlitePool,
+        i0_pubkey: &str,
+        idx: i64,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE users SET last_trade_index = MAX(COALESCE(last_trade_index, 0), ?) WHERE i0_pubkey = ?"#,
         )
         .bind(idx)
+        .bind(i0_pubkey)
         .execute(pool)
         .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!(
+                "No user row matched identity {i0_pubkey} when updating last_trade_index"
+            );
+        }
         Ok(())
     }
 

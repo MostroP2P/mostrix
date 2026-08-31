@@ -3,6 +3,7 @@ use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
 use crate::ui::helpers::{hydrate_app_admin_keys_from_privkey, track_startup_chats};
 use crate::ui::key_handler::EnterKeyContext;
+use crate::ui::pending_trade_index_retry::PendingTradeIndexRetry;
 use crate::ui::FormState;
 use crate::ui::{
     AdminChatUpdate, AppState, ChatAttachment, LnAddressVerifyResult, MessageNotification,
@@ -14,9 +15,10 @@ use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
     any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    hydrate_startup_active_order_dm_state, listen_for_chat_messages, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
-    OrderDmSubscriptionCmd, StartupDmHydration,
+    hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, listen_for_chat_messages,
+    set_chat_router_cmd_tx, set_dm_router_cmd_tx, sync_trade_index_from_mostro_and_persist,
+    unsubscribe_dm_listener_subscriptions, ChatRouterCmd, OrderDmSubscriptionCmd,
+    StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
@@ -49,6 +51,90 @@ pub struct RuntimeReconnectContext<'a> {
 }
 
 const POISONED_UI_FATAL: &str = "Internal error. Please restart Mostrix.";
+
+fn operation_result_for_mostro_command_error(
+    err: anyhow::Error,
+    retry: PendingTradeIndexRetry,
+) -> OperationResult {
+    if is_invalid_trade_index_error(&err) {
+        OperationResult::TradeIndexOutOfSync { retry }
+    } else {
+        OperationResult::Error(err.to_string())
+    }
+}
+
+/// Sync trade index from Mostro, then re-run the command that failed with `InvalidTradeIndex`.
+pub fn spawn_trade_index_sync_and_retry(ctx: &EnterKeyContext<'_>, retry: PendingTradeIndexRetry) {
+    let pool = ctx.pool.clone();
+    let client = ctx.client.clone();
+    let order_result_tx = ctx.order_result_tx.clone();
+    let dm_subscription_tx = ctx.dm_subscription_tx.clone();
+    let fallback_mostro_pubkey = ctx.mostro_pubkey;
+    let current_mostro_pubkey = Arc::clone(ctx.current_mostro_pubkey);
+    let mostro_info = ctx.mostro_info.clone();
+
+    tokio::spawn(async move {
+        let mostro_pubkey = match current_mostro_pubkey.lock() {
+            Ok(guard) => *guard,
+            Err(_) => fallback_mostro_pubkey,
+        };
+
+        if let Err(e) = sync_trade_index_from_mostro_and_persist(
+            &pool,
+            &client,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        {
+            let _ = order_result_tx.send(OperationResult::Error(format!(
+                "Trade index sync failed: {e}"
+            )));
+            return;
+        }
+
+        let result = match retry {
+            PendingTradeIndexRetry::NewOrder { form } => {
+                crate::util::send_new_order(
+                    &pool,
+                    &client,
+                    mostro_pubkey,
+                    form,
+                    Some(&dm_subscription_tx),
+                    mostro_info.as_ref(),
+                )
+                .await
+            }
+            PendingTradeIndexRetry::TakeOrder {
+                take_state,
+                amount,
+                invoice,
+            } => {
+                crate::util::take_order(
+                    &pool,
+                    &client,
+                    mostro_pubkey,
+                    &take_state.order,
+                    amount,
+                    invoice,
+                    Some(&dm_subscription_tx),
+                    mostro_info.as_ref(),
+                )
+                .await
+            }
+        };
+
+        match result {
+            Ok(op) => {
+                let _ = order_result_tx.send(op);
+            }
+            Err(e) => {
+                log::error!("Command failed after trade index sync: {e}");
+                let _ = order_result_tx.send(OperationResult::Error(e.to_string()));
+            }
+        }
+    });
+}
 
 /// Shared by runtime reset paths: log fatal, set exit-on-close, show error mode.
 fn apply_poisoned_mutex_ui_fatal(app: &mut AppState, user_message: String) {
@@ -915,6 +1001,7 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
                 fallback_mostro_pubkey
             }
         };
+        let form_for_retry = form.clone();
         match crate::util::send_new_order(
             &pool,
             &client,
@@ -930,7 +1017,12 @@ pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
             }
             Err(e) => {
                 log::error!("Failed to send order: {}", e);
-                let _ = order_result_tx.send(OperationResult::Error(e.to_string()));
+                let _ = order_result_tx.send(operation_result_for_mostro_command_error(
+                    e,
+                    PendingTradeIndexRetry::NewOrder {
+                        form: form_for_retry,
+                    },
+                ));
             }
         }
     });
@@ -1000,6 +1092,11 @@ pub fn spawn_take_order_task(
     mostro_info: Option<crate::util::MostroInstanceInfo>,
 ) {
     tokio::spawn(async move {
+        let retry = PendingTradeIndexRetry::TakeOrder {
+            take_state: take_state.clone(),
+            amount,
+            invoice: invoice.clone(),
+        };
         match crate::util::take_order(
             &pool,
             &client,
@@ -1017,7 +1114,7 @@ pub fn spawn_take_order_task(
             }
             Err(e) => {
                 log::error!("Failed to take order: {}", e);
-                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+                let _ = result_tx.send(operation_result_for_mostro_command_error(e, retry));
             }
         }
     });

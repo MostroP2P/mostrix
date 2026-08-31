@@ -34,7 +34,7 @@ use crate::util::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         start_fetch_scheduler, FetchSchedulerResult,
     },
-    StartupDmHydration,
+    sync_trade_index_from_mostro_and_persist, StartupDmHydration,
 };
 
 pub struct PostTerminalStartupInput<'a> {
@@ -151,6 +151,16 @@ pub async fn run_post_terminal_startup(
             "No internet / relays unreachable. Mostrix is retrying connection automatically."
                 .to_string(),
         );
+    } else if matches!(input.user_role, UserRole::User) {
+        // Mobile parity: silently align local trade index with Mostro on startup.
+        if User::get(input.pool).await.is_ok() {
+            if let Err(e) =
+                sync_trade_index_from_mostro_and_persist(input.pool, &client, mostro_pubkey, None)
+                    .await
+            {
+                log::warn!("Startup trade index sync failed: {e}");
+            }
+        }
     }
 
     spawn_network_status_monitor(

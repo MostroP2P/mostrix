@@ -1516,6 +1516,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmRestoreSession(ref mut selected_button)
                 | UiMode::ConfirmGenerateNewKeys(ref mut selected_button)
                 | UiMode::ConfirmImportSeed(_, ref mut selected_button)
+                | UiMode::ConfirmTradeIndexSync(_, ref mut selected_button)
                 | UiMode::ConfirmExit(ref mut selected_button) => {
                     *selected_button = !*selected_button; // Toggle between YES and NO
                     return Some(true);

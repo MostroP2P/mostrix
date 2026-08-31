@@ -130,6 +130,47 @@ fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSy
     })
 }
 
+/// Fetch Mostro's last trade index and raise local `users.last_trade_index` when behind.
+pub async fn sync_trade_index_from_mostro_and_persist(
+    pool: &sqlx::SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<i64> {
+    use crate::models::User;
+
+    let user = User::get(pool).await?;
+    let i0_pubkey = user.i0_pubkey.clone();
+    let current = user.last_trade_index.unwrap_or(0);
+    let identity_keys = User::get_identity_keys(pool).await?;
+    let sync =
+        fetch_last_trade_index_from_mostro(client, &identity_keys, mostro_pubkey, mostro_instance)
+            .await?;
+    ensure_same_active_user(pool, &i0_pubkey).await?;
+    if sync.last_used_index > current {
+        User::update_last_trade_index_for(pool, &i0_pubkey, sync.last_used_index).await?;
+        log::info!(
+            "Trade index synced from Mostro: {current} -> {}",
+            sync.last_used_index
+        );
+    } else if sync.no_history {
+        log::info!("Trade index sync: Mostro reports no prior trade history");
+    }
+    Ok(sync.last_used_index)
+}
+
+async fn ensure_same_active_user(pool: &sqlx::SqlitePool, expected_i0_pubkey: &str) -> Result<()> {
+    use crate::models::User;
+
+    let active = User::get(pool).await?;
+    if active.i0_pubkey != expected_i0_pubkey {
+        return Err(anyhow::anyhow!(
+            "Active user changed during trade index sync; abandoning stale Mostro response"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -31,6 +31,21 @@ async fn test_user_get() {
 }
 
 #[tokio::test]
+async fn test_user_update_last_trade_index_for_unknown_identity_fails() {
+    let pool = create_test_db().await.unwrap();
+    let mnemonic = test_mnemonic();
+
+    User::new(mnemonic, &pool).await.unwrap();
+    let err = User::update_last_trade_index_for(&pool, "deadbeef", 5)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("No user row matched identity"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_user_update_last_trade_index() {
     let pool = create_test_db().await.unwrap();
     let mnemonic = test_mnemonic();

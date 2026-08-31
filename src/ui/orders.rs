@@ -163,6 +163,10 @@ pub enum OperationResult {
         remember_buyer_saved_ln_address_for_order: bool,
     },
     Error(String),
+    /// Local trade index is behind Mostro; offer sync-and-retry (handled before render).
+    TradeIndexOutOfSync {
+        retry: crate::ui::pending_trade_index_retry::PendingTradeIndexRetry,
+    },
     /// Observer chat loaded successfully from relays.
     ObserverChatLoaded {
         generation: u64,

@@ -27,11 +27,13 @@ use crate::ui::{
 use crate::ui::key_handler::async_tasks::{
     spawn_import_seed_task, spawn_key_rotation_task, spawn_load_seed_words_task,
     spawn_refresh_mostro_info_from_settings_task, spawn_refresh_mostro_info_task,
-    spawn_send_new_order_task, spawn_verify_and_save_ln_address_task,
+    spawn_send_new_order_task, spawn_trade_index_sync_and_retry,
+    spawn_verify_and_save_ln_address_task,
 };
 use crate::ui::key_handler::user_handlers::{
     handle_enter_creating_order, handle_enter_taking_order,
 };
+use crate::ui::pending_trade_index_retry::PendingTradeIndexRetry;
 use bip39::Mnemonic;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::FromMnemonic;
@@ -790,6 +792,22 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = UiMode::operation_result(OperationResult::Info(
                 "Importing seed and wiping local session...".to_string(),
             ));
+            true
+        }
+        UiMode::ConfirmTradeIndexSync(retry, selected_button) => {
+            if !selected_button {
+                app.mode = UiMode::UserMode(UserMode::Normal);
+                return true;
+            }
+            match &retry {
+                PendingTradeIndexRetry::NewOrder { form } => {
+                    app.mode = UiMode::UserMode(UserMode::WaitingForMostro(form.clone()));
+                }
+                PendingTradeIndexRetry::TakeOrder { take_state, .. } => {
+                    app.mode = UiMode::UserMode(UserMode::WaitingTakeOrder(take_state.clone()));
+                }
+            }
+            spawn_trade_index_sync_and_retry(ctx, retry);
             true
         }
         UiMode::BackupNewKeys { .. } => {

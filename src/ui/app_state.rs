@@ -79,6 +79,11 @@ pub enum UiMode {
     ImportSeedWords(KeyInputState),
     /// Confirm destructive wipe + import (mnemonic held until Yes/No; cleared on clone).
     ConfirmImportSeed(Zeroizing<String>, bool), // (mnemonic, selected_button: true=Yes)
+    /// Mostro rejected a command with invalid trade index — sync from daemon and retry.
+    ConfirmTradeIndexSync(
+        crate::ui::pending_trade_index_retry::PendingTradeIndexRetry,
+        bool,
+    ), // (retry payload, selected_button: true=Sync&Retry)
 
     // User-specific modes
     UserMode(UserMode),
@@ -173,6 +178,9 @@ impl Clone for UiMode {
             UiMode::ImportSeedWords(state) => UiMode::ImportSeedWords(state.clone()),
             UiMode::ConfirmImportSeed(_, selected) => {
                 UiMode::ConfirmImportSeed(Zeroizing::new(String::new()), *selected)
+            }
+            UiMode::ConfirmTradeIndexSync(retry, selected) => {
+                UiMode::ConfirmTradeIndexSync(retry.clone(), *selected)
             }
             UiMode::UserMode(mode) => UiMode::UserMode(mode.clone()),
             UiMode::AdminMode(mode) => UiMode::AdminMode(mode.clone()),

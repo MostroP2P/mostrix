@@ -88,3 +88,23 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         }
     }
 }
+
+/// Structured Mostro `cant-do` refusal for typed error handling upstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MostroCantDoError {
+    pub reason: CantDoReason,
+}
+
+impl std::fmt::Display for MostroCantDoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", get_cant_do_description(&self.reason))
+    }
+}
+
+impl std::error::Error for MostroCantDoError {}
+
+/// True when Mostro rejected the request because the local trade index is stale.
+pub fn is_invalid_trade_index_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<MostroCantDoError>()
+        .is_some_and(|e| e.reason == CantDoReason::InvalidTradeIndex)
+}
