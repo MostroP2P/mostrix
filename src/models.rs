@@ -347,6 +347,81 @@ impl Order {
         Ok(order)
     }
 
+    /// Insert a row restored from Mostro, deriving peer-chat fields when trade pubkeys are present.
+    pub async fn insert_from_restore(
+        pool: &SqlitePool,
+        order: mostro_core::prelude::SmallOrder,
+        trade_keys: &nostr_sdk::prelude::Keys,
+        trade_index: i64,
+        is_maker: bool,
+    ) -> Result<Self> {
+        if trade_index <= 0 {
+            anyhow::bail!(
+                "Invalid trade_index {} while persisting restored order; expected positive index",
+                trade_index
+            );
+        }
+        let trade_keys_hex = trade_keys.secret_key().to_secret_hex();
+
+        let (counterparty_pubkey, order_chat_shared_key_hex) =
+            match crate::util::chat_utils::order_chat_counterparty_and_shared_hex(
+                trade_keys, &order,
+            ) {
+                Some((cp, sk)) => (Some(cp), Some(sk)),
+                None => (None, None),
+            };
+
+        let id = match order.id {
+            Some(id) => id.to_string(),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        let order_row = Order {
+            id: Some(id.clone()),
+            kind: order.kind.as_ref().map(|k| k.to_string()),
+            status: order.status.as_ref().map(|s| s.to_string()),
+            amount: order.amount,
+            fiat_code: order.fiat_code,
+            min_amount: order.min_amount,
+            max_amount: order.max_amount,
+            fiat_amount: order.fiat_amount,
+            payment_method: order.payment_method,
+            premium: order.premium,
+            trade_keys: Some(trade_keys_hex),
+            counterparty_pubkey,
+            order_chat_shared_key_hex,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: is_maker,
+            buyer_invoice: order.buyer_invoice,
+            request_id: None,
+            trade_index: Some(trade_index),
+            created_at: Some(chrono::Utc::now().timestamp()),
+            expires_at: order.expires_at,
+            last_seen_dm_ts: None,
+        };
+
+        let insert_result = order_row.insert_db(pool).await;
+
+        if let Err(e) = insert_result {
+            let is_unique_violation = match e.as_database_error() {
+                Some(db_err) => {
+                    let code = db_err.code().map(|c| c.to_string()).unwrap_or_default();
+                    code == "1555" || code == "2067"
+                }
+                None => false,
+            };
+
+            if is_unique_violation {
+                order_row.update_db(pool).await?;
+            } else {
+                return Err(e.into());
+            }
+        }
+
+        Ok(order_row)
+    }
+
     async fn insert_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
@@ -1477,6 +1552,59 @@ mod upsert_from_small_order_dm_tests {
             updated.trade_keys.as_deref(),
             Some(stored_keys.secret_key().to_secret_hex().as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn insert_from_restore_persists_peer_chat_fields_from_trade_pubkeys() {
+        let pool = create_test_pool().await;
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let seller_hex = seller.public_key().to_string();
+        let id = Uuid::new_v4();
+        let mut small_order = sample_small_order(id, 1000);
+        small_order.buyer_trade_pubkey = Some(buyer.public_key().to_string());
+        small_order.seller_trade_pubkey = Some(seller_hex);
+
+        let (expected_cp, expected_sk) =
+            crate::util::chat_utils::order_chat_counterparty_and_shared_hex(&buyer, &small_order)
+                .expect("trade pubkeys should derive chat fields");
+
+        Order::insert_from_restore(&pool, small_order, &buyer, 2, true)
+            .await
+            .expect("insert restored order");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("restored row");
+        assert_eq!(
+            stored.counterparty_pubkey.as_deref(),
+            Some(expected_cp.as_str())
+        );
+        assert_eq!(
+            stored.order_chat_shared_key_hex.as_deref(),
+            Some(expected_sk.as_str())
+        );
+        assert!(stored.is_mine);
+        assert_eq!(stored.trade_index, Some(2));
+    }
+
+    #[tokio::test]
+    async fn insert_from_restore_leaves_chat_fields_empty_without_trade_pubkeys() {
+        let pool = create_test_pool().await;
+        let trade_keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let small_order = sample_small_order(id, 500);
+
+        Order::insert_from_restore(&pool, small_order, &trade_keys, 1, false)
+            .await
+            .expect("insert minimal restored order");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("restored row");
+        assert!(stored.counterparty_pubkey.is_none());
+        assert!(stored.order_chat_shared_key_hex.is_none());
+        assert!(!stored.is_mine);
     }
 }
 

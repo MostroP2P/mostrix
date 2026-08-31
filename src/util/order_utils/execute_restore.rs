@@ -560,15 +560,7 @@ async fn restore_one_order(
         });
     }
 
-    Order::new(
-        pool,
-        small_order,
-        &trade_keys,
-        None,
-        info.trade_index,
-        is_maker,
-    )
-    .await?;
+    Order::insert_from_restore(pool, small_order, &trade_keys, info.trade_index, is_maker).await?;
     Ok(RestoredAs::Inserted {
         with_details,
         role_unknown,
