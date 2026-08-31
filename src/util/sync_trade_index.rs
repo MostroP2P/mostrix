@@ -133,8 +133,8 @@ fn parse_last_trade_index_response(message: &Message) -> Result<LastTradeIndexSy
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_last_trade_index, parse_last_trade_index_response,
-        validate_correlated_response, LastTradeIndexSync,
+        effective_last_trade_index, parse_last_trade_index_response, validate_correlated_response,
+        LastTradeIndexSync,
     };
     use mostro_core::prelude::*;
 
