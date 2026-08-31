@@ -13,6 +13,7 @@ pub mod network;
 pub mod order_utils;
 pub mod send_attachment;
 pub mod session_wipe;
+pub mod sync_trade_index;
 pub mod types;
 
 // Re-export commonly used items
@@ -63,4 +64,7 @@ pub use send_attachment::{
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
 pub use session_wipe::{clear_local_session_state, import_seed_and_wipe_session};
+pub use sync_trade_index::{
+    effective_last_trade_index, fetch_last_trade_index_from_mostro, LastTradeIndexSync,
+};
 pub use types::{get_cant_do_description, Event, ListKind};

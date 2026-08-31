@@ -16,6 +16,9 @@ use crate::util::dm_utils::{
     parse_dm_events, send_dm, wait_for_dm, OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
+use crate::util::sync_trade_index::{
+    effective_last_trade_index, fetch_last_trade_index_from_mostro,
+};
 use crate::util::types::get_cant_do_description;
 
 use super::helper::{
@@ -107,8 +110,9 @@ pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui:
 /// orders are handed to the DM router (`TrackOrder`) so their messages route
 /// live without a restart. Disputes restore their id and, when a solver is
 /// already assigned, the user↔solver chat secret (re-derived from the restored
-/// trade keys) so an in-flight dispute stays readable. `last_trade_index`
-/// advances to the highest index seen so future trades never reuse a key.
+/// trade keys) so an in-flight dispute stays readable. Stage 3 fetches
+/// `Action::LastTradeIndex` from Mostro; `last_trade_index` advances to
+/// `max(restore indices, mostro_last)` so future trades never reuse a key.
 pub async fn execute_restore_session(
     pool: &SqlitePool,
     client: &Client,
@@ -207,6 +211,17 @@ pub async fn execute_restore_session(
         );
     }
 
+    // Stage 3 (mobile-aligned): authoritative last-trade-index from Mostro.
+    // Always run — even when restore_orders is empty (completed-only history).
+    let mostro_last =
+        fetch_last_trade_index_from_mostro(client, &identity_keys, mostro_pubkey, mostro_instance)
+            .await?;
+    log::info!(
+        "Restore stage 3: Mostro last trade index is {} (no_history={})",
+        mostro_last.last_used_index,
+        mostro_last.no_history
+    );
+
     let mut summary = RestoreSummary {
         disputes: restore_data.restore_disputes.len(),
         ..Default::default()
@@ -217,15 +232,20 @@ pub async fn execute_restore_session(
     // "index bumped, some rows missing" (a re-run repairs it) and never "rows
     // with restored trade keys present, index stale" (a later order would reuse
     // a restored key). If this write fails nothing else has been touched.
-    let max_trade_index = restore_data
+    let restore_max = restore_data
         .restore_orders
         .iter()
         .map(|o| o.trade_index)
         .chain(restore_data.restore_disputes.iter().map(|d| d.trade_index))
         .max()
         .unwrap_or(0);
-    if max_trade_index > user.last_trade_index.unwrap_or(0) {
-        User::update_last_trade_index(pool, max_trade_index).await?;
+    let effective_last = effective_last_trade_index(restore_max, mostro_last.last_used_index);
+    if effective_last > user.last_trade_index.unwrap_or(0) {
+        User::update_last_trade_index(pool, effective_last).await?;
+        log::info!(
+            "Restore: advanced last_trade_index to {effective_last} (restore_max={restore_max}, mostro_last={})",
+            mostro_last.last_used_index
+        );
     }
 
     for info in &restore_data.restore_orders {
