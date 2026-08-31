@@ -375,7 +375,7 @@ impl Order {
             Some(id) => id.to_string(),
             None => uuid::Uuid::new_v4().to_string(),
         };
-        let order_row = Order {
+        let mut order_row = Order {
             id: Some(id.clone()),
             kind: order.kind.as_ref().map(|k| k.to_string()),
             status: order.status.as_ref().map(|s| s.to_string()),
@@ -413,6 +413,8 @@ impl Order {
             };
 
             if is_unique_violation {
+                let existing = Self::get_by_id(pool, &id).await?;
+                order_row = order_row.preserve_local_fields_from_existing(&existing);
                 order_row.update_db(pool).await?;
             } else {
                 return Err(e.into());
@@ -420,6 +422,19 @@ impl Order {
         }
 
         Ok(order_row)
+    }
+
+    /// Keep client-local columns when a restore update collides with an existing row.
+    fn preserve_local_fields_from_existing(mut self, existing: &Order) -> Self {
+        self.dispute_id = self.dispute_id.or_else(|| existing.dispute_id.clone());
+        self.solver_pubkey = self
+            .solver_pubkey
+            .or_else(|| existing.solver_pubkey.clone());
+        self.dispute_chat_shared_key_hex = self
+            .dispute_chat_shared_key_hex
+            .or_else(|| existing.dispute_chat_shared_key_hex.clone());
+        self.last_seen_dm_ts = self.last_seen_dm_ts.or(existing.last_seen_dm_ts);
+        self
     }
 
     async fn insert_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -1605,6 +1620,59 @@ mod upsert_from_small_order_dm_tests {
         assert!(stored.counterparty_pubkey.is_none());
         assert!(stored.order_chat_shared_key_hex.is_none());
         assert!(!stored.is_mine);
+    }
+
+    #[tokio::test]
+    async fn insert_from_restore_collision_preserves_local_dispute_and_dm_fields() {
+        let pool = create_test_pool().await;
+        let buyer = Keys::generate();
+        let seller = Keys::generate();
+        let id = Uuid::new_v4();
+        let local_dispute_id = "dispute-local-uuid".to_string();
+        let local_solver = Keys::generate().public_key().to_string();
+        let local_dispute_chat_key = "deadbeef".to_string();
+        let local_last_seen = 1_700_000_000_i64;
+
+        sqlx::query(
+            r#"INSERT INTO orders (
+                id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium,
+                trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
+                dispute_id, solver_pubkey, dispute_chat_shared_key_hex,
+                is_mine, trade_index, last_seen_dm_ts
+            ) VALUES (?, 'buy', 'active', 1000, 'USD', 10, 'bank', 0, ?, NULL, NULL, ?, ?, ?, 1, 5, ?)"#,
+        )
+        .bind(id.to_string())
+        .bind(buyer.secret_key().to_secret_hex())
+        .bind(&local_dispute_id)
+        .bind(&local_solver)
+        .bind(&local_dispute_chat_key)
+        .bind(local_last_seen)
+        .execute(&pool)
+        .await
+        .expect("seed existing order");
+
+        let mut small_order = sample_small_order(id, 2000);
+        small_order.buyer_trade_pubkey = Some(buyer.public_key().to_string());
+        small_order.seller_trade_pubkey = Some(seller.public_key().to_string());
+
+        Order::insert_from_restore(&pool, small_order, &buyer, 5, true)
+            .await
+            .expect("restore insert collides and updates");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("updated row");
+        assert_eq!(stored.amount, 2000, "restore should refresh order fields");
+        assert_eq!(
+            stored.dispute_id.as_deref(),
+            Some(local_dispute_id.as_str())
+        );
+        assert_eq!(stored.solver_pubkey.as_deref(), Some(local_solver.as_str()));
+        assert_eq!(
+            stored.dispute_chat_shared_key_hex.as_deref(),
+            Some(local_dispute_chat_key.as_str())
+        );
+        assert_eq!(stored.last_seen_dm_ts, Some(local_last_seen));
     }
 }
 
