@@ -329,6 +329,106 @@ pub async fn refresh_my_trades_maker_book_cache(pool: &SqlitePool, app: &mut App
         .collect();
 }
 
+/// Buyer vs seller for mapping persisted status to a Messages-tab [`Action`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TradeSide {
+    Buyer,
+    Seller,
+}
+
+/// Infer buyer/seller from maker/taker flag and order kind (SQLite rows lack trade pubkeys).
+fn trade_side_for_db_order(is_mine: bool, kind: Option<OrderKind>) -> TradeSide {
+    match (is_mine, kind) {
+        (true, Some(OrderKind::Sell)) => TradeSide::Seller,
+        (true, Some(OrderKind::Buy)) => TradeSide::Buyer,
+        (false, Some(OrderKind::Sell)) => TradeSide::Buyer,
+        (false, Some(OrderKind::Buy)) => TradeSide::Seller,
+        (true, None) => TradeSide::Seller,
+        (false, None) => TradeSide::Buyer,
+    }
+}
+
+/// Fallback when `orders.status` is missing or unparsable.
+fn history_action_without_status(is_mine: bool, kind: Option<OrderKind>) -> Action {
+    if is_mine {
+        Action::NewOrder
+    } else {
+        match kind {
+            Some(OrderKind::Buy) => Action::TakeBuy,
+            Some(OrderKind::Sell) => Action::TakeSell,
+            None => Action::WaitingSellerToPay,
+        }
+    }
+}
+
+/// Map persisted order status + role to a Messages-tab [`Action`].
+///
+/// Aligned with the mobile restore path (`RestoreService._getActionFromStatus`) so
+/// startup/restore DB sync shows the correct trade phase before relay DM replay.
+/// Trade-DM hydration may still replace the row when a fresher rumor arrives.
+pub(crate) fn history_action_for_db_order(order: &Order) -> Action {
+    let kind = order
+        .kind
+        .as_deref()
+        .and_then(|k| OrderKind::from_str(k).ok());
+    let status = order
+        .status
+        .as_deref()
+        .and_then(|s| Status::from_str(s).ok());
+    let side = trade_side_for_db_order(order.is_mine, kind);
+
+    let Some(status) = status else {
+        return history_action_without_status(order.is_mine, kind);
+    };
+
+    match status {
+        Status::Pending => Action::NewOrder,
+        Status::WaitingMakerBond | Status::WaitingTakerBond => Action::PayBondInvoice,
+        Status::WaitingBuyerInvoice => match side {
+            TradeSide::Buyer => Action::AddInvoice,
+            TradeSide::Seller => Action::WaitingBuyerInvoice,
+        },
+        Status::WaitingPayment => match side {
+            TradeSide::Seller => Action::PayInvoice,
+            TradeSide::Buyer => Action::WaitingSellerToPay,
+        },
+        Status::InProgress => match side {
+            TradeSide::Buyer => Action::HoldInvoicePaymentAccepted,
+            TradeSide::Seller => Action::BuyerTookOrder,
+        },
+        Status::Active => {
+            if order.is_mine {
+                // On-book listing vs matched trade: counterparty means the trade started.
+                if order
+                    .counterparty_pubkey
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())
+                {
+                    Action::BuyerTookOrder
+                } else {
+                    Action::NewOrder
+                }
+            } else {
+                match side {
+                    TradeSide::Buyer => Action::HoldInvoicePaymentAccepted,
+                    TradeSide::Seller => Action::BuyerTookOrder,
+                }
+            }
+        }
+        Status::FiatSent => Action::FiatSentOk,
+        Status::SettledHoldInvoice => match side {
+            TradeSide::Buyer => Action::Released,
+            TradeSide::Seller => Action::HoldInvoicePaymentSettled,
+        },
+        Status::Success => Action::PurchaseCompleted,
+        Status::Canceled | Status::Expired => Action::Canceled,
+        Status::CanceledByAdmin => Action::AdminCanceled,
+        Status::SettledByAdmin | Status::CompletedByAdmin => Action::AdminSettled,
+        Status::Dispute => Action::DisputeInitiatedByPeer,
+        Status::CooperativelyCanceled => Action::CooperativeCancelInitiatedByPeer,
+    }
+}
+
 fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
@@ -342,18 +442,7 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    let action = if order.is_mine {
-        match status {
-            Some(Status::WaitingMakerBond) => Action::PayBondInvoice,
-            _ => Action::NewOrder,
-        }
-    } else {
-        match kind {
-            Some(OrderKind::Buy) => Action::TakeBuy,
-            Some(OrderKind::Sell) => Action::TakeSell,
-            None => Action::WaitingSellerToPay,
-        }
-    };
+    let action = history_action_for_db_order(order);
 
     let payload_order = SmallOrder {
         id: Some(order_id),
@@ -840,4 +929,82 @@ pub async fn apply_admin_chat_updates(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod history_action_for_db_order_tests {
+    use super::history_action_for_db_order;
+    use crate::models::Order;
+    use mostro_core::prelude::Action;
+    use uuid::Uuid;
+
+    fn sample_order(status: &str, is_mine: bool, kind: &str, counterparty: Option<&str>) -> Order {
+        Order {
+            id: Some(Uuid::new_v4().to_string()),
+            kind: Some(kind.to_string()),
+            status: Some(status.to_string()),
+            amount: 1_000,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 50,
+            payment_method: "ln".to_string(),
+            premium: 0,
+            is_mine,
+            trade_index: Some(2),
+            counterparty_pubkey: counterparty.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pending_maker_stays_new_order() {
+        let order = sample_order("pending", true, "sell", None);
+        assert_eq!(history_action_for_db_order(&order), Action::NewOrder);
+    }
+
+    #[test]
+    fn active_taker_on_sell_uses_hold_invoice_payment_accepted() {
+        let peer = "a".repeat(64);
+        let order = sample_order("active", false, "sell", Some(peer.as_str()));
+        assert_eq!(
+            history_action_for_db_order(&order),
+            Action::HoldInvoicePaymentAccepted
+        );
+    }
+
+    #[test]
+    fn active_maker_with_counterparty_uses_buyer_took_order() {
+        let peer = "b".repeat(64);
+        let order = sample_order("active", true, "sell", Some(peer.as_str()));
+        assert_eq!(history_action_for_db_order(&order), Action::BuyerTookOrder);
+    }
+
+    #[test]
+    fn active_maker_without_counterparty_stays_new_order() {
+        let order = sample_order("active", true, "sell", None);
+        assert_eq!(history_action_for_db_order(&order), Action::NewOrder);
+    }
+
+    #[test]
+    fn in_progress_seller_maker_uses_buyer_took_order() {
+        let order = sample_order("in-progress", true, "sell", None);
+        assert_eq!(history_action_for_db_order(&order), Action::BuyerTookOrder);
+    }
+
+    #[test]
+    fn waiting_payment_maps_by_side() {
+        let seller = sample_order("waiting-payment", true, "sell", None);
+        assert_eq!(history_action_for_db_order(&seller), Action::PayInvoice);
+
+        let buyer = sample_order("waiting-payment", false, "sell", None);
+        assert_eq!(
+            history_action_for_db_order(&buyer),
+            Action::WaitingSellerToPay
+        );
+    }
+
+    #[test]
+    fn fiat_sent_uses_fiat_sent_ok() {
+        let order = sample_order("fiat-sent", false, "sell", None);
+        assert_eq!(history_action_for_db_order(&order), Action::FiatSentOk);
+    }
 }
