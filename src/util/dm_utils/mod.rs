@@ -2744,8 +2744,7 @@ mod tests {
             lookback_start,
         );
         let json = filter.as_json();
-        let expected_since =
-            (last_seen as u64).saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+        let expected_since = (last_seen as u64).saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
         assert!(json.contains(&format!("\"since\":{expected_since}")));
         assert!(json.contains(&format!("\"limit\":{}", STARTUP_TRADE_DM_FETCH_LIMIT)));
     }
