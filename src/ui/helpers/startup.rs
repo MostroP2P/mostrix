@@ -397,17 +397,13 @@ pub(crate) fn history_action_for_db_order(order: &Order) -> Action {
             TradeSide::Seller => Action::BuyerTookOrder,
         },
         Status::Active => {
-            if order.is_mine {
-                // On-book listing vs matched trade: counterparty means the trade started.
-                if order
-                    .counterparty_pubkey
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty())
-                {
-                    Action::BuyerTookOrder
-                } else {
-                    Action::NewOrder
-                }
+            let matched = order
+                .counterparty_pubkey
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+            // Unmatched maker listing stays NewOrder (hidden in Messages); matched trades use side.
+            if order.is_mine && !matched {
+                Action::NewOrder
             } else {
                 match side {
                     TradeSide::Buyer => Action::HoldInvoicePaymentAccepted,
@@ -972,10 +968,20 @@ mod history_action_for_db_order_tests {
     }
 
     #[test]
-    fn active_maker_with_counterparty_uses_buyer_took_order() {
+    fn active_maker_sell_with_counterparty_uses_buyer_took_order() {
         let peer = "b".repeat(64);
         let order = sample_order("active", true, "sell", Some(peer.as_str()));
         assert_eq!(history_action_for_db_order(&order), Action::BuyerTookOrder);
+    }
+
+    #[test]
+    fn active_maker_buy_with_counterparty_uses_hold_invoice_payment_accepted() {
+        let peer = "c".repeat(64);
+        let order = sample_order("active", true, "buy", Some(peer.as_str()));
+        assert_eq!(
+            history_action_for_db_order(&order),
+            Action::HoldInvoicePaymentAccepted
+        );
     }
 
     #[test]
