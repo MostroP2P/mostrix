@@ -1384,6 +1384,33 @@ fn trade_dm_replay_dispatch_mode(
     }
 }
 
+/// Relay fetch filter for trade-DM replay (`fetch_events` on startup or post-restore).
+///
+/// When `last_seen_dm_ts` is missing (post-wipe restore, first session), mirrors
+/// [`dm_helpers::DmSubscriptionMode::StartupCatchUp`]: no `since`, only `limit`, so relay
+/// retention — not the 12h cold lookback — bounds how far back we hydrate.
+fn trade_dm_replay_fetch_filter(
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    trade_pubkey: PublicKey,
+    last_seen_dm_ts: Option<i64>,
+    lookback_start: u64,
+) -> Filter {
+    let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
+    match last_seen_dm_ts.and_then(|ts| u64::try_from(ts).ok()) {
+        None => base.limit(STARTUP_TRADE_DM_FETCH_LIMIT),
+        Some(last_seen) => {
+            // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
+            // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list)
+            // then widen backward so the last processed DM's GiftWrap is not filtered out.
+            let combined_since = last_seen.min(lookback_start);
+            let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+            base.since(Timestamp::from(since_ts))
+                .limit(STARTUP_TRADE_DM_FETCH_LIMIT)
+        }
+    }
+}
+
 /// Snapshot of `listen_for_order_messages` locals passed into startup protocol DM replay.
 struct DmListenerStartupReplay<'a> {
     client: &'a Client,
@@ -1435,19 +1462,13 @@ async fn replay_single_trade_dm(
     };
     let pubkey = trade_keys.public_key();
 
-    // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
-    // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list) then
-    // widen backward so the last processed DM's GiftWrap is not filtered out.
-    let combined_since = order_last_seen_dm_ts
-        .get(&order_id)
-        .and_then(|ts| u64::try_from(*ts).ok())
-        .map(|last_seen| last_seen.min(lookback_start))
-        .unwrap_or(lookback_start);
-    let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
-
-    let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
-        .since(Timestamp::from(since_ts))
-        .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
+    let filter = trade_dm_replay_fetch_filter(
+        transport,
+        mostro_pubkey,
+        pubkey,
+        order_last_seen_dm_ts.get(&order_id).copied(),
+        lookback_start,
+    );
 
     let events = match client
         .fetch_events(filter)
@@ -2260,12 +2281,15 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
-        trade_dm_replay_dispatch_mode, trade_message_is_terminal,
+        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, TradeDmReplayDispatchMode,
+        STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
-    use mostro_core::prelude::{Action, Message, Payload, SmallOrder, Status, UnwrappedMessage};
+    use mostro_core::prelude::{
+        Action, Message, Payload, SmallOrder, Status, Transport, UnwrappedMessage,
+    };
     use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -2670,5 +2694,59 @@ mod tests {
             trade_dm_replay_dispatch_mode(&pubkey, &pubkey_to_sub, &sub_to_order),
             TradeDmReplayDispatchMode::TrackedSubscription
         );
+    }
+
+    #[test]
+    fn trade_dm_replay_no_cursor_uses_catch_up_fetch_without_since() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let lookback_start = Timestamp::now().as_secs();
+        let filter = trade_dm_replay_fetch_filter(
+            Transport::Nip44Direct,
+            mostro,
+            trade,
+            None,
+            lookback_start,
+        );
+        let json = filter.as_json();
+        assert!(json.contains(&format!("\"limit\":{}", STARTUP_TRADE_DM_FETCH_LIMIT)));
+        assert!(!json.contains("\"since\""));
+    }
+
+    #[test]
+    fn trade_dm_replay_no_cursor_omits_since_even_when_lookback_is_recent() {
+        // Regression: post-restore orders have no `last_seen_dm_ts`; the old path used
+        // `lookback_start` (now - 12h) and missed DMs older than the cold window.
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let recent_lookback = Timestamp::now().as_secs();
+        let filter = trade_dm_replay_fetch_filter(
+            Transport::Nip44Direct,
+            mostro,
+            trade,
+            None,
+            recent_lookback,
+        );
+        assert!(!filter.as_json().contains("\"since\""));
+    }
+
+    #[test]
+    fn trade_dm_replay_with_cursor_applies_since_and_skew() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let last_seen: i64 = 1_700_000_000;
+        let lookback_start = last_seen as u64 + 3600;
+        let filter = trade_dm_replay_fetch_filter(
+            Transport::Nip44Direct,
+            mostro,
+            trade,
+            Some(last_seen),
+            lookback_start,
+        );
+        let json = filter.as_json();
+        let expected_since =
+            (last_seen as u64).saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+        assert!(json.contains(&format!("\"since\":{expected_since}")));
+        assert!(json.contains(&format!("\"limit\":{}", STARTUP_TRADE_DM_FETCH_LIMIT)));
     }
 }
