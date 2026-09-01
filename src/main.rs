@@ -12,7 +12,8 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, load_admin_disputes_at_startup, refresh_my_trades_maker_book_cache,
-    replay_trade_dms_after_session_restore, sync_user_order_history_messages_from_db,
+    prepare_post_restore_trade_dm_replay, spawn_post_restore_trade_dm_replay,
+    sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -78,7 +79,12 @@ async fn apply_order_result(
     client: &Client,
     mostro_pubkey: PublicKey,
     message_notification_tx: &UnboundedSender<MessageNotification>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) {
+    if matches!(&result, OperationResult::PostRestoreTradeDmReplayCompleted) {
+        return;
+    }
+
     let is_dispute_related = match &result {
         OperationResult::AdminDisputeDeleted { .. } => true,
         OperationResult::Info(msg) => {
@@ -100,7 +106,10 @@ async fn apply_order_result(
         refresh_my_trades_maker_book_cache(pool, app).await;
     }
 
-    if !matches!(result, OperationResult::MyTradesMakerBookChanged) {
+    if !matches!(
+        result,
+        OperationResult::MyTradesMakerBookChanged | OperationResult::PostRestoreTradeDmReplayCompleted
+    ) {
         handle_operation_result(result, app);
     }
     if resync_my_trades_from_db && app.user_role == UserRole::User {
@@ -108,14 +117,16 @@ async fn apply_order_result(
     }
 
     if is_session_restored && app.user_role == UserRole::User {
-        replay_trade_dms_after_session_restore(
-            pool,
-            app,
-            client,
-            mostro_pubkey,
-            message_notification_tx,
-        )
-        .await;
+        if let Some(job) = prepare_post_restore_trade_dm_replay(pool, app).await {
+            spawn_post_restore_trade_dm_replay(
+                job,
+                pool.clone(),
+                client.clone(),
+                mostro_pubkey,
+                message_notification_tx.clone(),
+                order_result_tx.clone(),
+            );
+        }
     }
 
     if is_dispute_related && app.user_role == UserRole::Admin {
@@ -174,6 +185,7 @@ async fn drain_order_result_queue(
     client: &Client,
     mostro_pubkey: PublicKey,
     message_notification_tx: &UnboundedSender<MessageNotification>,
+    order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     while let Ok(result) = order_result_rx.try_recv() {
         apply_order_result(
@@ -183,6 +195,7 @@ async fn drain_order_result_queue(
             client,
             mostro_pubkey,
             message_notification_tx,
+            order_result_tx,
         )
         .await;
     }
@@ -464,6 +477,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         &client,
                         mostro_pubkey,
                         &message_notification_tx,
+                        &order_result_tx,
                     )
                     .await;
                 }
@@ -879,6 +893,7 @@ async fn main() -> Result<(), anyhow::Error> {
             &client,
             mostro_pubkey,
             &message_notification_tx,
+            &order_result_tx,
         )
         .await;
 
