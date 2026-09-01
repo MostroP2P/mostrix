@@ -13,9 +13,9 @@ use uuid::Uuid;
 use super::order_chat_projection::order_chat_list_item_from_db_order;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage, MessageNotification,
-    OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatChannel, UserChatSender,
-    UserOrderChatMessage, UserRole,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage,
+    MessageNotification, OrderChatLastSeen, OrderChatStaticHeader, OrderMessage, UserChatChannel,
+    UserChatSender, UserOrderChatMessage, UserRole,
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat, track_user_dispute_chat},
@@ -585,9 +585,7 @@ pub async fn replay_trade_dms_after_session_restore(
         *indices = startup_dm.active_order_trade_indices.clone();
     }
     for (order_id, ts) in &startup_dm.order_last_seen_dm_ts {
-        app.startup_popup_floor_ts
-            .entry(*order_id)
-            .or_insert(*ts);
+        app.startup_popup_floor_ts.entry(*order_id).or_insert(*ts);
     }
 
     let user = match User::get(pool).await {

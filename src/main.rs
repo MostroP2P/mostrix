@@ -20,7 +20,9 @@ use crate::ui::key_handler::{
     handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
-use crate::ui::{LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult};
+use crate::ui::{
+    LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
+};
 use crate::util::{
     blossom_servers_from_settings, execute_restore_session, handle_message_notification,
     handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
