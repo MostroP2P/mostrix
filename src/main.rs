@@ -11,8 +11,8 @@ use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    expire_attachment_toast, load_admin_disputes_at_startup, refresh_my_trades_maker_book_cache,
-    prepare_post_restore_trade_dm_replay, spawn_post_restore_trade_dm_replay,
+    expire_attachment_toast, load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_trade_dm_replay,
     sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
@@ -108,7 +108,8 @@ async fn apply_order_result(
 
     if !matches!(
         result,
-        OperationResult::MyTradesMakerBookChanged | OperationResult::PostRestoreTradeDmReplayCompleted
+        OperationResult::MyTradesMakerBookChanged
+            | OperationResult::PostRestoreTradeDmReplayCompleted
     ) {
         handle_operation_result(result, app);
     }
