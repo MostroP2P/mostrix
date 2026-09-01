@@ -12,7 +12,7 @@ use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
     expire_attachment_toast, load_admin_disputes_at_startup, refresh_my_trades_maker_book_cache,
-    sync_user_order_history_messages_from_db,
+    replay_trade_dms_after_session_restore, sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -20,7 +20,7 @@ use crate::ui::key_handler::{
     handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
-use crate::ui::{LnAddressVerifyResult, MostroInfoFetchResult, OperationResult};
+use crate::ui::{LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult};
 use crate::util::{
     blossom_servers_from_settings, execute_restore_session, handle_message_notification,
     handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
@@ -69,7 +69,14 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
     )
 }
 
-async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: OperationResult) {
+async fn apply_order_result(
+    pool: &SqlitePool,
+    app: &mut AppState,
+    result: OperationResult,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+) {
     let is_dispute_related = match &result {
         OperationResult::AdminDisputeDeleted { .. } => true,
         OperationResult::Info(msg) => {
@@ -78,6 +85,7 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
         }
         _ => false,
     };
+    let is_session_restored = matches!(&result, OperationResult::SessionRestored { .. });
     let resync_my_trades_from_db = requires_db_projection_resync(&result);
     let refresh_maker_book_cache = matches!(
         &result,
@@ -95,6 +103,17 @@ async fn apply_order_result(pool: &SqlitePool, app: &mut AppState, result: Opera
     }
     if resync_my_trades_from_db && app.user_role == UserRole::User {
         sync_user_order_history_messages_from_db(pool, app).await;
+    }
+
+    if is_session_restored && app.user_role == UserRole::User {
+        replay_trade_dms_after_session_restore(
+            pool,
+            app,
+            client,
+            mostro_pubkey,
+            message_notification_tx,
+        )
+        .await;
     }
 
     if is_dispute_related && app.user_role == UserRole::Admin {
@@ -150,9 +169,20 @@ async fn drain_order_result_queue(
     order_result_rx: &mut UnboundedReceiver<OperationResult>,
     pool: &SqlitePool,
     app: &mut AppState,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
 ) {
     while let Ok(result) = order_result_rx.try_recv() {
-        apply_order_result(pool, app, result).await;
+        apply_order_result(
+            pool,
+            app,
+            result,
+            client,
+            mostro_pubkey,
+            message_notification_tx,
+        )
+        .await;
     }
 }
 
@@ -425,7 +455,15 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             result = order_result_rx.recv() => {
                 if let Some(result) = result {
-                    apply_order_result(&pool, &mut app, result).await;
+                    apply_order_result(
+                        &pool,
+                        &mut app,
+                        result,
+                        &client,
+                        mostro_pubkey,
+                        &message_notification_tx,
+                    )
+                    .await;
                 }
             }
             ln_address_verify = ln_address_result_rx.recv() => {
@@ -832,7 +870,15 @@ async fn main() -> Result<(), anyhow::Error> {
             &app.mostro_info,
             &order_result_tx,
         );
-        drain_order_result_queue(&mut order_result_rx, &pool, &mut app).await;
+        drain_order_result_queue(
+            &mut order_result_rx,
+            &pool,
+            &mut app,
+            &client,
+            mostro_pubkey,
+            &message_notification_tx,
+        )
+        .await;
 
         // Expire transient UI timers/toasts before rendering.
         expire_attachment_toast(&mut app);

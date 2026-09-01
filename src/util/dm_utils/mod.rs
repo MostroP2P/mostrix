@@ -1331,6 +1331,59 @@ const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 100;
 /// only newer envelopes (e.g. `waiting-seller-to-pay`) are returned.
 const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 3 * 24 * 60 * 60;
 
+/// Outcome of replaying trade DMs for one active order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayTradeDmOutcome {
+    Hydrated,
+    SkippedNoKeys,
+    FetchFailed,
+    EmptyFetch,
+    ParseFailed,
+}
+
+/// Aggregate result of [`replay_active_trade_dms`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TradeDmReplaySummary {
+    pub attempted: usize,
+    pub hydrated: usize,
+    pub fetch_failed: usize,
+    pub empty: usize,
+    pub parse_failed: usize,
+    pub skipped_no_keys: usize,
+}
+
+impl TradeDmReplaySummary {
+    fn record(&mut self, outcome: ReplayTradeDmOutcome) {
+        self.attempted += 1;
+        match outcome {
+            ReplayTradeDmOutcome::Hydrated => self.hydrated += 1,
+            ReplayTradeDmOutcome::SkippedNoKeys => self.skipped_no_keys += 1,
+            ReplayTradeDmOutcome::FetchFailed => self.fetch_failed += 1,
+            ReplayTradeDmOutcome::EmptyFetch => self.empty += 1,
+            ReplayTradeDmOutcome::ParseFailed => self.parse_failed += 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TradeDmReplayDispatchMode {
+    TrackedSubscription,
+    UntrackedFallback,
+}
+
+fn trade_dm_replay_dispatch_mode(
+    pubkey: &PublicKey,
+    pubkey_to_subscription: &HashMap<PublicKey, SubscriptionId>,
+    subscription_to_order: &HashMap<SubscriptionId, (Uuid, i64)>,
+) -> TradeDmReplayDispatchMode {
+    match pubkey_to_subscription.get(pubkey) {
+        Some(sub_id) if subscription_to_order.contains_key(sub_id) => {
+            TradeDmReplayDispatchMode::TrackedSubscription
+        }
+        _ => TradeDmReplayDispatchMode::UntrackedFallback,
+    }
+}
+
 /// Snapshot of `listen_for_order_messages` locals passed into startup protocol DM replay.
 struct DmListenerStartupReplay<'a> {
     client: &'a Client,
@@ -1346,6 +1399,258 @@ struct DmListenerStartupReplay<'a> {
     subscription_to_order: &'a mut HashMap<SubscriptionId, (Uuid, i64)>,
     pubkey_to_subscription: &'a HashMap<PublicKey, SubscriptionId>,
     dropped_user_history_order_ids: &'a Arc<Mutex<HashSet<Uuid>>>,
+}
+
+/// Fetch and hydrate the newest trade DM rumor for one active order.
+#[allow(clippy::too_many_arguments)]
+async fn replay_single_trade_dm(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: &sqlx::sqlite::SqlitePool,
+    user: &User,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: &Arc<Mutex<usize>>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    pubkey_to_subscription: &HashMap<PublicKey, SubscriptionId>,
+    dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
+    order_id: Uuid,
+    trade_index: i64,
+    order_last_seen_dm_ts: &HashMap<Uuid, i64>,
+    lookback_start: u64,
+) -> ReplayTradeDmOutcome {
+    let trade_keys = match user.derive_trade_keys(trade_index) {
+        Ok(k) => k,
+        Err(e) => {
+            log::error!(
+                "Trade DM replay: failed to derive trade keys for index {}: {}",
+                trade_index,
+                e
+            );
+            return ReplayTradeDmOutcome::SkippedNoKeys;
+        }
+    };
+    let pubkey = trade_keys.public_key();
+
+    // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
+    // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list) then
+    // widen backward so the last processed DM's GiftWrap is not filtered out.
+    let combined_since = order_last_seen_dm_ts
+        .get(&order_id)
+        .and_then(|ts| u64::try_from(*ts).ok())
+        .map(|last_seen| last_seen.min(lookback_start))
+        .unwrap_or(lookback_start);
+    let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+
+    let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
+        .since(Timestamp::from(since_ts))
+        .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
+
+    let events = match client
+        .fetch_events(filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await
+    {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!(
+                "Trade DM replay: fetch_events failed for order_id={}: {}",
+                order_id,
+                e
+            );
+            return ReplayTradeDmOutcome::FetchFailed;
+        }
+    };
+
+    if events.is_empty() {
+        return ReplayTradeDmOutcome::EmptyFetch;
+    }
+
+    let event_list: Vec<Event> = events.into_iter().collect();
+    let fetched_n = event_list.len();
+
+    let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
+    for event in &event_list {
+        let unwrapped = match unwrap_incoming(event, &trade_keys).await {
+            Ok(Some(u)) => u,
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!(
+                    "Trade DM replay: unwrap_incoming failed (event {}): {}",
+                    event.id,
+                    e
+                );
+                continue;
+            }
+        };
+        let parsed_messages = parse_dm_events_single(event, &trade_keys, Some(unwrapped)).await;
+        if parsed_messages.is_empty() {
+            continue;
+        }
+        for triple in parsed_messages {
+            let (ref _msg, ts, ref _sender) = triple;
+            let take = match &best {
+                None => true,
+                Some((best_ts, best_eid, _)) => {
+                    ts > *best_ts || (ts == *best_ts && event.id.as_bytes() > best_eid.as_bytes())
+                }
+            };
+            if take {
+                best = Some((ts, event.id, triple));
+            }
+        }
+    }
+
+    let Some((max_rumor_ts, _, freshest)) = best else {
+        log::trace!(
+            "Trade DM replay: order_id={} trade_index={} had {} event(s) but none decrypted/parsed",
+            order_id,
+            trade_index,
+            fetched_n
+        );
+        return ReplayTradeDmOutcome::ParseFailed;
+    };
+
+    log::info!(
+        "Trade DM replay: order_id={} trade_index={} fetched {} protocol DM event(s); hydrating newest rumor ts={}",
+        order_id,
+        trade_index,
+        fetched_n,
+        max_rumor_ts
+    );
+
+    let dispatch_mode =
+        trade_dm_replay_dispatch_mode(&pubkey, pubkey_to_subscription, subscription_to_order);
+    if matches!(dispatch_mode, TradeDmReplayDispatchMode::UntrackedFallback) {
+        log::debug!(
+            "Trade DM replay: order_id={} using untracked dispatch (no live subscription mapping)",
+            order_id
+        );
+    }
+
+    let terminal_policy = match dispatch_mode {
+        TradeDmReplayDispatchMode::TrackedSubscription => {
+            let sub_id = pubkey_to_subscription
+                .get(&pubkey)
+                .expect("TrackedSubscription requires subscription id");
+            GiftWrapTerminalPolicy::TrackedSubscription(sub_id)
+        }
+        TradeDmReplayDispatchMode::UntrackedFallback => GiftWrapTerminalPolicy::UntrackedFallback,
+    };
+
+    dispatch_giftwrap_batch(
+        vec![freshest],
+        order_id,
+        trade_index,
+        &trade_keys,
+        messages,
+        pending_notifications,
+        message_notification_tx,
+        pool,
+        user,
+        active_order_trade_indices,
+        subscribed_pubkeys,
+        client,
+        subscription_to_order,
+        terminal_policy,
+        false,
+        dropped_user_history_order_ids,
+    )
+    .await;
+
+    ReplayTradeDmOutcome::Hydrated
+}
+
+/// One-shot relay fetch + replay for all active trade orders (awaitable).
+#[allow(clippy::too_many_arguments)]
+pub async fn replay_active_trade_dms(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: &sqlx::sqlite::SqlitePool,
+    user: &User,
+    messages: Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: Arc<Mutex<usize>>,
+    message_notification_tx: UnboundedSender<MessageNotification>,
+    active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
+    dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
+    startup_active_orders: HashMap<Uuid, i64>,
+    order_last_seen_dm_ts: HashMap<Uuid, i64>,
+) -> TradeDmReplaySummary {
+    let mut subscribed_pubkeys = HashSet::new();
+    let mut subscription_to_order = HashMap::new();
+    let pubkey_to_subscription = HashMap::new();
+    replay_active_trade_dms_with_subscription_maps(
+        client,
+        mostro_pubkey,
+        transport,
+        pool,
+        user,
+        &messages,
+        &pending_notifications,
+        &message_notification_tx,
+        &active_order_trade_indices,
+        &mut subscribed_pubkeys,
+        &mut subscription_to_order,
+        &pubkey_to_subscription,
+        &dropped_user_history_order_ids,
+        &startup_active_orders,
+        &order_last_seen_dm_ts,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn replay_active_trade_dms_with_subscription_maps(
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: &sqlx::sqlite::SqlitePool,
+    user: &User,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: &Arc<Mutex<usize>>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    pubkey_to_subscription: &HashMap<PublicKey, SubscriptionId>,
+    dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
+    startup_active_orders: &HashMap<Uuid, i64>,
+    order_last_seen_dm_ts: &HashMap<Uuid, i64>,
+) -> TradeDmReplaySummary {
+    let lookback_start = Timestamp::now()
+        .as_secs()
+        .saturating_sub(STARTUP_TRADE_DM_LOOKBACK_SECS);
+    let mut summary = TradeDmReplaySummary::default();
+
+    for (&order_id, &trade_index) in startup_active_orders {
+        let outcome = replay_single_trade_dm(
+            client,
+            mostro_pubkey,
+            transport,
+            pool,
+            user,
+            messages,
+            pending_notifications,
+            message_notification_tx,
+            active_order_trade_indices,
+            subscribed_pubkeys,
+            subscription_to_order,
+            pubkey_to_subscription,
+            dropped_user_history_order_ids,
+            order_id,
+            trade_index,
+            order_last_seen_dm_ts,
+            lookback_start,
+        )
+        .await;
+        summary.record(outcome);
+    }
+
+    summary
 }
 
 /// One-shot relay query + replay so restart shows trade DMs. `subscribe` alone often does not
@@ -1371,146 +1676,34 @@ async fn fetch_and_replay_startup_trade_dms(
         dropped_user_history_order_ids,
     } = replay;
 
-    let lookback_start = Timestamp::now()
-        .as_secs()
-        .saturating_sub(STARTUP_TRADE_DM_LOOKBACK_SECS);
+    let summary = replay_active_trade_dms_with_subscription_maps(
+        client,
+        mostro_pubkey,
+        transport,
+        pool,
+        user,
+        messages,
+        pending_notifications,
+        message_notification_tx,
+        active_order_trade_indices,
+        subscribed_pubkeys,
+        subscription_to_order,
+        pubkey_to_subscription,
+        dropped_user_history_order_ids,
+        startup_active_orders,
+        order_last_seen_dm_ts,
+    )
+    .await;
 
-    for (order_id, trade_index) in startup_active_orders {
-        let trade_keys = match user.derive_trade_keys(*trade_index) {
-            Ok(k) => k,
-            Err(e) => {
-                log::error!(
-                    "Startup DM replay: failed to derive trade keys for index {}: {}",
-                    trade_index,
-                    e
-                );
-                continue;
-            }
-        };
-        let pubkey = trade_keys.public_key();
-        let Some(sub_id) = pubkey_to_subscription.get(&pubkey).cloned() else {
-            log::trace!(
-                "Startup DM replay: no subscription id for order_id={} (subscribe may have failed)",
-                order_id
-            );
-            continue;
-        };
-
-        // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
-        // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list) then
-        // widen backward so the last processed DM's GiftWrap is not filtered out.
-        let combined_since = order_last_seen_dm_ts
-            .get(order_id)
-            .and_then(|ts| u64::try_from(*ts).ok())
-            .map(|last_seen| last_seen.min(lookback_start))
-            .unwrap_or(lookback_start);
-        let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
-
-        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
-            .since(Timestamp::from(since_ts))
-            .limit(STARTUP_TRADE_DM_FETCH_LIMIT);
-
-        let events = match client
-            .fetch_events(filter)
-            .timeout(FETCH_EVENTS_TIMEOUT)
-            .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!(
-                    "Startup DM replay: fetch_events failed for order_id={}: {}",
-                    order_id,
-                    e
-                );
-                continue;
-            }
-        };
-
-        if events.is_empty() {
-            continue;
-        }
-
-        // Fetch the full relay window (same filter as before), then hydrate from the **single**
-        // parsed line with the greatest **rumor** `created_at`. Envelope order can disagree with
-        // rumor time; replaying every line in envelope order could leave the UI on an older step.
-        let event_list: Vec<Event> = events.into_iter().collect();
-        let fetched_n = event_list.len();
-
-        let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
-        for event in &event_list {
-            let unwrapped = match unwrap_incoming(event, &trade_keys).await {
-                Ok(Some(u)) => u,
-                Ok(None) => continue,
-                Err(e) => {
-                    log::warn!(
-                        "Startup DM replay: unwrap_incoming failed (event {}): {}",
-                        event.id,
-                        e
-                    );
-                    continue;
-                }
-            };
-            let parsed_messages = parse_dm_events_single(event, &trade_keys, Some(unwrapped)).await;
-            if parsed_messages.is_empty() {
-                continue;
-            }
-            for triple in parsed_messages {
-                let (ref _msg, ts, ref _sender) = triple;
-                let take = match &best {
-                    None => true,
-                    Some((best_ts, best_eid, _)) => {
-                        ts > *best_ts
-                            || (ts == *best_ts && event.id.as_bytes() > best_eid.as_bytes())
-                    }
-                };
-                if take {
-                    best = Some((ts, event.id, triple));
-                }
-            }
-        }
-
-        let Some((max_rumor_ts, _, freshest)) = best else {
-            log::trace!(
-                "Startup DM replay: order_id={} trade_index={} had {} event(s) but none decrypted/parsed",
-                order_id,
-                trade_index,
-                fetched_n
-            );
-            continue;
-        };
-
-        log::info!(
-            "Startup DM replay: order_id={} trade_index={} fetched {} protocol DM event(s); hydrating newest rumor ts={}",
-            order_id,
-            trade_index,
-            fetched_n,
-            max_rumor_ts
-        );
-
-        if !subscription_to_order.contains_key(&sub_id) {
-            continue;
-        }
-
-        dispatch_giftwrap_batch(
-            vec![freshest],
-            *order_id,
-            *trade_index,
-            &trade_keys,
-            messages,
-            pending_notifications,
-            message_notification_tx,
-            pool,
-            user,
-            active_order_trade_indices,
-            subscribed_pubkeys,
-            client,
-            subscription_to_order,
-            GiftWrapTerminalPolicy::TrackedSubscription(&sub_id),
-            false,
-            dropped_user_history_order_ids,
-        )
-        .await;
-    }
+    log::info!(
+        "Startup trade DM replay: attempted={} hydrated={} empty={} fetch_failed={} parse_failed={} skipped_no_keys={}",
+        summary.attempted,
+        summary.hydrated,
+        summary.empty,
+        summary.fetch_failed,
+        summary.parse_failed,
+        summary.skipped_no_keys
+    );
 }
 
 struct PendingDmWaiter {
@@ -2067,7 +2260,8 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
-        trade_message_is_terminal, trade_message_should_untrack_order_chat,
+        trade_dm_replay_dispatch_mode, trade_message_is_terminal,
+        trade_message_should_untrack_order_chat, TradeDmReplayDispatchMode,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
@@ -2429,5 +2623,52 @@ mod tests {
         let thirty_days: u64 = 30 * 24 * 60 * 60;
         assert!(exp >= now + thirty_days.saturating_sub(2));
         assert!(exp <= now + thirty_days + 2);
+    }
+
+    #[test]
+    fn trade_dm_replay_uses_untracked_fallback_without_subscription_mapping() {
+        use nostr_sdk::prelude::SubscriptionId;
+        use std::collections::HashMap;
+
+        let pubkey = Keys::generate().public_key();
+        let empty_pubkey_to_sub: HashMap<_, SubscriptionId> = HashMap::new();
+        let empty_sub_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
+        assert_eq!(
+            trade_dm_replay_dispatch_mode(&pubkey, &empty_pubkey_to_sub, &empty_sub_to_order),
+            TradeDmReplayDispatchMode::UntrackedFallback
+        );
+    }
+
+    #[test]
+    fn trade_dm_replay_uses_untracked_fallback_when_subscription_not_tracked() {
+        use nostr_sdk::prelude::SubscriptionId;
+        use std::collections::HashMap;
+
+        let pubkey = Keys::generate().public_key();
+        let sub_id = SubscriptionId::generate();
+        let mut pubkey_to_sub = HashMap::new();
+        pubkey_to_sub.insert(pubkey, sub_id);
+        let empty_sub_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
+        assert_eq!(
+            trade_dm_replay_dispatch_mode(&pubkey, &pubkey_to_sub, &empty_sub_to_order),
+            TradeDmReplayDispatchMode::UntrackedFallback
+        );
+    }
+
+    #[test]
+    fn trade_dm_replay_uses_tracked_subscription_when_mapping_complete() {
+        use nostr_sdk::prelude::SubscriptionId;
+        use std::collections::HashMap;
+
+        let pubkey = Keys::generate().public_key();
+        let sub_id = SubscriptionId::generate();
+        let mut pubkey_to_sub = HashMap::new();
+        pubkey_to_sub.insert(pubkey, sub_id.clone());
+        let mut sub_to_order = HashMap::new();
+        sub_to_order.insert(sub_id, (Uuid::new_v4(), 1));
+        assert_eq!(
+            trade_dm_replay_dispatch_mode(&pubkey, &pubkey_to_sub, &sub_to_order),
+            TradeDmReplayDispatchMode::TrackedSubscription
+        );
     }
 }
