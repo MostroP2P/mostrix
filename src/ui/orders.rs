@@ -194,6 +194,8 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Background post-restore trade-DM replay finished (silent; `messages` already updated).
+    PostRestoreTradeDmReplayCompleted,
     /// Session restore finished: resync My Trades/Messages projections from
     /// SQLite (same DB-to-UI sync as startup), then show `message`.
     SessionRestored {

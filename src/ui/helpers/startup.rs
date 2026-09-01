@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::{
-    Action, DisputeStatus, Kind as OrderKind, Message, Payload, SmallOrder, Status,
+    Action, DisputeStatus, Kind as OrderKind, Message, Payload, SmallOrder, Status, Transport,
 };
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::order_chat_projection::order_chat_list_item_from_db_order;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage, OrderChatLastSeen,
-    OrderChatStaticHeader, OrderMessage, UserChatChannel, UserChatSender, UserOrderChatMessage,
-    UserRole,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage,
+    MessageNotification, OperationResult, OrderChatLastSeen, OrderChatStaticHeader, OrderMessage,
+    UserChatChannel, UserChatSender, UserOrderChatMessage, UserRole,
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat, track_user_dispute_chat},
@@ -21,7 +23,7 @@ use crate::util::{
         clamp_chat_since_cursor_now, derive_shared_key_hex, dispute_chat_allowed_signers,
         dispute_chat_role_for_inner_signer, order_chat_allowed_signers, parse_chat_pubkey,
     },
-    seed_admin_chat_last_seen,
+    hydrate_startup_active_order_dm_state, replay_active_trade_dms, seed_admin_chat_last_seen,
 };
 
 use super::attachments::{
@@ -556,6 +558,102 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
             app.order_chat_static.insert(h.order_id, h);
         }
     }
+}
+
+/// Snapshot of app/DB state needed for a background post-restore trade-DM replay.
+pub struct PostRestoreTradeDmReplayJob {
+    transport: Transport,
+    startup_active_orders: HashMap<Uuid, i64>,
+    order_last_seen_dm_ts: HashMap<Uuid, i64>,
+    messages: Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: Arc<Mutex<usize>>,
+    active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
+    dropped_user_history_order_ids: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+}
+
+/// Hydrate DM-router indices on `app` and return relay-fetch inputs for a background replay.
+pub async fn prepare_post_restore_trade_dm_replay(
+    pool: &SqlitePool,
+    app: &mut AppState,
+) -> Option<PostRestoreTradeDmReplayJob> {
+    if app.user_role != UserRole::User {
+        return None;
+    }
+
+    let startup_dm = match hydrate_startup_active_order_dm_state(pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("Post-restore: failed to load active-order DM map: {e}");
+            return None;
+        }
+    };
+
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm.active_order_trade_indices.clone();
+    }
+    for (order_id, ts) in &startup_dm.order_last_seen_dm_ts {
+        app.startup_popup_floor_ts.entry(*order_id).or_insert(*ts);
+    }
+
+    Some(PostRestoreTradeDmReplayJob {
+        transport: app.transport,
+        startup_active_orders: startup_dm.active_order_trade_indices,
+        order_last_seen_dm_ts: startup_dm.order_last_seen_dm_ts,
+        messages: Arc::clone(&app.messages),
+        pending_notifications: Arc::clone(&app.pending_notifications),
+        active_order_trade_indices: Arc::clone(&app.active_order_trade_indices),
+        dropped_user_history_order_ids: Arc::clone(&app.dropped_user_history_order_ids),
+    })
+}
+
+/// Spawn relay fetch + hydrate without blocking the UI loop; completion is reported on
+/// `order_result_tx` (silent [`OperationResult::PostRestoreTradeDmReplayCompleted`]).
+pub fn spawn_post_restore_trade_dm_replay(
+    job: PostRestoreTradeDmReplayJob,
+    pool: SqlitePool,
+    client: Client,
+    mostro_pubkey: PublicKey,
+    message_notification_tx: UnboundedSender<MessageNotification>,
+    order_result_tx: UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        let user = match User::get(&pool).await {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("Post-restore: failed to load user for trade DM replay: {e}");
+                let _ = order_result_tx.send(OperationResult::PostRestoreTradeDmReplayCompleted);
+                return;
+            }
+        };
+
+        let summary = replay_active_trade_dms(
+            &client,
+            mostro_pubkey,
+            job.transport,
+            &pool,
+            &user,
+            job.messages,
+            job.pending_notifications,
+            message_notification_tx,
+            job.active_order_trade_indices,
+            job.dropped_user_history_order_ids,
+            job.startup_active_orders,
+            job.order_last_seen_dm_ts,
+        )
+        .await;
+
+        log::info!(
+            "Post-restore trade DM replay: attempted={} hydrated={} empty={} fetch_failed={} parse_failed={} skipped_no_keys={}",
+            summary.attempted,
+            summary.hydrated,
+            summary.empty,
+            summary.fetch_failed,
+            summary.parse_failed,
+            summary.skipped_no_keys
+        );
+
+        let _ = order_result_tx.send(OperationResult::PostRestoreTradeDmReplayCompleted);
+    });
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.
