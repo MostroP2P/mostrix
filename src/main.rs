@@ -10,10 +10,13 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    expire_attachment_toast, load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_trade_dm_replay,
-    sync_user_order_history_messages_from_db,
+    active_peer_chat_order_ids_for_restore, admin_chat_keys_clone_for_role,
+    apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
+    apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
+    load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_peer_chat_hydrate,
+    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
+    track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -61,7 +64,6 @@ use tokio::time::{interval, Duration};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
 /// Results that must re-run the startup DB-to-UI sync (maker book cache +
 /// order history messages) because background work changed SQLite rows the
 /// in-memory projections are built from.
@@ -72,6 +74,12 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
     )
 }
 
+/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+///
+/// [`OperationResult::SessionRestored`] clears stale chat projection, resyncs DB-backed
+/// Messages/My Trades rows, and spawns background trade-DM replay plus peer-chat relay
+/// rebuild. [`OperationResult::PostRestorePeerChatReplayCompleted`] loads rebuilt peer
+/// transcripts from disk and re-runs [`track_startup_chats`].
 async fn apply_order_result(
     pool: &SqlitePool,
     app: &mut AppState,
@@ -82,6 +90,11 @@ async fn apply_order_result(
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     if matches!(&result, OperationResult::PostRestoreTradeDmReplayCompleted) {
+        return;
+    }
+    if let OperationResult::PostRestorePeerChatReplayCompleted { order_ids } = &result {
+        apply_restored_peer_order_chats_from_disk(app, order_ids);
+        track_startup_chats(pool, app).await;
         return;
     }
 
@@ -102,6 +115,10 @@ async fn apply_order_result(
             | OperationResult::SessionRestored { .. }
     );
 
+    if is_session_restored && app.user_role == UserRole::User {
+        clear_session_chat_projection(app);
+    }
+
     if refresh_maker_book_cache && app.user_role == UserRole::User {
         refresh_my_trades_maker_book_cache(pool, app).await;
     }
@@ -110,6 +127,7 @@ async fn apply_order_result(
         result,
         OperationResult::MyTradesMakerBookChanged
             | OperationResult::PostRestoreTradeDmReplayCompleted
+            | OperationResult::PostRestorePeerChatReplayCompleted { .. }
     ) {
         handle_operation_result(result, app);
     }
@@ -128,6 +146,13 @@ async fn apply_order_result(
                 order_result_tx.clone(),
             );
         }
+        let peer_order_ids = active_peer_chat_order_ids_for_restore(pool).await;
+        spawn_post_restore_peer_chat_hydrate(
+            pool.clone(),
+            client.clone(),
+            peer_order_ids,
+            order_result_tx.clone(),
+        );
     }
 
     if is_dispute_related && app.user_role == UserRole::Admin {

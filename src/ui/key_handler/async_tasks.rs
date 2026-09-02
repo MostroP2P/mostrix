@@ -1,7 +1,9 @@
 use crate::models::{Order, User};
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
-use crate::ui::helpers::{hydrate_app_admin_keys_from_privkey, track_startup_chats};
+use crate::ui::helpers::{
+    clear_session_chat_projection, hydrate_app_admin_keys_from_privkey, track_startup_chats,
+};
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::pending_trade_index_retry::PendingTradeIndexRetry;
 use crate::ui::FormState;
@@ -202,6 +204,8 @@ fn reset_pending_notifications_or_fatal(app: &mut AppState) -> Result<(), ()> {
     Err(())
 }
 
+/// Reset in-memory trade/message state after identity key reload; also clears peer/solver
+/// chat transcripts and cursors via [`clear_session_chat_projection`].
 fn clear_runtime_session_state(app: &mut AppState) {
     if clear_messages_or_fatal(app).is_err() {
         return;
@@ -212,6 +216,7 @@ fn clear_runtime_session_state(app: &mut AppState) {
     if reset_pending_notifications_or_fatal(app).is_err() {
         return;
     }
+    clear_session_chat_projection(app);
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
 }

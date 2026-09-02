@@ -303,6 +303,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::PostRestoreTradeDmReplayCompleted
+        | OperationResult::PostRestorePeerChatReplayCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }
@@ -494,6 +495,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         }
         OperationResult::MyTradesMakerBookChanged
         | OperationResult::PostRestoreTradeDmReplayCompleted
+        | OperationResult::PostRestorePeerChatReplayCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }

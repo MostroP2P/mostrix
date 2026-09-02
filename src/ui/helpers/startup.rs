@@ -13,15 +13,17 @@ use uuid::Uuid;
 use super::order_chat_projection::order_chat_list_item_from_db_order;
 use crate::models::{AdminDispute, Order, User};
 use crate::ui::{
-    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DisputeChatMessage,
-    MessageNotification, OperationResult, OrderChatLastSeen, OrderChatStaticHeader, OrderMessage,
-    UserChatChannel, UserChatSender, UserOrderChatMessage, UserRole,
+    AdminChatLastSeen, AdminChatUpdate, AppState, ChatParty, DecodedChatMessage,
+    DisputeChatMessage, MessageNotification, OperationResult, OrderChatLastSeen,
+    OrderChatStaticHeader, OrderMessage, UserChatChannel, UserChatSender, UserOrderChatMessage,
+    UserRole,
 };
 use crate::util::{
     chat_listener::{track_dispute_chat, track_order_chat, track_user_dispute_chat},
     chat_utils::{
         clamp_chat_since_cursor_now, derive_shared_key_hex, dispute_chat_allowed_signers,
-        dispute_chat_role_for_inner_signer, order_chat_allowed_signers, parse_chat_pubkey,
+        dispute_chat_role_for_inner_signer, fetch_chat_messages_for_shared_key,
+        keys_from_shared_hex, order_chat_allowed_signers, parse_chat_pubkey,
     },
     hydrate_startup_active_order_dm_state, replay_active_trade_dms, seed_admin_chat_last_seen,
 };
@@ -158,7 +160,9 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
 ///
 /// Commands are buffered on the router's channel until the task starts consuming them, so this
 /// is safe to call before the chat router task is spawned. History for each key is hydrated by
-/// the router on `TrackChatKey` using the passed `since` (last-seen) cursor.
+/// the router on `TrackChatKey` using the passed `since` (last-seen) cursor. After
+/// [`OperationResult::SessionRestored`], call again once peer-chat transcripts are on disk
+/// ([`OperationResult::PostRestorePeerChatReplayCompleted`]) so live subscriptions cover rebuilt orders.
 pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
     match app.user_role {
         UserRole::User => {
@@ -276,7 +280,9 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
 /// Load user order chat at startup from on-disk transcripts.
 ///
 /// Relay history is **not** polled here — [`track_startup_chats`] seeds the shared-key chat
-/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch).
+/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch). After
+/// [`OperationResult::SessionRestored`], peer transcripts are rebuilt from relay via
+/// [`spawn_post_restore_peer_chat_hydrate`] instead of relying on this path alone.
 pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::User {
         return;
@@ -560,6 +566,34 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
     }
 }
 
+/// Clear in-memory peer/solver chat transcripts and relay cursors.
+///
+/// After a session wipe or before post-restore hydrate, stale `order_chat_last_seen`
+/// values from the prior identity would bound relay fetches incorrectly and echo-skip
+/// logic would drop the user's own messages when the on-disk transcript is empty.
+pub fn clear_session_chat_projection(app: &mut AppState) {
+    app.order_chats.clear();
+    app.user_dispute_chats.clear();
+    app.order_chat_last_seen.clear();
+    app.user_dispute_chat_last_seen.clear();
+    app.order_chat_static.clear();
+    app.startup_popup_floor_ts.clear();
+    app.buyer_invoice_preference.clear();
+    app.orders_needing_replacement_invoice.clear();
+    app.my_trades_maker_book.clear();
+    app.pending_order_attachment_sends.clear();
+    app.sending_attachment_order_id = None;
+    app.selected_order_chat_idx = 0;
+    app.order_chat_input.clear();
+    app.order_chat_input_enabled = false;
+    app.order_chat_selected_message_idx = None;
+    app.order_chat_line_starts.clear();
+    app.order_chat_scroll_tracker = None;
+    if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+        dropped.clear();
+    }
+}
+
 /// Snapshot of app/DB state needed for a background post-restore trade-DM replay.
 pub struct PostRestoreTradeDmReplayJob {
     transport: Transport,
@@ -656,7 +690,230 @@ pub fn spawn_post_restore_trade_dm_replay(
     });
 }
 
+/// Outcome of relay rebuild for peer order chats after session restore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PeerOrderChatRestoreSummary {
+    pub attempted: usize,
+    pub hydrated: usize,
+    pub skipped_no_key: usize,
+    pub fetch_failed: usize,
+    pub empty: usize,
+}
+
+fn peer_chat_sender_for_decode(
+    local_trade_pubkey: &PublicKey,
+    inner_sender: &PublicKey,
+) -> UserChatSender {
+    if inner_sender == local_trade_pubkey {
+        UserChatSender::You
+    } else {
+        UserChatSender::Peer
+    }
+}
+
+/// Build a sorted peer-chat transcript from relay-decoded rows (deduped by inner event id).
+pub fn peer_order_chat_transcript_from_decoded(
+    decoded_messages: Vec<DecodedChatMessage>,
+    local_trade_pubkey: PublicKey,
+) -> Vec<UserOrderChatMessage> {
+    use std::collections::HashSet;
+
+    let mut seen_inner = HashSet::new();
+    let mut transcript = Vec::new();
+    for decoded in decoded_messages {
+        if !seen_inner.insert(decoded.inner_event_id) {
+            continue;
+        }
+        let (content, attachment) = match try_parse_attachment_message(&decoded.content) {
+            Some((attachment, display)) => (display, Some(attachment)),
+            None => (decoded.content, None),
+        };
+        transcript.push(UserOrderChatMessage {
+            sender: peer_chat_sender_for_decode(&local_trade_pubkey, &decoded.sender),
+            content,
+            timestamp: decoded.timestamp,
+            attachment,
+        });
+    }
+    transcript.sort_by_key(|m| m.timestamp);
+    transcript
+}
+
+/// Fetch peer order chat from relays, persist transcript, record inner ids for dedupe.
+async fn rebuild_peer_order_chat_transcript(
+    client: &Client,
+    order: &Order,
+) -> Result<Option<Vec<UserOrderChatMessage>>, anyhow::Error> {
+    let order_id = order
+        .id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("order row missing id"))?;
+    let trade_keys_hex = order
+        .trade_keys
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("order {order_id} missing trade keys"))?;
+    let trade_keys = Keys::parse(trade_keys_hex)?;
+    let local_trade_pubkey = trade_keys.public_key();
+
+    let shared_hex = order
+        .order_chat_shared_key_hex
+        .clone()
+        .or_else(|| derive_shared_key_hex(Some(&trade_keys), order.counterparty_pubkey.as_deref()));
+    let Some(shared_hex) = shared_hex else {
+        return Ok(None);
+    };
+    let Some(shared_keys) = keys_from_shared_hex(&shared_hex) else {
+        return Err(anyhow::anyhow!(
+            "invalid shared key hex for order {order_id}"
+        ));
+    };
+    let Some(allowed) =
+        order_chat_allowed_signers(local_trade_pubkey, order.counterparty_pubkey.as_deref())
+    else {
+        return Ok(None);
+    };
+
+    let decoded = fetch_chat_messages_for_shared_key(client, &shared_keys, &allowed, None).await?;
+    if decoded.is_empty() {
+        return Ok(None);
+    }
+
+    let mut seen_inner = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for msg in decoded {
+        if seen_inner.insert(msg.inner_event_id) {
+            deduped.push(msg);
+        }
+    }
+    let inner_event_ids: Vec<_> = deduped.iter().map(|m| m.inner_event_id).collect();
+
+    let transcript = peer_order_chat_transcript_from_decoded(deduped, local_trade_pubkey);
+    if transcript.is_empty() {
+        return Ok(None);
+    }
+
+    if !rewrite_order_chat_messages(order_id, &transcript) {
+        return Err(anyhow::anyhow!(
+            "failed to persist peer chat transcript for order {order_id}"
+        ));
+    }
+    for inner_id in inner_event_ids {
+        let _ = remember_order_chat_inner_id(order_id, &inner_id);
+    }
+
+    Ok(Some(transcript))
+}
+
+/// Relay-fetch peer chats for active restored orders (awaitable).
+pub async fn rebuild_peer_order_chats_after_restore(
+    client: &Client,
+    pool: &SqlitePool,
+    order_ids: &[String],
+) -> (PeerOrderChatRestoreSummary, Vec<String>) {
+    let mut summary = PeerOrderChatRestoreSummary::default();
+    let mut hydrated_ids = Vec::new();
+
+    for order_id in order_ids {
+        summary.attempted += 1;
+        let order = match Order::get_by_id(pool, order_id).await {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("Post-restore peer chat: order {order_id} not in DB: {e}");
+                summary.skipped_no_key += 1;
+                continue;
+            }
+        };
+        if order
+            .order_chat_shared_key_hex
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .is_none()
+            && order.counterparty_pubkey.is_none()
+        {
+            summary.skipped_no_key += 1;
+            continue;
+        }
+
+        match rebuild_peer_order_chat_transcript(client, &order).await {
+            Ok(Some(_)) => {
+                summary.hydrated += 1;
+                hydrated_ids.push(order_id.clone());
+            }
+            Ok(None) => summary.empty += 1,
+            Err(e) => {
+                log::warn!("Post-restore peer chat: rebuild failed for {order_id}: {e}");
+                summary.fetch_failed += 1;
+            }
+        }
+    }
+
+    (summary, hydrated_ids)
+}
+
+/// Load rebuilt peer-chat transcripts from disk into `app` (after background restore).
+pub fn apply_restored_peer_order_chats_from_disk(app: &mut AppState, order_ids: &[String]) {
+    for order_id in order_ids {
+        let Some(messages) = load_order_chat_from_file(order_id) else {
+            continue;
+        };
+        let max_ts = messages.iter().map(|m| m.timestamp).max().unwrap_or(0);
+        app.order_chats.insert(order_id.clone(), messages);
+        app.order_chat_last_seen.insert(
+            order_id.clone(),
+            OrderChatLastSeen {
+                last_seen_timestamp: Some(clamp_chat_since_cursor_now(max_ts)),
+            },
+        );
+    }
+}
+
+/// Active order ids eligible for post-restore peer-chat relay rebuild.
+pub async fn active_peer_chat_order_ids_for_restore(pool: &SqlitePool) -> Vec<String> {
+    match Order::get_startup_active_orders(pool).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
+        Err(e) => {
+            log::warn!("Post-restore peer chat: failed to list active orders: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Spawn peer-chat relay rebuild without blocking the UI loop; reports
+/// [`OperationResult::PostRestorePeerChatReplayCompleted`] with hydrated `order_ids`.
+pub fn spawn_post_restore_peer_chat_hydrate(
+    pool: SqlitePool,
+    client: Client,
+    order_ids: Vec<String>,
+    order_result_tx: UnboundedSender<OperationResult>,
+) {
+    if order_ids.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let (summary, hydrated_ids) =
+            rebuild_peer_order_chats_after_restore(&client, &pool, &order_ids).await;
+
+        log::info!(
+            "Post-restore peer chat rebuild: attempted={} hydrated={} empty={} fetch_failed={} skipped_no_key={}",
+            summary.attempted,
+            summary.hydrated,
+            summary.empty,
+            summary.fetch_failed,
+            summary.skipped_no_key
+        );
+
+        let _ = order_result_tx.send(OperationResult::PostRestorePeerChatReplayCompleted {
+            order_ids: hydrated_ids,
+        });
+    });
+}
+
 /// Merge fetched user order chat updates into app state and persist them to file.
+///
+/// On [`UserChatChannel::Peer`], relay rows from the local trade key are stored as **You**
+/// unless the inner event id is already known or an optimistic local line exists at the same
+/// timestamp (live-send echo). The solver channel still skips all local-trade-key rows.
 ///
 /// Durable inner-event ids are recorded only after a successful transcript
 /// [`save_order_chat_message`] / [`rewrite_order_chat_messages`]. On write
@@ -682,8 +939,27 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
             let sender_pubkey = msg.sender;
             let inner_id = msg.inner_event_id;
 
-            // Skip relay echoes of messages we already added locally on send (mirror admin chat).
-            if sender_pubkey == update.local_trade_pubkey {
+            if update.channel == UserChatChannel::Peer && sender_pubkey == update.local_trade_pubkey
+            {
+                if order_chat_inner_id_known(&order_id, &inner_id) {
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    continue;
+                }
+                let optimistic_echo = messages_vec.iter().any(|m| {
+                    m.sender == UserChatSender::You && m.timestamp == ts && m.content == content
+                });
+                if optimistic_echo {
+                    let _ = remember_order_chat_inner_id(&order_id, &inner_id);
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    continue;
+                }
+            } else if update.channel == UserChatChannel::Solver
+                && sender_pubkey == update.local_trade_pubkey
+            {
                 if ts > max_ts {
                     max_ts = ts;
                 }
@@ -781,8 +1057,17 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 app.attachment_toast = Some(build_attachment_toast(&att.filename));
             }
 
+            // Relay rows: map inner signer to You/Peer on peer channel (solver stays Peer).
+            let sender_label = match update.channel {
+                UserChatChannel::Peer if sender_pubkey == update.local_trade_pubkey => {
+                    UserChatSender::You
+                }
+                UserChatChannel::Peer => UserChatSender::Peer,
+                UserChatChannel::Solver => UserChatSender::Peer,
+            };
+
             let msg = UserOrderChatMessage {
-                sender: UserChatSender::Peer,
+                sender: sender_label,
                 content: msg_content,
                 timestamp: ts,
                 attachment,
@@ -1023,6 +1308,104 @@ pub async fn apply_admin_chat_updates(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod peer_order_chat_restore_tests {
+    use super::peer_order_chat_transcript_from_decoded;
+    use crate::ui::{DecodedChatMessage, UserChatSender};
+    use nostr_sdk::prelude::{EventId, Keys};
+
+    fn decoded(
+        ts: i64,
+        sender: nostr_sdk::prelude::PublicKey,
+        content: &str,
+        id_byte: u8,
+    ) -> DecodedChatMessage {
+        let mut hex = [0u8; 32];
+        hex[31] = id_byte;
+        DecodedChatMessage {
+            content: content.to_string(),
+            timestamp: ts,
+            sender,
+            inner_event_id: EventId::from_byte_array(hex),
+        }
+    }
+
+    #[test]
+    fn transcript_maps_you_and_peer_and_sorts_by_timestamp() {
+        let local = Keys::generate();
+        let peer = Keys::generate();
+        let messages = peer_order_chat_transcript_from_decoded(
+            vec![
+                decoded(200, peer.public_key(), "from peer", 2),
+                decoded(100, local.public_key(), "from me", 1),
+            ],
+            local.public_key(),
+        );
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "from me");
+        assert_eq!(messages[0].sender, UserChatSender::You);
+        assert_eq!(messages[1].content, "from peer");
+        assert_eq!(messages[1].sender, UserChatSender::Peer);
+    }
+}
+
+#[cfg(test)]
+mod clear_session_chat_projection_tests {
+    use super::clear_session_chat_projection;
+    use crate::ui::{AppState, OrderChatLastSeen, UserChatSender, UserOrderChatMessage, UserRole};
+    use uuid::Uuid;
+
+    #[test]
+    fn clears_peer_and_solver_chat_maps_and_cursors() {
+        let mut app = AppState::new(UserRole::User);
+        app.order_chats.insert(
+            "order-1".to_string(),
+            vec![UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: "hi".to_string(),
+                timestamp: 1,
+                attachment: None,
+            }],
+        );
+        app.user_dispute_chats.insert("order-1".to_string(), vec![]);
+        app.order_chat_last_seen.insert(
+            "order-1".to_string(),
+            OrderChatLastSeen {
+                last_seen_timestamp: Some(9_999),
+            },
+        );
+        app.user_dispute_chat_last_seen.insert(
+            "order-1".to_string(),
+            OrderChatLastSeen {
+                last_seen_timestamp: Some(8_888),
+            },
+        );
+        app.startup_popup_floor_ts
+            .insert(Uuid::new_v4(), 1_700_000_000);
+        app.selected_order_chat_idx = 3;
+        app.order_chat_input = "draft".to_string();
+        app.dropped_user_history_order_ids
+            .lock()
+            .expect("lock")
+            .insert(Uuid::new_v4());
+
+        clear_session_chat_projection(&mut app);
+
+        assert!(app.order_chats.is_empty());
+        assert!(app.user_dispute_chats.is_empty());
+        assert!(app.order_chat_last_seen.is_empty());
+        assert!(app.user_dispute_chat_last_seen.is_empty());
+        assert!(app.startup_popup_floor_ts.is_empty());
+        assert_eq!(app.selected_order_chat_idx, 0);
+        assert!(app.order_chat_input.is_empty());
+        assert!(app
+            .dropped_user_history_order_ids
+            .lock()
+            .expect("lock")
+            .is_empty());
+    }
 }
 
 #[cfg(test)]
