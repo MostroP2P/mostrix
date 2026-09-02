@@ -31,7 +31,7 @@ use crate::util::{
     handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
     restore_completion_result, set_chat_router_cmd_tx, set_dm_router_cmd_tx, set_fatal_error_tx,
     set_order_result_tx, spawn_save_attachment, spawn_send_order_chat_attachment,
-    untrack_dispute_chat_parties,
+    untrack_dispute_chat_parties, FatalNotify,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -401,14 +401,31 @@ async fn main() -> Result<(), anyhow::Error> {
     loop {
         tokio::select! {
             fatal = fatal_error_rx.recv() => {
-                if let Some(msg) = fatal {
-                    // Stop background work and prompt the user to restart.
-                    order_task.abort();
-                    dispute_task.abort();
-                    message_listener_handle.abort();
-                    chat_listener_handle.abort();
-                    app.fatal_exit_on_close = true;
-                    app.mode = UiMode::operation_result(OperationResult::Error(msg));
+                if let Some(notify) = fatal {
+                    match notify {
+                        FatalNotify::TaskAlarm(msg) => {
+                            app.background_task_alarm = Some(msg);
+                        }
+                        FatalNotify::TaskResumed(_) => {
+                            app.background_task_alarm = None;
+                        }
+                        FatalNotify::DmRouterSender(tx) => {
+                            dm_subscription_tx = tx;
+                        }
+                        FatalNotify::ChatRouterSender(tx) => {
+                            chat_router_cmd_tx = tx;
+                        }
+                        FatalNotify::RestartRequired(msg) => {
+                            // Unrecoverable: stop background work and prompt the user to restart.
+                            order_task.abort();
+                            dispute_task.abort();
+                            message_listener_handle.abort();
+                            chat_listener_handle.abort();
+                            app.fatal_exit_on_close = true;
+                            app.background_task_alarm = None;
+                            app.mode = UiMode::operation_result(OperationResult::Error(msg));
+                        }
+                    }
                 }
             }
             net = network_status_rx.recv() => {

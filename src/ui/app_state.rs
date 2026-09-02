@@ -299,6 +299,8 @@ pub struct AppState {
     pub transport: Transport,
     /// Non-blocking overlay shown when relays are unreachable.
     pub offline_overlay_message: Option<String>,
+    /// Non-blocking overlay when a background task panicked/exited and is respawning.
+    pub background_task_alarm: Option<String>,
     /// True only when BackupNewKeys was opened after runtime key rotation.
     /// In that case, app must restart to reload in-memory keys safely.
     pub backup_requires_restart: bool,
@@ -391,6 +393,7 @@ impl AppState {
             mostro_info: None,
             transport: Transport::default(),
             offline_overlay_message: None,
+            background_task_alarm: None,
             backup_requires_restart: false,
             pending_key_reload: false,
             pending_import_restore: false,

@@ -13,14 +13,13 @@ use crate::ui::{
 };
 use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
-use crate::util::listen_for_order_messages;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
-    any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, listen_for_chat_messages,
-    set_chat_router_cmd_tx, set_dm_router_cmd_tx, sync_trade_index_from_mostro_and_persist,
-    unsubscribe_dm_listener_subscriptions, ChatRouterCmd, OrderDmSubscriptionCmd,
-    StartupDmHydration,
+    any_relay_reachable, connect_client_safely, hydrate_startup_active_order_dm_state,
+    is_invalid_trade_index_error, set_chat_router_cmd_tx, set_dm_router_cmd_tx,
+    spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
+    sync_trade_index_from_mostro_and_persist, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
+    FatalNotify, OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
@@ -305,25 +304,19 @@ pub async fn respawn_trade_dm_listener(
     set_dm_router_cmd_tx(dm_subscription_tx.clone()).map_err(|msg| msg.to_string())?;
 
     let dm_transport = app.transport;
-    *message_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("trade DM listener", async move {
-            listen_for_order_messages(
-                client_for_messages,
-                mostro_pubkey,
-                dm_transport,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                order_last_seen_dm_ts_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dropped_user_history_clone,
-                new_dm_rx,
-            )
-            .await;
-        })
-        .await;
-    });
+    *message_listener_handle = spawn_supervised_trade_dm_listener(
+        client_for_messages,
+        mostro_pubkey,
+        dm_transport,
+        pool_for_messages,
+        active_order_trade_indices_clone,
+        order_last_seen_dm_ts_clone,
+        messages_clone,
+        message_notification_tx_clone,
+        pending_notifications_clone,
+        dropped_user_history_clone,
+        new_dm_rx,
+    );
     Ok(())
 }
 
@@ -445,25 +438,19 @@ pub async fn apply_pending_key_reload(
                     let dm_mostro_pubkey = new_mostro_pubkey;
                     let dm_transport =
                         dm_transport_for_mostro(client, new_mostro_pubkey, app, "Key reload").await;
-                    *message_listener_handle = tokio::spawn(async move {
-                        catch_unwind_request_fatal_restart("trade DM listener", async move {
-                            listen_for_order_messages(
-                                client_for_messages,
-                                dm_mostro_pubkey,
-                                dm_transport,
-                                pool_for_messages,
-                                active_order_trade_indices_clone,
-                                order_last_seen_dm_ts_clone,
-                                messages_clone,
-                                message_notification_tx_clone,
-                                pending_notifications_clone,
-                                dropped_user_history_clone,
-                                new_dm_rx,
-                            )
-                            .await;
-                        })
-                        .await;
-                    });
+                    *message_listener_handle = spawn_supervised_trade_dm_listener(
+                        client_for_messages,
+                        dm_mostro_pubkey,
+                        dm_transport,
+                        pool_for_messages,
+                        active_order_trade_indices_clone,
+                        order_last_seen_dm_ts_clone,
+                        messages_clone,
+                        message_notification_tx_clone,
+                        pending_notifications_clone,
+                        dropped_user_history_clone,
+                        new_dm_rx,
+                    );
 
                     app.backup_requires_restart = false;
                     app.pending_key_reload = false;
@@ -650,25 +637,19 @@ pub async fn apply_pending_fetch_scheduler_reload(
     let dm_mostro_pubkey = new_mostro_pubkey;
     let dm_transport =
         dm_transport_for_mostro(client, new_mostro_pubkey, app, "Fetch scheduler reload").await;
-    *message_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("trade DM listener", async move {
-            listen_for_order_messages(
-                client_for_messages,
-                dm_mostro_pubkey,
-                dm_transport,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                order_last_seen_dm_ts_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dropped_user_history_clone,
-                new_dm_rx,
-            )
-            .await;
-        })
-        .await;
-    });
+    *message_listener_handle = spawn_supervised_trade_dm_listener(
+        client_for_messages,
+        dm_mostro_pubkey,
+        dm_transport,
+        pool_for_messages,
+        active_order_trade_indices_clone,
+        order_last_seen_dm_ts_clone,
+        messages_clone,
+        message_notification_tx_clone,
+        pending_notifications_clone,
+        dropped_user_history_clone,
+        new_dm_rx,
+    );
 
     match router_reg {
         Ok(()) => Ok(()),
@@ -829,25 +810,19 @@ pub async fn reload_runtime_session_after_reconnect(
     let dm_mostro_pubkey = new_mostro_pubkey;
     let dm_transport =
         dm_transport_for_mostro(ctx.client, new_mostro_pubkey, ctx.app, "Reconnect").await;
-    *ctx.message_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("trade DM listener", async move {
-            listen_for_order_messages(
-                client_for_messages,
-                dm_mostro_pubkey,
-                dm_transport,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                order_last_seen_dm_ts_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dropped_user_history_clone,
-                new_dm_rx,
-            )
-            .await;
-        })
-        .await;
-    });
+    *ctx.message_listener_handle = spawn_supervised_trade_dm_listener(
+        client_for_messages,
+        dm_mostro_pubkey,
+        dm_transport,
+        pool_for_messages,
+        active_order_trade_indices_clone,
+        order_last_seen_dm_ts_clone,
+        messages_clone,
+        message_notification_tx_clone,
+        pending_notifications_clone,
+        dropped_user_history_clone,
+        new_dm_rx,
+    );
 
     match router_reg {
         Ok(()) => Ok(()),
@@ -884,12 +859,8 @@ pub async fn respawn_chat_listener(
     let client_for_chat = client.clone();
     let admin_tx = admin_chat_updates_tx.clone();
     let user_tx = user_order_chat_updates_tx.clone();
-    *chat_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("chat subscription router", async move {
-            listen_for_chat_messages(client_for_chat, admin_tx, user_tx, new_rx).await;
-        })
-        .await;
-    });
+    *chat_listener_handle =
+        spawn_supervised_chat_listener(client_for_chat, admin_tx, user_tx, new_rx);
 
     // Re-emit the active track set so all chats resubscribe on the new client/session.
     track_startup_chats(pool, app).await;
@@ -921,8 +892,8 @@ pub struct AppChannels {
     pub chat_router_cmd_rx: UnboundedReceiver<crate::util::ChatRouterCmd>,
     pub network_status_tx: UnboundedSender<NetworkStatus>,
     pub network_status_rx: UnboundedReceiver<NetworkStatus>,
-    pub fatal_error_tx: UnboundedSender<String>,
-    pub fatal_error_rx: UnboundedReceiver<String>,
+    pub fatal_error_tx: UnboundedSender<FatalNotify>,
+    pub fatal_error_rx: UnboundedReceiver<FatalNotify>,
     pub ln_address_result_tx: UnboundedSender<LnAddressVerifyResult>,
     pub ln_address_result_rx: UnboundedReceiver<LnAddressVerifyResult>,
 }
@@ -956,7 +927,7 @@ pub fn create_app_channels() -> AppChannels {
         tokio::sync::mpsc::unbounded_channel::<crate::util::ChatRouterCmd>();
     let (network_status_tx, network_status_rx) =
         tokio::sync::mpsc::unbounded_channel::<NetworkStatus>();
-    let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<FatalNotify>();
     let (ln_address_result_tx, ln_address_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<LnAddressVerifyResult>();
 
