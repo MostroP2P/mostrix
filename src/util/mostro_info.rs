@@ -762,20 +762,16 @@ mod tests {
 
     #[test]
     fn instance_info_fetch_to_apply_only_on_found() {
-        assert!(
-            MostroInstanceInfoFetch::Found(Box::new(MostroInstanceInfo {
-                protocol_version: Some(2),
-                ..Default::default()
-            }))
-            .to_apply()
-            .is_some()
-        );
+        assert!(MostroInstanceInfoFetch::Found(Box::new(MostroInstanceInfo {
+            protocol_version: Some(2),
+            ..Default::default()
+        }))
+        .to_apply()
+        .is_some());
         assert!(MostroInstanceInfoFetch::NotFound.to_apply().is_none());
-        assert!(
-            MostroInstanceInfoFetch::Rejected { fetched: 3 }
-                .to_apply()
-                .is_none()
-        );
+        assert!(MostroInstanceInfoFetch::Rejected { fetched: 3 }
+            .to_apply()
+            .is_none());
     }
 
     // Auth selection (MOSTRO-075) is covered above without a Client. Full
