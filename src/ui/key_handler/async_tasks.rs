@@ -246,18 +246,17 @@ async fn dm_transport_for_mostro(
     log_context: &str,
 ) -> Transport {
     match fetch_mostro_instance_info(client, mostro_pubkey).await {
-        Ok(info) => {
-            if let Some(info) = info {
+        Ok(fetch) => {
+            if let Some(info) = fetch.to_apply() {
                 app.set_mostro_info(Some(info));
             }
             app.transport
         }
         Err(e) => {
             log::warn!(
-                "{log_context}: failed to fetch Mostro instance info: {e}; defaulting to GiftWrap transport"
+                "{log_context}: failed to fetch Mostro instance info: {e}; keeping cached transport"
             );
-            app.set_mostro_info(None);
-            Transport::default()
+            app.transport
         }
     }
 }
@@ -1157,14 +1156,20 @@ pub fn spawn_refresh_mostro_info_from_settings_task(
         };
         let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
         let res = match result {
-            Ok(Some(info)) => MostroInfoFetchResult::Ok {
-                info: Box::new(Some(info)),
+            Ok(crate::util::MostroInstanceInfoFetch::Found(info)) => MostroInfoFetchResult::Ok {
+                info,
                 message: "Mostro instance info refreshed from relays.".to_string(),
             },
-            Ok(None) => MostroInfoFetchResult::Ok {
-                info: Box::new(None),
+            Ok(crate::util::MostroInstanceInfoFetch::NotFound) => MostroInfoFetchResult::NotFound {
                 message: "No Mostro instance info event found for the current pubkey.".to_string(),
             },
+            Ok(crate::util::MostroInstanceInfoFetch::Rejected { fetched }) => {
+                MostroInfoFetchResult::Rejected {
+                    message: format!(
+                        "Rejected {fetched} unauthentic instance-info event(s); keeping cached settings."
+                    ),
+                }
+            }
             Err(e) => {
                 MostroInfoFetchResult::Err(format!("Failed to refresh Mostro instance info: {}", e))
             }
@@ -1185,26 +1190,39 @@ pub fn spawn_refresh_mostro_info_task(
         let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
         if !show_result_toast {
             match &result {
-                Ok(Some(_)) => {}
-                Ok(None) => {
+                Ok(crate::util::MostroInstanceInfoFetch::Found(_)) => {}
+                Ok(crate::util::MostroInstanceInfoFetch::NotFound) => {
                     log::info!("No Mostro instance info event found for current Mostro pubkey");
+                }
+                Ok(crate::util::MostroInstanceInfoFetch::Rejected { fetched }) => {
+                    log::warn!(
+                        "Rejected {fetched} unauthentic instance-info event(s); keeping cached settings"
+                    );
                 }
                 Err(e) => {
                     log::warn!("Failed to fetch Mostro instance info: {}", e);
                 }
             }
-            if let Ok(info) = result {
-                let _ = tx.send(MostroInfoFetchResult::Applied {
-                    info: Box::new(info),
-                });
+            if let Ok(crate::util::MostroInstanceInfoFetch::Found(info)) = result {
+                let _ = tx.send(MostroInfoFetchResult::Applied { info });
             }
             return;
         }
         let res = match result {
-            Ok(info) => MostroInfoFetchResult::Ok {
-                info: Box::new(info),
+            Ok(crate::util::MostroInstanceInfoFetch::Found(info)) => MostroInfoFetchResult::Ok {
+                info,
                 message: "Mostro instance info updated.".to_string(),
             },
+            Ok(crate::util::MostroInstanceInfoFetch::NotFound) => MostroInfoFetchResult::NotFound {
+                message: "No Mostro instance info event found for the current pubkey.".to_string(),
+            },
+            Ok(crate::util::MostroInstanceInfoFetch::Rejected { fetched }) => {
+                MostroInfoFetchResult::Rejected {
+                    message: format!(
+                        "Rejected {fetched} unauthentic instance-info event(s); keeping cached settings."
+                    ),
+                }
+            }
             Err(e) => {
                 log::warn!(
                     "Failed to refresh Mostro instance info after pubkey change: {}",

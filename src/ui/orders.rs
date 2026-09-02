@@ -247,14 +247,20 @@ pub enum LnAddressVerifyResult {
 /// Result of an async Mostro instance info fetch (sent from key handlers to main loop).
 #[derive(Clone, Debug)]
 pub enum MostroInfoFetchResult {
+    /// Authentic revision fetched; apply via `set_mostro_info(Some(..))`.
     Ok {
-        info: Box<Option<crate::util::MostroInstanceInfo>>,
+        info: Box<crate::util::MostroInstanceInfo>,
         message: String,
     },
-    /// Startup / background refresh: update `mostro_info` only; do not change mode or show toasts.
+    /// No kind-38385 event on relay; cached instance info is unchanged.
+    NotFound { message: String },
+    /// Relay returned unauthentic candidates; cached instance info is unchanged.
+    Rejected { message: String },
+    /// Startup / background refresh: apply only when an authentic revision was found.
     Applied {
-        info: Box<Option<crate::util::MostroInstanceInfo>>,
+        info: Box<crate::util::MostroInstanceInfo>,
     },
+    /// Hard failure (settings / network); clears cached instance info.
     Err(String),
 }
 

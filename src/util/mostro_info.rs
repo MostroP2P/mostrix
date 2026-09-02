@@ -8,6 +8,32 @@ use std::str::FromStr;
 /// Nostr kind for Mostro instance status events.
 pub const MOSTRO_INSTANCE_INFO_KIND: u16 = 38385;
 
+/// Outcome of fetching kind-38385 instance info from relays.
+///
+/// Distinguishes “no candidates” from “candidates rejected by client-side auth” so callers
+/// preserve the last trusted cache instead of treating both as [`None`] clears (MOSTRO-075).
+#[derive(Clone, Debug)]
+pub enum MostroInstanceInfoFetch {
+    /// Newest authentic revision parsed from relay data.
+    Found(Box<MostroInstanceInfo>),
+    /// Relay returned no kind-38385 candidates for the filter.
+    NotFound,
+    /// Relay returned one or more candidates but none passed [`instance_info_event_is_authentic`].
+    Rejected { fetched: usize },
+}
+
+impl MostroInstanceInfoFetch {
+    /// Returns `Some(info)` when callers should invoke `AppState::set_mostro_info(Some(info))`.
+    ///
+    /// `None` means **preserve** the existing cache — do not call `set_mostro_info(None)`.
+    pub fn to_apply(self) -> Option<MostroInstanceInfo> {
+        match self {
+            Self::Found(info) => Some(*info),
+            Self::NotFound | Self::Rejected { .. } => None,
+        }
+    }
+}
+
 /// Age in seconds after which instance info is considered stale (7 days).
 const INSTANCE_INFO_STALE_SECS: u64 = 604_800;
 
@@ -326,13 +352,13 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
 /// re-checked client-side ([`instance_info_event_is_authentic`]) before apply
 /// (MOSTRO-075 — forged newer events must not flip `protocol_version` / transport).
 ///
-/// Returns `Ok(None)` when the relay returns no events, or when every returned event
-/// fails the client-side authenticity checks. Fetches up to 10 candidates and keeps
-/// the newest authentic revision by `created_at`.
+/// Returns [`MostroInstanceInfoFetch::NotFound`] when the relay returns no events,
+/// [`MostroInstanceInfoFetch::Rejected`] when every candidate fails authenticity checks.
+/// Fetches up to 10 candidates and keeps the newest authentic revision by `created_at`.
 pub async fn fetch_mostro_instance_info(
     client: &Client,
     mostro_pubkey: PublicKey,
-) -> Result<Option<MostroInstanceInfo>> {
+) -> Result<MostroInstanceInfoFetch> {
     // Ask for a small window so a forged "newest" event cannot wholly hide an
     // authentic revision when the relay returns a mixed set.
     let filter = Filter::new()
@@ -353,11 +379,14 @@ pub async fn fetch_mostro_instance_info(
             log::warn!(
                 "Rejected {fetched} kind-{MOSTRO_INSTANCE_INFO_KIND} event(s): none matched Mostro pubkey {mostro_pubkey} with a valid signature and d-tag"
             );
+            return Ok(MostroInstanceInfoFetch::Rejected { fetched });
         }
-        return Ok(None);
+        return Ok(MostroInstanceInfoFetch::NotFound);
     };
 
-    Ok(Some(mostro_info_from_authenticated_event(&event)?))
+    Ok(MostroInstanceInfoFetch::Found(Box::new(
+        mostro_info_from_authenticated_event(&event)?,
+    )))
 }
 
 /// Convenience helper: load the latest settings from disk, parse the configured
@@ -365,7 +394,7 @@ pub async fn fetch_mostro_instance_info(
 /// (same client-side authenticity checks as [`fetch_mostro_instance_info`]).
 pub async fn fetch_mostro_instance_info_from_settings(
     client: &Client,
-) -> Result<Option<MostroInstanceInfo>> {
+) -> Result<MostroInstanceInfoFetch> {
     let settings =
         load_settings_from_disk().map_err(|e| anyhow!("Failed to load settings: {}", e))?;
     let mostro_pubkey = PublicKey::from_str(&settings.mostro_pubkey)
@@ -731,7 +760,25 @@ mod tests {
         assert_eq!(transport_from_instance(Some(&info)), Transport::Nip44Direct);
     }
 
+    #[test]
+    fn instance_info_fetch_to_apply_only_on_found() {
+        assert!(
+            MostroInstanceInfoFetch::Found(Box::new(MostroInstanceInfo {
+                protocol_version: Some(2),
+                ..Default::default()
+            }))
+            .to_apply()
+            .is_some()
+        );
+        assert!(MostroInstanceInfoFetch::NotFound.to_apply().is_none());
+        assert!(
+            MostroInstanceInfoFetch::Rejected { fetched: 3 }
+                .to_apply()
+                .is_none()
+        );
+    }
+
     // Auth selection (MOSTRO-075) is covered above without a Client. Full
     // `fetch_mostro_instance_info` I/O still needs a mock/test double for
-    // nostr_sdk::Client (empty set → Ok(None); timeout → Err).
+    // nostr_sdk::Client (empty set → NotFound; forged set → Rejected; timeout → Err).
 }

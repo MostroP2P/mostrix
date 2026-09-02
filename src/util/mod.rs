@@ -53,7 +53,8 @@ pub use mostro_info::{
     fetch_mostro_instance_info, fetch_mostro_instance_info_from_settings, format_instance_info_age,
     instance_bonds_enabled, instance_info_event_is_authentic, mostro_info_from_authenticated_event,
     mostro_info_from_tags, nostr_pow_from_instance, select_authentic_instance_info_event,
-    transport_from_instance, MostroInstanceInfo, MOSTRO_INSTANCE_INFO_KIND,
+    transport_from_instance, MostroInstanceInfo, MostroInstanceInfoFetch,
+    MOSTRO_INSTANCE_INFO_KIND,
 };
 pub use network::{any_relay_reachable, connect_client_safely};
 pub use order_utils::{
