@@ -247,7 +247,9 @@ async fn dm_transport_for_mostro(
 ) -> Transport {
     match fetch_mostro_instance_info(client, mostro_pubkey).await {
         Ok(info) => {
-            app.set_mostro_info(info);
+            if let Some(info) = info {
+                app.set_mostro_info(Some(info));
+            }
             app.transport
         }
         Err(e) => {
