@@ -82,10 +82,11 @@ impl RestoreSummary {
 }
 
 /// Map the outcome of [`execute_restore_session`] to the operation result the
-/// restore task must emit. `Ok` MUST become [`OperationResult::SessionRestored`]
+/// restore task must emit. `Ok` MUST become [`crate::ui::OperationResult::SessionRestored`]
 /// — not a plain `Info` — because only that variant makes `apply_order_result`
-/// re-run the DB-to-UI projection sync; with `Info` the restored rows stay
-/// invisible until a later sync or restart.
+/// clear stale chat projection, re-run the DB-to-UI sync, and spawn post-restore
+/// relay hydrates; with `Info` the restored rows stay invisible until a later sync
+/// or restart.
 pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui::OperationResult {
     match outcome {
         Ok(summary) => crate::ui::OperationResult::SessionRestored {

@@ -64,7 +64,6 @@ use tokio::time::{interval, Duration};
 /// Constructs (or copies) the configuration file and loads it.
 pub static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
 /// Results that must re-run the startup DB-to-UI sync (maker book cache +
 /// order history messages) because background work changed SQLite rows the
 /// in-memory projections are built from.
@@ -75,6 +74,12 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
     )
 }
 
+/// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
+///
+/// [`OperationResult::SessionRestored`] clears stale chat projection, resyncs DB-backed
+/// Messages/My Trades rows, and spawns background trade-DM replay plus peer-chat relay
+/// rebuild. [`OperationResult::PostRestorePeerChatReplayCompleted`] loads rebuilt peer
+/// transcripts from disk and re-runs [`track_startup_chats`].
 async fn apply_order_result(
     pool: &SqlitePool,
     app: &mut AppState,

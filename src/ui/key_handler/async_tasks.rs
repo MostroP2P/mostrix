@@ -204,6 +204,8 @@ fn reset_pending_notifications_or_fatal(app: &mut AppState) -> Result<(), ()> {
     Err(())
 }
 
+/// Reset in-memory trade/message state after identity key reload; also clears peer/solver
+/// chat transcripts and cursors via [`clear_session_chat_projection`].
 fn clear_runtime_session_state(app: &mut AppState) {
     if clear_messages_or_fatal(app).is_err() {
         return;

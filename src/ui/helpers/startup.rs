@@ -160,7 +160,9 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
 ///
 /// Commands are buffered on the router's channel until the task starts consuming them, so this
 /// is safe to call before the chat router task is spawned. History for each key is hydrated by
-/// the router on `TrackChatKey` using the passed `since` (last-seen) cursor.
+/// the router on `TrackChatKey` using the passed `since` (last-seen) cursor. After
+/// [`OperationResult::SessionRestored`], call again once peer-chat transcripts are on disk
+/// ([`OperationResult::PostRestorePeerChatReplayCompleted`]) so live subscriptions cover rebuilt orders.
 pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
     match app.user_role {
         UserRole::User => {
@@ -278,7 +280,9 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
 /// Load user order chat at startup from on-disk transcripts.
 ///
 /// Relay history is **not** polled here — [`track_startup_chats`] seeds the shared-key chat
-/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch).
+/// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch). After
+/// [`OperationResult::SessionRestored`], peer transcripts are rebuilt from relay via
+/// [`spawn_post_restore_peer_chat_hydrate`] instead of relying on this path alone.
 pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::User {
         return;
@@ -874,7 +878,8 @@ pub async fn active_peer_chat_order_ids_for_restore(pool: &SqlitePool) -> Vec<St
     }
 }
 
-/// Spawn peer-chat relay rebuild without blocking the UI loop.
+/// Spawn peer-chat relay rebuild without blocking the UI loop; reports
+/// [`OperationResult::PostRestorePeerChatReplayCompleted`] with hydrated `order_ids`.
 pub fn spawn_post_restore_peer_chat_hydrate(
     pool: SqlitePool,
     client: Client,
@@ -904,6 +909,10 @@ pub fn spawn_post_restore_peer_chat_hydrate(
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.
+///
+/// On [`UserChatChannel::Peer`], relay rows from the local trade key are stored as **You**
+/// unless the inner event id is already known or an optimistic local line exists at the same
+/// timestamp (live-send echo). The solver channel still skips all local-trade-key rows.
 ///
 /// Durable inner-event ids are recorded only after a successful transcript
 /// [`save_order_chat_message`] / [`rewrite_order_chat_messages`]. On write
