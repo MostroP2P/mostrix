@@ -61,10 +61,13 @@ pub use order_selection::{
     selected_book_display_idx, selected_filtered_book_order,
 };
 pub use startup::{
-    admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    clear_session_chat_projection, hydrate_app_admin_keys_from_privkey,
-    load_admin_disputes_at_startup, load_user_order_chats_at_startup,
+    active_peer_chat_order_ids_for_restore, admin_chat_keys_clone_for_role,
+    apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
+    apply_user_order_chat_updates, clear_session_chat_projection,
+    hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
+    load_user_order_chats_at_startup, peer_order_chat_transcript_from_decoded,
     prepare_post_restore_trade_dm_replay, recover_admin_chat_from_files,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_trade_dm_replay,
-    sync_user_order_history_messages_from_db, track_startup_chats,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_peer_chat_hydrate,
+    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
+    track_startup_chats,
 };

@@ -196,6 +196,10 @@ pub enum OperationResult {
     MyTradesMakerBookChanged,
     /// Background post-restore trade-DM replay finished (silent; `messages` already updated).
     PostRestoreTradeDmReplayCompleted,
+    /// Background post-restore peer order-chat relay rebuild finished (silent).
+    PostRestorePeerChatReplayCompleted {
+        order_ids: Vec<String>,
+    },
     /// Session restore finished: resync My Trades/Messages projections from
     /// SQLite (same DB-to-UI sync as startup), then show `message`.
     SessionRestored {

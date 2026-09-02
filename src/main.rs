@@ -10,10 +10,13 @@ use crate::models::AdminDispute;
 use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
-    admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    clear_session_chat_projection, expire_attachment_toast, load_admin_disputes_at_startup,
-    prepare_post_restore_trade_dm_replay, refresh_my_trades_maker_book_cache,
+    active_peer_chat_order_ids_for_restore, admin_chat_keys_clone_for_role,
+    apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
+    apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
+    load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_peer_chat_hydrate,
     spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
+    track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -84,6 +87,11 @@ async fn apply_order_result(
     if matches!(&result, OperationResult::PostRestoreTradeDmReplayCompleted) {
         return;
     }
+    if let OperationResult::PostRestorePeerChatReplayCompleted { order_ids } = &result {
+        apply_restored_peer_order_chats_from_disk(app, order_ids);
+        track_startup_chats(pool, app).await;
+        return;
+    }
 
     let is_dispute_related = match &result {
         OperationResult::AdminDisputeDeleted { .. } => true,
@@ -114,6 +122,7 @@ async fn apply_order_result(
         result,
         OperationResult::MyTradesMakerBookChanged
             | OperationResult::PostRestoreTradeDmReplayCompleted
+            | OperationResult::PostRestorePeerChatReplayCompleted { .. }
     ) {
         handle_operation_result(result, app);
     }
@@ -132,6 +141,13 @@ async fn apply_order_result(
                 order_result_tx.clone(),
             );
         }
+        let peer_order_ids = active_peer_chat_order_ids_for_restore(pool).await;
+        spawn_post_restore_peer_chat_hydrate(
+            pool.clone(),
+            client.clone(),
+            peer_order_ids,
+            order_result_tx.clone(),
+        );
     }
 
     if is_dispute_related && app.user_role == UserRole::Admin {
