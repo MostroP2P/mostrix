@@ -786,9 +786,7 @@ async fn rebuild_peer_order_chat_transcript(
             deduped.push(msg);
         }
     }
-    for inner in &deduped {
-        let _ = remember_order_chat_inner_id(order_id, &inner.inner_event_id);
-    }
+    let inner_event_ids: Vec<_> = deduped.iter().map(|m| m.inner_event_id).collect();
 
     let transcript = peer_order_chat_transcript_from_decoded(deduped, local_trade_pubkey);
     if transcript.is_empty() {
@@ -799,6 +797,9 @@ async fn rebuild_peer_order_chat_transcript(
         return Err(anyhow::anyhow!(
             "failed to persist peer chat transcript for order {order_id}"
         ));
+    }
+    for inner_id in inner_event_ids {
+        let _ = remember_order_chat_inner_id(order_id, &inner_id);
     }
 
     Ok(Some(transcript))
