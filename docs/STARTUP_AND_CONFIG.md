@@ -243,13 +243,7 @@ When the user confirms **Restore Session** (`execute_restore_session` → `Actio
 
 **Out of scope (current restore hydrate)**: admin dispute chat transcript rebuild; solver-channel post-restore relay rebuild (solver channel still uses blanket local-trade-key skip in `apply_user_order_chat_updates`).
 
-**Manual verification** (seed import + restore without restart):
-
-1. Import seed / confirm restore → success popup; My Trades and Messages tabs list restored orders.
-2. **Messages** tab shows correct flow step per active order (trade-DM replay; no duplicate invoice popups).
-3. **My Trades** peer chat shows full **You** / **Peer** history (not empty or all-Peer).
-4. Send a new peer chat line — appears as **You** and is not duplicated when the relay echo arrives.
-5. Optional: restore with zero peer-chat-eligible orders — app remains usable; `track_startup_chats` still runs (no stuck empty chat state).
+**Acceptance:** automated proofs + manual smoke checklist — [RESTORE_SESSION_ACCEPTANCE.md](RESTORE_SESSION_ACCEPTANCE.md).
 
 **Source**: `src/main.rs` (`apply_order_result`), `src/ui/helpers/startup.rs` (`clear_session_chat_projection`, `hydrate_after_session_restore`, `spawn_post_restore_hydrate`, `RestoreHydrateReport`), `src/util/dm_utils/mod.rs` (`replay_active_trade_dms`, `trade_dm_replay_fetch_filter`), `src/util/order_utils/execute_restore.rs`.
 

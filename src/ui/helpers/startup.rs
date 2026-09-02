@@ -1466,6 +1466,43 @@ mod restore_hydrate_orchestrator_tests {
         assert_eq!(report.peer_chat, PeerOrderChatRestoreSummary::default());
         assert!(report.peer_hydrated_order_ids.is_empty());
     }
+
+    #[tokio::test]
+    async fn spawn_post_restore_hydrate_emits_completion_with_empty_peer_orders() {
+        use super::spawn_post_restore_hydrate;
+        use crate::ui::OperationResult;
+        use std::time::Duration;
+
+        let client = Client::new();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        let (notify_tx, _notify_rx) = unbounded_channel();
+        let (result_tx, mut result_rx) = unbounded_channel();
+
+        spawn_post_restore_hydrate(
+            pool,
+            client,
+            Keys::generate().public_key(),
+            None,
+            vec![],
+            notify_tx,
+            result_tx,
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(5), result_rx.recv())
+            .await
+            .expect("timed out waiting for post-restore hydrate")
+            .expect("order result channel closed");
+
+        match result {
+            OperationResult::PostRestoreHydrateCompleted { report } => {
+                assert!(report.trade_dm.is_none());
+                assert!(report.peer_hydrated_order_ids.is_empty());
+            }
+            other => panic!("expected PostRestoreHydrateCompleted, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]

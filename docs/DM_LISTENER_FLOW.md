@@ -363,7 +363,7 @@ Use this checklist when validating dual-transport behavior against live nodes:
 1. **v1 node** (`protocol_version: "1"`) — create order, take, pay invoice, release; flows unchanged (GiftWrap filters).
 2. **v2 node** (`protocol_version: "2"`) — same flows over kind-14 subscribe + `unwrap_incoming`.
 3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the active transport filter.
-4. **Session restore (no restart)** — Settings → Restore Session after seed import; Messages tab and My Trades peer chat hydrate via `spawn_post_restore_hydrate` without relaunching the DM listener. See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
+4. **Session restore (no restart)** — Settings → Restore Session after seed import; Messages tab and My Trades peer chat hydrate via `spawn_post_restore_hydrate` without relaunching the DM listener. See [RESTORE_SESSION_ACCEPTANCE.md](RESTORE_SESSION_ACCEPTANCE.md).
 5. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol v2 Mostro DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
 6. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
 
