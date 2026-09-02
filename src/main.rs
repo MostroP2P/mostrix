@@ -661,7 +661,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
                             let old_transport = app.transport;
-                            app.set_mostro_info(*info);
+                            app.set_mostro_info(Some(*info));
                             if old_transport != app.transport {
                                 log::warn!(
                                     "Mostro protocol transport changed {:?} -> {:?}; restarting DM listener",
@@ -689,8 +689,16 @@ async fn main() -> Result<(), anyhow::Error> {
                                 crate::ui::OperationResult::Info(message),
                             );
                         }
-                        MostroInfoFetchResult::Applied { info } => {
-                            app.set_mostro_info(*info);
+                        MostroInfoFetchResult::NotFound { message }
+                        | MostroInfoFetchResult::Rejected { message } => {
+                            app.mode = crate::ui::UiMode::operation_result(
+                                crate::ui::OperationResult::Info(message),
+                            );
+                        }
+                        MostroInfoFetchResult::FetchFailed { message } => {
+                            app.mode = crate::ui::UiMode::operation_result(
+                                crate::ui::OperationResult::Error(message),
+                            );
                         }
                         MostroInfoFetchResult::Err(e) => {
                             app.set_mostro_info(None);

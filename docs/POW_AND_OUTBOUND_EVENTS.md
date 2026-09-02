@@ -13,8 +13,8 @@ This document describes how Mostrix applies **NIP-13 proof-of-work** to events i
 
 ## Cached instance info at runtime
 
-- [`AppState.mostro_info`](../src/ui/app_state.rs) holds the latest fetched `MostroInstanceInfo`.
-- [`AppState.transport`](../src/ui/app_state.rs) mirrors resolved [`Transport`](../src/util/mod.rs). Updated via [`set_mostro_info`](../src/ui/app_state.rs).
+- [`AppState.mostro_info`](../src/ui/app_state.rs) holds the latest **client-authenticated** `MostroInstanceInfo` (see [`fetch_mostro_instance_info`](../src/util/mostro_info.rs)).
+- [`AppState.transport`](../src/ui/app_state.rs) mirrors resolved [`Transport`](../src/util/mod.rs). Updated via [`set_mostro_info`](../src/ui/app_state.rs) (stale `created_at` ignored).
 - [`EnterKeyContext`](../src/ui/key_handler/mod.rs) threads `mostro_info` into async work without re-fetching per message.
 - [`send_dm`](../src/util/dm_utils/mod.rs) takes `mostro_instance: Option<&MostroInstanceInfo>` and computes `pow = nostr_pow_for_protocol_dm(mostro_instance, action)` once per send.
 

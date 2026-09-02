@@ -214,16 +214,17 @@ pub async fn run_post_terminal_startup(
     let transport_for_listener = if relays_reachable {
         set_startup_phase(phase_tx, "Fetching Mostro instance info…");
         match fetch_mostro_instance_info(&client, mostro_pubkey).await {
-            Ok(info) => {
-                app.set_mostro_info(info);
+            Ok(fetch) => {
+                if let Some(info) = fetch.to_apply() {
+                    app.set_mostro_info(Some(info));
+                }
                 app.transport
             }
             Err(e) => {
                 log::warn!(
-                    "Failed to fetch Mostro instance info at startup: {e}; defaulting to GiftWrap transport"
+                    "Failed to fetch Mostro instance info at startup: {e}; keeping cached/default transport"
                 );
-                app.set_mostro_info(None);
-                Transport::default()
+                app.transport
             }
         }
     } else {
