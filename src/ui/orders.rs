@@ -256,10 +256,6 @@ pub enum MostroInfoFetchResult {
     NotFound { message: String },
     /// Relay returned unauthentic candidates; cached instance info is unchanged.
     Rejected { message: String },
-    /// Startup / background refresh: apply only when an authentic revision was found.
-    Applied {
-        info: Box<crate::util::MostroInstanceInfo>,
-    },
     /// Hard failure (settings / network); clears cached instance info.
     Err(String),
 }

@@ -1178,36 +1178,16 @@ pub fn spawn_refresh_mostro_info_from_settings_task(
     });
 }
 
-/// `show_result_toast`: when false (e.g. startup), only [`MostroInfoFetchResult::Applied`] is sent on
-/// success and errors are logged without UI.
+/// Refresh instance info after the configured Mostro pubkey changes.
+///
+/// Sends [`MostroInfoFetchResult`] to the main loop (UI toast + optional DM listener respawn).
 pub fn spawn_refresh_mostro_info_task(
     client: Client,
     mostro_pubkey: PublicKey,
     tx: UnboundedSender<MostroInfoFetchResult>,
-    show_result_toast: bool,
 ) {
     tokio::spawn(async move {
         let result = fetch_mostro_instance_info(&client, mostro_pubkey).await;
-        if !show_result_toast {
-            match &result {
-                Ok(crate::util::MostroInstanceInfoFetch::Found(_)) => {}
-                Ok(crate::util::MostroInstanceInfoFetch::NotFound) => {
-                    log::info!("No Mostro instance info event found for current Mostro pubkey");
-                }
-                Ok(crate::util::MostroInstanceInfoFetch::Rejected { fetched }) => {
-                    log::warn!(
-                        "Rejected {fetched} unauthentic instance-info event(s); keeping cached settings"
-                    );
-                }
-                Err(e) => {
-                    log::warn!("Failed to fetch Mostro instance info: {}", e);
-                }
-            }
-            if let Ok(crate::util::MostroInstanceInfoFetch::Found(info)) = result {
-                let _ = tx.send(MostroInfoFetchResult::Applied { info });
-            }
-            return;
-        }
         let res = match result {
             Ok(crate::util::MostroInstanceInfoFetch::Found(info)) => MostroInfoFetchResult::Ok {
                 info,

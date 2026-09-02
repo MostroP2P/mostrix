@@ -1055,7 +1055,6 @@ fn handle_enter_settings_mode(
                     ctx.client.clone(),
                     new_pubkey,
                     ctx.mostro_info_tx.clone(),
-                    true,
                 );
                 app.mode = UiMode::operation_result(OperationResult::Info(
                     "Fetching Mostro instance info...".to_string(),
