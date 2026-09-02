@@ -62,9 +62,9 @@ pub use order_selection::{
 };
 pub use startup::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup, prepare_post_restore_trade_dm_replay,
-    recover_admin_chat_from_files, refresh_my_trades_maker_book_cache,
-    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
-    track_startup_chats,
+    clear_session_chat_projection, hydrate_app_admin_keys_from_privkey,
+    load_admin_disputes_at_startup, load_user_order_chats_at_startup,
+    prepare_post_restore_trade_dm_replay, recover_admin_chat_from_files,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_trade_dm_replay,
+    sync_user_order_history_messages_from_db, track_startup_chats,
 };

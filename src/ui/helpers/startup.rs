@@ -560,6 +560,34 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
     }
 }
 
+/// Clear in-memory peer/solver chat transcripts and relay cursors.
+///
+/// After a session wipe or before post-restore hydrate, stale `order_chat_last_seen`
+/// values from the prior identity would bound relay fetches incorrectly and echo-skip
+/// logic would drop the user's own messages when the on-disk transcript is empty.
+pub fn clear_session_chat_projection(app: &mut AppState) {
+    app.order_chats.clear();
+    app.user_dispute_chats.clear();
+    app.order_chat_last_seen.clear();
+    app.user_dispute_chat_last_seen.clear();
+    app.order_chat_static.clear();
+    app.startup_popup_floor_ts.clear();
+    app.buyer_invoice_preference.clear();
+    app.orders_needing_replacement_invoice.clear();
+    app.my_trades_maker_book.clear();
+    app.pending_order_attachment_sends.clear();
+    app.sending_attachment_order_id = None;
+    app.selected_order_chat_idx = 0;
+    app.order_chat_input.clear();
+    app.order_chat_input_enabled = false;
+    app.order_chat_selected_message_idx = None;
+    app.order_chat_line_starts.clear();
+    app.order_chat_scroll_tracker = None;
+    if let Ok(mut dropped) = app.dropped_user_history_order_ids.lock() {
+        dropped.clear();
+    }
+}
+
 /// Snapshot of app/DB state needed for a background post-restore trade-DM replay.
 pub struct PostRestoreTradeDmReplayJob {
     transport: Transport,
@@ -1023,6 +1051,62 @@ pub async fn apply_admin_chat_updates(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod clear_session_chat_projection_tests {
+    use super::clear_session_chat_projection;
+    use crate::ui::{AppState, OrderChatLastSeen, UserChatSender, UserOrderChatMessage, UserRole};
+    use uuid::Uuid;
+
+    #[test]
+    fn clears_peer_and_solver_chat_maps_and_cursors() {
+        let mut app = AppState::new(UserRole::User);
+        app.order_chats.insert(
+            "order-1".to_string(),
+            vec![UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: "hi".to_string(),
+                timestamp: 1,
+                attachment: None,
+            }],
+        );
+        app.user_dispute_chats.insert("order-1".to_string(), vec![]);
+        app.order_chat_last_seen.insert(
+            "order-1".to_string(),
+            OrderChatLastSeen {
+                last_seen_timestamp: Some(9_999),
+            },
+        );
+        app.user_dispute_chat_last_seen.insert(
+            "order-1".to_string(),
+            OrderChatLastSeen {
+                last_seen_timestamp: Some(8_888),
+            },
+        );
+        app.startup_popup_floor_ts.insert(Uuid::new_v4(), 1_700_000_000);
+        app.selected_order_chat_idx = 3;
+        app.order_chat_input = "draft".to_string();
+        app.dropped_user_history_order_ids
+            .lock()
+            .expect("lock")
+            .insert(Uuid::new_v4());
+
+        clear_session_chat_projection(&mut app);
+
+        assert!(app.order_chats.is_empty());
+        assert!(app.user_dispute_chats.is_empty());
+        assert!(app.order_chat_last_seen.is_empty());
+        assert!(app.user_dispute_chat_last_seen.is_empty());
+        assert!(app.startup_popup_floor_ts.is_empty());
+        assert_eq!(app.selected_order_chat_idx, 0);
+        assert!(app.order_chat_input.is_empty());
+        assert!(app
+            .dropped_user_history_order_ids
+            .lock()
+            .expect("lock")
+            .is_empty());
+    }
 }
 
 #[cfg(test)]

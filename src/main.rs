@@ -11,9 +11,9 @@ use crate::models::User;
 use crate::settings::{init_settings, Settings};
 use crate::ui::helpers::{
     admin_chat_keys_clone_for_role, apply_admin_chat_updates, apply_user_order_chat_updates,
-    expire_attachment_toast, load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_trade_dm_replay,
-    sync_user_order_history_messages_from_db,
+    clear_session_chat_projection, expire_attachment_toast, load_admin_disputes_at_startup,
+    prepare_post_restore_trade_dm_replay, refresh_my_trades_maker_book_cache,
+    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -101,6 +101,10 @@ async fn apply_order_result(
             | OperationResult::Success(_)
             | OperationResult::SessionRestored { .. }
     );
+
+    if is_session_restored && app.user_role == UserRole::User {
+        clear_session_chat_projection(app);
+    }
 
     if refresh_maker_book_cache && app.user_role == UserRole::User {
         refresh_my_trades_maker_book_cache(pool, app).await;
