@@ -302,8 +302,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::OrderHistoryDeleted { .. }
         | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::MyTradesMakerBookChanged
-        | OperationResult::PostRestoreTradeDmReplayCompleted
-        | OperationResult::PostRestorePeerChatReplayCompleted { .. }
+        | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }
@@ -494,8 +493,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::MyTradesMakerBookChanged
-        | OperationResult::PostRestoreTradeDmReplayCompleted
-        | OperationResult::PostRestorePeerChatReplayCompleted { .. }
+        | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
         | OperationResult::OrderChatAttachmentSendFailed { .. }

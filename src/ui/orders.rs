@@ -194,13 +194,10 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
-    /// Background post-restore trade-DM replay finished (silent; `messages` already updated).
-    PostRestoreTradeDmReplayCompleted,
-    /// Background post-restore peer order-chat relay rebuild finished (silent).
-    /// The main loop loads `order_ids` from disk into [`crate::ui::AppState::order_chats`]
-    /// and re-emits [`crate::ui::helpers::track_startup_chats`].
-    PostRestorePeerChatReplayCompleted {
-        order_ids: Vec<String>,
+    /// Background post-restore hydrate finished (silent). The main loop loads peer transcripts
+    /// from disk and re-emits [`crate::ui::helpers::track_startup_chats`].
+    PostRestoreHydrateCompleted {
+        report: crate::ui::helpers::RestoreHydrateReport,
     },
     /// Session restore finished: clear stale chat projection, resync My Trades/Messages
     /// from SQLite, spawn background trade-DM and peer-chat relay rebuilds, then show

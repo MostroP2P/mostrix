@@ -107,6 +107,20 @@ Relay subscriptions alone often **do not** deliver enough stored history into th
 
 **Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
 
+### 4) Post-restore trade DM replay (session restore, no restart)
+
+Cold startup replay runs inside `listen_for_order_messages` bootstrap (section 3). **Session restore** (Settings → Restore Session) must refill the Messages tab **without** restarting the listener task. That path is separate:
+
+1. `apply_order_result` handles `OperationResult::SessionRestored` — clears chat projection, re-syncs DB-backed UI rows, then spawns **`spawn_post_restore_hydrate`** (`src/ui/helpers/startup.rs`).
+2. **`prepare_post_restore_trade_dm_replay`** reloads `hydrate_startup_active_order_dm_state`, re-seeds `active_order_trade_indices` and `startup_popup_floor_ts` on `AppState`.
+3. **`replay_active_trade_dms`** (awaitable; also used from the orchestrator) fetches per active order with **`trade_dm_replay_fetch_filter`**:
+   - **No `last_seen_dm_ts`** (post-wipe / fresh restore row): **limit-only** — no `since` — so relay retention bounds catch-up (not the 12h cold lookback).
+   - **Cursor present**: `since` from cursor ∩ lookback, minus GiftWrap envelope skew (`STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`), plus fetch limit.
+4. Dispatch uses **`UntrackedFallback`** when the live DM router has no `TrackOrder` subscription for the trade pubkey yet (common immediately after restore).
+5. Updates `AppState.messages` with **`notify: false`** (no duplicate popups). Completion is folded into **`RestoreHydrateReport.trade_dm`** on **`PostRestoreHydrateCompleted`**.
+
+Peer order chat (My Trades panel) is a **separate pipe** — shared-key kind-14 fetch in `rebuild_peer_order_chats_after_restore`, not the protocol-DM router. See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
+
 ## Command “preferences”: TrackOrder vs Waiter
 
 The listener consumes a command channel (`dm_subscription_rx`) with two variants:
@@ -349,6 +363,7 @@ Use this checklist when validating dual-transport behavior against live nodes:
 1. **v1 node** (`protocol_version: "1"`) — create order, take, pay invoice, release; flows unchanged (GiftWrap filters).
 2. **v2 node** (`protocol_version: "2"`) — same flows over kind-14 subscribe + `unwrap_incoming`.
 3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the active transport filter.
-4. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol v2 Mostro DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
-5. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
+4. **Session restore (no restart)** — Settings → Restore Session after seed import; Messages tab and My Trades peer chat hydrate via `spawn_post_restore_hydrate` without relaunching the DM listener. See [RESTORE_SESSION_ACCEPTANCE.md](RESTORE_SESSION_ACCEPTANCE.md).
+5. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol v2 Mostro DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
+6. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
 

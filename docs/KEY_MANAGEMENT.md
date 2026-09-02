@@ -135,4 +135,5 @@ Mostrix avoids storing full message histories locally. Instead, it uses the dete
 2. It re-derives the corresponding `Trade Keys`.
 3. It queries Nostr relays for recent **protocol DM** events directed to those trade public keys — GiftWrap (kind 1059) or signed kind 14, depending on the Mostro instance `protocol_version` / [`Transport`](../src/util/mod.rs).
 4. Separately, **P2P / dispute chat** is hydrated by the shared-key chat router (kind 14 `authors = [pub(K_sign)]`, plus legacy GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
-5. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.
+5. After **session restore** or **seed import / key reload**, `clear_session_chat_projection` clears stale in-memory chat cursors before relay re-hydrate (`src/ui/helpers/startup.rs`, `clear_runtime_session_state` in `src/ui/key_handler/async_tasks.rs`). See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
+6. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.

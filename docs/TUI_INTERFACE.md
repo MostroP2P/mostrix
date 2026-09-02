@@ -85,7 +85,7 @@ Focused on trading and order management.
 - **Orders**: View the global order book (persistent `TableState` scrolls with ↑↓; shared vertical scrollbar confined to data rows).
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
+- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Restore Session** (rebuild SQLite from Mostro + background hydrate of Messages tab trade DMs and My Trades peer chat without restart — see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)); **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
 - **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), and silent draft persistence when switching tabs.
 
 ### Admin Role
@@ -517,7 +517,7 @@ Active admin-chat transport is kind 14 (`K_sign` / `K_conv`). GiftWrap is inboun
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched subscription (kind 14 always; GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true). Disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup/reconnect. History is hydrated once per key on track.
+  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched subscription (kind 14 always; GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true). Disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup, reconnect, and after **session restore** (`PostRestoreHydrateCompleted`). History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
     - Fetches history with kind-14 `authors = [pub(K_sign)]`, plus a legacy `kind: 1059` `#p` query while dual-read is on (7-day rolling window; GiftWrap `created_at` is randomized so that query keeps the wide floor).

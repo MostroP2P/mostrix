@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS orders (
 The `orders` table is essential for:
 
 - **Trade Key Persistence**: Stores the trade keys needed to decrypt messages and sign actions for each active trade
-- **Order Recovery**: Allows the client to recover active orders on startup (`Order::get_startup_active_orders`, `hydrate_startup_active_order_dm_state`)
+- **Order Recovery**: Allows the client to recover active orders on startup (`Order::get_startup_active_orders`, `hydrate_startup_active_order_dm_state`) and after **session restore** (`execute_restore_session` → post-restore hydrate in `src/ui/helpers/startup.rs`)
 - **State Synchronization**: Enables the "fetch-on-startup" strategy to sync with Mostro daemon
 - **Trade History**: Maintains a local record of orders and trades
 - **My Trades static header (UI)**: on user history sync, `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs` seeds `AppState.order_chat_static` from existing `orders` rows (`id`, `kind`, `created_at`, `trade_index`, `is_mine`, and trade public key derived from `trade_keys`) so the in-app header (order id, type, created time, trade index, initiator) is stable across process restarts without re-folding the DM list.
@@ -421,7 +421,7 @@ Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on
 
 - **User order chat (My Trades)**:
   - Transcripts under `~/.mostrix/orders_chat/<order_id>.txt` (not in SQLite).
-  - Same JSON attachment persistence and legacy-placeholder hydration as admin chat; loaded by `load_user_order_chats_at_startup`. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
+  - Same JSON attachment persistence and legacy-placeholder hydration as admin chat; loaded by `load_user_order_chats_at_startup` at cold start and by `apply_restored_peer_order_chats_from_disk` after session restore. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache" and [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
 
 This approach keeps the core trade DM flow largely stateless while giving admin and user order chat a robust, restart‑safe transcript cache.
 
