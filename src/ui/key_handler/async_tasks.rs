@@ -2,7 +2,7 @@ use crate::models::{Order, User};
 use crate::settings::load_settings_from_disk;
 use crate::settings::Settings;
 use crate::ui::helpers::{
-    hydrate_app_admin_keys_from_privkey, track_startup_chats, clear_session_chat_projection,
+    clear_session_chat_projection, hydrate_app_admin_keys_from_privkey, track_startup_chats,
 };
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::pending_trade_index_retry::PendingTradeIndexRetry;

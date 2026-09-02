@@ -764,17 +764,17 @@ async fn rebuild_peer_order_chat_transcript(
         return Ok(None);
     };
     let Some(shared_keys) = keys_from_shared_hex(&shared_hex) else {
-        return Err(anyhow::anyhow!("invalid shared key hex for order {order_id}"));
+        return Err(anyhow::anyhow!(
+            "invalid shared key hex for order {order_id}"
+        ));
     };
-    let Some(allowed) = order_chat_allowed_signers(
-        local_trade_pubkey,
-        order.counterparty_pubkey.as_deref(),
-    ) else {
+    let Some(allowed) =
+        order_chat_allowed_signers(local_trade_pubkey, order.counterparty_pubkey.as_deref())
+    else {
         return Ok(None);
     };
 
-    let decoded =
-        fetch_chat_messages_for_shared_key(client, &shared_keys, &allowed, None).await?;
+    let decoded = fetch_chat_messages_for_shared_key(client, &shared_keys, &allowed, None).await?;
     if decoded.is_empty() {
         return Ok(None);
     }
@@ -938,8 +938,7 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
             let sender_pubkey = msg.sender;
             let inner_id = msg.inner_event_id;
 
-            if update.channel == UserChatChannel::Peer
-                && sender_pubkey == update.local_trade_pubkey
+            if update.channel == UserChatChannel::Peer && sender_pubkey == update.local_trade_pubkey
             {
                 if order_chat_inner_id_known(&order_id, &inner_id) {
                     if ts > max_ts {
@@ -1382,7 +1381,8 @@ mod clear_session_chat_projection_tests {
                 last_seen_timestamp: Some(8_888),
             },
         );
-        app.startup_popup_floor_ts.insert(Uuid::new_v4(), 1_700_000_000);
+        app.startup_popup_floor_ts
+            .insert(Uuid::new_v4(), 1_700_000_000);
         app.selected_order_chat_idx = 3;
         app.order_chat_input = "draft".to_string();
         app.dropped_user_history_order_ids
