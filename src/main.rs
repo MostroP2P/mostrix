@@ -14,8 +14,8 @@ use crate::ui::helpers::{
     apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
     apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
     load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_peer_chat_hydrate,
-    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
+    sync_user_order_history_messages_from_db,
     track_startup_chats,
 };
 use crate::ui::key_handler::{
@@ -77,9 +77,9 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
 ///
 /// [`OperationResult::SessionRestored`] clears stale chat projection, resyncs DB-backed
-/// Messages/My Trades rows, and spawns background trade-DM replay plus peer-chat relay
-/// rebuild. [`OperationResult::PostRestorePeerChatReplayCompleted`] loads rebuilt peer
-/// transcripts from disk and re-runs [`track_startup_chats`].
+/// Messages/My Trades rows, and spawns background post-restore hydrate (trade DMs + peer chat).
+/// [`OperationResult::PostRestoreHydrateCompleted`] loads rebuilt peer transcripts from disk
+/// and re-runs [`track_startup_chats`].
 async fn apply_order_result(
     pool: &SqlitePool,
     app: &mut AppState,
@@ -89,11 +89,8 @@ async fn apply_order_result(
     message_notification_tx: &UnboundedSender<MessageNotification>,
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
-    if matches!(&result, OperationResult::PostRestoreTradeDmReplayCompleted) {
-        return;
-    }
-    if let OperationResult::PostRestorePeerChatReplayCompleted { order_ids } = &result {
-        apply_restored_peer_order_chats_from_disk(app, order_ids);
+    if let OperationResult::PostRestoreHydrateCompleted { report } = &result {
+        apply_restored_peer_order_chats_from_disk(app, &report.peer_hydrated_order_ids);
         track_startup_chats(pool, app).await;
         return;
     }
@@ -126,8 +123,7 @@ async fn apply_order_result(
     if !matches!(
         result,
         OperationResult::MyTradesMakerBookChanged
-            | OperationResult::PostRestoreTradeDmReplayCompleted
-            | OperationResult::PostRestorePeerChatReplayCompleted { .. }
+            | OperationResult::PostRestoreHydrateCompleted { .. }
     ) {
         handle_operation_result(result, app);
     }
@@ -136,21 +132,15 @@ async fn apply_order_result(
     }
 
     if is_session_restored && app.user_role == UserRole::User {
-        if let Some(job) = prepare_post_restore_trade_dm_replay(pool, app).await {
-            spawn_post_restore_trade_dm_replay(
-                job,
-                pool.clone(),
-                client.clone(),
-                mostro_pubkey,
-                message_notification_tx.clone(),
-                order_result_tx.clone(),
-            );
-        }
+        let trade_dm_job = prepare_post_restore_trade_dm_replay(pool, app).await;
         let peer_order_ids = active_peer_chat_order_ids_for_restore(pool).await;
-        spawn_post_restore_peer_chat_hydrate(
+        spawn_post_restore_hydrate(
             pool.clone(),
             client.clone(),
+            mostro_pubkey,
+            trade_dm_job,
             peer_order_ids,
+            message_notification_tx.clone(),
             order_result_tx.clone(),
         );
     }

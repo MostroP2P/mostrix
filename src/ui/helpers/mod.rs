@@ -67,7 +67,6 @@ pub use startup::{
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
     load_user_order_chats_at_startup, peer_order_chat_transcript_from_decoded,
     prepare_post_restore_trade_dm_replay, recover_admin_chat_from_files,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_peer_chat_hydrate,
-    spawn_post_restore_trade_dm_replay, sync_user_order_history_messages_from_db,
-    track_startup_chats,
+    refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
+    sync_user_order_history_messages_from_db, track_startup_chats, RestoreHydrateReport,
 };

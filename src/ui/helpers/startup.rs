@@ -26,6 +26,7 @@ use crate::util::{
         keys_from_shared_hex, order_chat_allowed_signers, parse_chat_pubkey,
     },
     hydrate_startup_active_order_dm_state, replay_active_trade_dms, seed_admin_chat_last_seen,
+    TradeDmReplaySummary,
 };
 
 use super::attachments::{
@@ -162,7 +163,7 @@ pub async fn load_admin_disputes_at_startup(pool: &SqlitePool, app: &mut AppStat
 /// is safe to call before the chat router task is spawned. History for each key is hydrated by
 /// the router on `TrackChatKey` using the passed `since` (last-seen) cursor. After
 /// [`OperationResult::SessionRestored`], call again once peer-chat transcripts are on disk
-/// ([`OperationResult::PostRestorePeerChatReplayCompleted`]) so live subscriptions cover rebuilt orders.
+/// ([`OperationResult::PostRestoreHydrateCompleted`]) so live subscriptions cover rebuilt orders.
 pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
     match app.user_role {
         UserRole::User => {
@@ -282,7 +283,7 @@ pub async fn track_startup_chats(pool: &SqlitePool, app: &AppState) {
 /// Relay history is **not** polled here — [`track_startup_chats`] seeds the shared-key chat
 /// router, which hydrates once per key on `TrackChatKey` (avoids a duplicate fetch). After
 /// [`OperationResult::SessionRestored`], peer transcripts are rebuilt from relay via
-/// [`spawn_post_restore_peer_chat_hydrate`] instead of relying on this path alone.
+/// [`spawn_post_restore_hydrate`] instead of relying on this path alone.
 pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppState) {
     if app.user_role != UserRole::User {
         return;
@@ -640,53 +641,144 @@ pub async fn prepare_post_restore_trade_dm_replay(
     })
 }
 
-/// Spawn relay fetch + hydrate without blocking the UI loop; completion is reported on
-/// `order_result_tx` (silent [`OperationResult::PostRestoreTradeDmReplayCompleted`]).
-pub fn spawn_post_restore_trade_dm_replay(
+/// Run trade-DM relay replay for one post-restore job (awaitable).
+async fn run_post_restore_trade_dm_replay(
     job: PostRestoreTradeDmReplayJob,
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    message_notification_tx: UnboundedSender<MessageNotification>,
+) -> TradeDmReplaySummary {
+    let user = match User::get(pool).await {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("Post-restore: failed to load user for trade DM replay: {e}");
+            return TradeDmReplaySummary::default();
+        }
+    };
+
+    replay_active_trade_dms(
+        client,
+        mostro_pubkey,
+        job.transport,
+        pool,
+        &user,
+        job.messages,
+        job.pending_notifications,
+        message_notification_tx,
+        job.active_order_trade_indices,
+        job.dropped_user_history_order_ids,
+        job.startup_active_orders,
+        job.order_last_seen_dm_ts,
+    )
+    .await
+}
+
+/// Aggregate outcome of post-restore relay hydrates (trade DMs + peer order chat).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RestoreHydrateReport {
+    /// `None` when no active orders were eligible for trade-DM replay.
+    pub trade_dm: Option<TradeDmReplaySummary>,
+    pub peer_chat: PeerOrderChatRestoreSummary,
+    /// Order ids whose peer transcripts were persisted during hydrate.
+    pub peer_hydrated_order_ids: Vec<String>,
+}
+
+impl RestoreHydrateReport {
+    /// Log a single summary line for operators.
+    pub fn log_summary(&self) {
+        if let Some(trade_dm) = &self.trade_dm {
+            log::info!(
+                "Post-restore trade DM replay: attempted={} hydrated={} empty={} fetch_failed={} parse_failed={} skipped_no_keys={}",
+                trade_dm.attempted,
+                trade_dm.hydrated,
+                trade_dm.empty,
+                trade_dm.fetch_failed,
+                trade_dm.parse_failed,
+                trade_dm.skipped_no_keys
+            );
+        } else {
+            log::info!("Post-restore trade DM replay: skipped (no eligible orders)");
+        }
+        log::info!(
+            "Post-restore peer chat rebuild: attempted={} hydrated={} empty={} fetch_failed={} skipped_no_key={}",
+            self.peer_chat.attempted,
+            self.peer_chat.hydrated,
+            self.peer_chat.empty,
+            self.peer_chat.fetch_failed,
+            self.peer_chat.skipped_no_key
+        );
+    }
+}
+
+/// Awaitable post-restore hydrate: trade-DM replay and peer-chat rebuild run in parallel.
+pub async fn hydrate_after_session_restore(
+    client: &Client,
+    pool: &SqlitePool,
+    mostro_pubkey: PublicKey,
+    trade_dm_job: Option<PostRestoreTradeDmReplayJob>,
+    peer_order_ids: Vec<String>,
+    message_notification_tx: UnboundedSender<MessageNotification>,
+) -> RestoreHydrateReport {
+    let trade_dm_fut = async {
+        match trade_dm_job {
+            Some(job) => {
+                Some(
+                    run_post_restore_trade_dm_replay(
+                        job,
+                        pool,
+                        client,
+                        mostro_pubkey,
+                        message_notification_tx,
+                    )
+                    .await,
+                )
+            }
+            None => None,
+        }
+    };
+    let peer_chat_fut = async {
+        if peer_order_ids.is_empty() {
+            (PeerOrderChatRestoreSummary::default(), Vec::new())
+        } else {
+            rebuild_peer_order_chats_after_restore(client, pool, &peer_order_ids).await
+        }
+    };
+
+    let (trade_dm, (peer_chat, peer_hydrated_order_ids)) =
+        tokio::join!(trade_dm_fut, peer_chat_fut);
+
+    RestoreHydrateReport {
+        trade_dm,
+        peer_chat,
+        peer_hydrated_order_ids,
+    }
+}
+
+/// Spawn post-restore hydrate without blocking the UI loop; completion is reported on
+/// `order_result_tx` as [`OperationResult::PostRestoreHydrateCompleted`] (always sent,
+/// including when there are no peer orders to rebuild).
+pub fn spawn_post_restore_hydrate(
     pool: SqlitePool,
     client: Client,
     mostro_pubkey: PublicKey,
+    trade_dm_job: Option<PostRestoreTradeDmReplayJob>,
+    peer_order_ids: Vec<String>,
     message_notification_tx: UnboundedSender<MessageNotification>,
     order_result_tx: UnboundedSender<OperationResult>,
 ) {
     tokio::spawn(async move {
-        let user = match User::get(&pool).await {
-            Ok(u) => u,
-            Err(e) => {
-                log::warn!("Post-restore: failed to load user for trade DM replay: {e}");
-                let _ = order_result_tx.send(OperationResult::PostRestoreTradeDmReplayCompleted);
-                return;
-            }
-        };
-
-        let summary = replay_active_trade_dms(
+        let report = hydrate_after_session_restore(
             &client,
-            mostro_pubkey,
-            job.transport,
             &pool,
-            &user,
-            job.messages,
-            job.pending_notifications,
+            mostro_pubkey,
+            trade_dm_job,
+            peer_order_ids,
             message_notification_tx,
-            job.active_order_trade_indices,
-            job.dropped_user_history_order_ids,
-            job.startup_active_orders,
-            job.order_last_seen_dm_ts,
         )
         .await;
-
-        log::info!(
-            "Post-restore trade DM replay: attempted={} hydrated={} empty={} fetch_failed={} parse_failed={} skipped_no_keys={}",
-            summary.attempted,
-            summary.hydrated,
-            summary.empty,
-            summary.fetch_failed,
-            summary.parse_failed,
-            summary.skipped_no_keys
-        );
-
-        let _ = order_result_tx.send(OperationResult::PostRestoreTradeDmReplayCompleted);
+        report.log_summary();
+        let _ = order_result_tx.send(OperationResult::PostRestoreHydrateCompleted { report });
     });
 }
 
@@ -877,36 +969,6 @@ pub async fn active_peer_chat_order_ids_for_restore(pool: &SqlitePool) -> Vec<St
             Vec::new()
         }
     }
-}
-
-/// Spawn peer-chat relay rebuild without blocking the UI loop; reports
-/// [`OperationResult::PostRestorePeerChatReplayCompleted`] with hydrated `order_ids`.
-pub fn spawn_post_restore_peer_chat_hydrate(
-    pool: SqlitePool,
-    client: Client,
-    order_ids: Vec<String>,
-    order_result_tx: UnboundedSender<OperationResult>,
-) {
-    if order_ids.is_empty() {
-        return;
-    }
-    tokio::spawn(async move {
-        let (summary, hydrated_ids) =
-            rebuild_peer_order_chats_after_restore(&client, &pool, &order_ids).await;
-
-        log::info!(
-            "Post-restore peer chat rebuild: attempted={} hydrated={} empty={} fetch_failed={} skipped_no_key={}",
-            summary.attempted,
-            summary.hydrated,
-            summary.empty,
-            summary.fetch_failed,
-            summary.skipped_no_key
-        );
-
-        let _ = order_result_tx.send(OperationResult::PostRestorePeerChatReplayCompleted {
-            order_ids: hydrated_ids,
-        });
-    });
 }
 
 /// Merge fetched user order chat updates into app state and persist them to file.
@@ -1348,6 +1410,65 @@ mod peer_order_chat_restore_tests {
         assert_eq!(messages[0].sender, UserChatSender::You);
         assert_eq!(messages[1].content, "from peer");
         assert_eq!(messages[1].sender, UserChatSender::Peer);
+    }
+}
+
+#[cfg(test)]
+mod restore_hydrate_orchestrator_tests {
+    use super::{
+        hydrate_after_session_restore, PeerOrderChatRestoreSummary, RestoreHydrateReport,
+    };
+    use crate::util::TradeDmReplaySummary;
+    use nostr_sdk::prelude::{Client, Keys};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn restore_hydrate_report_default_is_empty() {
+        let report = RestoreHydrateReport::default();
+        assert!(report.trade_dm.is_none());
+        assert_eq!(report.peer_chat, PeerOrderChatRestoreSummary::default());
+        assert!(report.peer_hydrated_order_ids.is_empty());
+    }
+
+    #[test]
+    fn restore_hydrate_report_log_summary_does_not_panic() {
+        RestoreHydrateReport {
+            trade_dm: Some(TradeDmReplaySummary {
+                attempted: 1,
+                hydrated: 1,
+                ..TradeDmReplaySummary::default()
+            }),
+            peer_chat: PeerOrderChatRestoreSummary {
+                attempted: 2,
+                hydrated: 1,
+                ..PeerOrderChatRestoreSummary::default()
+            },
+            peer_hydrated_order_ids: vec!["order-1".to_string()],
+        }
+        .log_summary();
+    }
+
+    #[tokio::test]
+    async fn hydrate_with_no_eligible_work_returns_empty_report() {
+        let client = Client::new();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        let (tx, _rx) = unbounded_channel();
+
+        let report = hydrate_after_session_restore(
+            &client,
+            &pool,
+            Keys::generate().public_key(),
+            None,
+            vec![],
+            tx,
+        )
+        .await;
+
+        assert!(report.trade_dm.is_none());
+        assert_eq!(report.peer_chat, PeerOrderChatRestoreSummary::default());
+        assert!(report.peer_hydrated_order_ids.is_empty());
     }
 }
 
