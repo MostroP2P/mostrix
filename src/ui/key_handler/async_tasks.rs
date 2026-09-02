@@ -236,6 +236,9 @@ fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
 }
 
 /// Fetch instance info for `mostro_pubkey`, refresh [`AppState`] transport, and return it for the DM listener.
+///
+/// Uses [`fetch_mostro_instance_info`] (client-side author / `d` / signature checks). Apply goes
+/// through [`AppState::set_mostro_info`], which ignores older `created_at` than the cache.
 async fn dm_transport_for_mostro(
     client: &Client,
     mostro_pubkey: PublicKey,

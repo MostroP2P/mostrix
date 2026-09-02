@@ -291,9 +291,11 @@ pub struct AppState {
     pub pending_admin_disputes_reload: bool,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
-    /// Cached Mostro instance info (kind 38385 event), if available.
+    /// Cached Mostro instance info (kind 38385), if available.
+    /// Populated only from client-authenticated fetches; apply via [`Self::set_mostro_info`].
     pub mostro_info: Option<MostroInstanceInfo>,
     /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
+    /// Kept in sync by [`Self::set_mostro_info`] (including stale-revision ignore).
     pub transport: Transport,
     /// Non-blocking overlay shown when relays are unreachable.
     pub offline_overlay_message: Option<String>,
@@ -401,7 +403,22 @@ impl AppState {
     }
 
     /// Replace cached instance info and keep [`Self::transport`] in sync.
+    ///
+    /// Fail-closed on stale revisions: when both the incoming and cached values carry
+    /// `last_updated`, an older `created_at` is ignored so a lagging or malicious relay
+    /// cannot roll transport / fee / PoW display back (MOSTRO-075 monotonicity).
+    /// Explicit `None` still clears (invalid pubkey, hard fetch errors).
     pub fn set_mostro_info(&mut self, info: Option<MostroInstanceInfo>) {
+        if let (Some(new), Some(old)) = (info.as_ref(), self.mostro_info.as_ref()) {
+            if let (Some(new_ts), Some(old_ts)) = (new.last_updated, old.last_updated) {
+                if new_ts < old_ts {
+                    log::warn!(
+                        "Ignoring stale Mostro instance info (created_at {new_ts} < cached {old_ts})"
+                    );
+                    return;
+                }
+            }
+        }
         self.transport = transport_from_instance(info.as_ref());
         self.mostro_info = info;
     }
@@ -477,9 +494,12 @@ impl AppState {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::ui::chat::{ChatSender, DisputeChatMessage};
+    use mostro_core::prelude::Transport;
+    use nostr_sdk::prelude::Timestamp;
 
     fn dummy_observer_message(content: &str) -> DisputeChatMessage {
         DisputeChatMessage {
@@ -520,5 +540,43 @@ mod tests {
         assert_ne!(app.observer_fetch_generation, gen);
         assert!(app.observer_messages.is_empty());
         assert!(!app.observer_loading);
+    }
+
+    /// MOSTRO-075: stale created_at must not roll transport back.
+    #[test]
+    fn set_mostro_info_rejects_older_created_at() {
+        let mut app = AppState::new(UserRole::User);
+        let newer = MostroInstanceInfo {
+            last_updated: Some(Timestamp::from(2_000)),
+            protocol_version: Some(2),
+            ..Default::default()
+        };
+        app.set_mostro_info(Some(newer));
+        assert_eq!(app.transport, Transport::Nip44Direct);
+
+        let older = MostroInstanceInfo {
+            last_updated: Some(Timestamp::from(1_000)),
+            protocol_version: Some(1),
+            ..Default::default()
+        };
+        app.set_mostro_info(Some(older));
+        assert_eq!(app.transport, Transport::Nip44Direct);
+        assert_eq!(
+            app.mostro_info.as_ref().and_then(|i| i.protocol_version),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn set_mostro_info_none_still_clears() {
+        let mut app = AppState::new(UserRole::User);
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            last_updated: Some(Timestamp::from(2_000)),
+            protocol_version: Some(2),
+            ..Default::default()
+        }));
+        app.set_mostro_info(None);
+        assert!(app.mostro_info.is_none());
+        assert_eq!(app.transport, Transport::GiftWrap);
     }
 }

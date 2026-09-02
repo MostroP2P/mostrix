@@ -33,7 +33,8 @@ pub fn format_instance_info_age(ts: &Timestamp) -> String {
 /// All fields are optional because different instances may omit some tags.
 #[derive(Clone, Debug, Default)]
 pub struct MostroInstanceInfo {
-    /// When the instance info event was created (set by fetch, not from tags).
+    /// When the instance info event was created (set at fetch parse time, not from tags).
+    /// Used by [`crate::ui::AppState::set_mostro_info`] to reject older revisions.
     pub last_updated: Option<Timestamp>,
     pub mostro_version: Option<String>,
     pub mostro_commit_hash: Option<String>,
@@ -175,10 +176,61 @@ fn parse_bond_enabled(value: &str) -> Option<bool> {
     }
 }
 
+/// Whether a relay-returned kind-38385 event is safe to treat as Mostro instance info.
+///
+/// Relays can ignore or forge responses to `.author()` filters (MOSTRO-075). Before applying
+/// `protocol_version` / fees / PoW, require:
+/// - kind 38385
+/// - `event.pubkey == mostro_pubkey` (client-side author re-check)
+/// - `d` tag identifier equals the Mostro pubkey hex (addressable coordinate)
+/// - valid event id + signature (`Event::verify`)
+pub fn instance_info_event_is_authentic(event: &Event, mostro_pubkey: PublicKey) -> bool {
+    if event.kind != Kind::Custom(MOSTRO_INSTANCE_INFO_KIND) {
+        return false;
+    }
+    if event.pubkey != mostro_pubkey {
+        return false;
+    }
+    let expected_d = mostro_pubkey.to_string();
+    match event.tags.identifier() {
+        Some(id) if id == expected_d => {}
+        _ => return false,
+    }
+    event.verify().is_ok()
+}
+
+/// Pick the newest authentic instance-info event from a relay fetch result.
+///
+/// Skips forged / wrong-author / bad-signature events. Prefer this over trusting
+/// `limit(1)` alone — a malicious relay can return a throwaway-signed newer event first.
+pub fn select_authentic_instance_info_event(
+    events: impl IntoIterator<Item = Event>,
+    mostro_pubkey: PublicKey,
+) -> Option<Event> {
+    events
+        .into_iter()
+        .filter(|e| instance_info_event_is_authentic(e, mostro_pubkey))
+        .max_by_key(|e| e.created_at)
+}
+
+/// Parse instance info from a kind-38385 event that was already selected as authentic.
+///
+/// Sets [`MostroInstanceInfo::last_updated`] from `event.created_at`. Does **not** call
+/// [`instance_info_event_is_authentic`] — use after [`select_authentic_instance_info_event`]
+/// (or equivalent checks).
+pub fn mostro_info_from_authenticated_event(event: &Event) -> Result<MostroInstanceInfo> {
+    let mut info = mostro_info_from_tags(event.tags.clone())?;
+    info.last_updated = Some(event.created_at);
+    Ok(info)
+}
+
 /// Build a `MostroInstanceInfo` from the tags of a kind 38385 event.
 ///
 /// Unknown tags are ignored. Missing tags simply leave the corresponding
 /// fields as `None` or empty collections.
+///
+/// Does **not** authenticate authorship — callers that apply transport / fees from
+/// relay data must use [`select_authentic_instance_info_event`] first.
 pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
     let mut info = MostroInstanceInfo::default();
 
@@ -270,19 +322,24 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
 
 /// Fetch the latest Mostro instance info event for the given Mostro pubkey.
 ///
-/// Filters on:
-/// - kind 38385 (Mostro instance status)
-/// - author = Mostro pubkey
-/// - `d` tag / identifier = Mostro pubkey
+/// Relay filter uses author + kind + `d` tag, but relays are not trusted: results are
+/// re-checked client-side ([`instance_info_event_is_authentic`]) before apply
+/// (MOSTRO-075 — forged newer events must not flip `protocol_version` / transport).
+///
+/// Returns `Ok(None)` when the relay returns no events, or when every returned event
+/// fails the client-side authenticity checks. Fetches up to 10 candidates and keeps
+/// the newest authentic revision by `created_at`.
 pub async fn fetch_mostro_instance_info(
     client: &Client,
     mostro_pubkey: PublicKey,
 ) -> Result<Option<MostroInstanceInfo>> {
+    // Ask for a small window so a forged "newest" event cannot wholly hide an
+    // authentic revision when the relay returns a mixed set.
     let filter = Filter::new()
         .author(mostro_pubkey)
-        .kind(nostr_sdk::prelude::Kind::Custom(MOSTRO_INSTANCE_INFO_KIND))
+        .kind(Kind::Custom(MOSTRO_INSTANCE_INFO_KIND))
         .identifier(mostro_pubkey.to_string())
-        .limit(1);
+        .limit(10);
 
     let events = client
         .fetch_events(filter)
@@ -290,18 +347,22 @@ pub async fn fetch_mostro_instance_info(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch Mostro instance info from relays: {}", e))?;
 
-    let event = match events.iter().next() {
-        Some(ev) => ev,
-        None => return Ok(None),
+    let fetched = events.len();
+    let Some(event) = select_authentic_instance_info_event(events, mostro_pubkey) else {
+        if fetched > 0 {
+            log::warn!(
+                "Rejected {fetched} kind-{MOSTRO_INSTANCE_INFO_KIND} event(s): none matched Mostro pubkey {mostro_pubkey} with a valid signature and d-tag"
+            );
+        }
+        return Ok(None);
     };
 
-    let mut info = mostro_info_from_tags(event.tags.clone())?;
-    info.last_updated = Some(event.created_at);
-    Ok(Some(info))
+    Ok(Some(mostro_info_from_authenticated_event(&event)?))
 }
 
 /// Convenience helper: load the latest settings from disk, parse the configured
-/// Mostro pubkey, and fetch instance info for that pubkey from the relays.
+/// Mostro pubkey, and fetch instance info for that pubkey from the relays
+/// (same client-side authenticity checks as [`fetch_mostro_instance_info`]).
 pub async fn fetch_mostro_instance_info_from_settings(
     client: &Client,
 ) -> Result<Option<MostroInstanceInfo>> {
@@ -317,7 +378,7 @@ pub async fn fetch_mostro_instance_info_from_settings(
 mod tests {
     use super::*;
     use mostro_core::prelude::Transport;
-    use nostr_sdk::prelude::{Tag, Tags};
+    use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, Tag, Tags, Timestamp};
 
     #[test]
     fn split_csv_trims_and_ignores_empty_values() {
@@ -577,10 +638,100 @@ mod tests {
         assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::NewOrder), 8);
     }
 
-    // Fetch tests would require a mock or test double for nostr_sdk::Client
-    // (e.g. a trait + impl for production and a mock that returns empty events
-    // or simulates timeout). Not implemented here to avoid refactoring the public API.
-    // Intended behavior:
-    // - fetch_returns_none_when_no_event_exists: client returns []; assert Ok(None)
-    // - fetch_handles_network_timeout: client returns/timeouts with error; assert Err
+    fn instance_info_event(
+        keys: &Keys,
+        protocol_version: &str,
+        d_tag: Option<String>,
+        created_at: u64,
+    ) -> Event {
+        let mut tags = vec![
+            Tag::parse(["protocol_version", protocol_version]).unwrap(),
+            Tag::parse(["fee", "0.0"]).unwrap(),
+            Tag::parse(["pow", "0"]).unwrap(),
+        ];
+        if let Some(d) = d_tag {
+            tags.push(Tag::identifier(d));
+        }
+        EventBuilder::new(Kind::Custom(MOSTRO_INSTANCE_INFO_KIND), "")
+            .tags(Tags::from_list(tags))
+            .custom_created_at(Timestamp::from(created_at))
+            .finalize(keys)
+            .expect("instance info event")
+    }
+
+    /// MOSTRO-075: a throwaway-signed newer kind-38385 must not authenticate.
+    #[test]
+    fn forged_author_instance_info_is_rejected() {
+        let mostro = Keys::generate();
+        let attacker = Keys::generate();
+        let forged =
+            instance_info_event(&attacker, "2", Some(mostro.public_key().to_string()), 2_000);
+        assert!(!instance_info_event_is_authentic(
+            &forged,
+            mostro.public_key()
+        ));
+        assert!(
+            select_authentic_instance_info_event(vec![forged], mostro.public_key()).is_none(),
+            "forged author must not win newest-event selection"
+        );
+    }
+
+    #[test]
+    fn wrong_d_tag_instance_info_is_rejected() {
+        let mostro = Keys::generate();
+        let bad_d = instance_info_event(&mostro, "2", Some("not-the-mostro-pubkey".into()), 1_000);
+        assert!(!instance_info_event_is_authentic(
+            &bad_d,
+            mostro.public_key()
+        ));
+    }
+
+    #[test]
+    fn missing_d_tag_instance_info_is_rejected() {
+        let mostro = Keys::generate();
+        let no_d = instance_info_event(&mostro, "2", None, 1_000);
+        assert!(!instance_info_event_is_authentic(
+            &no_d,
+            mostro.public_key()
+        ));
+    }
+
+    #[test]
+    fn authentic_instance_info_wins_over_forged_newer() {
+        let mostro = Keys::generate();
+        let attacker = Keys::generate();
+        let authentic =
+            instance_info_event(&mostro, "1", Some(mostro.public_key().to_string()), 1_000);
+        let forged_newer =
+            instance_info_event(&attacker, "2", Some(mostro.public_key().to_string()), 9_999);
+
+        let selected = select_authentic_instance_info_event(
+            vec![forged_newer, authentic.clone()],
+            mostro.public_key(),
+        )
+        .expect("authentic event must be selected");
+        assert_eq!(selected.id, authentic.id);
+        let info = mostro_info_from_authenticated_event(&selected).unwrap();
+        assert_eq!(info.protocol_version, Some(1));
+        assert_eq!(info.last_updated, Some(Timestamp::from(1_000)));
+        assert_eq!(transport_from_instance(Some(&info)), Transport::GiftWrap);
+    }
+
+    #[test]
+    fn newest_authentic_instance_info_is_selected() {
+        let mostro = Keys::generate();
+        let older = instance_info_event(&mostro, "1", Some(mostro.public_key().to_string()), 1_000);
+        let newer = instance_info_event(&mostro, "2", Some(mostro.public_key().to_string()), 2_000);
+        let selected =
+            select_authentic_instance_info_event(vec![older, newer.clone()], mostro.public_key())
+                .expect("newest authentic");
+        assert_eq!(selected.id, newer.id);
+        let info = mostro_info_from_authenticated_event(&selected).unwrap();
+        assert_eq!(info.protocol_version, Some(2));
+        assert_eq!(transport_from_instance(Some(&info)), Transport::Nip44Direct);
+    }
+
+    // Auth selection (MOSTRO-075) is covered above without a Client. Full
+    // `fetch_mostro_instance_info` I/O still needs a mock/test double for
+    // nostr_sdk::Client (empty set → Ok(None); timeout → Err).
 }

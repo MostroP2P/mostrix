@@ -20,8 +20,8 @@ Mostrix uses Nostr transports for two distinct purposes:
 Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
 
 - Tag **`protocol_version`**: `"1"` → GiftWrap, `"2"` → NIP-44 direct messages.
-- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs).
-- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync whenever instance info updates ([`set_mostro_info`](../src/ui/app_state.rs)).
+- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs). Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored).
 - The **Mostro Info** tab displays protocol version and resolved wire transport.
 
 **Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses `transport_from_instance` + [`wrap_message_with`](../src/util/mod.rs); v2 adds default NIP-40 expiration (30 days) when `expiration` is `None`.
