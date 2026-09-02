@@ -214,7 +214,44 @@ For **User** role, Mostrix restores peer-to-peer order chat alongside trade DMs:
 - Cached transcripts live under `~/.mostrix/orders_chat/<order_id>.txt` and are loaded into `AppState.order_chats` by `load_user_order_chats_at_startup`.
 - **Attachment rows in transcripts** are stored as **JSON** (`image_encrypted` / `file_encrypted` via `serialize_attachment_for_transcript`) so **Ctrl+S** and file counts work immediately after restart; legacy `[Image: … - Ctrl+S to save]` lines are hydrated in memory when relay returns the same attachment at the same timestamp.
 - Disk restore via `load_user_order_chats_at_startup` seeds `AppState.order_chats` and `order_chat_last_seen`. Relay history is hydrated once by the **shared-key chat subscription router** when `track_startup_chats` emits `TrackChatKey` — no separate startup poll and no timed polling.
-- `apply_user_order_chat_updates` skips relay echoes of the local trade pubkey; peer dedup is scoped to existing **Peer** rows so optimistic **You** sends are not mirrored as **Peer** and do not suppress unrelated peer text at the same timestamp. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
+- `apply_user_order_chat_updates` on the **peer** channel maps relay rows from the local trade key to **You** unless the inner event id is already known or an optimistic **You** line exists at the same timestamp (live-send echo). The **solver** channel still skips all local-trade-key rows. Peer dedup matches only existing **Peer** rows at the same `(timestamp, content)` (or same attachment / legacy placeholder) so an optimistic **You** line cannot hide a real counterparty message in the same second. See [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md) — "User order chat local cache".
+- After **session restore** (Settings → Restore Session, without restart), peer transcripts are rebuilt from relay in the background and `track_startup_chats` is re-emitted when hydrate completes — see [Session restore hydrate](#session-restore-hydrate-without-restart) below.
+
+### Session restore hydrate (without restart)
+
+When the user confirms **Restore Session** (`execute_restore_session` → `Action::RestoreSession`), Mostro returns the identity's active orders and disputes; Mostrix rebuilds SQLite and must re-hydrate in-memory UI state **without** a full app restart.
+
+**Entry**: Settings → **Restore Session** (`UiMode::ConfirmRestoreSession`) or first-launch restore path in `main.rs`. Success MUST emit [`OperationResult::SessionRestored`](../src/ui/orders.rs) (not plain `Info`) so `apply_order_result` runs the hydrate pipeline (`restore_completion_result` in `src/util/order_utils/execute_restore.rs`).
+
+**Synchronous steps** (`apply_order_result` on `SessionRestored`, User role):
+
+1. **`clear_session_chat_projection`** — wipe in-memory peer/solver chat transcripts, `order_chat_last_seen` / `user_dispute_chat_last_seen`, maker-book cache, attachment send state, and related maps. Stale cursors from the prior identity would otherwise bound relay fetches incorrectly; empty transcripts plus old echo-skip rules would drop the user's own relay rows during rebuild. Also called from **`clear_runtime_session_state`** after seed import / key reload (`src/ui/key_handler/async_tasks.rs`).
+2. **DB → UI projection** — `refresh_my_trades_maker_book_cache` + `sync_user_order_history_messages_from_db` (same paths as cold startup; `history_action_for_db_order` maps DB status → Messages-tab `Action`).
+3. **Restore success popup** — `handle_operation_result` shows the `SessionRestored` message.
+
+**Background hydrate** (non-blocking; unified orchestrator in `src/ui/helpers/startup.rs`):
+
+- **`spawn_post_restore_hydrate`** runs **`hydrate_after_session_restore`** in a `tokio::spawn` task. Trade-DM replay and peer-chat rebuild run **in parallel** (`tokio::join!`).
+- **Trade protocol DMs (Messages tab, pipe A)** — `prepare_post_restore_trade_dm_replay` seeds `active_order_trade_indices` / `startup_popup_floor_ts`, then **`replay_active_trade_dms`** (`src/util/dm_utils/mod.rs`) fetches per active order. Filter: **`trade_dm_replay_fetch_filter`** — when `last_seen_dm_ts` is missing (fresh restore / post-wipe), **no `since`** (limit-only catch-up, mirrors `DmSubscriptionMode::StartupCatchUp`); when a cursor exists, `since` + 12h lookback + GiftWrap envelope skew. Uses **`UntrackedFallback`** when the DM router has no live subscription yet. Updates `AppState.messages` in place (`notify: false`).
+- **Peer order chat (My Trades chat panel, pipe B)** — **`rebuild_peer_order_chats_after_restore`** relay-fetches shared-key history per active order (`fetch_chat_messages_for_shared_key`), dedupes by inner event id, maps **You** / **Peer** from inner signer, sorts by timestamp, persists via **`rewrite_order_chat_messages`**, then records inner ids only after a successful save.
+- **Completion** — always emits silent **`OperationResult::PostRestoreHydrateCompleted { report: RestoreHydrateReport }`** (aggregates `TradeDmReplaySummary` + `PeerOrderChatRestoreSummary` + hydrated order ids), even when there are zero peer-chat-eligible orders.
+
+**Main loop on `PostRestoreHydrateCompleted`**:
+
+1. **`apply_restored_peer_order_chats_from_disk`** — load rebuilt `orders_chat/<order_id>.txt` into `AppState.order_chats` and seed `order_chat_last_seen`.
+2. **`track_startup_chats`** — re-seed the shared-key chat router so live subscriptions cover restored orders.
+
+**Out of scope (current restore hydrate)**: admin dispute chat transcript rebuild; solver-channel post-restore relay rebuild (solver channel still uses blanket local-trade-key skip in `apply_user_order_chat_updates`).
+
+**Manual verification** (seed import + restore without restart):
+
+1. Import seed / confirm restore → success popup; My Trades and Messages tabs list restored orders.
+2. **Messages** tab shows correct flow step per active order (trade-DM replay; no duplicate invoice popups).
+3. **My Trades** peer chat shows full **You** / **Peer** history (not empty or all-Peer).
+4. Send a new peer chat line — appears as **You** and is not duplicated when the relay echo arrives.
+5. Optional: restore with zero peer-chat-eligible orders — app remains usable; `track_startup_chats` still runs (no stuck empty chat state).
+
+**Source**: `src/main.rs` (`apply_order_result`), `src/ui/helpers/startup.rs` (`clear_session_chat_projection`, `hydrate_after_session_restore`, `spawn_post_restore_hydrate`, `RestoreHydrateReport`), `src/util/dm_utils/mod.rs` (`replay_active_trade_dms`, `trade_dm_replay_fetch_filter`), `src/util/order_utils/execute_restore.rs`.
 
 ## Main Event Loop
 
