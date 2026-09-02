@@ -256,7 +256,9 @@ pub enum MostroInfoFetchResult {
     NotFound { message: String },
     /// Relay returned unauthentic candidates; cached instance info is unchanged.
     Rejected { message: String },
-    /// Hard failure (settings / network); clears cached instance info.
+    /// Relay fetch failed (timeout / unreachable); cached instance info is unchanged.
+    FetchFailed { message: String },
+    /// Hard failure (invalid settings / pubkey); clears cached instance info.
     Err(String),
 }
 

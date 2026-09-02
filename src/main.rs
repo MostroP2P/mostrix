@@ -695,6 +695,11 @@ async fn main() -> Result<(), anyhow::Error> {
                                 crate::ui::OperationResult::Info(message),
                             );
                         }
+                        MostroInfoFetchResult::FetchFailed { message } => {
+                            app.mode = crate::ui::UiMode::operation_result(
+                                crate::ui::OperationResult::Error(message),
+                            );
+                        }
                         MostroInfoFetchResult::Err(e) => {
                             app.set_mostro_info(None);
                             app.mode = crate::ui::UiMode::operation_result(

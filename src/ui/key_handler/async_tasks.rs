@@ -1170,9 +1170,9 @@ pub fn spawn_refresh_mostro_info_from_settings_task(
                     ),
                 }
             }
-            Err(e) => {
-                MostroInfoFetchResult::Err(format!("Failed to refresh Mostro instance info: {}", e))
-            }
+            Err(e) => MostroInfoFetchResult::FetchFailed {
+                message: format!("Failed to refresh Mostro instance info: {}", e),
+            },
         };
         let _ = tx.send(res);
     });
@@ -1208,7 +1208,9 @@ pub fn spawn_refresh_mostro_info_task(
                     "Failed to refresh Mostro instance info after pubkey change: {}",
                     e
                 );
-                MostroInfoFetchResult::Err(e.to_string())
+                MostroInfoFetchResult::FetchFailed {
+                    message: format!("Failed to refresh Mostro instance info: {}", e),
+                }
             }
         };
         let _ = tx.send(res);
