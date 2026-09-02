@@ -722,18 +722,16 @@ pub async fn hydrate_after_session_restore(
 ) -> RestoreHydrateReport {
     let trade_dm_fut = async {
         match trade_dm_job {
-            Some(job) => {
-                Some(
-                    run_post_restore_trade_dm_replay(
-                        job,
-                        pool,
-                        client,
-                        mostro_pubkey,
-                        message_notification_tx,
-                    )
-                    .await,
+            Some(job) => Some(
+                run_post_restore_trade_dm_replay(
+                    job,
+                    pool,
+                    client,
+                    mostro_pubkey,
+                    message_notification_tx,
                 )
-            }
+                .await,
+            ),
             None => None,
         }
     };
@@ -1415,9 +1413,7 @@ mod peer_order_chat_restore_tests {
 
 #[cfg(test)]
 mod restore_hydrate_orchestrator_tests {
-    use super::{
-        hydrate_after_session_restore, PeerOrderChatRestoreSummary, RestoreHydrateReport,
-    };
+    use super::{hydrate_after_session_restore, PeerOrderChatRestoreSummary, RestoreHydrateReport};
     use crate::util::TradeDmReplaySummary;
     use nostr_sdk::prelude::{Client, Keys};
     use tokio::sync::mpsc::unbounded_channel;

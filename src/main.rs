@@ -15,8 +15,7 @@ use crate::ui::helpers::{
     apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
     load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
     refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
-    sync_user_order_history_messages_from_db,
-    track_startup_chats,
+    sync_user_order_history_messages_from_db, track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
