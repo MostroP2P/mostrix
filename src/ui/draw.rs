@@ -591,6 +591,11 @@ No: paste BOLT11 or Lightning address manually."
     if let Some(message) = app.offline_overlay_message.as_deref() {
         offline_overlay::render_offline_overlay(f, message);
     }
+
+    // Recoverable background-task failure (per-task respawn; other workers stay up).
+    if let Some(message) = app.background_task_alarm_message() {
+        task_alarm_overlay::render_task_alarm_overlay(f, &message);
+    }
 }
 
 fn render_add_solver_popup(f: &mut ratatui::Frame, add_solver_state: &AddSolverState) {

@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval_at, Duration, Instant};
 
 use crate::settings::Settings;
-use crate::util::catch_unwind_request_fatal_restart;
+use crate::util::supervise_critical_task;
 use sqlx::SqlitePool;
 
 use super::get_disputes;
@@ -158,8 +158,11 @@ pub fn start_fetch_scheduler(
 
 /// Spawns order/dispute polling loops using the given client and shared list state.
 ///
-/// Callers must **abort** any previous handles returned for the same `orders`/`disputes` Arcs
-/// before calling again (e.g. after a soft key reload replaces the [`Client`]).
+/// Each loop is wrapped in [`crate::util::supervise_critical_task`] so a panic or
+/// unexpected exit (e.g. notification stream ended) respawns **that** scheduler only.
+/// Callers must still **abort** any previous handles returned for the same
+/// `orders`/`disputes` Arcs before calling again (e.g. after a soft key reload
+/// replaces the [`Client`]).
 pub fn spawn_fetch_scheduler_loops(
     client: Client,
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,
@@ -175,7 +178,13 @@ pub fn spawn_fetch_scheduler_loops(
     let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey);
     let reloaded_settings = settings.clone();
     let order_task = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("order book scheduler", async move {
+        supervise_critical_task("order book scheduler", || {
+            let client_for_orders = client_for_orders.clone();
+            let pool_for_orders = pool_for_orders.clone();
+            let current_mostro_pubkey_for_orders = Arc::clone(&current_mostro_pubkey_for_orders);
+            let orders_clone = Arc::clone(&orders_clone);
+            let reloaded_settings = reloaded_settings.clone();
+            async move {
             let mut notifications = client_for_orders.notifications();
             // Real-time order subscription + periodic reconciliation poll.
             let mostro_pubkey_for_order_subscribe = match current_mostro_pubkey_for_orders.lock() {
@@ -328,8 +337,8 @@ pub fn spawn_fetch_scheduler_loops(
                     }
                 }
             }
-        })
-        .await;
+            }
+        }).await;
     });
 
     // Spawn task to periodically fetch disputes
@@ -338,7 +347,12 @@ pub fn spawn_fetch_scheduler_loops(
     let pool_for_disputes = pool.clone();
     let current_mostro_pubkey_for_disputes = Arc::clone(&current_mostro_pubkey);
     let dispute_task = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("disputes scheduler", async move {
+        supervise_critical_task("disputes scheduler", || {
+            let client_for_disputes = client_for_disputes.clone();
+            let pool_for_disputes = pool_for_disputes.clone();
+            let current_mostro_pubkey_for_disputes = Arc::clone(&current_mostro_pubkey_for_disputes);
+            let disputes_clone = Arc::clone(&disputes_clone);
+            async move {
             let mut notifications = client_for_disputes.notifications();
             let mostro_pubkey_for_dispute_subscribe =
                 match current_mostro_pubkey_for_disputes.lock() {
@@ -489,8 +503,8 @@ pub fn spawn_fetch_scheduler_loops(
                     }
                 }
             }
-        })
-        .await;
+            }
+        }).await;
     });
 
     (order_task, dispute_task)

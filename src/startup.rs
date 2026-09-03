@@ -27,13 +27,13 @@ use crate::ui::startup_splash::{
 };
 use crate::ui::{AppState, OperationResult, UiMode, UserRole};
 use crate::util::{
-    any_relay_reachable, catch_unwind_request_fatal_restart, connect_client_safely,
-    fetch_mostro_instance_info, hydrate_startup_active_order_dm_state, listen_for_chat_messages,
-    listen_for_order_messages,
+    any_relay_reachable, connect_client_safely, fetch_mostro_instance_info,
+    hydrate_startup_active_order_dm_state,
     order_utils::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         start_fetch_scheduler, FetchSchedulerResult,
     },
+    spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
     sync_trade_index_from_mostro_and_persist, StartupDmHydration,
 };
 
@@ -245,25 +245,19 @@ pub async fn run_post_terminal_startup(
     let dm_subscription_rx = input.dm_subscription_rx;
     let mostro_pubkey_for_listener = mostro_pubkey;
 
-    let message_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("trade DM listener", async move {
-            listen_for_order_messages(
-                client_for_messages,
-                mostro_pubkey_for_listener,
-                transport_for_listener,
-                pool_for_messages,
-                active_order_trade_indices_clone,
-                order_last_seen_dm_ts_clone,
-                messages_clone,
-                message_notification_tx_clone,
-                pending_notifications_clone,
-                dropped_user_history_clone,
-                dm_subscription_rx,
-            )
-            .await;
-        })
-        .await;
-    });
+    let message_listener_handle = spawn_supervised_trade_dm_listener(
+        client_for_messages,
+        mostro_pubkey_for_listener,
+        transport_for_listener,
+        pool_for_messages,
+        active_order_trade_indices_clone,
+        order_last_seen_dm_ts_clone,
+        messages_clone,
+        message_notification_tx_clone,
+        pending_notifications_clone,
+        dropped_user_history_clone,
+        dm_subscription_rx,
+    );
 
     // Single shared-key chat subscription router (user order chat + admin dispute chat).
     // Track/untrack commands arrive via the global sender registered in `main.rs`.
@@ -271,18 +265,12 @@ pub async fn run_post_terminal_startup(
     let admin_chat_updates_tx_for_chat = input.admin_chat_updates_tx.clone();
     let user_order_chat_updates_tx_for_chat = input.user_order_chat_updates_tx.clone();
     let chat_router_cmd_rx = input.chat_router_cmd_rx;
-    let chat_listener_handle = tokio::spawn(async move {
-        catch_unwind_request_fatal_restart("chat subscription router", async move {
-            listen_for_chat_messages(
-                client_for_chat,
-                admin_chat_updates_tx_for_chat,
-                user_order_chat_updates_tx_for_chat,
-                chat_router_cmd_rx,
-            )
-            .await;
-        })
-        .await;
-    });
+    let chat_listener_handle = spawn_supervised_chat_listener(
+        client_for_chat,
+        admin_chat_updates_tx_for_chat,
+        user_order_chat_updates_tx_for_chat,
+        chat_router_cmd_rx,
+    );
 
     Ok(StartupBootstrap {
         client,

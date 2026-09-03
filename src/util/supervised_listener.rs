@@ -1,0 +1,438 @@
+//! Supervised spawns for long-lived listeners whose command channels must be recreated on respawn.
+//!
+//! Unlike [`crate::util::supervise_critical_task`], these loops own an `mpsc` command
+//! receiver. On panic or unexpected exit the supervisor **immediately** recreates the
+//! channel and re-publishes the global sender (before backoff) so `TrackOrder` /
+//! `TrackChatKey` buffer instead of hitting a closed channel. Hot-path DM
+//! dispatch must use [`crate::util::send_track_order_cmd`] (locks the global
+//! sender) rather than a main-loop `UnboundedSender` clone, which is only
+//! refreshed asynchronously via [`crate::util::FatalNotify::DmRouterSender`].
+//! Main is notified via
+//! [`crate::util::FatalNotify::DmRouterSender`] / [`crate::util::FatalNotify::ChatRouterSender`].
+//! Chat recovery also replays [`crate::ui::helpers::track_startup_chats`] from the main loop.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use futures::FutureExt;
+use mostro_core::prelude::Transport;
+use nostr_sdk::prelude::{Client, PublicKey};
+use sqlx::SqlitePool;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
+use tokio::time::Duration;
+use uuid::Uuid;
+
+use crate::ui::{AdminChatUpdate, MessageNotification, OrderChatUpdate, OrderMessage};
+use crate::util::chat_listener::{listen_for_chat_messages, set_chat_router_cmd_tx, ChatRouterCmd};
+use crate::util::dm_utils::{
+    hydrate_startup_active_order_dm_state, listen_for_order_messages, set_dm_router_cmd_tx,
+    OrderDmSubscriptionCmd,
+};
+use crate::util::fatal::{fatal_requested, next_backoff_secs, send_fatal_notify, FatalNotify};
+
+const TRADE_DM_LISTENER_LABEL: &str = "trade DM listener";
+const CHAT_ROUTER_LABEL: &str = "chat subscription router";
+const INITIAL_BACKOFF_SECS: u64 = 1;
+
+fn publish_fresh_cmd_channel<T>(publish: impl FnOnce(UnboundedSender<T>)) -> UnboundedReceiver<T> {
+    let (new_tx, new_rx) = mpsc::unbounded_channel();
+    publish(new_tx);
+    new_rx
+}
+
+async fn supervise_replaceable_rx_loop<T, R, Fut, P>(
+    label: &'static str,
+    mut rx: UnboundedReceiver<T>,
+    mut publish: P,
+    mut run: R,
+    initial_backoff_secs: u64,
+    stop_on_fatal: bool,
+) where
+    T: Send + 'static,
+    R: FnMut(UnboundedReceiver<T>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send,
+    P: FnMut(UnboundedSender<T>),
+{
+    let mut backoff_secs = initial_backoff_secs;
+    loop {
+        if stop_on_fatal && fatal_requested() {
+            break;
+        }
+        let started = Instant::now();
+        send_fatal_notify(FatalNotify::TaskResumed(label.to_string()));
+        let result = std::panic::AssertUnwindSafe(run(rx)).catch_unwind().await;
+        if stop_on_fatal && fatal_requested() {
+            break;
+        }
+        match result {
+            Ok(()) => {
+                log::warn!(
+                    "critical task {:?} exited unexpectedly; respawning after {}s backoff",
+                    label,
+                    backoff_secs
+                );
+            }
+            Err(_) => {
+                log::error!(
+                    "[panic] critical task {:?} unwound; respawning after {}s backoff",
+                    label,
+                    backoff_secs
+                );
+            }
+        }
+        // Rotate the command channel *before* backoff so helpers keep a live sender
+        // and commands issued while the worker is down are queued for the next run.
+        rx = publish_fresh_cmd_channel(&mut publish);
+        send_fatal_notify(FatalNotify::TaskAlarm {
+            task: label.to_string(),
+            message: format!(
+                "Background task \"{label}\" stopped unexpectedly and is restarting (retry in {backoff_secs}s).\n\
+Other protocol channels remain active."
+            ),
+        });
+        let healthy_run = started.elapsed();
+        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        backoff_secs = next_backoff_secs(backoff_secs, healthy_run);
+    }
+}
+
+/// Merge durable last-seen DM cursors, keeping the **newest** timestamp per order.
+///
+/// Respawn seeds start from the original spawn-time map; SQLite may have advanced via
+/// [`Order::update_last_seen_dm_ts`]. Using `or_insert` would retain the stale seed and
+/// regress `StartupSince`, replaying already-processed DMs.
+fn merge_last_seen_dm_cursors(
+    into: &mut HashMap<Uuid, i64>,
+    from: impl IntoIterator<Item = (Uuid, i64)>,
+) {
+    for (order_id, ts) in from {
+        into.entry(order_id)
+            .and_modify(|existing| *existing = (*existing).max(ts))
+            .or_insert(ts);
+    }
+}
+
+async fn merge_durable_dm_tracks(
+    pool: &SqlitePool,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
+    order_last_seen_dm_ts: &mut HashMap<Uuid, i64>,
+) {
+    let Ok(hydration) = hydrate_startup_active_order_dm_state(pool).await else {
+        return;
+    };
+    if let Ok(mut indices) = active_order_trade_indices.lock() {
+        for (order_id, trade_index) in hydration.active_order_trade_indices {
+            indices.entry(order_id).or_insert(trade_index);
+        }
+    }
+    merge_last_seen_dm_cursors(order_last_seen_dm_ts, hydration.order_last_seen_dm_ts);
+}
+
+/// Spawn the trade DM listener with per-task panic/exit recovery and command-channel refresh.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_supervised_trade_dm_listener(
+    client: Client,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: SqlitePool,
+    active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>,
+    order_last_seen_dm_ts: HashMap<Uuid, i64>,
+    messages: Arc<Mutex<Vec<OrderMessage>>>,
+    message_notification_tx: UnboundedSender<MessageNotification>,
+    pending_notifications: Arc<Mutex<usize>>,
+    dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
+    initial_dm_rx: UnboundedReceiver<OrderDmSubscriptionCmd>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let last_seen_seed = order_last_seen_dm_ts;
+        supervise_replaceable_rx_loop(
+            TRADE_DM_LISTENER_LABEL,
+            initial_dm_rx,
+            |tx| {
+                if set_dm_router_cmd_tx(tx.clone()).is_ok() {
+                    send_fatal_notify(FatalNotify::DmRouterSender(tx));
+                } else {
+                    log::error!("[dm_listener] failed to register router sender after respawn");
+                }
+            },
+            {
+                move |rx| {
+                    let client = client.clone();
+                    let pool = pool.clone();
+                    let active_order_trade_indices = Arc::clone(&active_order_trade_indices);
+                    let messages = Arc::clone(&messages);
+                    let message_notification_tx = message_notification_tx.clone();
+                    let pending_notifications = Arc::clone(&pending_notifications);
+                    let dropped_user_history_order_ids =
+                        Arc::clone(&dropped_user_history_order_ids);
+                    let mut last_seen = last_seen_seed.clone();
+                    async move {
+                        merge_durable_dm_tracks(&pool, &active_order_trade_indices, &mut last_seen)
+                            .await;
+                        listen_for_order_messages(
+                            client,
+                            mostro_pubkey,
+                            transport,
+                            pool,
+                            active_order_trade_indices,
+                            last_seen,
+                            messages,
+                            message_notification_tx,
+                            pending_notifications,
+                            dropped_user_history_order_ids,
+                            rx,
+                        )
+                        .await;
+                    }
+                }
+            },
+            INITIAL_BACKOFF_SECS,
+            true,
+        )
+        .await;
+    })
+}
+
+/// Spawn the shared-key chat router with per-task panic/exit recovery and command-channel refresh.
+pub fn spawn_supervised_chat_listener(
+    client: Client,
+    admin_chat_updates_tx: tokio::sync::mpsc::Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_order_chat_updates_tx: tokio::sync::mpsc::Sender<
+        Result<Vec<OrderChatUpdate>, anyhow::Error>,
+    >,
+    initial_chat_rx: UnboundedReceiver<ChatRouterCmd>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        supervise_replaceable_rx_loop(
+            CHAT_ROUTER_LABEL,
+            initial_chat_rx,
+            |tx| {
+                if set_chat_router_cmd_tx(tx.clone()).is_ok() {
+                    send_fatal_notify(FatalNotify::ChatRouterSender(tx));
+                } else {
+                    log::error!("[chat_listener] failed to register router sender after respawn");
+                }
+            },
+            |rx| {
+                let client = client.clone();
+                let admin_chat_updates_tx = admin_chat_updates_tx.clone();
+                let user_order_chat_updates_tx = user_order_chat_updates_tx.clone();
+                async move {
+                    listen_for_chat_messages(
+                        client,
+                        admin_chat_updates_tx,
+                        user_order_chat_updates_tx,
+                        rx,
+                    )
+                    .await;
+                }
+            },
+            INITIAL_BACKOFF_SECS,
+            true,
+        )
+        .await;
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex as AsyncMutex;
+
+    #[test]
+    fn merge_last_seen_dm_cursors_keeps_maximum_timestamp() {
+        let order_a = Uuid::from_u128(1);
+        let order_b = Uuid::from_u128(2);
+        let order_c = Uuid::from_u128(3);
+
+        // Spawn-time seed (stale after the first listener run advanced DB cursors).
+        let mut seed = HashMap::from([(order_a, 100_i64), (order_b, 200)]);
+        // Durable map after processing DMs (and a brand-new order).
+        let durable = HashMap::from([(order_a, 150_i64), (order_b, 50), (order_c, 300)]);
+
+        merge_last_seen_dm_cursors(&mut seed, durable);
+
+        assert_eq!(
+            seed.get(&order_a),
+            Some(&150),
+            "newer durable cursor must win so StartupSince does not regress"
+        );
+        assert_eq!(
+            seed.get(&order_b),
+            Some(&200),
+            "seed wins when it is already newer than durable"
+        );
+        assert_eq!(
+            seed.get(&order_c),
+            Some(&300),
+            "orders only in durable map are inserted"
+        );
+    }
+
+    #[test]
+    fn merge_last_seen_dm_cursors_or_insert_would_replay_processed_dms() {
+        // Documents the bug: spawn seed 100 + durable 500 with or_insert keeps 100.
+        let order = Uuid::from_u128(42);
+        let mut seed = HashMap::from([(order, 100_i64)]);
+        merge_last_seen_dm_cursors(&mut seed, [(order, 500_i64)]);
+        assert_eq!(
+            seed[&order], 500,
+            "after respawn, StartupSince must use the newest processed DM timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn commands_sent_while_listener_down_are_delivered_after_respawn() {
+        crate::util::fatal::reset_fatal_requested_for_tests();
+
+        let received = Arc::new(AsyncMutex::new(None));
+        let (initial_tx, initial_rx) = mpsc::unbounded_channel::<u8>();
+        let live_tx = Arc::new(Mutex::new(initial_tx));
+        let rotated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+
+        let live_tx_for_publish = Arc::clone(&live_tx);
+        let rotated_for_publish = Arc::clone(&rotated);
+        let received_for_run = Arc::clone(&received);
+        let runs_for_run = Arc::clone(&runs);
+
+        let handle = tokio::spawn(async move {
+            supervise_replaceable_rx_loop(
+                "test listener",
+                initial_rx,
+                |tx| {
+                    *live_tx_for_publish.lock().expect("live tx") = tx;
+                    rotated_for_publish.store(true, Ordering::SeqCst);
+                },
+                move |mut rx| {
+                    let received = Arc::clone(&received_for_run);
+                    let run_idx = runs_for_run.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if run_idx == 0 {
+                            panic!("simulated intake panic");
+                        }
+                        if let Some(cmd) = rx.recv().await {
+                            *received.lock().await = Some(cmd);
+                        }
+                        std::future::pending::<()>().await;
+                    }
+                },
+                0,
+                false,
+            )
+            .await;
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !rotated.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "listener should panic and rotate the command channel"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        live_tx
+            .lock()
+            .expect("live tx")
+            .send(7)
+            .expect("send during backoff after immediate channel rotate");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *received.lock().await,
+            Some(7),
+            "TrackOrder-equivalent command issued while the listener was down must be received after respawn"
+        );
+        handle.abort();
+    }
+
+    /// Main can hold a local `UnboundedSender` clone that is only refreshed after
+    /// an async `FatalNotify`. After channel rotation that clone is closed; dispatch
+    /// must go through shared indirection (the live sender behind a mutex), matching
+    /// [`crate::util::send_track_order_cmd`].
+    #[tokio::test]
+    async fn race_stale_main_clone_vs_shared_dispatch_after_rotation() {
+        crate::util::fatal::reset_fatal_requested_for_tests();
+
+        let received = Arc::new(AsyncMutex::new(Vec::new()));
+        let (initial_tx, initial_rx) = mpsc::unbounded_channel::<u8>();
+        // Shared live sender — what global DM_ROUTER_CMD_TX / main refresh target.
+        let live_tx = Arc::new(Mutex::new(initial_tx.clone()));
+        // Stale main-loop clone taken before rotation (never refreshed).
+        let stale_main_clone = initial_tx;
+        let rotated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+
+        let live_tx_for_publish = Arc::clone(&live_tx);
+        let rotated_for_publish = Arc::clone(&rotated);
+        let received_for_run = Arc::clone(&received);
+        let runs_for_run = Arc::clone(&runs);
+
+        let handle = tokio::spawn(async move {
+            supervise_replaceable_rx_loop(
+                "test listener",
+                initial_rx,
+                |tx| {
+                    *live_tx_for_publish.lock().expect("live tx") = tx;
+                    rotated_for_publish.store(true, Ordering::SeqCst);
+                },
+                move |mut rx| {
+                    let received = Arc::clone(&received_for_run);
+                    let run_idx = runs_for_run.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if run_idx == 0 {
+                            panic!("simulated intake panic");
+                        }
+                        while let Some(cmd) = rx.recv().await {
+                            received.lock().await.push(cmd);
+                            if !received.lock().await.is_empty() {
+                                break;
+                            }
+                        }
+                        std::future::pending::<()>().await;
+                    }
+                },
+                0,
+                false,
+            )
+            .await;
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !rotated.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "listener should panic and rotate the command channel"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Race: "main" still holds the pre-rotation clone…
+        assert!(
+            stale_main_clone.send(1).is_err(),
+            "stale main-loop clone must fail after channel rotation"
+        );
+        // …while shared dispatch (current sender behind the mutex) succeeds.
+        live_tx
+            .lock()
+            .expect("live tx")
+            .send(2)
+            .expect("shared dispatch after rotation");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if received.lock().await.as_slice() == [2] {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shared-dispatch command must be delivered after respawn; got {:?}",
+                *received.lock().await
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        handle.abort();
+    }
+}

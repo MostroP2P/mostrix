@@ -13,6 +13,7 @@ pub mod network;
 pub mod order_utils;
 pub mod send_attachment;
 pub mod session_wipe;
+pub mod supervised_listener;
 pub mod sync_trade_index;
 pub mod types;
 
@@ -32,13 +33,13 @@ pub use db_utils::save_order;
 pub use dm_utils::{
     handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
     listen_for_order_messages, parse_dm_events, replay_active_trade_dms, seed_admin_chat_last_seen,
-    send_dm, set_dm_router_cmd_tx, set_order_result_tx, try_notify_my_trades_maker_book_changed,
-    unsubscribe_dm_listener_subscriptions, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
-    TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT,
+    send_dm, send_track_order_cmd, set_dm_router_cmd_tx, set_order_result_tx,
+    try_notify_my_trades_maker_book_changed, unsubscribe_dm_listener_subscriptions, wait_for_dm,
+    OrderDmSubscriptionCmd, StartupDmHydration, TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT,
 };
 pub use fatal::{
-    catch_unwind_request_fatal_restart, fatal_requested, install_background_panic_hook,
-    request_fatal_restart, set_fatal_error_tx,
+    fatal_requested, install_background_panic_hook, next_backoff_secs, request_fatal_restart,
+    set_fatal_error_tx, supervise_critical_task, FatalNotify,
 };
 pub use file_validation::{
     attachment_extension_allowed, validate_attachment_file, AttachmentFileClass,
@@ -66,6 +67,7 @@ pub use send_attachment::{
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
 };
 pub use session_wipe::{clear_local_session_state, import_seed_and_wipe_session};
+pub use supervised_listener::{spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener};
 pub use sync_trade_index::{
     effective_last_trade_index, fetch_last_trade_index_from_mostro,
     sync_trade_index_from_mostro_and_persist, LastTradeIndexSync,

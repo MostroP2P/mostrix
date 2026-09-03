@@ -37,6 +37,7 @@ pub mod startup_splash;
 pub mod state;
 pub mod status;
 pub mod tabs;
+pub mod task_alarm_overlay;
 pub mod trade_index_sync_popup;
 pub mod user_state;
 pub mod waiting;

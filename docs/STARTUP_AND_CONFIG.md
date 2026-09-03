@@ -171,7 +171,7 @@ Several background tasks are spawned to keep the UI and data in sync:
    - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
      and reload runtime background tasks.
 5. **Shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`):
-   - A **single long-lived task** (spawned in `src/startup.rs`, respawned on reconnect/key reload) maintains batched live subscriptions over **all** tracked chats — kind 14 `authors = [pub(K_sign)]`, plus GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true — the same model as Mostro Mobile's `SubscriptionManager`. No timed polling.
+   - A **single long-lived task** (`spawn_supervised_chat_listener` in `src/startup.rs`, also respawned on reconnect/key reload **and** on panic/unexpected exit with backoff) maintains batched live subscriptions over **all** tracked chats — kind 14 `authors = [pub(K_sign)]`, plus GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true — the same model as Mostro Mobile's `SubscriptionManager`. No timed polling.
    - **Track/untrack** via the global command channel (`ChatRouterCmd`, published by `set_chat_router_cmd_tx`). Helpers: `track_order_chat` / `untrack_order_chat` / `track_dispute_chat` / `untrack_dispute_chat`.
    - On `TrackChatKey`, the router hydrates history once via dual-read fetch (`fetch_chat_messages_for_shared_key`: kind 14 by `pub(K_sign)`, plus GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true; filtered by the last-seen cursor; unwrapped with the track's inner-signer allow-list). Buffered track/untrack commands are drained and applied before a **single** batched resubscribe (idempotent re-tracks are no-ops). Subscribe failures retry with short backoff. Empty `allowed_signers` lists are not tracked.
    - Live traffic is kind 14, routed by the derived `pub(K_sign)` outer author. While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true (mostrix#102 dual-read window), legacy `kind: 1059` GiftWraps are also routed by the event’s `#p` tag (ECDH shared pubkey). Both are decrypted with `unwrap_giftwrap_with_shared_key` against the track’s inner-signer allow-list and emitted on the existing `admin_chat_updates` / `user_order_chat_updates` channels. Outbound chat is always kind 14.
@@ -252,13 +252,13 @@ When the user confirms **Restore Session** (`execute_restore_session` → `Actio
 
 The TUI runs in a `tokio::select!` loop that handles (among others):
 
-1. **Fatal errors**: `fatal_error_rx` — aborts background work and shows an error popup.
+1. **Fatal / task notifications**: `fatal_error_rx` (`FatalNotify`) — `TaskAlarm` / `TaskResumed` show or clear a non-blocking task-alarm overlay while **only the failed worker** respawns with backoff; `DmRouterSender` / `ChatRouterSender` are published **as soon as** a listener dies (before backoff) so `TrackOrder` / `TrackChatKey` buffer on the new channel; `ChatRouterSender` also replays `track_startup_chats`. `RestartRequired` (poisoned locks, etc.) aborts all background work and shows a sticky restart prompt.
 2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
 3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
 4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.
 5. **Key rotation / seed words / message notifications / admin & user chat fetches / Mostro instance info / user input / periodic ticks**: see `src/main.rs` (`create_app_channels` in `src/ui/key_handler/async_tasks.rs` lists all paired senders and receivers, including **`save_attachment_tx`/`rx`** for Ctrl+S downloads and **`send_order_attachment_tx`/`rx`** for outbound My Trades uploads via `SendOrderAttachmentJob`). User order chat results arrive on `user_order_chat_updates_rx` and are applied via `apply_user_order_chat_updates`.
 
-**Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`).
+**Source**: `src/main.rs` (outer `loop` + `tokio::select!` + `terminal.draw`), `src/util/fatal.rs` (`FatalNotify`, `supervise_critical_task`), `src/util/supervised_listener.rs`.
 
 ```text
 // Simplified shape (not exhaustive — see src/main.rs for full select!)

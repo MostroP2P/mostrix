@@ -16,10 +16,13 @@
 //! emitted on the existing `admin_chat_updates` / `user_order_chat_updates`
 //! channels.
 //!
-//! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): the task is spawned once at
-//! startup and respawned on client reload/reconnect, exactly like the trade DM
-//! listener. Chat keys are tracked/untracked via the global command channel
-//! published by [`set_chat_router_cmd_tx`].
+//! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): spawned via
+//! [`crate::util::spawn_supervised_chat_listener`] at startup (and on client
+//! reload/reconnect). The supervisor also respawns this task on panic or unexpected
+//! exit without aborting other workers: it publishes a fresh command sender immediately
+//! (commands buffer during backoff) and the main loop replays [`crate::ui::helpers::track_startup_chats`].
+//! Chat keys are tracked/untracked via the
+//! global command channel published by [`set_chat_router_cmd_tx`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -617,9 +620,10 @@ async fn hydrate_history(
 
 /// Single background router for all shared-key chats (user order + admin dispute).
 ///
-/// Spawned once at startup and respawned on client reload/reconnect (mirrors
-/// `listen_for_order_messages`). Consumes [`ChatRouterCmd`] for track/untrack and
-/// routes live GiftWrap (`#p`) and kind-14 (`authors = pub(K_sign)`) events.
+/// Spawned via [`crate::util::spawn_supervised_chat_listener`] at startup and on
+/// client reload/reconnect (mirrors the trade DM listener). The supervisor also
+/// respawns this task on panic or unexpected exit. Consumes [`ChatRouterCmd`] for
+/// track/untrack and routes live GiftWrap (`#p`) and kind-14 (`authors = pub(K_sign)`) events.
 /// Live unwrap and hydration require the per-key inner-signer allow-list from
 /// [`ChatRouterCmd::TrackChatKey`].
 ///

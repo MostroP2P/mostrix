@@ -13,7 +13,7 @@ use crate::ui::helpers::user_dispute_chat_since_from_file;
 use crate::util::chat_listener::track_user_dispute_chat;
 use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::dm_utils::{
-    parse_dm_events, send_dm, wait_for_dm, OrderDmSubscriptionCmd, FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::sync_trade_index::{
@@ -119,7 +119,10 @@ pub async fn execute_restore_session(
     client: &Client,
     mostro_pubkey: PublicKey,
     mostro_instance: Option<&MostroInstanceInfo>,
-    dm_subscription_tx: UnboundedSender<OrderDmSubscriptionCmd>,
+    // Retained for call-site compatibility; TrackOrder always uses the current
+    // global DM router sender ([`send_track_order_cmd`]) so a supervised respawn
+    // cannot leave this clone pointing at a closed channel.
+    _dm_subscription_tx: UnboundedSender<crate::util::OrderDmSubscriptionCmd>,
 ) -> Result<RestoreSummary> {
     let user = User::get(pool).await?;
     let identity_keys = User::get_identity_keys(pool).await?;
@@ -286,10 +289,9 @@ pub async fn execute_restore_session(
             .map(is_terminal_trade_status)
             .unwrap_or(false);
         if !terminal {
-            let _ = dm_subscription_tx.send(OrderDmSubscriptionCmd::TrackOrder {
-                order_id: info.order_id,
-                trade_index: info.trade_index,
-            });
+            // Always use the current global DM router sender (not a possibly-stale
+            // main-loop clone refreshed only after FatalNotify).
+            send_track_order_cmd(info.order_id, info.trade_index);
         }
     }
 
