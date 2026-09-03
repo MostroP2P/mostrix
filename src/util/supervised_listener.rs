@@ -98,6 +98,22 @@ Other protocol channels remain active."
     }
 }
 
+/// Merge durable last-seen DM cursors, keeping the **newest** timestamp per order.
+///
+/// Respawn seeds start from the original spawn-time map; SQLite may have advanced via
+/// [`Order::update_last_seen_dm_ts`]. Using `or_insert` would retain the stale seed and
+/// regress `StartupSince`, replaying already-processed DMs.
+fn merge_last_seen_dm_cursors(
+    into: &mut HashMap<Uuid, i64>,
+    from: impl IntoIterator<Item = (Uuid, i64)>,
+) {
+    for (order_id, ts) in from {
+        into.entry(order_id)
+            .and_modify(|existing| *existing = (*existing).max(ts))
+            .or_insert(ts);
+    }
+}
+
 async fn merge_durable_dm_tracks(
     pool: &SqlitePool,
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
@@ -111,9 +127,7 @@ async fn merge_durable_dm_tracks(
             indices.entry(order_id).or_insert(trade_index);
         }
     }
-    for (order_id, ts) in hydration.order_last_seen_dm_ts {
-        order_last_seen_dm_ts.entry(order_id).or_insert(ts);
-    }
+    merge_last_seen_dm_cursors(order_last_seen_dm_ts, hydration.order_last_seen_dm_ts);
 }
 
 /// Spawn the trade DM listener with per-task panic/exit recovery and command-channel refresh.
@@ -227,6 +241,48 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Mutex as AsyncMutex;
+
+    #[test]
+    fn merge_last_seen_dm_cursors_keeps_maximum_timestamp() {
+        let order_a = Uuid::from_u128(1);
+        let order_b = Uuid::from_u128(2);
+        let order_c = Uuid::from_u128(3);
+
+        // Spawn-time seed (stale after the first listener run advanced DB cursors).
+        let mut seed = HashMap::from([(order_a, 100_i64), (order_b, 200)]);
+        // Durable map after processing DMs (and a brand-new order).
+        let durable = HashMap::from([(order_a, 150_i64), (order_b, 50), (order_c, 300)]);
+
+        merge_last_seen_dm_cursors(&mut seed, durable);
+
+        assert_eq!(
+            seed.get(&order_a),
+            Some(&150),
+            "newer durable cursor must win so StartupSince does not regress"
+        );
+        assert_eq!(
+            seed.get(&order_b),
+            Some(&200),
+            "seed wins when it is already newer than durable"
+        );
+        assert_eq!(
+            seed.get(&order_c),
+            Some(&300),
+            "orders only in durable map are inserted"
+        );
+    }
+
+    #[test]
+    fn merge_last_seen_dm_cursors_or_insert_would_replay_processed_dms() {
+        // Documents the bug: spawn seed 100 + durable 500 with or_insert keeps 100.
+        let order = Uuid::from_u128(42);
+        let mut seed = HashMap::from([(order, 100_i64)]);
+        merge_last_seen_dm_cursors(&mut seed, [(order, 500_i64)]);
+        assert_eq!(
+            seed[&order], 500,
+            "after respawn, StartupSince must use the newest processed DM timestamp"
+        );
+    }
 
     #[tokio::test]
     async fn commands_sent_while_listener_down_are_delivered_after_respawn() {
