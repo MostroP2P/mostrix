@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -299,8 +299,9 @@ pub struct AppState {
     pub transport: Transport,
     /// Non-blocking overlay shown when relays are unreachable.
     pub offline_overlay_message: Option<String>,
-    /// Non-blocking overlay when a background task panicked/exited and is respawning.
-    pub background_task_alarm: Option<String>,
+    /// Non-blocking overlay when background task(s) panicked/exited and are respawning.
+    /// Keyed by stable supervisor label so one task resuming does not clear another’s alarm.
+    pub background_task_alarms: BTreeMap<String, String>,
     /// True only when BackupNewKeys was opened after runtime key rotation.
     /// In that case, app must restart to reload in-memory keys safely.
     pub backup_requires_restart: bool,
@@ -393,7 +394,7 @@ impl AppState {
             mostro_info: None,
             transport: Transport::default(),
             offline_overlay_message: None,
-            background_task_alarm: None,
+            background_task_alarms: BTreeMap::new(),
             backup_requires_restart: false,
             pending_key_reload: false,
             pending_import_restore: false,
@@ -435,6 +436,21 @@ impl AppState {
                 self.mode,
                 UiMode::Normal | UiMode::AdminMode(AdminMode::Normal)
             )
+    }
+
+    /// Combined recoverable-task alarm text for the non-blocking overlay, if any.
+    pub fn background_task_alarm_message(&self) -> Option<String> {
+        match self.background_task_alarms.len() {
+            0 => None,
+            1 => self.background_task_alarms.values().next().cloned(),
+            n => {
+                let mut lines = vec![format!("{n} background tasks restarting:")];
+                for (task, message) in &self.background_task_alarms {
+                    lines.push(format!("• {task}: {message}"));
+                }
+                Some(lines.join("\n"))
+            }
+        }
     }
 
     fn bump_observer_fetch_generation(&mut self) -> u64 {
@@ -487,6 +503,7 @@ impl AppState {
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
         self.offline_overlay_message = None;
+        self.background_task_alarms.clear();
         // Clear observer state when switching roles so sensitive data does not linger
         self.clear_observer_secrets();
         // Note: we intentionally preserve admin_dispute_chats, admin_chat_last_seen,
@@ -512,6 +529,26 @@ mod tests {
             target_party: None,
             attachment: None,
         }
+    }
+
+    #[test]
+    fn background_task_alarm_message_is_keyed_per_task() {
+        let mut app = AppState::new(UserRole::User);
+        assert!(app.background_task_alarm_message().is_none());
+
+        app.background_task_alarms
+            .insert("order book scheduler".into(), "orders down".into());
+        app.background_task_alarms
+            .insert("trade DM listener".into(), "dm down".into());
+        let combined = app.background_task_alarm_message().expect("alarms");
+        assert!(combined.contains("2 background tasks restarting"));
+        assert!(combined.contains("order book scheduler"));
+        assert!(combined.contains("trade DM listener"));
+
+        app.background_task_alarms.remove("trade DM listener");
+        let one = app.background_task_alarm_message().expect("one alarm");
+        assert_eq!(one, "orders down");
+        assert!(!one.contains("2 background"));
     }
 
     #[test]

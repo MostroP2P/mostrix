@@ -593,8 +593,8 @@ No: paste BOLT11 or Lightning address manually."
     }
 
     // Recoverable background-task failure (per-task respawn; other workers stay up).
-    if let Some(message) = app.background_task_alarm.as_deref() {
-        task_alarm_overlay::render_task_alarm_overlay(f, message);
+    if let Some(message) = app.background_task_alarm_message() {
+        task_alarm_overlay::render_task_alarm_overlay(f, &message);
     }
 }
 

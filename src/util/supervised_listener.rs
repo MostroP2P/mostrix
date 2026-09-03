@@ -81,12 +81,16 @@ async fn supervise_replaceable_rx_loop<T, R, Fut, P>(
         // Rotate the command channel *before* backoff so helpers keep a live sender
         // and commands issued while the worker is down are queued for the next run.
         rx = publish_fresh_cmd_channel(&mut publish);
-        send_fatal_notify(FatalNotify::TaskAlarm(format!(
-            "Background task \"{label}\" stopped unexpectedly and is restarting (retry in {backoff_secs}s).\n\
+        send_fatal_notify(FatalNotify::TaskAlarm {
+            task: label.to_string(),
+            message: format!(
+                "Background task \"{label}\" stopped unexpectedly and is restarting (retry in {backoff_secs}s).\n\
 Other protocol channels remain active."
-        )));
+            ),
+        });
+        let healthy_run = started.elapsed();
         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-        backoff_secs = next_backoff_secs(backoff_secs, started.elapsed());
+        backoff_secs = next_backoff_secs(backoff_secs, healthy_run);
     }
 }
 

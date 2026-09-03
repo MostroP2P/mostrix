@@ -20,8 +20,12 @@ use crate::util::dm_utils::OrderDmSubscriptionCmd;
 #[derive(Debug, Clone)]
 pub enum FatalNotify {
     /// A background task panicked or exited unexpectedly; it will respawn with backoff.
-    TaskAlarm(String),
-    /// The task recovered and is running again — clear any task alarm banner.
+    TaskAlarm {
+        /// Stable supervisor label (e.g. `"trade DM listener"`).
+        task: String,
+        message: String,
+    },
+    /// The task recovered and is running again — clear that task’s alarm banner.
     TaskResumed(String),
     /// DM router sender replaced as soon as the listener dies (before backoff) so
     /// `TrackOrder` / waiters buffer on the new channel. Main must update its clone.
@@ -83,10 +87,13 @@ pub fn request_fatal_restart(message: impl Into<String>) {
     send_notify(FatalNotify::RestartRequired(msg));
 }
 
-fn request_task_alarm(message: impl Into<String>) {
+fn request_task_alarm(label: &str, message: impl Into<String>) {
     let msg = message.into();
-    log::warn!("[task-alarm] {}", msg);
-    send_notify(FatalNotify::TaskAlarm(msg));
+    log::warn!("[task-alarm] {}: {}", label, msg);
+    send_notify(FatalNotify::TaskAlarm {
+        task: label.to_string(),
+        message: msg,
+    });
 }
 
 fn request_task_resumed(label: &str) {
@@ -140,12 +147,16 @@ where
                 );
             }
         }
-        request_task_alarm(format!(
-            "Background task \"{label}\" stopped unexpectedly and is restarting (retry in {backoff_secs}s).\n\
+        request_task_alarm(
+            label,
+            format!(
+                "Background task \"{label}\" stopped unexpectedly and is restarting (retry in {backoff_secs}s).\n\
 Other protocol channels remain active."
-        ));
+            ),
+        );
+        let healthy_run = started.elapsed();
         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-        backoff_secs = next_backoff_secs(backoff_secs, started.elapsed());
+        backoff_secs = next_backoff_secs(backoff_secs, healthy_run);
     }
 }
 
@@ -198,8 +209,29 @@ mod tests {
     #[test]
     fn fatal_notify_string_variants_differ() {
         assert_ne!(
-            format!("{:?}", FatalNotify::TaskAlarm("a".into())),
+            format!(
+                "{:?}",
+                FatalNotify::TaskAlarm {
+                    task: "a".into(),
+                    message: "m".into()
+                }
+            ),
             format!("{:?}", FatalNotify::TaskResumed("a".into()))
+        );
+    }
+
+    #[test]
+    fn next_backoff_uses_healthy_run_not_including_sleep() {
+        // A 1s failure followed by a long sleep must still double, not reset.
+        assert_eq!(
+            next_backoff_secs(32, Duration::from_secs(1)),
+            60,
+            "immediate failure after a prior 32s delay must cap at 60, not reset"
+        );
+        assert_eq!(
+            next_backoff_secs(32, Duration::from_secs(30)),
+            INITIAL_BACKOFF_SECS,
+            "only a long healthy *run* resets backoff"
         );
     }
 }

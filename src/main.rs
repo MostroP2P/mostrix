@@ -403,11 +403,11 @@ async fn main() -> Result<(), anyhow::Error> {
             fatal = fatal_error_rx.recv() => {
                 if let Some(notify) = fatal {
                     match notify {
-                        FatalNotify::TaskAlarm(msg) => {
-                            app.background_task_alarm = Some(msg);
+                        FatalNotify::TaskAlarm { task, message } => {
+                            app.background_task_alarms.insert(task, message);
                         }
-                        FatalNotify::TaskResumed(_) => {
-                            app.background_task_alarm = None;
+                        FatalNotify::TaskResumed(task) => {
+                            app.background_task_alarms.remove(&task);
                         }
                         FatalNotify::DmRouterSender(tx) => {
                             dm_subscription_tx = tx;
@@ -425,7 +425,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             message_listener_handle.abort();
                             chat_listener_handle.abort();
                             app.fatal_exit_on_close = true;
-                            app.background_task_alarm = None;
+                            app.background_task_alarms.clear();
                             app.mode = UiMode::operation_result(OperationResult::Error(msg));
                         }
                     }
