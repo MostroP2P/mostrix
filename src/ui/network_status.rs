@@ -13,6 +13,9 @@ pub enum NetworkStatus {
 /// Spawn a background task that periodically checks relay reachability and
 /// sends `NetworkStatus` transitions over the provided channel.
 ///
+/// The loop is wrapped in [`crate::util::supervise_critical_task`]: panic or unexpected
+/// exit respawns this monitor only (other protocol workers keep running).
+///
 /// `initial_reachable` must match the startup check that may have set the offline
 /// overlay. Seeding avoids a spurious `Online` on the first tick (tokio intervals
 /// fire immediately) which would force a reconnect while already healthy.

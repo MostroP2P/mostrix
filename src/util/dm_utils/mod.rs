@@ -1837,6 +1837,9 @@ async fn resolve_order_for_event(
 ///   so it does not unwrap twice there)
 ///
 /// Lifecycle notes:
+/// - spawned via [`crate::util::spawn_supervised_trade_dm_listener`] (startup, reload,
+///   reconnect, and panic/exit recovery); the supervisor recreates `dm_subscription_rx`
+///   on respawn
 /// - bootstrap subscriptions for already-active orders at startup
 /// - continue processing relay notifications even if `dm_subscription_rx` is closed
 ///   (no new dynamic subscriptions, existing ones remain active)

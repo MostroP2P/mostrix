@@ -1,4 +1,10 @@
 //! Supervised spawns for long-lived listeners whose command channels must be recreated on respawn.
+//!
+//! Unlike [`crate::util::supervise_critical_task`], these loops own an `mpsc` command
+//! receiver. After panic or unexpected exit the supervisor recreates the channel,
+//! re-registers the global sender, and notifies the main loop via
+//! [`crate::util::FatalNotify::DmRouterSender`] / [`crate::util::FatalNotify::ChatRouterSender`]
+//! so `TrackOrder` / chat routing keep working.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

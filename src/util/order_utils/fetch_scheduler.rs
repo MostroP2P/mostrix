@@ -158,8 +158,11 @@ pub fn start_fetch_scheduler(
 
 /// Spawns order/dispute polling loops using the given client and shared list state.
 ///
-/// Callers must **abort** any previous handles returned for the same `orders`/`disputes` Arcs
-/// before calling again (e.g. after a soft key reload replaces the [`Client`]).
+/// Each loop is wrapped in [`crate::util::supervise_critical_task`] so a panic or
+/// unexpected exit (e.g. notification stream ended) respawns **that** scheduler only.
+/// Callers must still **abort** any previous handles returned for the same
+/// `orders`/`disputes` Arcs before calling again (e.g. after a soft key reload
+/// replaces the [`Client`]).
 pub fn spawn_fetch_scheduler_loops(
     client: Client,
     current_mostro_pubkey: Arc<Mutex<PublicKey>>,

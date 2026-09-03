@@ -1,3 +1,11 @@
+//! Fatal vs recoverable background-task notifications for the TUI main loop.
+//!
+//! [`request_fatal_restart`] is for **unrecoverable** state (e.g. poisoned mutexes):
+//! the main loop aborts all workers and shows a sticky restart prompt.
+//! Panic or unexpected exit of a single critical task uses [`supervise_critical_task`]
+//! (or the DM/chat helpers in [`crate::util::supervised_listener`]): only that task
+//! respawns with backoff, and the UI shows a non-blocking [`FatalNotify::TaskAlarm`].
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

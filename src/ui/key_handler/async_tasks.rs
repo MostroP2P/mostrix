@@ -261,6 +261,9 @@ async fn dm_transport_for_mostro(
 }
 
 /// Abort and respawn the trade DM listener (e.g. after `protocol_version` / transport changes).
+///
+/// Replaces the [`JoinHandle`] with [`crate::util::spawn_supervised_trade_dm_listener`]
+/// so the new task still recovers from panic/exit independently.
 #[allow(clippy::too_many_arguments)]
 pub async fn respawn_trade_dm_listener(
     app: &mut AppState,
@@ -836,7 +839,8 @@ pub async fn reload_runtime_session_after_reconnect(
 ///
 /// Needed after key reload (client replaced) or reconnect / fetch-scheduler reload
 /// (`client.unsubscribe_all()` drops the chat subscription). Rebuilds the router with a fresh
-/// command channel, re-registers the global sender, and re-emits the active track set
+/// command channel via [`crate::util::spawn_supervised_chat_listener`], re-registers the
+/// global sender, and re-emits the active track set
 /// ([`track_startup_chats`], option B) so every chat resubscribes on the new client/session.
 pub async fn respawn_chat_listener(
     app: &AppState,
@@ -892,6 +896,7 @@ pub struct AppChannels {
     pub chat_router_cmd_rx: UnboundedReceiver<crate::util::ChatRouterCmd>,
     pub network_status_tx: UnboundedSender<NetworkStatus>,
     pub network_status_rx: UnboundedReceiver<NetworkStatus>,
+    /// Task-alarm, router-sender refresh, and unrecoverable restart notifications.
     pub fatal_error_tx: UnboundedSender<FatalNotify>,
     pub fatal_error_rx: UnboundedReceiver<FatalNotify>,
     pub ln_address_result_tx: UnboundedSender<LnAddressVerifyResult>,
