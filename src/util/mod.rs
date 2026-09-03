@@ -19,8 +19,9 @@ pub mod types;
 // Re-export commonly used items
 pub use crate::ui::helpers::PreparedOrderChatAttachment;
 pub use blossom::{
-    blossom_url_to_https, decrypt_blob, encrypt_blob, fetch_blob, save_attachment_to_disk,
-    spawn_save_attachment, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE, DEFAULT_BLOSSOM_SERVERS,
+    blossom_url_to_https, decrypt_blob, decrypt_blob_with_keys, encrypt_blob, fetch_blob,
+    save_attachment_to_disk, spawn_save_attachment, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE,
+    DEFAULT_BLOSSOM_SERVERS,
 };
 pub use chat_listener::{
     listen_for_chat_messages, set_chat_router_cmd_tx, track_dispute_chat, track_order_chat,

@@ -116,7 +116,8 @@ pub(crate) fn observer_kind14_filter(
 
 /// Read-only disclosure for a solver: `K_conv` secret hex and `pub(K_sign)`.
 ///
-/// Never returns the `K_sign` secret. `K_conv` decrypts; it cannot author kind 14.
+/// Never returns the `K_sign` secret. `K_conv` decrypts kind-14 content and
+/// attachment blobs; it cannot author kind 14.
 pub fn conversation_disclosure_from_ecdh(ecdh_keys: &Keys) -> Option<(String, String)> {
     let (conv, sign) = chat_keys_from_ecdh(ecdh_keys)?;
     Some((
@@ -228,11 +229,11 @@ pub fn dispute_chat_role_for_inner_signer(
     }
 }
 
-/// 32-byte ChaCha20 key for decrypting order-chat attachments (shared ECDH secret).
-pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
+/// Rebuild the order-chat ECDH `Keys` (IKM), from persisted hex or trade-key ECDH.
+pub fn order_chat_ecdh_keys(order: &Order) -> Option<Keys> {
     if let Some(hex) = order.order_chat_shared_key_hex.as_deref() {
         if let Some(keys) = keys_from_shared_hex(hex) {
-            return Some(keys.secret_key().to_secret_bytes().to_vec());
+            return Some(keys);
         }
     }
     let trade_keys_hex = order.trade_keys.as_deref()?;
@@ -241,7 +242,51 @@ pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
     let cp = order.counterparty_pubkey.as_deref()?;
     let cp_pk = PublicKey::parse(cp).ok()?;
     derive_shared_keys(Some(&trade_keys), Some(&cp_pk))
-        .map(|k| k.secret_key().to_secret_bytes().to_vec())
+}
+
+/// 32-byte ChaCha20 key for order-chat attachments: disclosed-compatible `K_conv`.
+///
+/// Kind-14 chat wraps with `K_conv` / `K_sign`. Attachments use the same `K_conv`
+/// secret so an Observer holding only the disclosed Shared key can decrypt.
+/// Prefer this for encrypt and as the first decrypt candidate.
+pub fn order_chat_decryption_key_bytes(order: &Order) -> Option<Vec<u8>> {
+    attachment_key_from_ecdh(&order_chat_ecdh_keys(order)?)
+}
+
+/// Legacy ChaCha20 key (raw ECDH IKM) used before v2 / by Mostro Mobile multimedia.
+pub fn order_chat_legacy_attachment_key_bytes(order: &Order) -> Option<Vec<u8>> {
+    Some(
+        order_chat_ecdh_keys(order)?
+            .secret_key()
+            .to_secret_bytes()
+            .to_vec(),
+    )
+}
+
+/// `K_conv` secret bytes from an ECDH `Keys` (IKM).
+pub fn attachment_key_from_ecdh(ecdh_keys: &Keys) -> Option<Vec<u8>> {
+    let (conv, _) = chat_keys_from_ecdh(ecdh_keys)?;
+    Some(conv.secret_key().to_secret_bytes().to_vec())
+}
+
+/// Decrypt candidates for a channel that holds ECDH: `K_conv` first, then ECDH IKM.
+pub fn attachment_key_candidates_from_ecdh(ecdh_keys: &Keys) -> Vec<Vec<u8>> {
+    let mut keys = Vec::with_capacity(2);
+    if let Some(conv) = attachment_key_from_ecdh(ecdh_keys) {
+        keys.push(conv);
+    }
+    let ecdh = ecdh_keys.secret_key().to_secret_bytes().to_vec();
+    if keys.first().map(|k| k.as_slice()) != Some(ecdh.as_slice()) {
+        keys.push(ecdh);
+    }
+    keys
+}
+
+/// Decrypt candidates for an order chat: `K_conv` then legacy ECDH.
+pub fn order_chat_attachment_key_candidates(order: &Order) -> Vec<Vec<u8>> {
+    order_chat_ecdh_keys(order)
+        .map(|ecdh| attachment_key_candidates_from_ecdh(&ecdh))
+        .unwrap_or_default()
 }
 
 /// Resolve the order-chat counterparty pubkey and the ECDH shared-key hex.
@@ -1168,6 +1213,45 @@ mod tests {
         .expect("from stored hex");
         assert_eq!(via_order.0, conv_hex);
         assert_eq!(via_order.1, sign_pk_hex);
+    }
+
+    #[test]
+    fn attachment_key_is_k_conv_so_observer_can_decrypt() {
+        use crate::util::blossom::{decrypt_blob, encrypt_blob};
+
+        let a = Keys::generate();
+        let b = Keys::generate();
+        let ecdh = derive_shared_keys(Some(&a), Some(&b.public_key())).expect("ecdh");
+        let (conv_hex, _) = conversation_disclosure_from_ecdh(&ecdh).expect("disclosure");
+
+        let encrypt_key = attachment_key_from_ecdh(&ecdh).expect("k_conv attach key");
+        let ecdh_bytes = ecdh.secret_key().to_secret_bytes().to_vec();
+        assert_ne!(
+            encrypt_key, ecdh_bytes,
+            "attachment ChaCha must not be raw ECDH (Observer only has K_conv)"
+        );
+
+        let plain = b"dispute evidence photo";
+        let blob = encrypt_blob(&encrypt_key, plain).expect("encrypt");
+
+        // Observer pastes disclosed K_conv and rebuilds Keys the same way as Ctrl+S.
+        let observer_keys = keys_from_shared_hex(&conv_hex).expect("observer K_conv");
+        let observer_key = observer_keys.secret_key().to_secret_bytes().to_vec();
+        assert_eq!(observer_key, encrypt_key);
+        assert_eq!(decrypt_blob(&observer_key, &blob).expect("observer decrypt"), plain);
+
+        let candidates = attachment_key_candidates_from_ecdh(&ecdh);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0], encrypt_key);
+        assert_eq!(candidates[1], ecdh_bytes);
+
+        // Legacy mobile/ECDH blobs still decrypt via the fallback candidate.
+        let legacy_blob = encrypt_blob(&ecdh_bytes, plain).expect("legacy encrypt");
+        assert!(decrypt_blob(&encrypt_key, &legacy_blob).is_err());
+        assert_eq!(
+            crate::util::blossom::decrypt_blob_with_keys(&candidates, &legacy_blob).expect("legacy"),
+            plain
+        );
     }
 
     #[tokio::test]

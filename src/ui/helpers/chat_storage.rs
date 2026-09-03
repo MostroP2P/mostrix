@@ -863,6 +863,7 @@ mod tests {
             mime_type: None,
             file_type: ChatAttachmentType::File,
             decryption_key: None,
+            decryption_key_fallbacks: Vec::new(),
         };
         let json = serialize_attachment_for_transcript(&att);
         let (content, restored) = message_fields_from_transcript_content(&json);
