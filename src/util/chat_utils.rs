@@ -116,7 +116,8 @@ pub(crate) fn observer_kind14_filter(
 
 /// Read-only disclosure for a solver: `K_conv` secret hex and `pub(K_sign)`.
 ///
-/// Never returns the `K_sign` secret. `K_conv` decrypts; it cannot author kind 14.
+/// Never returns the `K_sign` secret. `K_conv` decrypts kind-14 content and
+/// attachment blobs; it cannot author kind 14.
 pub fn conversation_disclosure_from_ecdh(ecdh_keys: &Keys) -> Option<(String, String)> {
     let (conv, sign) = chat_keys_from_ecdh(ecdh_keys)?;
     Some((

@@ -283,7 +283,11 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Downloads an attachment from a Blossom URL, optionally decrypts it, and writes to
-/// `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or with `.enc` suffix if no key).
+/// `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>`.
+///
+/// `decryption_keys` are tried in order via [`decrypt_blob_with_keys`] (v2: `K_conv`,
+/// then legacy ECDH). An empty list leaves the blob encrypted and appends `.enc`
+/// to the sanitized filename.
 pub async fn save_attachment_to_disk(
     dispute_id: String,
     blossom_url: String,
@@ -314,7 +318,11 @@ pub async fn save_attachment_to_disk(
 }
 
 /// Spawns a task to download the attachment, optionally decrypt it, and write to
-/// `~/.mostrix/downloads/`. Sends `OperationResult::Info(path)` or `OperationResult::Error` on completion.
+/// `~/.mostrix/downloads/`.
+///
+/// Builds the decrypt candidate list from [`ChatAttachment::decryption_key`] then
+/// [`ChatAttachment::decryption_key_fallbacks`]. Sends `OperationResult::Info(path)`
+/// or `OperationResult::Error` on completion.
 pub fn spawn_save_attachment(
     dispute_id: String,
     attachment: ChatAttachment,
