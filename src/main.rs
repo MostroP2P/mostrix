@@ -414,6 +414,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                         FatalNotify::ChatRouterSender(tx) => {
                             chat_router_cmd_tx = tx;
+                            // In-memory chat `targets` died with the router; re-emit durable tracks
+                            // onto the fresh channel (buffered until the worker finishes backoff).
+                            track_startup_chats(&pool, &app).await;
                         }
                         FatalNotify::RestartRequired(msg) => {
                             // Unrecoverable: stop background work and prompt the user to restart.

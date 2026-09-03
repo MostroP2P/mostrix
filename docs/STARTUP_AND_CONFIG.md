@@ -252,7 +252,7 @@ When the user confirms **Restore Session** (`execute_restore_session` → `Actio
 
 The TUI runs in a `tokio::select!` loop that handles (among others):
 
-1. **Fatal / task notifications**: `fatal_error_rx` (`FatalNotify`) — `TaskAlarm` / `TaskResumed` show or clear a non-blocking task-alarm overlay while **only the failed worker** respawns with backoff; `DmRouterSender` / `ChatRouterSender` refresh main’s command-channel clones after listener respawn; `RestartRequired` (poisoned locks, etc.) aborts all background work and shows a sticky restart prompt.
+1. **Fatal / task notifications**: `fatal_error_rx` (`FatalNotify`) — `TaskAlarm` / `TaskResumed` show or clear a non-blocking task-alarm overlay while **only the failed worker** respawns with backoff; `DmRouterSender` / `ChatRouterSender` are published **as soon as** a listener dies (before backoff) so `TrackOrder` / `TrackChatKey` buffer on the new channel; `ChatRouterSender` also replays `track_startup_chats`. `RestartRequired` (poisoned locks, etc.) aborts all background work and shows a sticky restart prompt.
 2. **Network status**: `network_status_rx` — offline overlay vs reconnect + runtime reload.
 3. **Order / dispute / attachment / observer async results**: `order_result_rx` — `OperationResult`; includes dispute-list refresh side effects for certain `Info` messages and My Trades DB resync for `OrderHistoryDeleted`.
 4. **Lightning address verify-and-save (settings)**: `ln_address_result_rx` — `LnAddressVerifyResult`; mapped to `OperationResult::Info` / `Error` and passed to **`handle_operation_result`** so UI behavior matches other operation-result popups without mixing traffic into `order_result_rx`.

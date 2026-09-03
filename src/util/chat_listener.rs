@@ -19,7 +19,9 @@
 //! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): spawned via
 //! [`crate::util::spawn_supervised_chat_listener`] at startup (and on client
 //! reload/reconnect). The supervisor also respawns this task on panic or unexpected
-//! exit without aborting other workers. Chat keys are tracked/untracked via the
+//! exit without aborting other workers: it publishes a fresh command sender immediately
+//! (commands buffer during backoff) and the main loop replays [`crate::ui::helpers::track_startup_chats`].
+//! Chat keys are tracked/untracked via the
 //! global command channel published by [`set_chat_router_cmd_tx`].
 
 use std::collections::{HashMap, HashSet};

@@ -1838,8 +1838,9 @@ async fn resolve_order_for_event(
 ///
 /// Lifecycle notes:
 /// - spawned via [`crate::util::spawn_supervised_trade_dm_listener`] (startup, reload,
-///   reconnect, and panic/exit recovery); the supervisor recreates `dm_subscription_rx`
-///   on respawn
+///   reconnect, and panic/exit recovery); on failure the supervisor publishes a fresh
+///   command sender **before** backoff so `TrackOrder` / waiters buffer, then this
+///   loop re-bootstraps from `active_order_trade_indices` (merged with DB hydration)
 /// - bootstrap subscriptions for already-active orders at startup
 /// - continue processing relay notifications even if `dm_subscription_rx` is closed
 ///   (no new dynamic subscriptions, existing ones remain active)

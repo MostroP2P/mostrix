@@ -23,9 +23,11 @@ pub enum FatalNotify {
     TaskAlarm(String),
     /// The task recovered and is running again — clear any task alarm banner.
     TaskResumed(String),
-    /// DM router sender replaced after listener respawn; main must update its clone.
+    /// DM router sender replaced as soon as the listener dies (before backoff) so
+    /// `TrackOrder` / waiters buffer on the new channel. Main must update its clone.
     DmRouterSender(UnboundedSender<OrderDmSubscriptionCmd>),
-    /// Chat router sender replaced after listener respawn; main must update its clone.
+    /// Chat router sender replaced as soon as the listener dies (before backoff).
+    /// Main must update its clone and replay [`crate::ui::helpers::track_startup_chats`].
     ChatRouterSender(UnboundedSender<ChatRouterCmd>),
     /// Unrecoverable error — user must restart the process.
     RestartRequired(String),
@@ -50,6 +52,11 @@ pub fn set_fatal_error_tx(tx: UnboundedSender<FatalNotify>) -> Result<(), &'stat
 
 pub fn fatal_requested() -> bool {
     FATAL_REQUESTED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_fatal_requested_for_tests() {
+    FATAL_REQUESTED.store(false, Ordering::Relaxed);
 }
 
 fn send_notify(event: FatalNotify) {
