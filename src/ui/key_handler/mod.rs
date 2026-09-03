@@ -860,10 +860,24 @@ pub fn handle_key_event(
                                     },
                                 ) {
                                     if let Ok(sender_pk) = PublicKey::parse(pk_str) {
-                                        if let Ok(shared) = crate::util::blossom::derive_shared_key(
+                                        if let Ok(ecdh) = crate::util::blossom::derive_shared_key(
                                             admin_keys, &sender_pk,
                                         ) {
-                                            attachment.decryption_key = Some(shared.to_vec());
+                                            if let Ok(sk) =
+                                                nostr_sdk::prelude::SecretKey::from_slice(&ecdh)
+                                            {
+                                                let ecdh_keys = Keys::new(sk);
+                                                let mut candidates = crate::util::chat_utils::attachment_key_candidates_from_ecdh(
+                                                    &ecdh_keys,
+                                                );
+                                                if let Some(primary) = candidates.first().cloned() {
+                                                    attachment.decryption_key = Some(primary);
+                                                    if candidates.len() > 1 {
+                                                        attachment.decryption_key_fallbacks =
+                                                            candidates.split_off(1);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -959,10 +973,16 @@ pub fn handle_key_event(
                                     if let Ok(order) =
                                         crate::models::Order::get_by_id(&pool, &order_id).await
                                     {
-                                        attachment.decryption_key =
-                                            crate::util::chat_utils::order_chat_decryption_key_bytes(
-                                                &order,
-                                            );
+                                        let mut candidates = crate::util::chat_utils::order_chat_attachment_key_candidates(
+                                            &order,
+                                        );
+                                        if let Some(primary) = candidates.first().cloned() {
+                                            attachment.decryption_key = Some(primary);
+                                            if candidates.len() > 1 {
+                                                attachment.decryption_key_fallbacks =
+                                                    candidates.split_off(1);
+                                            }
+                                        }
                                     }
                                 }
                                 let _ = tx.send((order_id, attachment));
@@ -1013,15 +1033,15 @@ pub fn handle_key_event(
                             app.observer_shared_key_input.chars().take(8).collect();
                         let id = format!("observer_{}", key_prefix);
 
-                        // Observer holds K_conv only; use it as the ChaCha key when the
-                        // attachment JSON omitted an inline key.
+                        // Observer holds K_conv only — the same ChaCha key used for
+                        // v2 attachment encrypt (peers derive K_conv from ECDH).
                         let mut att_clone = (*att).clone();
                         if att_clone.decryption_key.is_none() {
                             if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
                                 &app.observer_shared_key_input,
                             ) {
                                 att_clone.decryption_key =
-                                    Some(keys.secret_key().secret_bytes().to_vec());
+                                    Some(keys.secret_key().to_secret_bytes().to_vec());
                             }
                         }
 

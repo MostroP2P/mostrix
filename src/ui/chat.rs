@@ -75,6 +75,9 @@ pub struct ChatAttachment {
     pub file_type: ChatAttachmentType,
     /// When provided by the sender, used to decrypt the blob when saving.
     pub decryption_key: Option<Vec<u8>>,
+    /// Extra ChaCha keys tried after [`Self::decryption_key`] (e.g. legacy ECDH
+    /// IKM after v2 `K_conv`). Never present on the wire.
+    pub decryption_key_fallbacks: Vec<Vec<u8>>,
 }
 
 /// A chat message in the dispute resolution interface

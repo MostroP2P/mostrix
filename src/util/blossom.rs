@@ -1,6 +1,8 @@
 //! Blossom URL resolution, blob download/upload, and ChaCha20-Poly1305 encrypt/decrypt.
 //! Matches Mostro Mobile encrypted file messaging: blob layout [nonce:12][ciphertext][tag:16].
-//! Shared key for decryption: ECDH(admin_sk, sender_pubkey), same as mostro-cli with roles swapped.
+//!
+//! Attachment ChaCha keys (v2): prefer `K_conv` (same secret disclosed to Observer).
+//! Legacy / mobile blobs may still use the raw ECDH IKM — decrypt tries candidates in order.
 
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -36,8 +38,10 @@ pub const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
 /// Upload timeout (seconds).
 const BLOSSOM_UPLOAD_TIMEOUT_SECS: u64 = 300;
 
-/// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
-/// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
+/// Derives the ECDH shared secret (IKM) from our private key and the sender's public key.
+///
+/// Prefer [`crate::util::chat_utils::attachment_key_candidates_from_ecdh`] for attachment
+/// decrypt (`K_conv` then this IKM). Encrypt with `K_conv` only.
 pub fn derive_shared_key(admin_keys: &Keys, sender_pubkey: &PublicKey) -> Result<[u8; 32]> {
     let shared = SharedKey::derive(admin_keys.secret_key(), sender_pubkey)
         .map_err(|e| anyhow!("shared key derivation failed: {e}"))?;
@@ -145,6 +149,21 @@ pub fn decrypt_blob(key: &[u8], blob: &[u8]) -> Result<Vec<u8>> {
         .decrypt(nonce, ciphertext_and_tag)
         .map_err(|e| anyhow!("decrypt failed: {}", e))?;
     Ok(plaintext)
+}
+
+/// Tries each ChaCha key in order until one decrypts (`K_conv`, then legacy ECDH, …).
+pub fn decrypt_blob_with_keys(keys: &[Vec<u8>], blob: &[u8]) -> Result<Vec<u8>> {
+    if keys.is_empty() {
+        return Err(anyhow!("no decryption keys provided"));
+    }
+    let mut last_err = None;
+    for key in keys {
+        match decrypt_blob(key, blob) {
+            Ok(plain) => return Ok(plain),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("decrypt failed")))
 }
 
 /// Encrypts plaintext with ChaCha20-Poly1305. Returns `[nonce:12][ciphertext][tag:16]`.
@@ -269,17 +288,19 @@ pub async fn save_attachment_to_disk(
     dispute_id: String,
     blossom_url: String,
     filename: String,
-    decryption_key: Option<Vec<u8>>,
+    decryption_keys: Vec<Vec<u8>>,
 ) -> Result<PathBuf> {
     let url = blossom_url_to_https(blossom_url.trim())?;
     let client = Client::new();
     let blob = fetch_blob(&client, &url, 0, BLOSSOM_MAX_BLOB_SIZE).await?;
-    let bytes = match &decryption_key {
-        Some(key) => decrypt_blob(key, &blob)?,
-        None => blob,
+    let had_keys = !decryption_keys.is_empty();
+    let bytes = if had_keys {
+        decrypt_blob_with_keys(&decryption_keys, &blob)?
+    } else {
+        blob
     };
     let sanitized = sanitize_filename(&filename);
-    let final_name = if decryption_key.is_some() {
+    let final_name = if had_keys {
         sanitized
     } else {
         format!("{}.enc", sanitized)
@@ -301,9 +322,17 @@ pub fn spawn_save_attachment(
 ) {
     let blossom_url = attachment.blossom_url;
     let filename = attachment.filename;
-    let decryption_key = attachment.decryption_key;
+    let mut decryption_keys = Vec::new();
+    if let Some(key) = attachment.decryption_key {
+        decryption_keys.push(key);
+    }
+    for key in attachment.decryption_key_fallbacks {
+        if decryption_keys.iter().all(|k| k != &key) {
+            decryption_keys.push(key);
+        }
+    }
     tokio::spawn(async move {
-        match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_key).await {
+        match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_keys).await {
             Ok(path) => {
                 let _ = order_result_tx.send(OperationResult::Info(format!(
                     "Saved to {}",
@@ -345,6 +374,17 @@ mod tests {
         let blob = encrypt_blob(&key, plain).unwrap();
         let out = decrypt_blob(&key, &blob).unwrap();
         assert_eq!(out, plain);
+    }
+
+    #[test]
+    fn decrypt_blob_with_keys_tries_until_match() {
+        let wrong = [1u8; 32];
+        let right = [9u8; 32];
+        let plain = b"observer k_conv decrypt";
+        let blob = encrypt_blob(&right, plain).unwrap();
+        let out = decrypt_blob_with_keys(&[wrong.to_vec(), right.to_vec()], &blob).unwrap();
+        assert_eq!(out, plain);
+        assert!(decrypt_blob_with_keys(&[wrong.to_vec()], &blob).is_err());
     }
 
     #[test]
