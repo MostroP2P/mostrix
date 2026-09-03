@@ -8,7 +8,9 @@ use std::str::FromStr;
 use crate::models::User;
 use crate::ui::FormState;
 use crate::util::db_utils::save_order;
-use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::dm_utils::{
+    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
     create_order_result_success, handle_mostro_response, payment_request_operation_result,
@@ -174,12 +176,9 @@ pub async fn send_new_order(
                                 {
                                     log::error!("Failed to save order to database: {}", e);
                                 }
-                                if let Some(tx) = dm_subscription_tx {
+                                if dm_subscription_tx.is_some() {
                                     if let Some(order_id) = order.id {
-                                        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-                                            order_id,
-                                            trade_index: next_idx,
-                                        });
+                                        send_track_order_cmd(order_id, next_idx);
                                     }
                                 }
 

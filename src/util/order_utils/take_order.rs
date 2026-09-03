@@ -6,7 +6,9 @@ use nostr_sdk::prelude::*;
 use crate::models::User;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
 use crate::util::db_utils::save_order;
-use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::dm_utils::{
+    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{handle_mostro_response, payment_request_operation_result};
 use crate::util::OrderDmSubscriptionCmd;
@@ -71,19 +73,16 @@ pub async fn take_order(
 
     // Subscribe as early as possible for take-order flow so the first
     // Mostro response/event is not missed by the background DM listener.
-    if let Some(tx) = dm_subscription_tx {
-        // Optimistic `TrackOrder` via `dm_subscription_tx`: register this trade key with the
-        // listener *before* `send_dm` / `wait_for_dm`, using the requested `order_id` and
-        // `next_idx`. Intentionally redundant with the post-`save_order` send below.
+    if dm_subscription_tx.is_some() {
+        // Optimistic TrackOrder via the **current** global DM router sender (not a
+        // possibly-stale main-loop clone). Intentionally redundant with the post-
+        // `save_order` send below.
         log::info!(
             "[take_order] Early subscribe command for order_id={}, trade_index={}",
             order_id,
             next_idx
         );
-        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-            order_id,
-            trade_index: next_idx,
-        });
+        send_track_order_cmd(order_id, next_idx);
     }
 
     // Create payload based on action type
@@ -301,16 +300,13 @@ async fn persist_taken_order(
     {
         log::error!("Failed to save order to database: {}", e);
     }
-    if let Some(tx) = dm_subscription_tx {
+    if dm_subscription_tx.is_some() {
         log::info!(
             "[take_order] Sending DM subscription command for order_id={}, trade_index={}",
             effective_order_id,
             next_idx
         );
-        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-            order_id: effective_order_id,
-            trade_index: next_idx,
-        });
+        send_track_order_cmd(effective_order_id, next_idx);
     }
     normalized
 }

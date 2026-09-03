@@ -560,23 +560,12 @@ async fn upsert_order_from_trade_dm(
     }
 }
 
-/// Resolve maker/taker for [`crate::ui::OrderMessage::is_mine`] after a trade DM is stored.
+/// Send [`DmRouterCmd::TrackOrder`] via the **current** global DM router sender.
 ///
-/// Callers must pass SQLite **after** [`upsert_order_from_trade_dm`], not the pre-upsert snapshot
-/// (see `handle_trade_dm_for_order`).
-///
-/// # Why `Option<bool>`
-///
-/// - [`crate::util::db_utils::save_order`] always writes `is_mine` (`true` = maker, `false` = taker).
-/// - [`crate::models::Order::upsert_from_small_order_dm`] may insert a row first and defaults new
-///   rows to maker; that must not be treated as role-known until `save_order` runs.
-///
-/// # Branches
-///
-/// - **Row existed before upsert** (create/take already persisted): post-upsert `is_mine` is trusted.
-/// - **No row before upsert** (typical taker race: `TrackOrder` before `save_order(false)`): keep
-///   `None` unless an earlier Messages row already carried role; UI helpers then default to taker.
-fn try_send_track_order(order_id: Uuid, trade_index: i64) {
+/// Always locks [`DM_ROUTER_CMD_TX`] at send time so a supervised listener channel
+/// rotation cannot leave callers holding a closed `UnboundedSender` clone (main-loop
+/// locals are refreshed asynchronously via [`crate::util::FatalNotify::DmRouterSender`]).
+pub fn send_track_order_cmd(order_id: Uuid, trade_index: i64) {
     let Ok(guard) = DM_ROUTER_CMD_TX.lock() else {
         return;
     };
@@ -586,6 +575,10 @@ fn try_send_track_order(order_id: Uuid, trade_index: i64) {
             trade_index,
         });
     }
+}
+
+fn try_send_track_order(order_id: Uuid, trade_index: i64) {
+    send_track_order_cmd(order_id, trade_index);
 }
 
 /// `NewOrder` + `Payload::Order` with `status: pending` — book republish or range child listing.
@@ -731,6 +724,22 @@ async fn try_handle_new_order_trade_dm(
     .await
 }
 
+/// Resolve maker/taker for [`crate::ui::OrderMessage::is_mine`] after a trade DM is stored.
+///
+/// Callers must pass SQLite **after** [`upsert_order_from_trade_dm`], not the pre-upsert snapshot
+/// (see `handle_trade_dm_for_order`).
+///
+/// # Why `Option<bool>`
+///
+/// - [`crate::util::db_utils::save_order`] always writes `is_mine` (`true` = maker, `false` = taker).
+/// - [`crate::models::Order::upsert_from_small_order_dm`] may insert a row first and defaults new
+///   rows to maker; that must not be treated as role-known until `save_order` runs.
+///
+/// # Branches
+///
+/// - **Row existed before upsert** (create/take already persisted): post-upsert `is_mine` is trusted.
+/// - **No row before upsert** (typical taker race: `TrackOrder` before `save_order(false)`): keep
+///   `None` unless an earlier Messages row already carried role; UI helpers then default to taker.
 fn effective_is_mine_for_trade_dm_message(
     had_local_row_before_upsert: bool,
     post_upsert_is_mine: Option<bool>,

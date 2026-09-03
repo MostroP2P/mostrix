@@ -3,7 +3,11 @@
 //! Unlike [`crate::util::supervise_critical_task`], these loops own an `mpsc` command
 //! receiver. On panic or unexpected exit the supervisor **immediately** recreates the
 //! channel and re-publishes the global sender (before backoff) so `TrackOrder` /
-//! `TrackChatKey` buffer instead of hitting a closed channel. Main is notified via
+//! `TrackChatKey` buffer instead of hitting a closed channel. Hot-path DM
+//! dispatch must use [`crate::util::send_track_order_cmd`] (locks the global
+//! sender) rather than a main-loop `UnboundedSender` clone, which is only
+//! refreshed asynchronously via [`crate::util::FatalNotify::DmRouterSender`].
+//! Main is notified via
 //! [`crate::util::FatalNotify::DmRouterSender`] / [`crate::util::FatalNotify::ChatRouterSender`].
 //! Chat recovery also replays [`crate::ui::helpers::track_startup_chats`] from the main loop.
 
@@ -285,6 +289,94 @@ mod tests {
             Some(7),
             "TrackOrder-equivalent command issued while the listener was down must be received after respawn"
         );
+        handle.abort();
+    }
+
+    /// Main can hold a local `UnboundedSender` clone that is only refreshed after
+    /// an async `FatalNotify`. After channel rotation that clone is closed; dispatch
+    /// must go through shared indirection (the live sender behind a mutex), matching
+    /// [`crate::util::send_track_order_cmd`].
+    #[tokio::test]
+    async fn race_stale_main_clone_vs_shared_dispatch_after_rotation() {
+        crate::util::fatal::reset_fatal_requested_for_tests();
+
+        let received = Arc::new(AsyncMutex::new(Vec::new()));
+        let (initial_tx, initial_rx) = mpsc::unbounded_channel::<u8>();
+        // Shared live sender — what global DM_ROUTER_CMD_TX / main refresh target.
+        let live_tx = Arc::new(Mutex::new(initial_tx.clone()));
+        // Stale main-loop clone taken before rotation (never refreshed).
+        let stale_main_clone = initial_tx;
+        let rotated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runs = Arc::new(AtomicUsize::new(0));
+
+        let live_tx_for_publish = Arc::clone(&live_tx);
+        let rotated_for_publish = Arc::clone(&rotated);
+        let received_for_run = Arc::clone(&received);
+        let runs_for_run = Arc::clone(&runs);
+
+        let handle = tokio::spawn(async move {
+            supervise_replaceable_rx_loop(
+                "test listener",
+                initial_rx,
+                |tx| {
+                    *live_tx_for_publish.lock().expect("live tx") = tx;
+                    rotated_for_publish.store(true, Ordering::SeqCst);
+                },
+                move |mut rx| {
+                    let received = Arc::clone(&received_for_run);
+                    let run_idx = runs_for_run.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if run_idx == 0 {
+                            panic!("simulated intake panic");
+                        }
+                        while let Some(cmd) = rx.recv().await {
+                            received.lock().await.push(cmd);
+                            if !received.lock().await.is_empty() {
+                                break;
+                            }
+                        }
+                        std::future::pending::<()>().await;
+                    }
+                },
+                0,
+                false,
+            )
+            .await;
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !rotated.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "listener should panic and rotate the command channel"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Race: "main" still holds the pre-rotation clone…
+        assert!(
+            stale_main_clone.send(1).is_err(),
+            "stale main-loop clone must fail after channel rotation"
+        );
+        // …while shared dispatch (current sender behind the mutex) succeeds.
+        live_tx
+            .lock()
+            .expect("live tx")
+            .send(2)
+            .expect("shared dispatch after rotation");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if received.lock().await.as_slice() == [2] {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shared-dispatch command must be delivered after respawn; got {:?}",
+                *received.lock().await
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         handle.abort();
     }
 }

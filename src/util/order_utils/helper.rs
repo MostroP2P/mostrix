@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::ui::state::{OperationResult, OrderChatStaticHeader, OrderSuccess, TakeOrderState};
 use crate::util::db_utils::save_order;
-use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
+use crate::util::dm_utils::{send_track_order_cmd, FETCH_EVENTS_TIMEOUT};
 use crate::util::filters::create_filter;
 use crate::util::types::{get_cant_do_description, Event, ListKind, MostroCantDoError};
 use crate::util::OrderDmSubscriptionCmd;
@@ -717,14 +717,11 @@ pub(super) async fn payment_request_operation_result(
         log::error!("Failed to save order to database: {e}");
     }
 
-    if let Some(tx) = dm_subscription_tx {
+    if dm_subscription_tx.is_some() {
         log::info!(
             "[{log_prefix}] Sending DM subscription command for order_id={effective_order_id}, trade_index={next_idx}"
         );
-        let _ = tx.send(OrderDmSubscriptionCmd::TrackOrder {
-            order_id: effective_order_id,
-            trade_index: next_idx,
-        });
+        send_track_order_cmd(effective_order_id, next_idx);
     }
 
     log::info!("Received {popup_action:?} for order {effective_order_id} with invoice");
