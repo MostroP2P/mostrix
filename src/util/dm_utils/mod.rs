@@ -52,6 +52,8 @@ use std::collections::BTreeSet;
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_PENDING_WAITERS: usize = 32;
+/// Backoff between waiter re-registrations after a reconnect/listener abort (MOSTRO-080).
+const WAIT_FOR_DM_REREGISTER_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
 const DEFAULT_DM_EXPIRATION_DAYS: u64 = 30;
@@ -321,8 +323,17 @@ pub async fn send_dm(
     Ok(())
 }
 
-/// Wait for a direct message response from Mostro
-/// Registers a router waiter, then sends the message (to avoid missing responses).
+/// Wait for a direct message response from Mostro.
+///
+/// Registers a router waiter, then sends the outbound message **once**. If the
+/// trade-DM listener is aborted or respawned mid-wait (connectivity reconnect,
+/// supervised restart — MOSTRO-080), the oneshot is canceled; this re-registers
+/// on the current router **without resending** so a daemon reply that arrives
+/// after subscriptions are rebuilt can still complete the command.
+///
+/// Exhausting the timeout budget still surfaces as
+/// `"Timeout waiting for DM or gift wrap event"` (not a spuriously immediate
+/// cancel), so callers can distinguish transport loss from a daemon `CantDo`.
 pub async fn wait_for_dm<F>(
     trade_keys: &Keys,
     timeout: std::time::Duration,
@@ -331,38 +342,108 @@ pub async fn wait_for_dm<F>(
 where
     F: std::future::Future<Output = Result<()>> + Send,
 {
-    let dm_router_tx = match DM_ROUTER_CMD_TX.lock() {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut sent = false;
+    // `sent_message` is a one-shot future; pin it so we can poll once across retries.
+    let mut sent_message = std::pin::pin!(sent_message);
+
+    loop {
+        if crate::util::fatal_requested() {
+            return Err(anyhow::anyhow!(
+                "DM waiter canceled before receiving an event"
+            ));
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+        }
+        let remaining = deadline - now;
+
+        let dm_router_tx = match dm_router_cmd_sender() {
+            Ok(tx) => tx,
+            Err(e) => {
+                // Global sender missing/poisoned during reconnect window — keep
+                // trying until the deadline rather than failing the protocol cmd.
+                if remaining <= WAIT_FOR_DM_REREGISTER_BACKOFF {
+                    return Err(e);
+                }
+                log::warn!(
+                    "[wait_for_dm] DM router not ready ({e}); retrying until deadline (MOSTRO-080)"
+                );
+                tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF).await;
+                continue;
+            }
+        };
+
+        let (response_tx, response_rx) = oneshot::channel::<Event>();
+        if dm_router_tx
+            .send(DmRouterCmd::RegisterWaiter {
+                trade_keys: trade_keys.clone(),
+                response_tx,
+            })
+            .is_err()
+        {
+            log::warn!(
+                "[wait_for_dm] RegisterWaiter channel closed; re-registering without resend (MOSTRO-080)"
+            );
+            tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF.min(remaining)).await;
+            continue;
+        }
+
+        if !sent {
+            sent_message.as_mut().await?;
+            sent = true;
+        }
+
+        match tokio::time::timeout(remaining, response_rx).await {
+            Ok(Ok(event)) => {
+                let mut events = BTreeSet::new();
+                events.insert(event);
+                return Ok(events);
+            }
+            Ok(Err(_canceled)) => {
+                // Listener aborted, rejected the waiter, or rotated the channel.
+                // Do not surface this as a daemon rejection — re-register only.
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if !should_reregister_dm_waiter_after_cancel(left) {
+                    return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+                }
+                log::warn!(
+                    "[wait_for_dm] waiter canceled mid-flight; re-registering without resend (MOSTRO-080)"
+                );
+                tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF.min(left)).await;
+            }
+            Err(_elapsed) => {
+                return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+            }
+        }
+    }
+}
+
+/// Current global DM router sender used by [`wait_for_dm`] / [`send_track_order_cmd`].
+fn dm_router_cmd_sender() -> Result<UnboundedSender<OrderDmSubscriptionCmd>> {
+    match DM_ROUTER_CMD_TX.lock() {
         Ok(guard) => guard.clone().ok_or_else(|| {
             anyhow::anyhow!("DM router is not ready. Please retry after listener initialization.")
-        })?,
+        }),
         Err(_) => {
             crate::util::request_fatal_restart(
                 "Mostrix encountered an internal error (poisoned DM router lock). Please restart the app."
                     .to_string(),
             );
-            return Err(anyhow::anyhow!(
+            Err(anyhow::anyhow!(
                 "DM router mutex poisoned; restart the application."
-            ));
+            ))
         }
-    };
-    let (response_tx, response_rx) = oneshot::channel::<Event>();
-    dm_router_tx
-        .send(DmRouterCmd::RegisterWaiter {
-            trade_keys: trade_keys.clone(),
-            response_tx,
-        })
-        .map_err(|_| anyhow::anyhow!("Failed to register DM waiter: router channel closed"))?;
+    }
+}
 
-    // Send message only after waiter registration to avoid races.
-    sent_message.await?;
-    let event = tokio::time::timeout(timeout, response_rx)
-        .await
-        .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
-        .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
-
-    let mut events = BTreeSet::new();
-    events.insert(event);
-    Ok(events)
+/// Whether a canceled waiter oneshot should be retried within the remaining budget.
+///
+/// Used by unit tests to lock MOSTRO-080 reconnect resurrection behavior.
+fn should_reregister_dm_waiter_after_cancel(remaining: std::time::Duration) -> bool {
+    !remaining.is_zero() && !crate::util::fatal_requested()
 }
 
 /// Parse DM events to extract Messages (v1 GiftWrap and v2 kind 14 via [`unwrap_incoming`]).
@@ -2362,10 +2443,11 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         is_take_sell_buyer_waiting_invoice, new_order_would_regress_messages_row,
+        set_dm_router_cmd_tx, should_reregister_dm_waiter_after_cancel,
         small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
         trade_dm_replay_fetch_filter, trade_message_is_terminal,
-        trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
-        TradeDmReplayDispatchMode, STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS,
+        trade_message_should_untrack_order_chat, upsert_order_from_trade_dm, wait_for_dm,
+        DmRouterCmd, TradeDmReplayDispatchMode, STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS,
         STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
@@ -2987,5 +3069,65 @@ mod tests {
         let expected_since = (last_seen as u64).saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
         assert!(json.contains(&format!("\"since\":{expected_since}")));
         assert!(json.contains(&format!("\"limit\":{}", STARTUP_TRADE_DM_FETCH_LIMIT)));
+    }
+
+    #[test]
+    fn waiter_cancel_reregisters_while_budget_remains() {
+        // MOSTRO-080: mid-flight cancel must not fail the command while time remains.
+        assert!(should_reregister_dm_waiter_after_cancel(
+            std::time::Duration::from_millis(100)
+        ));
+        assert!(!should_reregister_dm_waiter_after_cancel(
+            std::time::Duration::ZERO
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_for_dm_reregisters_after_listener_abort_without_resending() {
+        // Simulate reconnect aborting the first waiter oneshot; the second
+        // RegisterWaiter receives the daemon reply. Outbound send runs once.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
+        set_dm_router_cmd_tx(tx).expect("publish router sender");
+
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sends_for_task = Arc::clone(&sends);
+        let trade_keys = Keys::generate();
+        let reply_keys = Keys::generate();
+        let reply = EventBuilder::new(nostr_sdk::prelude::Kind::TextNote, "mostro-reply")
+            .finalize(&reply_keys)
+            .expect("sign reply");
+
+        let router = tokio::spawn(async move {
+            let mut saw_first = false;
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    DmRouterCmd::RegisterWaiter { response_tx, .. } => {
+                        if !saw_first {
+                            saw_first = true;
+                            // Drop = reconnect abort of in-flight waiter.
+                            drop(response_tx);
+                        } else {
+                            let _ = response_tx.send(reply.clone());
+                            break;
+                        }
+                    }
+                    DmRouterCmd::TrackOrder { .. } => {}
+                }
+            }
+        });
+
+        let result = wait_for_dm(&trade_keys, std::time::Duration::from_secs(2), async {
+            sends_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+
+        assert!(result.is_ok(), "expected resurrected waiter: {result:?}");
+        assert_eq!(
+            sends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "protocol message must be sent only once across waiter resurrection"
+        );
+        let _ = router.await;
     }
 }
