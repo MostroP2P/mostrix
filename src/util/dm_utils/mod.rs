@@ -523,7 +523,29 @@ async fn upsert_order_from_trade_dm(
     trade_keys: &Keys,
 ) {
     let (label, small_order) = match (action, payload.as_ref()) {
-        (Action::AddInvoice, Some(Payload::Order(o))) => ("AddInvoice", o.clone()),
+        (Action::AddInvoice, Some(Payload::Order(o))) => {
+            // MOSTRO-078: never hydrate SQLite from unvalidated daemon sats.
+            // TrackOrder-before-save_order has no local row yet — defer until
+            // take_order persists a trusted amount. If a row exists but amount
+            // is still 0, wait as well.
+            let Ok(existing) = Order::get_by_id(pool, &order_id.to_string()).await else {
+                log::info!(
+                    "Deferring AddInvoice DB hydration for order {} until a local trusted amount exists",
+                    order_id
+                );
+                return;
+            };
+            if existing.amount <= 0 {
+                log::info!(
+                    "Deferring AddInvoice DB hydration for order {}: local amount is not trusted yet",
+                    order_id
+                );
+                return;
+            }
+            let mut order = o.clone();
+            order.amount = existing.amount;
+            ("AddInvoice", order)
+        }
         (Action::PayInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
             ("PayInvoice", o.clone())
         }
@@ -767,6 +789,26 @@ struct PriorMessageSnapshot {
     order_snapshot: Option<SmallOrder>,
 }
 
+/// Take-sell buyer still waiting to submit a payout invoice (MOSTRO-078).
+///
+/// The DM listener must not frame sat amounts from an unvalidated daemon
+/// `Payload::Order` for this phase — only the take_order execute path (or a
+/// prior trusted Messages row) may supply sats.
+///
+/// `is_mine == None` is treated as taker: that is the TrackOrder-before-`save_order`
+/// race where role is not yet persisted.
+fn is_take_sell_buyer_waiting_invoice(
+    action: &Action,
+    is_mine: Option<bool>,
+    order_kind: Option<mostro_core::order::Kind>,
+    order_status: Option<Status>,
+) -> bool {
+    matches!(action, Action::AddInvoice)
+        && !matches!(is_mine, Some(true))
+        && order_kind == Some(mostro_core::order::Kind::Sell)
+        && matches!(order_status, Some(Status::WaitingBuyerInvoice) | None)
+}
+
 /// Handle a single decoded trade DM for a given order/trade index.
 #[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
@@ -898,6 +940,10 @@ async fn handle_trade_dm_for_order(
     // `Option<Amount>` field of `Payload::PaymentRequest` (the SmallOrder is
     // `None` per mostro-core 0.11.0 wire format); for `PayInvoice` it may come
     // either as that explicit override or via the embedded order's `amount`.
+    //
+    // MOSTRO-078: `AddInvoice` sats from `Payload::Order` are **not** trusted on
+    // this listener path for take-sell waiting-buyer framing — see
+    // [`is_take_sell_buyer_waiting_invoice`] / `effective_sat_amount` below.
     let (sat_amount, invoice) = match &action {
         Action::PayInvoice | Action::PayBondInvoice => match &inner_kind.payload {
             Some(Payload::PaymentRequest(opt_order, invoice, opt_amount)) => {
@@ -917,16 +963,10 @@ async fn handle_trade_dm_for_order(
         _ => (None, None),
     };
 
-    // Only show PayInvoice/PayBondInvoice popup/notification when an invoice is actually present.
-    let is_actionable_notification = match &action {
-        Action::PayInvoice | Action::PayBondInvoice => {
-            invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
-        }
-        Action::AddInvoice | Action::AddBondInvoice => sat_amount.is_some(),
-        _ => true,
-    };
-
-    if matches!(action, Action::PayInvoice | Action::PayBondInvoice) && !is_actionable_notification
+    // PayInvoice/PayBondInvoice: require a non-empty invoice before continuing.
+    // AddInvoice actionable-ness is decided after role/status merge (MOSTRO-078).
+    if matches!(action, Action::PayInvoice | Action::PayBondInvoice)
+        && !invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
     {
         return;
     }
@@ -1068,15 +1108,43 @@ async fn handle_trade_dm_for_order(
         }
     }
 
-    let effective_sat_amount = sat_amount.or(prior_sat_amount);
+    let take_sell_waiting = is_take_sell_buyer_waiting_invoice(
+        &action,
+        effective_is_mine,
+        effective_order_kind,
+        effective_order_status,
+    );
+    let effective_sat_amount = if take_sell_waiting {
+        // MOSTRO-078: ignore daemon Payload::Order.amount until execute-path
+        // (or a prior trusted Messages row) supplies sats.
+        prior_sat_amount
+    } else {
+        sat_amount.or(prior_sat_amount)
+    };
     let effective_invoice = invoice.clone().or(prior_invoice);
 
+    let is_actionable_notification = match &action {
+        Action::PayInvoice | Action::PayBondInvoice => effective_invoice
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        Action::AddInvoice | Action::AddBondInvoice => effective_sat_amount.is_some(),
+        _ => true,
+    };
+
     let snapshot_from_db = db_order.as_ref().map(small_order_from_db_order);
-    let effective_order_snapshot = merge_order_snapshots(
+    let mut effective_order_snapshot = merge_order_snapshots(
         small_order_from_payload(&inner_kind.payload),
         prior_order_snapshot,
         snapshot_from_db,
     );
+    if take_sell_waiting {
+        // Keep snapshot sats aligned with framing: never leave a fabricated daemon
+        // amount for Messages Enter to fall back to when sat_amount is absent.
+        if let Some(ref mut snap) = effective_order_snapshot {
+            snap.amount = prior_sat_amount.unwrap_or(0);
+        }
+    }
 
     if notify && is_new_message && is_actionable_notification {
         match pending_notifications.lock() {
@@ -2293,10 +2361,12 @@ mod tests {
     use super::{
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
-        new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
-        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
-        trade_message_should_untrack_order_chat, TradeDmReplayDispatchMode,
-        STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS, STARTUP_TRADE_DM_FETCH_LIMIT,
+        is_take_sell_buyer_waiting_invoice, new_order_would_regress_messages_row,
+        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
+        trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
+        TradeDmReplayDispatchMode, STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS,
+        STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
@@ -2651,6 +2721,163 @@ mod tests {
             &Action::PayInvoice,
             &Action::NewOrder,
         ));
+    }
+
+    #[test]
+    fn take_sell_buyer_waiting_invoice_gate_covers_taker_race() {
+        use mostro_core::order::Kind;
+
+        // TrackOrder-before-save_order race: role unknown, sell AddInvoice.
+        assert!(is_take_sell_buyer_waiting_invoice(
+            &Action::AddInvoice,
+            None,
+            Some(Kind::Sell),
+            Some(Status::WaitingBuyerInvoice),
+        ));
+        assert!(is_take_sell_buyer_waiting_invoice(
+            &Action::AddInvoice,
+            Some(false),
+            Some(Kind::Sell),
+            None,
+        ));
+        // Maker buy AddInvoice must still allow listener framing.
+        assert!(!is_take_sell_buyer_waiting_invoice(
+            &Action::AddInvoice,
+            Some(true),
+            Some(Kind::Buy),
+            Some(Status::WaitingBuyerInvoice),
+        ));
+        // Post-retry settled-hold is not the take-sell waiting gate.
+        assert!(!is_take_sell_buyer_waiting_invoice(
+            &Action::AddInvoice,
+            Some(false),
+            Some(Kind::Sell),
+            Some(Status::SettledHoldInvoice),
+        ));
+    }
+
+    #[tokio::test]
+    async fn add_invoice_dm_without_local_row_does_not_persist_forged_amount() {
+        // MOSTRO-078: TrackOrder-before-save_order race — forged AddInvoice
+        // sats must not create/update an orders row with the payload amount.
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let order_id = Uuid::new_v4();
+        let forged_amount = 1_i64;
+        let trade_keys = Keys::generate();
+        upsert_order_from_trade_dm(
+            &pool,
+            order_id,
+            &Action::AddInvoice,
+            &Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                amount: forged_amount,
+                fiat_code: "USD".to_string(),
+                fiat_amount: 100,
+                payment_method: "SEPA".to_string(),
+                ..Default::default()
+            })),
+            Some(1),
+            &trade_keys,
+        )
+        .await;
+
+        match Order::get_by_id(&pool, &order_id.to_string()).await {
+            Ok(row) => assert_ne!(
+                row.amount, forged_amount,
+                "persisted amount must not equal forged AddInvoice payload"
+            ),
+            Err(_) => {
+                // Expected: hydration deferred — no row until take_order saves
+                // a trusted amount.
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn add_invoice_dm_preserves_trusted_local_amount_over_forged_payload() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let order_id = Uuid::new_v4();
+        let trusted_amount = 20_895_i64;
+        let forged_amount = 1_i64;
+        let trade_keys = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, trade_keys, is_mine, trade_index) \
+             VALUES (?, 'sell', 'waiting-buyer-invoice', ?, 'USD', 100, 'SEPA', 0, ?, 0, 3)",
+        )
+        .bind(order_id.to_string())
+        .bind(trusted_amount)
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed trusted take-order row");
+
+        upsert_order_from_trade_dm(
+            &pool,
+            order_id,
+            &Action::AddInvoice,
+            &Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                amount: forged_amount,
+                fiat_code: "USD".to_string(),
+                fiat_amount: 100,
+                payment_method: "SEPA".to_string(),
+                ..Default::default()
+            })),
+            Some(1),
+            &trade_keys,
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order still present");
+        assert_eq!(stored.amount, trusted_amount);
+        assert_ne!(stored.amount, forged_amount);
     }
 
     #[test]

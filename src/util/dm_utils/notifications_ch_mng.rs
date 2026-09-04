@@ -271,6 +271,10 @@ fn invoice_popup_mode(
 
 /// Remember the execute-path row so a later listener copy of the same DM does not
 /// auto-popup again (`auto_popup_shown`), and My Trades has a sidebar entry.
+///
+/// If a row for the same `order_id` already exists (e.g. a raced listener insert),
+/// refreshes `sat_amount`, `order_status`, `order_snapshot`, and `order_kind` from
+/// this execute-path message so fabricated framing cannot stick (MOSTRO-078).
 fn remember_open_invoice_order_message(app: &mut AppState, order_message: &OrderMessage) {
     let Some(order_id) = order_message.order_id else {
         return;
@@ -285,7 +289,24 @@ fn remember_open_invoice_order_message(app: &mut AppState, order_message: &Order
         }
     };
     if let Some(existing) = messages.iter_mut().find(|m| m.order_id == Some(order_id)) {
+        // Prefer the execute-path framing (already cross-checked for take-sell)
+        // over a raced listener row that may carry a fabricated sat_amount
+        // (MOSTRO-078).
         existing.auto_popup_shown = true;
+        if let Some(sats) = order_message.sat_amount {
+            existing.sat_amount = Some(sats);
+        }
+        if let Some(status) = order_message.order_status {
+            existing.order_status = Some(status);
+        }
+        if order_message.order_snapshot.is_some() {
+            existing
+                .order_snapshot
+                .clone_from(&order_message.order_snapshot);
+        }
+        if order_message.order_kind.is_some() {
+            existing.order_kind = order_message.order_kind;
+        }
         return;
     }
     let mut stored = order_message.clone();
@@ -294,7 +315,11 @@ fn remember_open_invoice_order_message(app: &mut AppState, order_message: &Order
     messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 }
 
-/// Apply invoice or waiting-phase popup after a synchronous protocol reply (bond payout, etc.).
+/// Apply invoice or waiting-phase popup after a synchronous protocol reply (bond payout,
+/// take-sell AddInvoice, etc.).
+///
+/// Remembers / refreshes the Messages sidebar row first so framing matches the
+/// validated execute-path amounts before the popup opens (MOSTRO-078).
 pub fn apply_open_invoice_popup_from_execute(
     app: &mut AppState,
     notification: MessageNotification,
@@ -765,5 +790,55 @@ mod tests {
         let header = app.order_chat_static.get(&order_id).expect("static header");
         assert_eq!(header.dispute_id.as_deref(), Some("dispute-id"));
         assert_eq!(header.solver_pubkey.as_deref(), Some("solver-pubkey"));
+    }
+
+    #[test]
+    fn remember_open_invoice_overwrites_stale_sat_amount() {
+        // MOSTRO-078: an earlier raced row must not keep a fabricated sat_amount
+        // when the validated execute-path OpenInvoicePopup is remembered.
+        use super::apply_open_invoice_popup_from_execute;
+
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.messages
+            .lock()
+            .unwrap()
+            .push(add_invoice_row_at_settled(
+                order_id,
+                Kind::Sell,
+                false,
+                false,
+            ));
+        assert_eq!(
+            app.messages.lock().unwrap()[0].sat_amount,
+            Some(50_000),
+            "precondition: stale amount present"
+        );
+
+        let mut trusted = add_invoice_row_at_settled(order_id, Kind::Sell, false, true);
+        trusted.sat_amount = Some(20_895);
+        trusted.order_status = Some(Status::WaitingBuyerInvoice);
+        let notification = MessageNotification {
+            order_id: Some(order_id),
+            message_preview: String::new(),
+            timestamp: 30,
+            action: Action::AddInvoice,
+            sat_amount: Some(20_895),
+            invoice: None,
+            body: None,
+            maker_bond_publish: false,
+            solver_pubkey: None,
+            dispute_id: None,
+        };
+        apply_open_invoice_popup_from_execute(&mut app, notification, &trusted);
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("row kept");
+        assert_eq!(row.sat_amount, Some(20_895));
+        assert_eq!(row.order_status, Some(Status::WaitingBuyerInvoice));
+        assert!(row.auto_popup_shown);
     }
 }
