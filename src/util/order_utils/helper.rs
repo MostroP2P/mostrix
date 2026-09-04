@@ -23,12 +23,20 @@ fn has_mostro_event_kind(event: &nostr_sdk::prelude::Event, kind: u16) -> bool {
     event.kind == nostr_sdk::prelude::Kind::Custom(kind)
 }
 
+fn has_valid_event_signature(event: &nostr_sdk::prelude::Event) -> bool {
+    event.verify().is_ok()
+}
+
 fn is_mostro_order_event(event: &nostr_sdk::prelude::Event, mostro_pubkey: PublicKey) -> bool {
-    event.pubkey == mostro_pubkey && has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND)
+    event.pubkey == mostro_pubkey
+        && has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND)
+        && has_valid_event_signature(event)
 }
 
 fn is_mostro_dispute_event(event: &nostr_sdk::prelude::Event, mostro_pubkey: PublicKey) -> bool {
-    event.pubkey == mostro_pubkey && has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND)
+    event.pubkey == mostro_pubkey
+        && has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND)
+        && has_valid_event_signature(event)
 }
 
 /// Parse order from nostr tags
@@ -344,7 +352,9 @@ pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
     let mut latest_by_id: HashMap<Uuid, (i64, Dispute)> = HashMap::new();
 
     for event in events.iter() {
-        if !has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND) {
+        if !has_mostro_event_kind(event, NOSTR_DISPUTE_EVENT_KIND)
+            || !has_valid_event_signature(event)
+        {
             continue;
         }
         let mut dispute = match dispute_from_tags(event.tags.clone()) {
@@ -385,7 +395,9 @@ pub fn aggregate_latest_orders_by_id(events: &NostrEvents) -> HashMap<Uuid, Smal
     let mut latest_by_id: HashMap<Uuid, SmallOrder> = HashMap::new();
 
     for event in events.iter() {
-        if !has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND) {
+        if !has_mostro_event_kind(event, NOSTR_ORDER_EVENT_KIND)
+            || !has_valid_event_signature(event)
+        {
             continue;
         }
         let mut order = match order_from_tags(event.tags.clone()) {
@@ -976,6 +988,11 @@ mod tests {
             .expect("order event without kind")
     }
 
+    fn tamper_event_content(mut event: Event) -> Event {
+        event.content.push_str("tampered");
+        event
+    }
+
     #[test]
     fn dispute_from_tags_reads_created_at_open_time() {
         let id = Uuid::new_v4();
@@ -1099,6 +1116,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_orders_rejects_tampered_events() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            tamper_event_content(order_event(
+                &keys,
+                id,
+                "EUR",
+                "pending",
+                NOSTR_ORDER_EVENT_KIND,
+                20,
+            )),
+            order_event(&keys, id, "USD", "pending", NOSTR_ORDER_EVENT_KIND, 10),
+        ]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_orders_events(events, None, Some(Status::Pending), None);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, Some(id));
+        assert_eq!(parsed[0].fiat_code, "USD");
+    }
+
+    #[test]
+    fn parse_disputes_rejects_tampered_events() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [
+            tamper_event_content(dispute_event(
+                &keys,
+                id,
+                "in-progress",
+                Some(1_700_000_200),
+                20,
+            )),
+            dispute_event(&keys, id, "initiated", Some(1_700_000_100), 10),
+        ]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_disputes_events(events);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, id);
+        assert_eq!(parsed[0].status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
     fn targeted_order_lookup_ignores_newer_event_with_wrong_id() {
         let keys = Keys::generate();
         let wanted_id = Uuid::new_v4();
@@ -1128,6 +1194,24 @@ mod tests {
 
         assert_eq!(order.id, Some(wanted_id));
         assert_eq!(order.fiat_code, "USD");
+    }
+
+    #[test]
+    fn targeted_order_lookup_rejects_tampered_event() {
+        let keys = Keys::generate();
+        let order_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [tamper_event_content(order_event(
+            &keys,
+            order_id,
+            "USD",
+            "pending",
+            NOSTR_ORDER_EVENT_KIND,
+            10,
+        ))]
+        .into_iter()
+        .collect();
+
+        assert!(latest_small_order_by_id(&events, keys.public_key(), order_id).is_none());
     }
 
     #[test]
@@ -1203,6 +1287,23 @@ mod tests {
 
         assert_eq!(dispute.id, wanted_id);
         assert_eq!(dispute.status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn targeted_dispute_lookup_rejects_tampered_event() {
+        let keys = Keys::generate();
+        let dispute_id = Uuid::new_v4();
+        let events: BTreeSet<_> = [tamper_event_content(dispute_event(
+            &keys,
+            dispute_id,
+            "initiated",
+            Some(1_700_000_100),
+            10,
+        ))]
+        .into_iter()
+        .collect();
+
+        assert!(latest_dispute_by_id(&events, keys.public_key(), dispute_id).is_none());
     }
 
     #[test]

@@ -693,6 +693,39 @@ fn active_order_filter_input(state: &mut OrderBookFilterState) -> Option<&mut St
     }
 }
 
+fn paste_text_into_order_filter(state: &mut OrderBookFilterState, text: &str) -> bool {
+    let filtered_text: String = text.chars().filter(|c| !c.is_control()).collect();
+    if filtered_text.is_empty() {
+        return false;
+    }
+
+    let Some(input) = active_order_filter_input(state) else {
+        return false;
+    };
+    input.push_str(&filtered_text);
+    true
+}
+
+fn handle_order_filter_paste_shortcut<F>(
+    app: &mut AppState,
+    key_event: &KeyEvent,
+    mut read_clipboard: F,
+) -> Option<bool>
+where
+    F: FnMut() -> Option<String>,
+{
+    if !matches!(app.mode, UiMode::OrderFilters(_)) || !is_paste_shortcut(key_event) {
+        return None;
+    }
+
+    if let Some(text) = read_clipboard() {
+        if let UiMode::OrderFilters(ref mut state) = app.mode {
+            paste_text_into_order_filter(state, &text);
+        }
+    }
+    Some(true)
+}
+
 fn order_filter_field_accepts_text(field: OrderBookFilterField) -> bool {
     !matches!(field, OrderBookFilterField::Kind)
 }
@@ -783,6 +816,12 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    if let Some(handled) =
+        handle_order_filter_paste_shortcut(app, &key_event, read_clipboard_text_best_effort)
+    {
+        return Some(handled);
+    }
 
     if matches!(app.mode, UiMode::OrderFilters(_)) {
         return Some(handle_order_filter_popup_key(app, code, &key_event));
@@ -2051,6 +2090,75 @@ mod key_handler_tests {
             UiMode::OrderFilters(state) => {
                 assert_eq!(state.filters.fiat_code, "MX");
             }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_v_pastes_into_focused_order_filter_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+            filters: OrderBookFilters {
+                fiat_code: "M".to_string(),
+                ..Default::default()
+            },
+            focused: OrderBookFilterField::FiatCurrency,
+        });
+
+        let handled = handle_order_filter_paste_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            || Some("XN\n".to_string()),
+        );
+
+        assert_eq!(handled, Some(true));
+        match app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters.fiat_code, "MXN"),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_insert_pastes_into_focused_order_filter_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+            filters: OrderBookFilters {
+                payment_method: "SPE".to_string(),
+                ..Default::default()
+            },
+            focused: OrderBookFilterField::PaymentMethod,
+        });
+
+        let handled = handle_order_filter_paste_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT),
+            || Some("I\n".to_string()),
+        );
+
+        assert_eq!(handled, Some(true));
+        match app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters.payment_method, "SPEI"),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn order_filter_paste_shortcut_ignores_non_text_field() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState {
+            filters: OrderBookFilters::default(),
+            focused: OrderBookFilterField::Kind,
+        });
+
+        let handled = handle_order_filter_paste_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            || Some("sell".to_string()),
+        );
+
+        assert_eq!(handled, Some(true));
+        match app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters, OrderBookFilters::default()),
             other => panic!("expected OrderFilters mode, got {other:?}"),
         }
     }

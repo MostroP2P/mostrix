@@ -73,7 +73,11 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
         } else if compact_orders {
-            lines.extend(compact_orders_help(narrow_orders, inner.height));
+            lines.extend(compact_orders_help(
+                narrow_orders,
+                inner.width,
+                inner.height,
+            ));
         } else if compact_my_trades {
             lines.extend(compact_my_trades_help(narrow_my_trades));
         } else if matches!(tab, Tab::User(UserTab::Orders)) {
@@ -88,8 +92,13 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
                 lines.push(help_shortcut_line(&s));
             }
         }
+        let close_hint = if compact_orders {
+            compact_orders_close_hint(inner.width)
+        } else {
+            HELP_CLOSE_HINT
+        };
         lines.push(Line::from(Span::styled(
-            HELP_CLOSE_HINT,
+            close_hint,
             Style::default().fg(Color::DarkGray),
         )));
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
@@ -230,10 +239,12 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
     .collect()
 }
 
-fn compact_orders_help(narrow: bool, inner_height: u16) -> Vec<Line<'static>> {
+fn compact_orders_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
     if narrow {
         let (title_style, _) = settings_instruction_block_style();
-        if inner_height <= 4 {
+        let close_rows = if inner_width <= 13 { 1 } else { 2 };
+        let available_shortcut_rows = inner_height.saturating_sub(close_rows);
+        if available_shortcut_rows <= 3 {
             return ["Shift+F", "Shift+X"]
                 .into_iter()
                 .map(|row| Line::from(Span::styled(row, title_style)))
@@ -252,6 +263,14 @@ fn compact_orders_help(narrow: bool, inner_height: u16) -> Vec<Line<'static>> {
     .into_iter()
     .map(help_shortcut_line)
     .collect()
+}
+
+fn compact_orders_close_hint(inner_width: u16) -> &'static str {
+    if inner_width <= 13 {
+        "Esc"
+    } else {
+        HELP_CLOSE_HINT
+    }
 }
 
 /// Split `Key: description` help strings into bold key + gray body (same as Settings Shift+H rows).
@@ -507,7 +526,7 @@ mod help_content_tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
         let mut flat = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
@@ -515,7 +534,11 @@ mod help_content_tests {
             }
             flat.push('\n');
         }
-        flat.contains(needle)
+        flat
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        buffer_text(buf).contains(needle)
     }
 
     #[test]
@@ -644,6 +667,28 @@ mod help_content_tests {
                 buffer_contains(buf, expected),
                 "missing {expected:?} from very short Orders help"
             );
+        }
+    }
+
+    #[test]
+    fn tiny_narrow_orders_help_keeps_filters_and_short_close_hint_visible() {
+        for (width, height) in [(15, 10), (15, 6)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let app = AppState::new(UserRole::User);
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::Orders)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            for expected in ["Shift+F", "Shift+X", "Esc"] {
+                let rendered = buffer_text(buf);
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected:?} from {width}x{height} Orders help:\n{rendered}"
+                );
+            }
         }
     }
 }
