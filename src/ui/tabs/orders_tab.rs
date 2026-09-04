@@ -1,15 +1,16 @@
 use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::*;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
 
 use crate::ui::helpers::{
     format_local_timestamp, format_premium, get_filtered_book_orders, render_table_list_scrollbar,
     selected_book_display_idx,
 };
+use crate::ui::orders::{OrderBookFilterField, OrderBookFilterState};
 use crate::ui::{apply_kind_color, AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
@@ -66,10 +67,17 @@ pub fn render_orders_tab(
         return;
     }
 
-    let filtered = get_filtered_book_orders(&orders_lock, &app.currencies_filter);
+    let filtered =
+        get_filtered_book_orders(&orders_lock, &app.currencies_filter, &app.order_filters);
+    let (filter_area, table_area) =
+        split_filter_and_table(area, app.order_filters.has_active_filters());
+    if let Some(filter_area) = filter_area {
+        render_order_filter_bar(f, filter_area, app);
+    }
+
     if filtered.is_empty() {
         let paragraph = Paragraph::new(Span::styled(
-            "📭 No offers match the current currency filter…",
+            "📭 No offers match the current filters…",
             Style::default().fg(Color::Yellow),
         ))
         .block(
@@ -80,17 +88,17 @@ pub fn render_orders_tab(
                 .border_style(Style::default().fg(PRIMARY_COLOR))
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
-        f.render_widget(paragraph, area);
+        f.render_widget(paragraph, table_area);
         return;
     }
 
     let display_selected_idx =
         selected_book_display_idx(app.selected_order_id, &filtered).unwrap_or(0);
 
-    let compact = area.width < 100;
+    let compact = table_area.width < 100;
     // Drop the header when height < 4 so at least one data row stays visible
     // (same short-terminal rule as Disputes Pending).
-    let show_header = area.height >= 4;
+    let show_header = table_area.height >= 4;
     let header_labels = if compact {
         vec!["📈 Kind", "💵 Fiat Amt", "± Premium", "💳 Payment"]
     } else {
@@ -225,13 +233,13 @@ pub fn render_orders_tab(
     }
 
     app.orders_table_state.select(Some(display_selected_idx));
-    f.render_stateful_widget(table, area, &mut app.orders_table_state);
+    f.render_stateful_widget(table, table_area, &mut app.orders_table_state);
 
     let header_rows = u16::from(show_header);
-    let visible_rows = area.height.saturating_sub(2 + header_rows) as usize;
+    let visible_rows = table_area.height.saturating_sub(2 + header_rows) as usize;
     render_table_list_scrollbar(
         f,
-        area,
+        table_area,
         row_count,
         visible_rows,
         header_rows,
@@ -239,9 +247,343 @@ pub fn render_orders_tab(
     );
 }
 
+fn split_filter_and_table(area: Rect, has_filters: bool) -> (Option<Rect>, Rect) {
+    if !has_filters || area.height < 7 {
+        return (None, area);
+    }
+    let chunks = Layout::new(
+        Direction::Vertical,
+        [Constraint::Length(4), Constraint::Min(3)],
+    )
+    .split(area);
+    (Some(chunks[0]), chunks[1])
+}
+
+fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
+    let summary = app.order_filters.summary();
+    let hint = if area.width < 80 {
+        "Shift+F filters | Shift+X clear"
+    } else {
+        "Shift+F: edit filters | Shift+X: clear filters | Enter: take/cancel selected order"
+    };
+    let text = vec![
+        Line::from(vec![
+            Span::styled(
+                "Filters: ",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(summary, Style::default().fg(Color::White)),
+        ]),
+        Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
+    ];
+    f.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .title("Order Filters")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        ),
+        area,
+    );
+}
+
 fn premium_cell(premium: i64) -> Cell<'static> {
     let (text, color) = format_premium(premium);
     Cell::from(text).style(Style::default().fg(color))
+}
+
+pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilterState) {
+    let area = f.area();
+    let popup = center_rect(
+        area,
+        76.min(area.width.saturating_sub(2)),
+        16.min(area.height),
+    );
+    f.render_widget(Clear, popup);
+
+    let inner_width = popup.width.saturating_sub(2) as usize;
+    let inner_height = popup.height.saturating_sub(2);
+    let compact = popup.height < 14 || popup.width < 56;
+    let lines = if compact {
+        compact_order_filter_popup_lines(state, inner_width, inner_height)
+    } else {
+        full_order_filter_popup_lines(state, inner_width)
+    };
+
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Left).block(
+            Block::default()
+                .title("Order Filters")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(PRIMARY_COLOR))
+                .style(Style::default().bg(BACKGROUND_COLOR)),
+        ),
+        popup,
+    );
+}
+
+fn full_order_filter_popup_lines(
+    state: &OrderBookFilterState,
+    inner_width: usize,
+) -> Vec<Line<'static>> {
+    let label_width = 20;
+    let value_width = inner_width.saturating_sub(label_width + 3);
+    let mut lines = vec![
+        shortcut_line(&[("Enter", "Apply"), ("Esc", "Cancel"), ("Up/Down", "Field")]),
+        shortcut_line(&[("Space", "Cycle kind"), ("Shift+X", "Clear")]),
+        active_filters_line(state, inner_width),
+        Line::from(""),
+    ];
+    lines.extend(
+        OrderBookFilterField::ALL
+            .iter()
+            .map(|field| filter_field_line(state, *field, label_width, value_width)),
+    );
+    lines.push(Line::from(""));
+    lines.push(focused_field_hint_line(state.focused, inner_width));
+    lines
+}
+
+fn compact_order_filter_popup_lines(
+    state: &OrderBookFilterState,
+    inner_width: usize,
+    inner_height: u16,
+) -> Vec<Line<'static>> {
+    let label = state.focused.label();
+    let value = compact_field_value(state, inner_width);
+    let mut lines = vec![shortcut_line(&[("Enter", "Apply"), ("Esc", "Cancel")])];
+
+    if inner_height > 4 {
+        lines.push(shortcut_line(&[("Up/Down", "Field"), ("Shift+X", "Clear")]));
+    } else {
+        lines.push(shortcut_line(&[("Shift+X", "Clear")]));
+    }
+
+    lines.push(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("Value: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            value,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    if inner_height > 5 {
+        lines.push(focused_field_hint_line(state.focused, inner_width));
+    }
+
+    lines
+}
+
+fn active_filters_line(state: &OrderBookFilterState, inner_width: usize) -> Line<'static> {
+    if state.filters.has_active_filters() {
+        let summary_width = inner_width.saturating_sub("Active: ".len());
+        Line::from(vec![
+            Span::styled("Active: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                truncate_for_cell(&state.filters.summary(), summary_width)
+                    .trim_end()
+                    .to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(
+            truncate_for_cell(
+                "Active: no filters. Set fields below, then press Enter.",
+                inner_width,
+            )
+            .trim_end()
+            .to_string(),
+            Style::default().fg(Color::DarkGray),
+        ))
+    }
+}
+
+fn shortcut_line(items: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, (key, label)) in items.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn filter_field_line(
+    state: &OrderBookFilterState,
+    field: OrderBookFilterField,
+    label_width: usize,
+    value_width: usize,
+) -> Line<'static> {
+    Line::from(filter_field_spans(state, field, label_width, value_width))
+}
+
+fn filter_field_spans(
+    state: &OrderBookFilterState,
+    field: OrderBookFilterField,
+    label_width: usize,
+    value_width: usize,
+) -> Vec<Span<'static>> {
+    let selected = field == state.focused;
+    let row_style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let label_style = if selected {
+        row_style
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let value = filter_field_value(state, field);
+    let value_style = if value == "Any" {
+        if selected {
+            row_style
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    } else {
+        if selected {
+            row_style
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        }
+    };
+    let value = if value_width == 0 {
+        if selected && active_order_filter_field_accepts_text(field) && value == "Any" {
+            "Type value...".to_string()
+        } else {
+            value
+        }
+    } else {
+        truncate_for_cell(&value, value_width)
+    };
+
+    vec![
+        Span::styled(if selected { "> " } else { "  " }, row_style),
+        Span::styled(format!("{:<label_width$}", field.label()), label_style),
+        Span::styled(" ", row_style),
+        Span::styled(value, value_style),
+    ]
+}
+
+fn active_order_filter_field_accepts_text(field: OrderBookFilterField) -> bool {
+    !matches!(field, OrderBookFilterField::Kind)
+}
+
+fn focused_field_hint_line(field: OrderBookFilterField, inner_width: usize) -> Line<'static> {
+    let hint = match field {
+        OrderBookFilterField::Kind => "Space cycles Buy/Sell. Use Any to include both.",
+        OrderBookFilterField::FiatCurrency => "Type a currency code, for example MXN or USD.",
+        OrderBookFilterField::FiatAmountMin => "Type the minimum fiat amount to include.",
+        OrderBookFilterField::FiatAmountMax => "Type the maximum fiat amount to include.",
+        OrderBookFilterField::PremiumMin => {
+            "Type the minimum premium percent, negative values allowed."
+        }
+        OrderBookFilterField::PremiumMax => {
+            "Type the maximum premium percent, negative values allowed."
+        }
+        OrderBookFilterField::PaymentMethod => "Type part of a payment method, for example SPEI.",
+        OrderBookFilterField::CreatedWithinDays => "Type a number of days, for example 7.",
+    };
+    Line::from(vec![
+        Span::styled("Hint: ", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(
+            truncate_for_cell(hint, inner_width.saturating_sub("Hint: ".len()))
+                .trim_end()
+                .to_string(),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+fn truncate_for_cell(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut chars = value.chars();
+    let mut out: String = chars.by_ref().take(width).collect();
+    if chars.next().is_some() && width > 1 {
+        out.pop();
+        out.push('.');
+    }
+    format!("{out:<width$}")
+}
+
+fn compact_field_value(state: &OrderBookFilterState, inner_width: usize) -> String {
+    let raw_value = filter_field_value(state, state.focused);
+    let value = if state.focused != OrderBookFilterField::Kind && raw_value == "Any" {
+        "Type value...".to_string()
+    } else {
+        raw_value
+    };
+    truncate_for_cell(&value, inner_width.saturating_sub("Value: ".len()))
+        .trim_end()
+        .to_string()
+}
+
+fn filter_field_value(state: &OrderBookFilterState, field: OrderBookFilterField) -> String {
+    match field {
+        OrderBookFilterField::Kind => state.filters.kind.label().to_string(),
+        OrderBookFilterField::FiatCurrency => empty_display(&state.filters.fiat_code),
+        OrderBookFilterField::FiatAmountMin => empty_display(&state.filters.fiat_amount_min),
+        OrderBookFilterField::FiatAmountMax => empty_display(&state.filters.fiat_amount_max),
+        OrderBookFilterField::PremiumMin => empty_display(&state.filters.premium_min),
+        OrderBookFilterField::PremiumMax => empty_display(&state.filters.premium_max),
+        OrderBookFilterField::PaymentMethod => empty_display(&state.filters.payment_method),
+        OrderBookFilterField::CreatedWithinDays => {
+            empty_display(&state.filters.created_within_days)
+        }
+    }
+}
+
+fn empty_display(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "Any".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn center_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let [area] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    area
 }
 
 #[cfg(test)]
@@ -294,6 +636,7 @@ mod tests {
         assert!(buffer_contains(&buf, "Premium"));
         assert!(buffer_contains(&buf, "-3%"));
         assert!(buffer_contains(&buf, "SEPA"));
+        assert!(!buffer_contains(&buf, "Order Filters"));
     }
 
     #[test]
@@ -304,6 +647,147 @@ mod tests {
         assert!(buffer_contains(&buf, "100 USD"));
         assert!(buffer_contains(&buf, "SEPA"));
         assert!(!buffer_contains(&buf, "Created"));
+    }
+
+    #[test]
+    fn orders_table_shows_active_filter_summary() {
+        let backend = TestBackend::new(130, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", 2)]));
+        let mut app = AppState::new(UserRole::User);
+        app.order_filters.fiat_code = "USD".to_string();
+        app.order_filters.payment_method = "sep".to_string();
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Filters:"));
+        assert!(buffer_contains(buf, "fiat=USD"));
+        assert!(buffer_contains(buf, "payment~sep"));
+        assert!(buffer_contains(buf, "Shift+F: edit filters"));
+    }
+
+    #[test]
+    fn orders_table_keeps_filter_summary_when_filters_match_no_orders() {
+        let backend = TestBackend::new(130, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", 2)]));
+        let mut app = AppState::new(UserRole::User);
+        app.order_filters.fiat_code = "EUR".to_string();
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Filters:"));
+        assert!(buffer_contains(buf, "fiat=EUR"));
+        assert!(buffer_contains(buf, "No offers match"));
+    }
+
+    #[test]
+    fn order_filter_popup_lists_all_filter_fields() {
+        let backend = TestBackend::new(90, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = OrderBookFilterState::default();
+        state.filters.payment_method = "cash".to_string();
+
+        terminal
+            .draw(|f| render_order_filter_popup(f, &state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Buy/Sell"));
+        assert!(buffer_contains(buf, "Fiat currency"));
+        assert!(buffer_contains(buf, "Fiat amount min"));
+        assert!(buffer_contains(buf, "Premium max %"));
+        assert!(buffer_contains(buf, "Payment method"));
+        assert!(buffer_contains(buf, "Created within days"));
+        assert!(buffer_contains(buf, "Shift+X Clear"));
+        assert!(buffer_contains(buf, "cash"));
+    }
+
+    #[test]
+    fn short_order_filter_popup_keeps_focused_field_visible() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = OrderBookFilterState {
+            focused: OrderBookFilterField::PremiumMax,
+            ..Default::default()
+        };
+        state.filters.premium_max = "12".to_string();
+
+        terminal
+            .draw(|f| render_order_filter_popup(f, &state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Premium max %"));
+        assert!(buffer_contains(buf, "12"));
+        assert!(buffer_contains(buf, "Shift+X Clear"));
+    }
+
+    #[test]
+    fn narrow_order_filter_popup_keeps_focused_field_visible() {
+        let backend = TestBackend::new(40, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = OrderBookFilterState {
+            focused: OrderBookFilterField::PaymentMethod,
+            ..Default::default()
+        };
+        state.filters.payment_method = "cash".to_string();
+
+        terminal
+            .draw(|f| render_order_filter_popup(f, &state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment method"));
+        assert!(buffer_contains(buf, "cash"));
+        assert!(buffer_contains(buf, "Shift+X Clear"));
+    }
+
+    #[test]
+    fn tiny_order_filter_popup_keeps_clear_shortcut_and_value_visible() {
+        let backend = TestBackend::new(36, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = OrderBookFilterState {
+            focused: OrderBookFilterField::PaymentMethod,
+            ..Default::default()
+        };
+        state.filters.payment_method = "cash".to_string();
+
+        terminal
+            .draw(|f| render_order_filter_popup(f, &state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Shift+X Clear"));
+        assert!(buffer_contains(buf, "Payment method"));
+        assert!(buffer_contains(buf, "cash"));
+    }
+
+    #[test]
+    fn order_filter_popup_truncates_long_values() {
+        let backend = TestBackend::new(78, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = OrderBookFilterState {
+            focused: OrderBookFilterField::PaymentMethod,
+            ..Default::default()
+        };
+        state.filters.payment_method =
+            "very long payment method name that should not wrap inside the popup".to_string();
+        state.filters.fiat_code = "USD".to_string();
+
+        terminal
+            .draw(|f| render_order_filter_popup(f, &state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "payment~very long payment method"));
+        assert!(!buffer_contains(buf, "should not wrap inside the popup"));
     }
 
     /// When more orders exist than table body rows, selecting a late row must
@@ -320,8 +804,9 @@ mod tests {
         let orders = Arc::new(Mutex::new(book));
         let mut app = AppState::new(UserRole::User);
         app.selected_order_id = Some(last_id);
-        // Height 10 → ~7 body rows after borders+header; selecting last must scroll.
-        let backend = TestBackend::new(130, 10);
+        // Height 6 keeps the Orders table compact enough to skip the filter bar while still
+        // leaving body rows to scroll.
+        let backend = TestBackend::new(130, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
@@ -352,7 +837,7 @@ mod tests {
         let orders = Arc::new(Mutex::new(book));
         let mut app = AppState::new(UserRole::User);
         app.selected_order_id = Some(first_id);
-        let backend = TestBackend::new(130, 10);
+        let backend = TestBackend::new(130, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
@@ -435,7 +920,7 @@ mod tests {
         let mut app = AppState::new(UserRole::User);
         app.selected_order_id = Some(last_id);
 
-        let backend = TestBackend::new(130, 10);
+        let backend = TestBackend::new(130, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
