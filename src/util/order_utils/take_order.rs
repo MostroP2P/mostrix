@@ -323,52 +323,64 @@ fn expected_buyer_invoice_sats(book_amount: i64, fee_rate: f64) -> i64 {
 /// [`expected_buyer_invoice_sats`]; market-price books (`amount == 0`) only require a
 /// positive daemon quote after id / kind / status / fiat checks.
 ///
+/// All identity fields on the reply (`id`, `kind`, `status`, `fiat_code`, `fiat_amount`)
+/// are required — omitted or empty values are rejected (MOSTRO-078 fail-closed).
+///
 /// # Errors
 ///
-/// Mismatched id, kind, status, fiat, or sats; missing fee for fixed-price; non-positive
-/// market quote (MOSTRO-078).
+/// Missing/mismatched id, kind, status, fiat, or sats; missing fee for fixed-price;
+/// non-positive market quote (MOSTRO-078).
 fn validate_take_sell_add_invoice_reply(
     requested: &SmallOrder,
     returned: &SmallOrder,
     take_fiat_amount: Option<i64>,
     fee_rate: Option<f64>,
 ) -> Result<i64> {
-    if let (Some(req_id), Some(ret_id)) = (requested.id, returned.id) {
-        if req_id != ret_id {
-            return Err(anyhow::anyhow!(
-                "AddInvoice order id mismatch: took {}, daemon sent {}",
-                req_id,
-                ret_id
-            ));
-        }
+    let req_id = requested
+        .id
+        .ok_or_else(|| anyhow::anyhow!("Taken order is missing id"))?;
+    let ret_id = returned
+        .id
+        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order id"))?;
+    if req_id != ret_id {
+        return Err(anyhow::anyhow!(
+            "AddInvoice order id mismatch: took {}, daemon sent {}",
+            req_id,
+            ret_id
+        ));
     }
 
-    if let Some(kind) = returned.kind {
-        if requested.kind.is_some_and(|k| k != kind) {
-            return Err(anyhow::anyhow!(
-                "AddInvoice order kind mismatch: expected {:?}, got {:?}",
-                requested.kind,
-                kind
-            ));
-        }
-        if kind != mostro_core::order::Kind::Sell {
-            return Err(anyhow::anyhow!(
-                "AddInvoice after take-sell must be a sell order, got {:?}",
-                kind
-            ));
-        }
+    let kind = returned
+        .kind
+        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order kind"))?;
+    if requested.kind.is_some_and(|k| k != kind) {
+        return Err(anyhow::anyhow!(
+            "AddInvoice order kind mismatch: expected {:?}, got {:?}",
+            requested.kind,
+            kind
+        ));
+    }
+    if kind != mostro_core::order::Kind::Sell {
+        return Err(anyhow::anyhow!(
+            "AddInvoice after take-sell must be a sell order, got {:?}",
+            kind
+        ));
     }
 
-    if let Some(status) = returned.status {
-        if status != Status::WaitingBuyerInvoice {
-            return Err(anyhow::anyhow!(
-                "AddInvoice status mismatch: expected WaitingBuyerInvoice, got {:?}",
-                status
-            ));
-        }
+    let status = returned
+        .status
+        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order status"))?;
+    if status != Status::WaitingBuyerInvoice {
+        return Err(anyhow::anyhow!(
+            "AddInvoice status mismatch: expected WaitingBuyerInvoice, got {:?}",
+            status
+        ));
     }
 
-    if !returned.fiat_code.is_empty() && returned.fiat_code != requested.fiat_code {
+    if returned.fiat_code.is_empty() {
+        return Err(anyhow::anyhow!("AddInvoice reply missing fiat code"));
+    }
+    if returned.fiat_code != requested.fiat_code {
         return Err(anyhow::anyhow!(
             "AddInvoice fiat code mismatch: expected {}, got {}",
             requested.fiat_code,
@@ -377,7 +389,13 @@ fn validate_take_sell_add_invoice_reply(
     }
 
     let expected_fiat = take_fiat_amount.unwrap_or(requested.fiat_amount);
-    if returned.fiat_amount != 0 && returned.fiat_amount != expected_fiat {
+    if expected_fiat <= 0 {
+        return Err(anyhow::anyhow!(
+            "AddInvoice expected fiat amount must be positive, got {}",
+            expected_fiat
+        ));
+    }
+    if returned.fiat_amount != expected_fiat {
         return Err(anyhow::anyhow!(
             "AddInvoice fiat amount mismatch: expected {}, got {}",
             expected_fiat,
@@ -675,5 +693,68 @@ mod tests {
         let err = validate_take_sell_add_invoice_reply(&requested, &returned, Some(75), None)
             .expect_err("fiat mismatch must fail");
         assert!(err.to_string().contains("fiat amount mismatch"));
+    }
+
+    #[test]
+    fn validate_add_invoice_rejects_omitted_identity_fields() {
+        let id = uuid::Uuid::new_v4();
+        let requested = sample_small_order(id);
+        let net = expected_buyer_invoice_sats(21_000, 0.01);
+
+        let mut missing_id = sample_small_order(id);
+        missing_id.id = None;
+        missing_id.amount = net;
+        assert!(
+            validate_take_sell_add_invoice_reply(&requested, &missing_id, None, Some(0.01))
+                .unwrap_err()
+                .to_string()
+                .contains("missing order id")
+        );
+
+        let mut missing_kind = sample_small_order(id);
+        missing_kind.kind = None;
+        missing_kind.amount = net;
+        assert!(
+            validate_take_sell_add_invoice_reply(&requested, &missing_kind, None, Some(0.01))
+                .unwrap_err()
+                .to_string()
+                .contains("missing order kind")
+        );
+
+        let mut missing_status = sample_small_order(id);
+        missing_status.status = None;
+        missing_status.amount = net;
+        assert!(validate_take_sell_add_invoice_reply(
+            &requested,
+            &missing_status,
+            None,
+            Some(0.01)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing order status"));
+
+        let mut empty_fiat_code = sample_small_order(id);
+        empty_fiat_code.fiat_code.clear();
+        empty_fiat_code.amount = net;
+        assert!(validate_take_sell_add_invoice_reply(
+            &requested,
+            &empty_fiat_code,
+            None,
+            Some(0.01)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing fiat code"));
+
+        let mut zero_fiat = sample_small_order(id);
+        zero_fiat.fiat_amount = 0;
+        zero_fiat.amount = net;
+        assert!(
+            validate_take_sell_add_invoice_reply(&requested, &zero_fiat, None, Some(0.01))
+                .unwrap_err()
+                .to_string()
+                .contains("fiat amount mismatch")
+        );
     }
 }
