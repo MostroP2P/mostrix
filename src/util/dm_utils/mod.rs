@@ -334,6 +334,13 @@ pub async fn send_dm(
 /// Exhausting the timeout budget still surfaces as
 /// `"Timeout waiting for DM or gift wrap event"` (not a spuriously immediate
 /// cancel), so callers can distinguish transport loss from a daemon `CantDo`.
+///
+/// # Errors
+///
+/// - Timeout with no matching reply within `timeout`
+/// - Outbound `sent_message` failure (returned before any resurrection loop)
+/// - Fatal restart requested (`"DM waiter canceled before receiving an event"`)
+/// - DM router still unavailable when the remaining budget is too small to retry
 pub async fn wait_for_dm<F>(
     trade_keys: &Keys,
     timeout: std::time::Duration,
@@ -441,7 +448,8 @@ fn dm_router_cmd_sender() -> Result<UnboundedSender<OrderDmSubscriptionCmd>> {
 
 /// Whether a canceled waiter oneshot should be retried within the remaining budget.
 ///
-/// Used by unit tests to lock MOSTRO-080 reconnect resurrection behavior.
+/// Used by [`wait_for_dm`] after listener abort/reject, and by unit tests locking
+/// MOSTRO-080 reconnect resurrection behavior.
 fn should_reregister_dm_waiter_after_cancel(remaining: std::time::Duration) -> bool {
     !remaining.is_zero() && !crate::util::fatal_requested()
 }
@@ -1999,6 +2007,8 @@ async fn resolve_order_for_event(
 ///   reconnect, and panic/exit recovery); on failure the supervisor publishes a fresh
 ///   command sender **before** backoff so `TrackOrder` / waiters buffer, then this
 ///   loop re-bootstraps from `active_order_trade_indices` (merged with DB hydration)
+/// - aborting this task drops in-memory `pending_waiters`; [`wait_for_dm`] re-registers
+///   on the rebuilt router without resending (MOSTRO-080)
 /// - bootstrap subscriptions for already-active orders at startup
 /// - continue processing relay notifications even if `dm_subscription_rx` is closed
 ///   (no new dynamic subscriptions, existing ones remain active)
@@ -2202,7 +2212,8 @@ pub async fn listen_for_order_messages(
                                 pending_waiters.len(),
                                 MAX_PENDING_WAITERS
                             );
-                            // Dropping `response_tx` cancels waiter immediately in `wait_for_dm`.
+                            // Dropping `response_tx` cancels this oneshot; [`wait_for_dm`]
+                            // re-registers for the remaining timeout budget (MOSTRO-080).
                             continue;
                         }
                         let before = pending_waiters.len();
@@ -2229,9 +2240,9 @@ pub async fn listen_for_order_messages(
                                         waiter_pubkey,
                                         e
                                     );
-                                    // Immediate waiter cancellation path: do not queue this waiter
-                                    // when we could not subscribe. Dropping response_tx here makes
-                                    // wait_for_dm receive oneshot cancellation right away.
+                                    // Do not queue this waiter when subscribe failed. Dropping
+                                    // `response_tx` cancels the oneshot; [`wait_for_dm`] will
+                                    // re-register until its timeout budget is exhausted (MOSTRO-080).
                                     continue;
                                 }
                             }
