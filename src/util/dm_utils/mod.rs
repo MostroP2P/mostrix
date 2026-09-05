@@ -2687,12 +2687,11 @@ mod tests {
     use uuid::Uuid;
 
     /// `wait_for_dm` uses the process-global DM router sender; serialize tests that publish it.
-    static WAIT_FOR_DM_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static WAIT_FOR_DM_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-    fn lock_wait_for_dm_router_tests() -> std::sync::MutexGuard<'static, ()> {
-        WAIT_FOR_DM_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    async fn lock_wait_for_dm_router_tests() -> tokio::sync::MutexGuard<'static, ()> {
+        WAIT_FOR_DM_TEST_LOCK.lock().await
     }
 
     #[tokio::test]
@@ -3320,7 +3319,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_dm_reregisters_after_listener_abort_without_resending() {
-        let _guard = lock_wait_for_dm_router_tests();
+        let _guard = lock_wait_for_dm_router_tests().await;
         // Simulate reconnect aborting the first waiter oneshot; the second
         // RegisterWaiter receives the daemon reply. Outbound send runs once.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
@@ -3381,7 +3380,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_dm_fails_immediately_on_capacity_full() {
-        let _guard = lock_wait_for_dm_router_tests();
+        let _guard = lock_wait_for_dm_router_tests().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
         set_dm_router_cmd_tx(tx).expect("publish router sender");
 
@@ -3427,7 +3426,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_dm_catch_up_observes_reply_published_during_reconnect_gap() {
-        let _guard = lock_wait_for_dm_router_tests();
+        let _guard = lock_wait_for_dm_router_tests().await;
         // Critical ordering (ermeme / MOSTRO-080):
         // send succeeds → listener aborted → reply published before new sub is live →
         // resurrected waiter with catch_up_since still observes the reply (no resend).
