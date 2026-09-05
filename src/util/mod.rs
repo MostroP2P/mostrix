@@ -46,8 +46,8 @@ pub use file_validation::{
     ValidatedAttachment, ATTACHMENT_ALLOWED_EXTENSIONS,
 };
 pub use filters::{
-    create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
-    filter_protocol_dm_from_mostro, MOSTRO_LIST_FETCH_EVENT_LIMIT,
+    create_filter, create_mostro_list_fetch_filter, filter_protocol_dm_from_mostro,
+    MOSTRO_LIST_FETCH_EVENT_LIMIT,
 };
 pub use mostro_core::prelude::{unwrap_incoming, wrap_message_with, Transport};
 pub use mostro_info::{

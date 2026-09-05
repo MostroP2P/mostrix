@@ -53,7 +53,7 @@ fn foo(msg: &crate::ui::DisputeChatMessage) { /* ... */ }
 - **Use traits**: When multiple types share behavior, consider using traits.
 - **Centralize configuration**: Use the `Settings` struct instead of hardcoding values.
 
-- [`send_dm`](../src/util/dm_utils/mod.rs) in `src/util/dm_utils/mod.rs` is reused across order operations; it wraps via `mostro-core` [`wrap_message_with`](../src/util/mod.rs) (v1 GiftWrap or v2 signed kind 14 per instance info).
+- [`send_dm`](../src/util/dm_utils/mod.rs) in `src/util/dm_utils/mod.rs` is reused across order operations; it wraps via `mostro-core` [`wrap_message_with`](../src/util/mod.rs) (signed kind 14 / NIP-44).
 
 ### 3. Simplicity
 
@@ -180,8 +180,8 @@ pub use dm_utils::{
     FETCH_EVENTS_TIMEOUT,
 };
 pub use filters::{
-    create_filter, create_mostro_list_fetch_filter, filter_giftwrap_to_recipient,
-    filter_protocol_dm_from_mostro, MOSTRO_LIST_FETCH_EVENT_LIMIT,
+    create_filter, create_mostro_list_fetch_filter, filter_protocol_dm_from_mostro,
+    MOSTRO_LIST_FETCH_EVENT_LIMIT,
 };
 pub use order_utils::{fetch_events_list, get_orders, send_new_order, take_order};
 pub use types::{get_cant_do_description, Event, ListKind};

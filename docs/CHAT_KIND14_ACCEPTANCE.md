@@ -34,7 +34,7 @@ Flip the const to `false` after coordinated deprecation with mobile / other clie
 1. Two clients complete a trade chat round-trip on kind 14.
 2. Confirm outer `pubkey == pub(K_sign)` and `#p == [pub(K_conv)]` (no trade keys).
 3. Observer with disclosed `K_conv` (and optional locator) reads history; cannot send.
-4. Protocol DMs on v1 and v2 instances still function (see [DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md#manual-verification-protocol-v2)).
+4. Protocol DMs on v2 instances still function (see [DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md#manual-verification-protocol-v2)). Protocol v1 GiftWrap Mostro is unsupported.
 
 ## Related
 

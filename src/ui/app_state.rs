@@ -235,7 +235,7 @@ pub struct AppState {
     /// Orders where Mostro asked for a **replacement** invoice after payout retries
     /// failed. Sticky until the buyer submits (or cancels the trade) so Enter on
     /// Messages can reopen the AddInvoice popup even if the sidebar row did not
-    /// update to `AddInvoice` (out-of-order GiftWrap timestamps).
+    /// update to `AddInvoice` (out-of-order protocol DM timestamps).
     pub orders_needing_replacement_invoice: HashSet<uuid::Uuid>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
@@ -392,7 +392,7 @@ impl AppState {
             pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
             mostro_info: None,
-            transport: Transport::default(),
+            transport: Transport::Nip44Direct,
             offline_overlay_message: None,
             background_task_alarms: BTreeMap::new(),
             backup_requires_restart: false,
@@ -424,6 +424,11 @@ impl AppState {
             }
         }
         self.transport = transport_from_instance(info.as_ref());
+        if info.as_ref().and_then(|i| i.protocol_version) == Some(1) {
+            log::warn!(
+                "Mostro instance advertises protocol_version=1 (GiftWrap); Mostrix speaks NIP-44 (protocol v2) only"
+            );
+        }
         self.mostro_info = info;
     }
 
@@ -514,7 +519,6 @@ impl AppState {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::ui::chat::{ChatSender, DisputeChatMessage};
@@ -617,6 +621,6 @@ mod tests {
         }));
         app.set_mostro_info(None);
         assert!(app.mostro_info.is_none());
-        assert_eq!(app.transport, Transport::GiftWrap);
+        assert_eq!(app.transport, Transport::Nip44Direct);
     }
 }

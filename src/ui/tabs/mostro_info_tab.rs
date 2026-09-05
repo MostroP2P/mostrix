@@ -94,6 +94,12 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
         None => "unknown".to_string(),
     };
     push_kv(&mut lines, "Protocol version", &protocol_version);
+    if info.protocol_version == Some(1) {
+        lines.push(Line::from(Span::styled(
+            "This instance advertises protocol v1 (GiftWrap), which Mostrix no longer supports.",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
     push_kv(
         &mut lines,
         "Wire transport",
@@ -191,12 +197,8 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     lines
 }
 
-fn transport_display_label(transport: Transport) -> &'static str {
-    #[allow(deprecated)]
-    match transport {
-        Transport::GiftWrap => "GiftWrap (NIP-59)",
-        Transport::Nip44Direct => "NIP-44 direct",
-    }
+fn transport_display_label(_transport: Transport) -> &'static str {
+    "NIP-44 direct"
 }
 
 fn section_title(title: &str) -> Line<'static> {
@@ -249,4 +251,48 @@ fn push_list(lines: &mut Vec<Line<'static>>, label: &str, items: &[String]) {
 
     let joined = items.join(", ");
     push_kv(lines, label, &joined);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines_text(info: &MostroInstanceInfo) -> String {
+        build_info_lines(info)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn v1_protocol_version_shows_unsupported_warning() {
+        let info = MostroInstanceInfo {
+            protocol_version: Some(1),
+            ..Default::default()
+        };
+        let text = lines_text(&info);
+        assert!(text.contains("Protocol version: 1"));
+        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(text.contains(
+            "This instance advertises protocol v1 (GiftWrap), which Mostrix no longer supports."
+        ));
+    }
+
+    #[test]
+    fn v2_protocol_version_has_no_unsupported_warning() {
+        let info = MostroInstanceInfo {
+            protocol_version: Some(2),
+            ..Default::default()
+        };
+        let text = lines_text(&info);
+        assert!(text.contains("Protocol version: 2"));
+        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(!text.contains("no longer supports"));
+    }
 }

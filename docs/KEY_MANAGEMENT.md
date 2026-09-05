@@ -29,14 +29,14 @@ On very first launch, when Mostrix must bootstrap a brand-new `settings.toml`, i
 
 The **Identity Key** is the user's long-term Nostr identity. It is used for:
 - Building reputation across the Mostro network.
-- Signing the **Seal** (kind 13) in NIP-59 Gift Wrap events in "Normal Mode".
+- Identity proof inside protocol v2 kind-14 ciphertext when it differs from the trade key ("Normal Mode").
 - Acting as the primary point of contact for the Mostro daemon for rating updates.
 
 ## Trade Keys (Index 1+)
 
 To maximize privacy, Mostrix derives a **fresh ephemeral trade key** for every new order or taken trade.
 
-- **Role**: Signs the **Rumor** (kind 1) inside the NIP-59 Gift Wrap.
+- **Role**: Authors and signs the outer protocol v2 kind-14 event, and signs the inner message tuple.
 - **Privacy**: Ensures that trades are not easily linkable to the user's primary identity by external observers.
 
 ## Admin Shared Keys for Disputes
@@ -61,21 +61,20 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 
 - **Validation**: When saving a new dispute, if buyer and seller pubkeys differ but the two derived shared keys are identical, the client logs an error (`Shared keys for dispute … are identical for different buyer/seller pubkeys; chat may be broken`). This guards against bad relay data or parsing issues. A unit test in `src/util/chat_utils.rs` asserts that different counterparty pubkeys yield different shared keys.
 
-## NIP-59 Gift Wrap Structure (protocol v1)
+## Protocol v2 kind 14 (Mostro DMs)
 
-Mostrix implements NIP-59 for **protocol v1** Mostro DMs. **Protocol v2** Mostro DMs use signed kind 14 via [`wrap_message_with`](../src/util/mod.rs). **P2P / dispute chat** uses kind 14 (`K_sign` / `K_conv`) and dual-reads legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
+Mostrix implements **protocol v2** signed kind 14 for Mostro DMs via [`wrap_message_with`](../src/util/mod.rs). Protocol v1 NIP-59 GiftWrap is not used. **P2P / dispute chat** uses kind 14 (`K_sign` / `K_conv`) and dual-reads legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
 
 ### 1. Normal Mode (Reputation Enabled)
 In this mode, Mostro can link the trade to your identity key for reputation purposes, but other Nostr users cannot.
-- **Wrap (Kind 1059)**: Signed by a random ephemeral key.
-- **Seal (Kind 13)**: Signed by the **Identity Key (Index 0)**.
-- **Rumor (Kind 1)**: Signed by the **Trade Key (Index N)**.
+- **Outer event (kind 14)**: Signed by the **Trade Key (Index N)** (visible, rate-limitable sender).
+- **Ciphertext**: NIP-44 encryption of `[Message, trade_sig, [identity_pubkey, identity_sig]]`.
+- **Identity proof**: Signed by the **Identity Key (Index 0)** over a domain-tagged payload that binds the trade pubkey to the message.
 
 ### 2. Full Privacy Mode
 In this mode, Mostro cannot link the trade to your identity key. You operate anonymously without reputation.
-- **Wrap (Kind 1059)**: Signed by a random ephemeral key.
-- **Seal (Kind 13)**: Signed by the **Trade Key (Index N)**.
-- **Rumor (Kind 1)**: Signed by the **Trade Key (Index N)**.
+- **Outer event (kind 14)**: Signed by the **Trade Key (Index N)**.
+- **Ciphertext**: identity proof is omitted; the receiver treats the trade key as the identity.
 
 ## Trade Index Incrementation
 Whenever a user creates or takes an order, the next trade index is reserved atomically in the database before any network I/O.
@@ -133,7 +132,7 @@ Each order entry also stores the specific `trade_keys` (or the index) used, allo
 Mostrix avoids storing full message histories locally. Instead, it uses the deterministic nature of the keys:
 1. On startup, the client retrieves all active order IDs and their associated `trade_index` from the database.
 2. It re-derives the corresponding `Trade Keys`.
-3. It queries Nostr relays for recent **protocol DM** events directed to those trade public keys — GiftWrap (kind 1059) or signed kind 14, depending on the Mostro instance `protocol_version` / [`Transport`](../src/util/mod.rs).
+3. It queries Nostr relays for recent **protocol DM** events directed to those trade public keys — signed kind 14 from Mostro (`filter_protocol_dm_from_mostro`).
 4. Separately, **P2P / dispute chat** is hydrated by the shared-key chat router (kind 14 `authors = [pub(K_sign)]`, plus legacy GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
 5. After **session restore** or **seed import / key reload**, `clear_session_chat_projection` clears stale in-memory chat cursors before relay re-hydrate (`src/ui/helpers/startup.rs`, `clear_runtime_session_state` in `src/ui/key_handler/async_tasks.rs`). See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
 6. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.

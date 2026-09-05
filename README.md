@@ -40,7 +40,7 @@ The **documentation index** is **[docs/README.md](docs/README.md)** — architec
 
 **Quick links:** [Startup & config](docs/STARTUP_AND_CONFIG.md) · [DM listener / Messages sync](docs/DM_LISTENER_FLOW.md) · [Database](docs/DATABASE.md) · [Message flow & protocol](docs/MESSAGE_FLOW_AND_PROTOCOL.md) · [Key management](docs/KEY_MANAGEMENT.md) · [Coding standards](docs/CODING_STANDARDS.md)
 
-Mostrix reads the connected Mostro instance **`protocol_version`** tag (kind 38385), **auto-selects** GiftWrap vs NIP-44 for protocol DMs, and shows the resolved wire transport on the **Mostro Info** tab. P2P order chat and admin dispute chat stay on GiftWrap. Details: [docs/README.md — Protocol v2](docs/README.md#protocol-v2-nip-44--protocol-dms-complete).
+Mostrix speaks **protocol v2** (signed kind 14 / NIP-44) for Mostro protocol DMs and shows the advertised `protocol_version` on the **Mostro Info** tab. Protocol v1 GiftWrap instances are unsupported. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap. Details: [docs/README.md — Protocol v2](docs/README.md#protocol-v2-nip-44--protocol-dms-complete).
 
 ### Settings (`settings.toml`)
 

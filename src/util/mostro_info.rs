@@ -161,14 +161,13 @@ pub fn is_v2_first_contact_protocol_action(action: &Action) -> bool {
 
 /// NIP-13 bits for a protocol DM toward Mostro.
 ///
-/// v1 GiftWrap: always base instance `pow` (daemon spam gate is v2-only).
-/// v2 NIP-44: first-contact actions use `max(pow, pow_first_contact)` so new order/take
-/// clears the daemon's stiffer toll when operators set `pow_first_contact` above `pow`.
+/// First-contact actions (`NewOrder`, `TakeBuy`, `TakeSell`) use
+/// `max(pow, pow_first_contact)` so new order/take clears the daemon's stiffer
+/// toll when operators set `pow_first_contact` above `pow`. Other actions use
+/// base instance `pow`.
 pub fn nostr_pow_for_protocol_dm(instance: Option<&MostroInstanceInfo>, action: &Action) -> u8 {
     let base = nostr_pow_from_instance(instance);
-    if transport_from_instance(instance) == Transport::Nip44Direct
-        && is_v2_first_contact_protocol_action(action)
-    {
+    if is_v2_first_contact_protocol_action(action) {
         base.max(effective_pow_first_contact_from_instance(instance))
     } else {
         base
@@ -185,13 +184,11 @@ pub fn instance_bonds_enabled(instance: Option<&MostroInstanceInfo>) -> bool {
 
 /// Resolve the Mostro protocol wire transport from cached instance info.
 ///
-/// Missing or unknown `protocol_version` defaults to legacy v1 GiftWrap.
-pub fn transport_from_instance(info: Option<&MostroInstanceInfo>) -> Transport {
-    match info.and_then(|i| i.protocol_version) {
-        Some(2) => Transport::Nip44Direct,
-        #[allow(deprecated)]
-        _ => Transport::GiftWrap,
-    }
+/// Mostrix speaks protocol v2 (signed kind 14 / NIP-44) only. Advertised
+/// `protocol_version` is still parsed for the Mostro Info tab; v1 GiftWrap
+/// instances are unsupported ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
+pub fn transport_from_instance(_info: Option<&MostroInstanceInfo>) -> Transport {
+    Transport::Nip44Direct
 }
 
 fn parse_bond_enabled(value: &str) -> Option<bool> {
@@ -403,7 +400,6 @@ pub async fn fetch_mostro_instance_info_from_settings(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use mostro_core::prelude::Transport;
@@ -569,18 +565,18 @@ mod tests {
     }
 
     #[test]
-    fn transport_from_instance_resolves_protocol_version() {
-        assert_eq!(transport_from_instance(None), Transport::GiftWrap);
+    fn transport_from_instance_is_always_nip44() {
+        assert_eq!(transport_from_instance(None), Transport::Nip44Direct);
         assert_eq!(
             transport_from_instance(Some(&MostroInstanceInfo::default())),
-            Transport::GiftWrap
+            Transport::Nip44Direct
         );
         assert_eq!(
             transport_from_instance(Some(&MostroInstanceInfo {
                 protocol_version: Some(1),
                 ..Default::default()
             })),
-            Transport::GiftWrap
+            Transport::Nip44Direct
         );
         assert_eq!(
             transport_from_instance(Some(&MostroInstanceInfo {
@@ -594,7 +590,7 @@ mod tests {
                 protocol_version: Some(99),
                 ..Default::default()
             })),
-            Transport::GiftWrap
+            Transport::Nip44Direct
         );
     }
 
@@ -657,14 +653,17 @@ mod tests {
     }
 
     #[test]
-    fn nostr_pow_for_protocol_dm_v1_ignores_first_contact_toll() {
+    fn nostr_pow_for_protocol_dm_first_contact_applies_regardless_of_advertised_version() {
         let info = MostroInstanceInfo {
             pow: Some(8),
             pow_first_contact: Some(16),
             protocol_version: Some(1),
             ..Default::default()
         };
-        assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::NewOrder), 8);
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::NewOrder),
+            16
+        );
     }
 
     fn instance_info_event(
@@ -743,7 +742,7 @@ mod tests {
         let info = mostro_info_from_authenticated_event(&selected).unwrap();
         assert_eq!(info.protocol_version, Some(1));
         assert_eq!(info.last_updated, Some(Timestamp::from(1_000)));
-        assert_eq!(transport_from_instance(Some(&info)), Transport::GiftWrap);
+        assert_eq!(transport_from_instance(Some(&info)), Transport::Nip44Direct);
     }
 
     #[test]

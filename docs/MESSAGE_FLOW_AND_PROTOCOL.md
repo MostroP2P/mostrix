@@ -12,35 +12,30 @@ Mostrix uses Nostr transports for two distinct purposes:
 
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
-| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385 (inbound + outbound) |
+| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | Signed kind 14 via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs) | Protocol v2 only (`Transport::Nip44Direct`). v1 GiftWrap instances are unsupported. |
 | **P2P order chat** (My Trades) and **admin dispute chat** | Kind 14 (`K_sign` / `K_conv`) via `mostro_core::chat`; dual-read legacy GiftWrap while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true | Unrelated to protocol v2 Mostro DMs; ECDH secret still stored, keys derived at runtime |
 
-### Protocol v2 discovery, outbound send, and subscriptions (partial)
+### Protocol v2 discovery, outbound send, and subscriptions
 
 Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
 
-- Tag **`protocol_version`**: `"1"` → GiftWrap, `"2"` → NIP-44 direct messages.
-- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs). Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
-- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored).
-- The **Mostro Info** tab displays protocol version and resolved wire transport.
+- Tag **`protocol_version`**: `"2"` is the supported Mostrix wire. `"1"` (GiftWrap) is parsed for display only; Mostrix does not send or subscribe protocol GiftWrap ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
+- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs). [`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct`. Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored). A v1 advertisement logs a warning.
+- The **Mostro Info** tab displays protocol version and wire transport (NIP-44), plus a warning when the instance advertises v1.
 
-**Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses `transport_from_instance` + [`wrap_message_with`](../src/util/mod.rs); v2 adds default NIP-40 expiration (30 days) when `expiration` is `None`.
+**Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs) with `Transport::Nip44Direct` and default NIP-40 expiration (30 days) when `expiration` is `None`.
 
-**Transport before listener:** startup awaits instance info; reload/reconnect uses [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
+**Transport before listener:** startup awaits instance info; reload/reconnect uses [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs). Offline/failed fetch defaults to NIP-44.
 
-**Relay filters (implemented):**
+**Relay filters (implemented):** `.author(mostro_pubkey).pubkey(trade_key).kind(14)` (self-admin omits `#p`).
 
-| Transport | Inbound filter (Mostro → client) |
-|-----------|----------------------------------|
-| v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
-| v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` via [`filter_protocol_dm_from_mostro`](../src/util/filters.rs).
 
-Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` via [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with the resolved `transport`.
+### Envelope overview
 
-### Legacy overview
-
-1. **NIP-59 Gift Wrap (1059)**: Protocol v1 Mostro DMs. Also the **legacy** P2P / dispute-chat receive path while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true.
-2. **Kind 14**: Protocol v2 Mostro DMs (`wrap_message_with`) **and** current P2P / dispute chat (`wrap_chat_message`, subscribe `authors = [pub(K_sign)]`).
+1. **Kind 14**: Protocol v2 Mostro DMs (`wrap_message_with`) **and** current P2P / dispute chat (`wrap_chat_message`, subscribe `authors = [pub(K_sign)]`).
+2. **NIP-59 Gift Wrap (1059)**: **not** used for protocol DMs. Legacy P2P / dispute-chat receive path while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true.
 
 ### Proof-of-work (NIP-13)
 
@@ -165,7 +160,7 @@ The `wait_for_dm` function now uses the shared DM router:
 1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
-4. The background DM listener decrypt-checks incoming protocol DM events (GiftWrap or kind 14 per transport) against pending waiters and delivers the first match to `wait_for_dm`
+4. The background DM listener decrypt-checks incoming protocol DM events (signed kind 14) against pending waiters and delivers the first match to `wait_for_dm`
 
 Waiter subscription detail:
 - `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only)
@@ -549,7 +544,7 @@ See **[buy order flow.md](buy%20order%20flow.md)** and **[sell order flow.md](se
 ## Error Handling Patterns
 
 ### Timeout Handling
-If no waiter-matching GiftWrap arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds), `wait_for_dm` fails with a timeout error.
+If no waiter-matching protocol DM arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds), `wait_for_dm` fails with a timeout error.
 
 ### Request ID Mismatch
 **Source**: `src/util/order_utils/send_new_order.rs:199`
