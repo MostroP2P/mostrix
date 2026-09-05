@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::models::Order;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
 use crate::util::db_utils::{save_order, update_order_status};
-use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::dm_utils::{
+    parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_TIMEOUT_MSG,
+};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
     build_order_chat_static_header, handle_mostro_response, inferred_status_from_trade_action,
@@ -18,7 +20,7 @@ use crate::util::order_utils::helper::{
 
 /// Matches the timeout branch in [`wait_for_dm`].
 fn is_wait_for_dm_timeout(err: &anyhow::Error) -> bool {
-    err.to_string() == "Timeout waiting for DM or gift wrap event"
+    err.to_string() == WAIT_FOR_DM_TIMEOUT_MSG
 }
 
 /// Verify if an invoice is valid
@@ -466,7 +468,7 @@ mod tests {
 
     #[test]
     fn wait_for_dm_timeout_is_recognized_for_add_bond_invoice() {
-        let timeout = anyhow::anyhow!("Timeout waiting for DM or gift wrap event");
+        let timeout = anyhow::anyhow!(WAIT_FOR_DM_TIMEOUT_MSG);
         assert!(is_wait_for_dm_timeout(&timeout));
         let canceled = anyhow::anyhow!("DM waiter canceled before receiving an event");
         assert!(!is_wait_for_dm_timeout(&canceled));

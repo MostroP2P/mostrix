@@ -61,11 +61,11 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct message (request_id, trade_index)
-    Client->>IdentityKey: Sign Seal
-    Client->>TradeKey: Sign Rumor
+    Client->>IdentityKey: Sign identity proof (ciphertext)
+    Client->>TradeKey: Sign kind-14 event
     Client->>Client: Register DM waiter in router
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
-    NostrRelays->>Mostro: Forward Gift Wrap
+    Client->>NostrRelays: Publish signed kind 14 (NIP-44)
+    NostrRelays->>Mostro: Forward protocol DM
     Mostro->>Mostro: Process NewOrder
     alt Bonds disabled or range order (Phase 5)
         Mostro->>NostrRelays: Action::NewOrder (pending)
@@ -73,7 +73,7 @@ sequenceDiagram
         Mostro->>NostrRelays: PayBondInvoice + PaymentRequest (waiting-maker-bond)
     end
     NostrRelays-->>Client: Receive response (timeout: 15s)
-    Client->>TradeKey: Decrypt Gift Wrap
+    Client->>TradeKey: Decrypt kind 14
     Client->>Client: Validate request_id
     Client->>DB: Save order + trade_keys + index + TrackOrder
     alt Action::NewOrder
@@ -143,10 +143,9 @@ A `Message` is constructed with:
 ```
 
 The message is sent via `send_dm`, which:
-- Resolves wire transport from cached instance info ([`transport_from_instance`](../src/util/mostro_info.rs))
-- Wraps with [`wrap_message_with`](../src/util/mod.rs): v1 NIP-59 Gift Wrap or v2 signed kind 14 (identity proof in ciphertext)
+- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14; identity proof in ciphertext)
 - Uses the **Identity Key** for reputation binding and the **Trade Key** to sign the published event and inner message tuple
-- On v2, adds a default NIP-40 expiration (30 days) when the caller passes `None`
+- Adds a default NIP-40 expiration (30 days) when the caller passes `None`
 
 ### 5. Waiting for Response
 **Source**: `src/util/order_utils/send_new_order.rs:141`
@@ -201,7 +200,7 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct TakeOrder message
-    Client->>NostrRelays: Subscribe + Publish NIP-59
+    Client->>NostrRelays: Subscribe + Publish kind 14
     NostrRelays->>Mostro: Forward TakeOrder
     Mostro->>Mostro: Validate & process
     alt Buy Order
@@ -337,37 +336,19 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 **Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/chat_visibility.rs`, `src/ui/helpers/attachments.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/ui/save_attachment_popup.rs`, `src/ui/send_attachment_picker.rs`, `src/util/dm_utils/order_ch_mng.rs`, `src/util/chat_utils.rs`, `src/util/blossom.rs`, `src/util/file_validation.rs`, `src/util/send_attachment.rs`
 
 ### Message Parsing
-**Source**: `src/util/dm_utils/mod.rs:137`
-```137:159:src/util/dm_utils/mod.rs
-        let (created_at, message, sender) = match dm.kind {
-            nostr_sdk::Kind::GiftWrap => {
-                let unwrapped_gift = match nip59::extract_rumor(pubkey, dm).await {
-                    Ok(u) => u,
-                    Err(e) => {
-                        log::warn!("Could not decrypt gift wrap (event {}): {}", dm.id, e);
-                        continue;
-                    }
-                };
-                let (message, _): (Message, Option<String>) =
-                    match serde_json::from_str(&unwrapped_gift.rumor.content) {
-                        Ok(msg) => msg,
-                        Err(e) => {
-                            log::warn!("Could not parse message content (event {}): {}", dm.id, e);
-                            continue;
-                        }
-                    };
-
-                (
-                    unwrapped_gift.rumor.created_at,
-                    message,
-                    unwrapped_gift.sender,
-                )
+**Source**: [`parse_dm_events`](../src/util/dm_utils/mod.rs)
+```rust
+        let (created_at, message, sender) = match unwrap_incoming(dm, pubkey).await {
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!("Could not unwrap protocol DM (event {}): {}", dm.id, e);
+                continue;
             }
+            Ok(Some(u)) => (u.created_at, u.message, u.sender),
+        };
 ```
 
-The parser handles:
-- **NIP-59 Gift Wrap**: Extracts the rumor, decrypts using the trade key, and parses the JSON message
-- **NIP-44 Private Direct Messages**: Decrypts using the conversation key derived from the trade key and receiver's public key
+The parser decrypts signed kind-14 protocol DMs with [`unwrap_incoming`](../src/util/mod.rs) using the trade key and skips events that cannot be unwrapped.
 
 ## Sending Trade Messages
 
@@ -391,9 +372,9 @@ sequenceDiagram
     Client->>DB: Get identity keys
     DB-->>Client: identity_keys
     Client->>Client: Create payload & request_id
-    Client->>IdentityKey: Sign Seal
-    Client->>TradeKey: Sign Rumor
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
+    Client->>IdentityKey: Sign identity proof (ciphertext)
+    Client->>TradeKey: Sign kind-14 event
+    Client->>NostrRelays: Publish signed kind 14 (NIP-44)
     NostrRelays->>Mostro: Forward message
     Mostro->>Mostro: Process action
     Mostro->>NostrRelays: Acknowledgment
@@ -557,15 +538,12 @@ If no waiter-matching protocol DM arrives within `FETCH_EVENTS_TIMEOUT` (15 seco
 If the response's `request_id` doesn't match the sent request, the operation is rejected.
 
 ### Decryption Failures
-**Source**: `src/util/dm_utils/mod.rs:139`
-```139:144:src/util/dm_utils/mod.rs
-                let unwrapped_gift = match nip59::extract_rumor(pubkey, dm).await {
-                    Ok(u) => u,
-                    Err(e) => {
-                        log::warn!("Could not decrypt gift wrap (event {}): {}", dm.id, e);
-                        continue;
-                    }
-                };
+**Source**: [`parse_dm_events`](../src/util/dm_utils/mod.rs)
+```rust
+            Err(e) => {
+                log::warn!("Could not unwrap protocol DM (event {}): {}", dm.id, e);
+                continue;
+            }
 ```
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
@@ -700,7 +678,7 @@ sequenceDiagram
     DB-->>Client: order_id, trade_index pairs
     loop For each order
         Client->>TradeKey: Re-derive key (trade_index)
-        Client->>NostrRelays: Query Gift Wrap events
+        Client->>NostrRelays: Query kind-14 protocol DMs
         NostrRelays-->>Client: Recent events
         Client->>TradeKey: Decrypt events
         Client->>Client: Parse & reconstruct state

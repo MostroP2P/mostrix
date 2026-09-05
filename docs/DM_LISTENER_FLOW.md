@@ -98,9 +98,9 @@ Relay subscriptions alone often **do not** deliver enough stored history into th
 - Takes a **`DmListenerStartupReplay`** snapshot (`client`, `mostro_pubkey`, `transport`, `pool`, `user`, messages, notification maps, subscription maps).
 - For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
 - Within that fetched window, decrypts each event with [`unwrap_incoming`](../src/util/mod.rs) and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
-- Dispatches **`dispatch_giftwrap_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
+- Dispatches **`dispatch_trade_dm_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
 
-**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
+**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_trade_dm_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_trade_dm_batch`** in `src/util/dm_utils/mod.rs`.
 
 ### 4) Post-restore trade DM replay (session restore, no restart)
 

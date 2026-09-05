@@ -48,6 +48,11 @@ use futures::StreamExt;
 use std::collections::BTreeSet;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Timeout error string from [`wait_for_dm`]. Callers that special-case a
+/// missing Mostro reply (e.g. AddBondInvoice) must match this exact text.
+pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event";
+
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_PENDING_WAITERS: usize = 32;
 
@@ -352,7 +357,7 @@ where
     sent_message.await?;
     let event = tokio::time::timeout(timeout, response_rx)
         .await
-        .map_err(|_| anyhow::anyhow!("Timeout waiting for protocol DM event"))?
+        .map_err(|_| anyhow::anyhow!(WAIT_FOR_DM_TIMEOUT_MSG))?
         .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
 
     let mut events = BTreeSet::new();
