@@ -553,21 +553,17 @@ fn waiter_catch_up_filter(
         .limit(WAIT_FOR_DM_CATCHUP_LIMIT)
 }
 
-/// Fetch recent protocol DMs and deliver the first matching reply to the waiter.
+/// Fetch recent protocol DMs and return the newest Mostro reply suitable for a waiter.
 ///
-/// Returns `None` when the oneshot was satisfied; `Some(response_tx)` when the waiter
-/// should still be queued for live notifications.
-async fn try_deliver_waiter_catch_up(
+/// Used off the listener `select!` loop (spawned catch-up) so relay I/O does not block
+/// `RegisterWaiter` or live notification handling (MOSTRO-080).
+async fn fetch_waiter_catch_up_reply(
     client: &Client,
     transport: Transport,
     mostro_pubkey: PublicKey,
     trade_keys: &Keys,
     catch_up_since: Timestamp,
-    response_tx: oneshot::Sender<Event>,
-) -> Option<oneshot::Sender<Event>> {
-    if response_tx.is_closed() {
-        return None;
-    }
+) -> Option<Event> {
     let filter = waiter_catch_up_filter(
         transport,
         mostro_pubkey,
@@ -586,11 +582,11 @@ async fn try_deliver_waiter_catch_up(
                 trade_keys.public_key(),
                 e
             );
-            return Some(response_tx);
+            return None;
         }
     };
     if events.is_empty() {
-        return Some(response_tx);
+        return None;
     }
 
     let expected_kind = transport.event_kind();
@@ -604,17 +600,22 @@ async fn try_deliver_waiter_catch_up(
         match unwrap_incoming(&event, trade_keys).await {
             Ok(Some(u)) if is_mostro_waiter_reply(&event, trade_keys, &u, mostro_pubkey) => {
                 log::info!(
-                    "[dm_listener] waiter catch-up delivered event {} for {} (MOSTRO-080)",
+                    "[dm_listener] waiter catch-up found event {} for {} (MOSTRO-080)",
                     event.id,
                     trade_keys.public_key()
                 );
-                let _ = response_tx.send(event);
-                return None;
+                return Some(event);
             }
             _ => continue,
         }
     }
-    Some(response_tx)
+    None
+}
+
+/// Result of an async waiter catch-up fetch, applied on the listener loop.
+struct WaiterCatchUpDone {
+    trade_pubkey: PublicKey,
+    event: Option<Event>,
 }
 
 /// Current global DM router sender used by [`wait_for_dm`] / [`send_track_order_cmd`].
@@ -2087,6 +2088,32 @@ struct PendingDmWaiter {
     response_tx: oneshot::Sender<Event>,
 }
 
+/// Complete the first open pending waiter for `trade_pubkey` with `event`.
+///
+/// Returns `true` when `response_tx` accepted the event. Live delivery may have already
+/// satisfied the waiter while catch-up I/O was in flight.
+fn try_complete_pending_waiter(
+    pending_waiters: &mut Vec<PendingDmWaiter>,
+    trade_pubkey: PublicKey,
+    event: Event,
+) -> bool {
+    let mut still_pending = Vec::with_capacity(pending_waiters.len());
+    let mut completed = false;
+    for waiter in pending_waiters.drain(..) {
+        if waiter.response_tx.is_closed() {
+            continue;
+        }
+        if !completed && waiter.trade_keys.public_key() == trade_pubkey {
+            let _ = waiter.response_tx.send(event.clone());
+            completed = true;
+        } else {
+            still_pending.push(waiter);
+        }
+    }
+    *pending_waiters = still_pending;
+    completed
+}
+
 fn prune_closed_waiters(pending_waiters: &mut Vec<PendingDmWaiter>) {
     let before = pending_waiters.len();
     pending_waiters.retain(|w| !w.response_tx.is_closed());
@@ -2197,7 +2224,9 @@ async fn resolve_order_for_event(
 ///   command sender **before** backoff so `TrackOrder` / waiters buffer, then this
 ///   loop re-bootstraps from `active_order_trade_indices` (merged with DB hydration)
 /// - aborting this task drops in-memory `pending_waiters`; [`wait_for_dm`] re-registers
-///   on the rebuilt router without resending (MOSTRO-080)
+///   on the rebuilt router without resending (MOSTRO-080). Resurrection catch-up
+///   `fetch_events` runs on spawned tasks and completes via a channel so the listener
+///   `select!` stays responsive to live notifications and other `RegisterWaiter` cmds
 /// - bootstrap subscriptions for already-active orders at startup
 /// - continue processing relay notifications even if `dm_subscription_rx` is closed
 ///   (no new dynamic subscriptions, existing ones remain active)
@@ -2229,6 +2258,8 @@ pub async fn listen_for_order_messages(
     let mut subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
     let mut pubkey_to_subscription: HashMap<PublicKey, SubscriptionId> = HashMap::new();
     let mut pending_waiters: Vec<PendingDmWaiter> = Vec::new();
+    let (waiter_catch_up_tx, mut waiter_catch_up_rx) =
+        tokio::sync::mpsc::unbounded_channel::<WaiterCatchUpDone>();
     let mut waiter_gc_interval = tokio::time::interval(PENDING_WAITER_GC_INTERVAL);
     // First tick is immediate; skip it so the first cleanup runs after the interval.
     waiter_gc_interval.tick().await;
@@ -2308,6 +2339,27 @@ pub async fn listen_for_order_messages(
         tokio::select! {
             _ = waiter_gc_interval.tick() => {
                 prune_closed_waiters(&mut pending_waiters);
+            }
+            catch_up_done = waiter_catch_up_rx.recv() => {
+                let Some(done) = catch_up_done else {
+                    // Only the listener holds the sender clones for spawned tasks; if this
+                    // arm fires with None, keep serving live notifications / cmds.
+                    log::warn!("[dm_listener] waiter catch-up channel closed");
+                    continue;
+                };
+                let Some(event) = done.event else {
+                    continue;
+                };
+                if try_complete_pending_waiter(
+                    &mut pending_waiters,
+                    done.trade_pubkey,
+                    event,
+                ) {
+                    log::trace!(
+                        "[dm_listener] waiter satisfied via async catch-up for {}",
+                        done.trade_pubkey
+                    );
+                }
             }
             new_subscription_cmd = dm_subscription_rx.recv() => {
                 let Some(cmd_subscription) = new_subscription_cmd else {
@@ -2446,44 +2498,40 @@ pub async fn listen_for_order_messages(
                             }
                         }
 
-                        // Always fetch when resurrecting: TrackOrder may already hold a live-only
-                        // subscription, so subscribe above is skipped for that pubkey.
-                        let response_tx = if let Some(since) = catch_up_since {
-                            try_deliver_waiter_catch_up(
-                                &client,
-                                transport,
-                                mostro_pubkey,
-                                &trade_keys,
-                                since,
-                                response_tx,
-                            )
-                            .await
-                        } else {
-                            Some(response_tx)
-                        };
-
-                        match response_tx {
-                            None => {
-                                // Catch-up already delivered the reply.
-                                let _ = admit_tx.send(WaiterAdmitResult::Admitted);
-                                log::trace!(
-                                    "[dm_listener] waiter satisfied via catch-up; pending_before={}",
-                                    before
-                                );
-                            }
-                            Some(response_tx) => {
-                                let _ = admit_tx.send(WaiterAdmitResult::Admitted);
-                                pending_waiters.push(PendingDmWaiter {
-                                    trade_keys,
-                                    response_tx,
+                        // Queue for live notifications immediately, then spawn catch-up so
+                        // fetch_events (up to WAIT_FOR_DM_CATCHUP_FETCH_TIMEOUT) does not block
+                        // RegisterWaiter / notification processing. Multiple resurrected waiters
+                        // can catch up concurrently (MOSTRO-080).
+                        let _ = admit_tx.send(WaiterAdmitResult::Admitted);
+                        let trade_pubkey = trade_keys.public_key();
+                        pending_waiters.push(PendingDmWaiter {
+                            trade_keys: trade_keys.clone(),
+                            response_tx,
+                        });
+                        if let Some(since) = catch_up_since {
+                            let client = client.clone();
+                            let catch_up_tx = waiter_catch_up_tx.clone();
+                            tokio::spawn(async move {
+                                let event = fetch_waiter_catch_up_reply(
+                                    &client,
+                                    transport,
+                                    mostro_pubkey,
+                                    &trade_keys,
+                                    since,
+                                )
+                                .await;
+                                let _ = catch_up_tx.send(WaiterCatchUpDone {
+                                    trade_pubkey,
+                                    event,
                                 });
-                                log::trace!(
-                                    "[dm_listener] waiter queued pending_before={} pending_after={}",
-                                    before,
-                                    pending_waiters.len()
-                                );
-                            }
+                            });
                         }
+                        log::trace!(
+                            "[dm_listener] waiter queued pending_before={} pending_after={} catch_up={}",
+                            before,
+                            pending_waiters.len(),
+                            catch_up_since.is_some()
+                        );
                     }
                 }
             }
@@ -2686,8 +2734,9 @@ mod tests {
         new_order_would_regress_messages_row, set_dm_router_cmd_tx,
         should_reregister_dm_waiter_after_cancel, small_order_pending_from_new_order_payload,
         trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
-        trade_message_should_untrack_order_chat, upsert_order_from_trade_dm, wait_for_dm,
-        waiter_catch_up_filter, DmRouterCmd, TradeDmReplayDispatchMode, WaiterAdmitResult,
+        trade_message_should_untrack_order_chat, try_complete_pending_waiter,
+        upsert_order_from_trade_dm, wait_for_dm, waiter_catch_up_filter, DmRouterCmd,
+        PendingDmWaiter, TradeDmReplayDispatchMode, WaiterAdmitResult,
         STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS, STARTUP_TRADE_DM_FETCH_LIMIT,
         WAIT_FOR_DM_CATCHUP_LIMIT,
     };
@@ -3565,5 +3614,43 @@ mod tests {
         let json = filter.as_json();
         assert!(json.contains(&format!("\"since\":{}", since.as_secs())));
         assert!(json.contains(&format!("\"limit\":{WAIT_FOR_DM_CATCHUP_LIMIT}")));
+    }
+
+    #[tokio::test]
+    async fn async_catch_up_completes_matching_pending_waiter() {
+        let trade_keys = Keys::generate();
+        let other_keys = Keys::generate();
+        let reply_keys = Keys::generate();
+        let reply = EventBuilder::new(nostr_sdk::prelude::Kind::TextNote, "catch-up-reply")
+            .finalize(&reply_keys)
+            .expect("sign reply");
+
+        let (tx_match, rx_match) = tokio::sync::oneshot::channel();
+        let (tx_other, mut rx_other) = tokio::sync::oneshot::channel();
+        let mut pending = vec![
+            PendingDmWaiter {
+                trade_keys: other_keys,
+                response_tx: tx_other,
+            },
+            PendingDmWaiter {
+                trade_keys: trade_keys.clone(),
+                response_tx: tx_match,
+            },
+        ];
+
+        assert!(try_complete_pending_waiter(
+            &mut pending,
+            trade_keys.public_key(),
+            reply.clone()
+        ));
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            rx_match.await.expect("matched waiter").id,
+            reply.id
+        );
+        assert!(
+            rx_other.try_recv().is_err(),
+            "unrelated waiter must stay pending"
+        );
     }
 }
