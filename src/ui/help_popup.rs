@@ -10,6 +10,8 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 // 13 shortcuts, intro, close hint, borders, and one row of margin above and below.
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 19;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
+const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
+const ORDERS_FULL_HELP_MIN_WIDTH: u16 = 48;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
 pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
@@ -19,11 +21,17 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         matches!(tab, Tab::User(UserTab::MyTrades)) && area.width < MY_TRADES_FULL_HELP_MIN_WIDTH;
     let compact_my_trades = matches!(tab, Tab::User(UserTab::MyTrades))
         && (area.height < MY_TRADES_FULL_HELP_MIN_HEIGHT || narrow_my_trades);
+    let narrow_orders =
+        matches!(tab, Tab::User(UserTab::Orders)) && area.width < ORDERS_FULL_HELP_MIN_WIDTH;
+    let compact_orders = matches!(tab, Tab::User(UserTab::Orders))
+        && (area.height < ORDERS_FULL_HELP_MIN_HEIGHT || narrow_orders);
 
     // Match Settings Shift+H: compact rows, styled shortcut + description, full viewport height.
     let compact_chrome = matches!(
         tab,
-        Tab::Admin(AdminTab::DisputesInProgress) | Tab::User(UserTab::MyTrades)
+        Tab::Admin(AdminTab::DisputesInProgress)
+            | Tab::User(UserTab::Orders)
+            | Tab::User(UserTab::MyTrades)
     );
 
     let (popup_width, popup_height) = if compact_chrome {
@@ -64,18 +72,33 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         let mut lines: Vec<Line<'static>> = Vec::new();
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
+        } else if compact_orders {
+            lines.extend(compact_orders_help(
+                narrow_orders,
+                inner.width,
+                inner.height,
+            ));
         } else if compact_my_trades {
             lines.extend(compact_my_trades_help(narrow_my_trades));
+        } else if matches!(tab, Tab::User(UserTab::Orders)) {
+            for s in &plain_lines {
+                lines.push(help_shortcut_line(s));
+            }
         } else {
             lines.push(help_my_trades_intro());
         }
-        if !compact_my_trades {
+        if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
             for s in plain_lines {
                 lines.push(help_shortcut_line(&s));
             }
         }
+        let close_hint = if compact_orders {
+            compact_orders_close_hint(inner.width)
+        } else {
+            HELP_CLOSE_HINT
+        };
         lines.push(Line::from(Span::styled(
-            HELP_CLOSE_HINT,
+            close_hint,
             Style::default().fg(Color::DarkGray),
         )));
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
@@ -214,6 +237,40 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
     .into_iter()
     .map(help_shortcut_line)
     .collect()
+}
+
+fn compact_orders_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
+    if narrow {
+        let (title_style, _) = settings_instruction_block_style();
+        let close_rows = if inner_width <= 13 { 1 } else { 2 };
+        let available_shortcut_rows = inner_height.saturating_sub(close_rows);
+        if available_shortcut_rows <= 3 {
+            return ["Shift+F", "Shift+X"]
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, title_style)))
+                .collect();
+        }
+        return ["↑↓", "Enter", "Shift+F", "Shift+X"]
+            .into_iter()
+            .map(|row| Line::from(Span::styled(row, title_style)))
+            .collect();
+    }
+
+    [
+        "↑↓ / Enter: Select / take order",
+        "Shift+F / Shift+X: Edit / clear filters",
+    ]
+    .into_iter()
+    .map(help_shortcut_line)
+    .collect()
+}
+
+fn compact_orders_close_hint(inner_width: u16) -> &'static str {
+    if inner_width <= 13 {
+        "Esc"
+    } else {
+        HELP_CLOSE_HINT
+    }
 }
 
 /// Split `Key: description` help strings into bold key + gray body (same as Settings Shift+H rows).
@@ -408,6 +465,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             vec![
                 HELP_ORDERS_ENTER_TAKE.to_string(),
                 HELP_ORDERS_SELECT.to_string(),
+                HELP_ORDERS_SHIFT_F_FILTERS.to_string(),
+                HELP_ORDERS_SHIFT_X_CLEAR_FILTERS.to_string(),
             ],
         ),
         Tab::User(UserTab::MyTrades) => (
@@ -467,7 +526,7 @@ mod help_content_tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
         let mut flat = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
@@ -475,7 +534,11 @@ mod help_content_tests {
             }
             flat.push('\n');
         }
-        flat.contains(needle)
+        flat
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        buffer_text(buf).contains(needle)
     }
 
     #[test]
@@ -560,6 +623,72 @@ mod help_content_tests {
                 buffer_contains(buf, expected),
                 "missing {expected:?} from narrow compact My Trades help"
             );
+        }
+    }
+
+    #[test]
+    fn short_narrow_orders_help_keeps_filter_shortcuts_and_close_hint_visible() {
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::Orders)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for expected in [
+            "Enter",
+            "Shift+F",
+            "Shift+X",
+            "Esc, Enter or",
+            "Ctrl+H to close",
+        ] {
+            assert!(
+                buffer_contains(buf, expected),
+                "missing {expected:?} from compact Orders help"
+            );
+        }
+    }
+
+    #[test]
+    fn very_short_narrow_orders_help_keeps_filters_and_close_hint_visible() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::Orders)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for expected in ["Shift+F", "Shift+X", "Esc, Enter or", "Ctrl+H to close"] {
+            assert!(
+                buffer_contains(buf, expected),
+                "missing {expected:?} from very short Orders help"
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_narrow_orders_help_keeps_filters_and_short_close_hint_visible() {
+        for (width, height) in [(15, 10), (15, 6)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let app = AppState::new(UserRole::User);
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::Orders)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            for expected in ["Shift+F", "Shift+X", "Esc"] {
+                let rendered = buffer_text(buf);
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected:?} from {width}x{height} Orders help:\n{rendered}"
+                );
+            }
         }
     }
 }

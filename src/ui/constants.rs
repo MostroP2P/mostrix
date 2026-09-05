@@ -109,6 +109,8 @@ pub const HELP_EXIT_ENTER_CONFIRM: &str = "Enter: Confirm exit (then Yes/No)";
 pub const HELP_ORDERS_ENTER_TAKE: &str =
     "Enter: Take selected order (or cancel if it is your pending listing)";
 pub const HELP_ORDERS_SELECT: &str = "↑↓: Select order";
+pub const HELP_ORDERS_SHIFT_F_FILTERS: &str = "Shift+F: Edit order filters";
+pub const HELP_ORDERS_SHIFT_X_CLEAR_FILTERS: &str = "Shift+X: Clear order filters";
 /// Confirmation body when Enter on Orders targets a maker pending order we own.
 pub const HELP_ORDERS_CANCEL_PENDING_MSG: &str =
     "Cancel this pending order? It will be removed from the order book.";

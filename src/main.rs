@@ -216,6 +216,7 @@ async fn drain_order_result_queue(
     }
 }
 
+use crate::ui::orders::{OrderBookFilterField, OrderBookFilterState};
 use crate::ui::{AppState, ChatAttachment, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -246,6 +247,13 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 }
 
 fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
+    let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
+
+    if let UiMode::OrderFilters(ref mut state) = app.mode {
+        append_paste_to_order_filter(state, &filtered_text);
+        return;
+    }
+
     // Handle paste for invoice input
     if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
         if invoice_state.focused {
@@ -264,12 +272,28 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
 
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
-        let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
         app.observer_shared_key_input.push_str(&filtered_text);
     }
 
     // Disputes in Progress chatbox (admin) — keeps newlines for multi-line drafts
     let _ = append_paste_to_admin_dispute_chat(app, pasted_text);
+}
+
+fn append_paste_to_order_filter(state: &mut OrderBookFilterState, text: &str) {
+    let target = match state.focused {
+        OrderBookFilterField::Kind => None,
+        OrderBookFilterField::FiatCurrency => Some(&mut state.filters.fiat_code),
+        OrderBookFilterField::FiatAmountMin => Some(&mut state.filters.fiat_amount_min),
+        OrderBookFilterField::FiatAmountMax => Some(&mut state.filters.fiat_amount_max),
+        OrderBookFilterField::PremiumMin => Some(&mut state.filters.premium_min),
+        OrderBookFilterField::PremiumMax => Some(&mut state.filters.premium_max),
+        OrderBookFilterField::PaymentMethod => Some(&mut state.filters.payment_method),
+        OrderBookFilterField::CreatedWithinDays => Some(&mut state.filters.created_within_days),
+    };
+
+    if let Some(target) = target {
+        target.push_str(text);
+    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -960,6 +984,15 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
+        let order_filter_shortcuts = if app.user_role == UserRole::User
+            && matches!(
+                app.active_tab,
+                crate::ui::navigation::Tab::User(crate::ui::navigation::UserTab::Orders)
+            ) {
+            " | Shift+F: Order filters | Shift+X: Clear order filters"
+        } else {
+            ""
+        };
         // Mostro name (Lightning node alias) from instance info
         let mostro_alias = match app.mostro_info.as_ref() {
             Some(info) => info
@@ -976,8 +1009,8 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
-                "💱 Currencies: {} - Filters: {}",
-                mostro_instance_currencies, currencies_filter_str
+                "💱 Currencies: {} - Filters: {}{}",
+                mostro_instance_currencies, currencies_filter_str, order_filter_shortcuts
             ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
