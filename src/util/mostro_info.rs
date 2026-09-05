@@ -187,7 +187,7 @@ pub fn instance_bonds_enabled(instance: Option<&MostroInstanceInfo>) -> bool {
 /// Mostrix speaks protocol v2 (signed kind 14 / NIP-44) only. Advertised
 /// `protocol_version` is still parsed for the Mostro Info tab; v1 GiftWrap
 /// instances are unsupported ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
-pub fn transport_from_instance(_info: Option<&MostroInstanceInfo>) -> Transport {
+pub fn transport_from_instance() -> Transport {
     Transport::Nip44Direct
 }
 
@@ -566,32 +566,7 @@ mod tests {
 
     #[test]
     fn transport_from_instance_is_always_nip44() {
-        assert_eq!(transport_from_instance(None), Transport::Nip44Direct);
-        assert_eq!(
-            transport_from_instance(Some(&MostroInstanceInfo::default())),
-            Transport::Nip44Direct
-        );
-        assert_eq!(
-            transport_from_instance(Some(&MostroInstanceInfo {
-                protocol_version: Some(1),
-                ..Default::default()
-            })),
-            Transport::Nip44Direct
-        );
-        assert_eq!(
-            transport_from_instance(Some(&MostroInstanceInfo {
-                protocol_version: Some(2),
-                ..Default::default()
-            })),
-            Transport::Nip44Direct
-        );
-        assert_eq!(
-            transport_from_instance(Some(&MostroInstanceInfo {
-                protocol_version: Some(99),
-                ..Default::default()
-            })),
-            Transport::Nip44Direct
-        );
+        assert_eq!(transport_from_instance(), Transport::Nip44Direct);
     }
 
     #[test]
@@ -742,7 +717,7 @@ mod tests {
         let info = mostro_info_from_authenticated_event(&selected).unwrap();
         assert_eq!(info.protocol_version, Some(1));
         assert_eq!(info.last_updated, Some(Timestamp::from(1_000)));
-        assert_eq!(transport_from_instance(Some(&info)), Transport::Nip44Direct);
+        assert_eq!(transport_from_instance(), Transport::Nip44Direct);
     }
 
     #[test]
@@ -756,7 +731,7 @@ mod tests {
         assert_eq!(selected.id, newer.id);
         let info = mostro_info_from_authenticated_event(&selected).unwrap();
         assert_eq!(info.protocol_version, Some(2));
-        assert_eq!(transport_from_instance(Some(&info)), Transport::Nip44Direct);
+        assert_eq!(transport_from_instance(), Transport::Nip44Direct);
     }
 
     #[test]
