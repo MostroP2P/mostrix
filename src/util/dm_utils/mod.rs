@@ -3347,10 +3347,7 @@ mod tests {
                         let _ = admit_tx.send(WaiterAdmitResult::Admitted);
                         if !saw_first {
                             saw_first = true;
-                            assert!(
-                                catch_up_since.is_none(),
-                                "first registration is live-only"
-                            );
+                            assert!(catch_up_since.is_none(), "first registration is live-only");
                             // Drop = reconnect abort of in-flight waiter.
                             drop(response_tx);
                         } else {
