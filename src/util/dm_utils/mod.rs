@@ -88,6 +88,19 @@ fn is_own_signed_v2_outbound(
         && unwrapped.signature.is_some()
 }
 
+/// Whether an unwrapped protocol DM may complete a [`wait_for_dm`] waiter.
+///
+/// GiftWrap filters match by recipient only; the inner rumor sender must still be Mostro
+/// before we treat the event as a daemon reply. Also excludes echoed own v2 outbound.
+fn is_mostro_waiter_reply(
+    event: &Event,
+    trade_keys: &Keys,
+    unwrapped: &UnwrappedMessage,
+    mostro_pubkey: PublicKey,
+) -> bool {
+    unwrapped.sender == mostro_pubkey && !is_own_signed_v2_outbound(event, trade_keys, unwrapped)
+}
+
 #[derive(Clone, Copy)]
 struct CachedDmUnwrap {
     can_decrypt: bool,
@@ -589,7 +602,7 @@ async fn try_deliver_waiter_catch_up(
             continue;
         }
         match unwrap_incoming(&event, trade_keys).await {
-            Ok(Some(u)) if !is_own_signed_v2_outbound(&event, trade_keys, &u) => {
+            Ok(Some(u)) if is_mostro_waiter_reply(&event, trade_keys, &u, mostro_pubkey) => {
                 log::info!(
                     "[dm_listener] waiter catch-up delivered event {} for {} (MOSTRO-080)",
                     event.id,
@@ -2518,10 +2531,11 @@ pub async fn listen_for_order_messages(
                                 {
                                     Ok(Some(u)) => CachedDmUnwrap {
                                         can_decrypt: true,
-                                        skip_for_waiter: is_own_signed_v2_outbound(
+                                        skip_for_waiter: !is_mostro_waiter_reply(
                                             &event,
                                             &waiter.trade_keys,
                                             &u,
+                                            mostro_pubkey,
                                         ),
                                     },
                                     _ => CachedDmUnwrap {
@@ -2667,11 +2681,11 @@ pub async fn listen_for_order_messages(
 mod tests {
     use super::{
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
-        is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
-        is_take_sell_buyer_waiting_invoice, new_order_would_regress_messages_row,
-        set_dm_router_cmd_tx, should_reregister_dm_waiter_after_cancel,
-        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
-        trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        is_mostro_waiter_reply, is_own_signed_v2_outbound, is_pre_active_maker_listing,
+        is_pre_active_taker_take, is_take_sell_buyer_waiting_invoice,
+        new_order_would_regress_messages_row, set_dm_router_cmd_tx,
+        should_reregister_dm_waiter_after_cancel, small_order_pending_from_new_order_payload,
+        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm, wait_for_dm,
         waiter_catch_up_filter, DmRouterCmd, TradeDmReplayDispatchMode, WaiterAdmitResult,
         STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS, STARTUP_TRADE_DM_FETCH_LIMIT,
@@ -2879,6 +2893,46 @@ mod tests {
             created_at: Timestamp::now(),
         };
         assert!(!is_own_signed_v2_outbound(&event, &keys, &unsigned));
+    }
+
+    #[test]
+    fn waiter_reply_requires_mostro_sender() {
+        let trade_keys = Keys::generate();
+        let mostro = Keys::generate().public_key();
+        let stranger = Keys::generate().public_key();
+        let event = EventBuilder::new(nostr_sdk::prelude::Kind::GiftWrap, "ciphertext")
+            .tags([Tag::public_key(trade_keys.public_key())])
+            .finalize(&Keys::generate())
+            .expect("sign giftwrap envelope");
+        let message = Message::new_order(None, None, None, Action::NewOrder, None);
+
+        let from_mostro = UnwrappedMessage {
+            message: message.clone(),
+            signature: None,
+            sender: mostro,
+            identity: mostro,
+            created_at: Timestamp::now(),
+        };
+        assert!(is_mostro_waiter_reply(
+            &event,
+            &trade_keys,
+            &from_mostro,
+            mostro
+        ));
+
+        let from_stranger = UnwrappedMessage {
+            message,
+            signature: None,
+            sender: stranger,
+            identity: stranger,
+            created_at: Timestamp::now(),
+        };
+        assert!(!is_mostro_waiter_reply(
+            &event,
+            &trade_keys,
+            &from_stranger,
+            mostro
+        ));
     }
 
     #[test]
