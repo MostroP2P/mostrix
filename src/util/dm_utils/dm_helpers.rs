@@ -59,10 +59,12 @@ pub(crate) async fn ensure_order_dm_subscription(
             let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
             base.since(Timestamp::from(since_ts))
         }
-        // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
-        // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
-        // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
-        // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
+        // Live-only: match first-registration `RegisterWaiter` in `listen_for_order_messages`
+        // (`.limit(0)`). Resurrection after reconnect uses a bounded `since` catch-up instead
+        // (MOSTRO-080). `take_order` sends `TrackOrder` before `wait_for_dm`, so this
+        // subscription is created first; if we used `.since(now)` here, same-second Mostro
+        // responses could be missed and `RegisterWaiter` would not add a second subscription
+        // (pubkey already subscribed).
         DmSubscriptionMode::LiveOnly => base.limit(0),
     };
 

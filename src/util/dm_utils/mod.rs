@@ -54,6 +54,13 @@ const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::fro
 const MAX_PENDING_WAITERS: usize = 32;
 /// Backoff between waiter re-registrations after a reconnect/listener abort (MOSTRO-080).
 const WAIT_FOR_DM_REREGISTER_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+/// Clock-skew padding when catching up waiters after a reconnect gap (MOSTRO-080).
+const WAIT_FOR_DM_CATCHUP_SKEW_SECS: u64 = 60;
+/// Bound relay backlog fetched when resurrecting a waiter across a reconnect gap.
+const WAIT_FOR_DM_CATCHUP_LIMIT: usize = 32;
+/// Cap catch-up `fetch_events` so RegisterWaiter does not block the listener for the full
+/// startup fetch timeout.
+const WAIT_FOR_DM_CATCHUP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
 const DEFAULT_DM_EXPIRATION_DAYS: u64 = 30;
@@ -87,6 +94,15 @@ struct CachedDmUnwrap {
     skip_for_waiter: bool,
 }
 
+/// Immediate outcome of [`DmRouterCmd::RegisterWaiter`] before an event is delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaiterAdmitResult {
+    /// Waiter was queued (and/or already satisfied via catch-up fetch).
+    Admitted,
+    /// Listener refused the waiter because the pending-waiter capacity was reached.
+    CapacityFull,
+}
+
 #[derive(Debug)]
 pub enum DmRouterCmd {
     TrackOrder {
@@ -96,6 +112,11 @@ pub enum DmRouterCmd {
     RegisterWaiter {
         trade_keys: Keys,
         response_tx: oneshot::Sender<Event>,
+        /// Ack before the event oneshot: capacity vs admitted (MOSTRO-080 / CodeRabbit).
+        admit_tx: oneshot::Sender<WaiterAdmitResult>,
+        /// When `Some`, subscribe/fetch from this timestamp to cover replies published while
+        /// the listener was down (reconnect gap — MOSTRO-080 / ermeme).
+        catch_up_since: Option<Timestamp>,
     },
 }
 
@@ -331,14 +352,23 @@ pub async fn send_dm(
 /// on the current router **without resending** so a daemon reply that arrives
 /// after subscriptions are rebuilt can still complete the command.
 ///
+/// Re-registration requests a bounded catch-up from the original wait start so
+/// replies published while the listener was down are not missed (live-only
+/// `.limit(0)` alone is insufficient across a reconnect gap).
+///
+/// `timeout` is an end-to-end deadline: registration, outbound send, and the
+/// response wait all share the same remaining budget.
+///
 /// Exhausting the timeout budget still surfaces as
 /// `"Timeout waiting for DM or gift wrap event"` (not a spuriously immediate
 /// cancel), so callers can distinguish transport loss from a daemon `CantDo`.
+/// Capacity rejection fails immediately (does not spam 50 ms retries).
 ///
 /// # Errors
 ///
 /// - Timeout with no matching reply within `timeout`
 /// - Outbound `sent_message` failure (returned before any resurrection loop)
+/// - Pending-waiter capacity full (`"DM waiter rejected: too many pending waiters"`)
 /// - Fatal restart requested (`"DM waiter canceled before receiving an event"`)
 /// - DM router still unavailable when the remaining budget is too small to retry
 pub async fn wait_for_dm<F>(
@@ -350,7 +380,11 @@ where
     F: std::future::Future<Output = Result<()>> + Send,
 {
     let deadline = tokio::time::Instant::now() + timeout;
+    // Anchor catch-up to the original wait (pre-send) so gap replies are in-window.
+    let catch_up_anchor = Timestamp::now();
     let mut sent = false;
+    // After listener abort/channel loss, next RegisterWaiter must catch up.
+    let mut needs_catch_up = false;
     // `sent_message` is a one-shot future; pin it so we can poll once across retries.
     let mut sent_message = std::pin::pin!(sent_message);
 
@@ -361,11 +395,10 @@ where
             ));
         }
 
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
-        }
-        let remaining = deadline - now;
+        let remaining = match remaining_until_deadline(deadline) {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
 
         let dm_router_tx = match dm_router_cmd_sender() {
             Ok(tx) => tx,
@@ -378,31 +411,89 @@ where
                 log::warn!(
                     "[wait_for_dm] DM router not ready ({e}); retrying until deadline (MOSTRO-080)"
                 );
+                needs_catch_up = true;
                 tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF).await;
                 continue;
             }
         };
 
         let (response_tx, response_rx) = oneshot::channel::<Event>();
+        let (admit_tx, admit_rx) = oneshot::channel::<WaiterAdmitResult>();
+        let catch_up_since = if needs_catch_up {
+            Some(Timestamp::from(
+                catch_up_anchor
+                    .as_secs()
+                    .saturating_sub(WAIT_FOR_DM_CATCHUP_SKEW_SECS),
+            ))
+        } else {
+            None
+        };
+
         if dm_router_tx
             .send(DmRouterCmd::RegisterWaiter {
                 trade_keys: trade_keys.clone(),
                 response_tx,
+                admit_tx,
+                catch_up_since,
             })
             .is_err()
         {
             log::warn!(
                 "[wait_for_dm] RegisterWaiter channel closed; re-registering without resend (MOSTRO-080)"
             );
+            needs_catch_up = true;
             tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF.min(remaining)).await;
             continue;
         }
 
-        if !sent {
-            sent_message.as_mut().await?;
-            sent = true;
+        let remaining = match remaining_until_deadline(deadline) {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
+        match tokio::time::timeout(remaining, admit_rx).await {
+            Ok(Ok(WaiterAdmitResult::Admitted)) => {}
+            Ok(Ok(WaiterAdmitResult::CapacityFull)) => {
+                return Err(anyhow::anyhow!(
+                    "DM waiter rejected: too many pending waiters"
+                ));
+            }
+            Ok(Err(_admit_dropped)) => {
+                // Listener died before admitting — treat as reconnect abort.
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if !should_reregister_dm_waiter_after_cancel(left) {
+                    return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+                }
+                log::warn!(
+                    "[wait_for_dm] admit canceled; re-registering without resend (MOSTRO-080)"
+                );
+                needs_catch_up = true;
+                tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF.min(left)).await;
+                continue;
+            }
+            Err(_elapsed) => {
+                return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+            }
         }
 
+        if !sent {
+            let remaining = match remaining_until_deadline(deadline) {
+                Ok(r) => r,
+                Err(e) => return Err(e),
+            };
+            match tokio::time::timeout(remaining, sent_message.as_mut()).await {
+                Ok(Ok(())) => sent = true,
+                Ok(Err(e)) => return Err(e),
+                Err(_elapsed) => {
+                    return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
+                }
+            }
+        }
+
+        // Recompute after send so the response wait cannot overrun the end-to-end deadline.
+        let remaining = match remaining_until_deadline(deadline) {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
         match tokio::time::timeout(remaining, response_rx).await {
             Ok(Ok(event)) => {
                 let mut events = BTreeSet::new();
@@ -410,8 +501,7 @@ where
                 return Ok(events);
             }
             Ok(Err(_canceled)) => {
-                // Listener aborted, rejected the waiter, or rotated the channel.
-                // Do not surface this as a daemon rejection — re-register only.
+                // Listener aborted or rotated the channel (capacity already handled via admit).
                 let left = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if !should_reregister_dm_waiter_after_cancel(left) {
                     return Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"));
@@ -419,6 +509,7 @@ where
                 log::warn!(
                     "[wait_for_dm] waiter canceled mid-flight; re-registering without resend (MOSTRO-080)"
                 );
+                needs_catch_up = true;
                 tokio::time::sleep(WAIT_FOR_DM_REREGISTER_BACKOFF.min(left)).await;
             }
             Err(_elapsed) => {
@@ -426,6 +517,91 @@ where
             }
         }
     }
+}
+
+fn remaining_until_deadline(deadline: tokio::time::Instant) -> Result<std::time::Duration> {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        Err(anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))
+    } else {
+        Ok(deadline - now)
+    }
+}
+
+/// Relay filter for waiter catch-up after reconnect (bounded `since` + `limit`).
+fn waiter_catch_up_filter(
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    waiter_pubkey: PublicKey,
+    since: Timestamp,
+) -> Filter {
+    filter_protocol_dm_from_mostro(transport, mostro_pubkey, waiter_pubkey)
+        .since(since)
+        .limit(WAIT_FOR_DM_CATCHUP_LIMIT)
+}
+
+/// Fetch recent protocol DMs and deliver the first matching reply to the waiter.
+///
+/// Returns `None` when the oneshot was satisfied; `Some(response_tx)` when the waiter
+/// should still be queued for live notifications.
+async fn try_deliver_waiter_catch_up(
+    client: &Client,
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    trade_keys: &Keys,
+    catch_up_since: Timestamp,
+    response_tx: oneshot::Sender<Event>,
+) -> Option<oneshot::Sender<Event>> {
+    if response_tx.is_closed() {
+        return None;
+    }
+    let filter = waiter_catch_up_filter(
+        transport,
+        mostro_pubkey,
+        trade_keys.public_key(),
+        catch_up_since,
+    );
+    let events = match client
+        .fetch_events(filter)
+        .timeout(WAIT_FOR_DM_CATCHUP_FETCH_TIMEOUT)
+        .await
+    {
+        Ok(events) => events,
+        Err(e) => {
+            log::warn!(
+                "[dm_listener] waiter catch-up fetch failed for {}: {} (MOSTRO-080)",
+                trade_keys.public_key(),
+                e
+            );
+            return Some(response_tx);
+        }
+    };
+    if events.is_empty() {
+        return Some(response_tx);
+    }
+
+    let expected_kind = transport.event_kind();
+    let mut events: Vec<Event> = events.into_iter().collect();
+    // Prefer newest envelopes so a gap reply wins over older traffic.
+    events.sort_by_key(|e| std::cmp::Reverse(e.created_at.as_secs()));
+    for event in events {
+        if event.kind != expected_kind {
+            continue;
+        }
+        match unwrap_incoming(&event, trade_keys).await {
+            Ok(Some(u)) if !is_own_signed_v2_outbound(&event, trade_keys, &u) => {
+                log::info!(
+                    "[dm_listener] waiter catch-up delivered event {} for {} (MOSTRO-080)",
+                    event.id,
+                    trade_keys.public_key()
+                );
+                let _ = response_tx.send(event);
+                return None;
+            }
+            _ => continue,
+        }
+    }
+    Some(response_tx)
 }
 
 /// Current global DM router sender used by [`wait_for_dm`] / [`send_track_order_cmd`].
@@ -2204,6 +2380,8 @@ pub async fn listen_for_order_messages(
                     DmRouterCmd::RegisterWaiter {
                         trade_keys,
                         response_tx,
+                        admit_tx,
+                        catch_up_since,
                     } => {
                         prune_closed_waiters(&mut pending_waiters);
                         if pending_waiters.len() >= MAX_PENDING_WAITERS {
@@ -2212,19 +2390,27 @@ pub async fn listen_for_order_messages(
                                 pending_waiters.len(),
                                 MAX_PENDING_WAITERS
                             );
-                            // Dropping `response_tx` cancels this oneshot; [`wait_for_dm`]
-                            // re-registers for the remaining timeout budget (MOSTRO-080).
+                            let _ = admit_tx.send(WaiterAdmitResult::CapacityFull);
+                            // Drop `response_tx`; wait_for_dm fails on CapacityFull (no retry storm).
                             continue;
                         }
                         let before = pending_waiters.len();
                         let waiter_pubkey = trade_keys.public_key();
                         if subscribed_pubkeys.insert(waiter_pubkey) {
-                            let filter = filter_protocol_dm_from_mostro(
-                                transport,
-                                mostro_pubkey,
-                                waiter_pubkey,
-                            )
-                            .limit(0);
+                            let filter = match catch_up_since {
+                                Some(since) => waiter_catch_up_filter(
+                                    transport,
+                                    mostro_pubkey,
+                                    waiter_pubkey,
+                                    since,
+                                ),
+                                None => filter_protocol_dm_from_mostro(
+                                    transport,
+                                    mostro_pubkey,
+                                    waiter_pubkey,
+                                )
+                                .limit(0),
+                            };
                             match client.subscribe(filter).await {
                                 Ok(output) => {
                                     // Remember the subscription id so a later TrackOrder can
@@ -2240,22 +2426,51 @@ pub async fn listen_for_order_messages(
                                         waiter_pubkey,
                                         e
                                     );
-                                    // Do not queue this waiter when subscribe failed. Dropping
-                                    // `response_tx` cancels the oneshot; [`wait_for_dm`] will
-                                    // re-register until its timeout budget is exhausted (MOSTRO-080).
+                                    // Do not admit — dropping admit/response cancels; wait_for_dm
+                                    // will re-register with catch-up until timeout (MOSTRO-080).
                                     continue;
                                 }
                             }
                         }
-                        pending_waiters.push(PendingDmWaiter {
-                            trade_keys,
-                            response_tx,
-                        });
-                        log::trace!(
-                            "[dm_listener] waiter queued pending_before={} pending_after={}",
-                            before,
-                            pending_waiters.len()
-                        );
+
+                        // Always fetch when resurrecting: TrackOrder may already hold a live-only
+                        // subscription, so subscribe above is skipped for that pubkey.
+                        let response_tx = if let Some(since) = catch_up_since {
+                            try_deliver_waiter_catch_up(
+                                &client,
+                                transport,
+                                mostro_pubkey,
+                                &trade_keys,
+                                since,
+                                response_tx,
+                            )
+                            .await
+                        } else {
+                            Some(response_tx)
+                        };
+
+                        match response_tx {
+                            None => {
+                                // Catch-up already delivered the reply.
+                                let _ = admit_tx.send(WaiterAdmitResult::Admitted);
+                                log::trace!(
+                                    "[dm_listener] waiter satisfied via catch-up; pending_before={}",
+                                    before
+                                );
+                            }
+                            Some(response_tx) => {
+                                let _ = admit_tx.send(WaiterAdmitResult::Admitted);
+                                pending_waiters.push(PendingDmWaiter {
+                                    trade_keys,
+                                    response_tx,
+                                });
+                                log::trace!(
+                                    "[dm_listener] waiter queued pending_before={} pending_after={}",
+                                    before,
+                                    pending_waiters.len()
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -2458,8 +2673,9 @@ mod tests {
         small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
         trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm, wait_for_dm,
-        DmRouterCmd, TradeDmReplayDispatchMode, STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS,
-        STARTUP_TRADE_DM_FETCH_LIMIT,
+        waiter_catch_up_filter, DmRouterCmd, TradeDmReplayDispatchMode, WaiterAdmitResult,
+        STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS, STARTUP_TRADE_DM_FETCH_LIMIT,
+        WAIT_FOR_DM_CATCHUP_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
@@ -2469,6 +2685,15 @@ mod tests {
     use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    /// `wait_for_dm` uses the process-global DM router sender; serialize tests that publish it.
+    static WAIT_FOR_DM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_wait_for_dm_router_tests() -> std::sync::MutexGuard<'static, ()> {
+        WAIT_FOR_DM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[tokio::test]
     async fn cant_do_surfaces_rejection_without_changing_order_status() {
@@ -3095,6 +3320,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_dm_reregisters_after_listener_abort_without_resending() {
+        let _guard = lock_wait_for_dm_router_tests();
         // Simulate reconnect aborting the first waiter oneshot; the second
         // RegisterWaiter receives the daemon reply. Outbound send runs once.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
@@ -3112,12 +3338,26 @@ mod tests {
             let mut saw_first = false;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    DmRouterCmd::RegisterWaiter { response_tx, .. } => {
+                    DmRouterCmd::RegisterWaiter {
+                        response_tx,
+                        admit_tx,
+                        catch_up_since,
+                        ..
+                    } => {
+                        let _ = admit_tx.send(WaiterAdmitResult::Admitted);
                         if !saw_first {
                             saw_first = true;
+                            assert!(
+                                catch_up_since.is_none(),
+                                "first registration is live-only"
+                            );
                             // Drop = reconnect abort of in-flight waiter.
                             drop(response_tx);
                         } else {
+                            assert!(
+                                catch_up_since.is_some(),
+                                "resurrection must request catch-up"
+                            );
                             let _ = response_tx.send(reply.clone());
                             break;
                         }
@@ -3140,5 +3380,140 @@ mod tests {
             "protocol message must be sent only once across waiter resurrection"
         );
         let _ = router.await;
+    }
+
+    #[tokio::test]
+    async fn wait_for_dm_fails_immediately_on_capacity_full() {
+        let _guard = lock_wait_for_dm_router_tests();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
+        set_dm_router_cmd_tx(tx).expect("publish router sender");
+
+        let registrations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registrations_router = Arc::clone(&registrations);
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sends_for_task = Arc::clone(&sends);
+        let trade_keys = Keys::generate();
+
+        let router = tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                if let DmRouterCmd::RegisterWaiter { admit_tx, .. } = cmd {
+                    registrations_router.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = admit_tx.send(WaiterAdmitResult::CapacityFull);
+                }
+            }
+        });
+
+        let result = wait_for_dm(&trade_keys, std::time::Duration::from_secs(2), async {
+            sends_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+
+        let err = result.expect_err("capacity must fail closed");
+        assert!(
+            err.to_string().contains("too many pending waiters"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            sends.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "must not send protocol message after capacity rejection"
+        );
+        assert_eq!(
+            registrations.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "capacity rejection must not retry-spam RegisterWaiter"
+        );
+        router.abort();
+        let _ = router.await;
+    }
+
+    #[tokio::test]
+    async fn wait_for_dm_catch_up_observes_reply_published_during_reconnect_gap() {
+        let _guard = lock_wait_for_dm_router_tests();
+        // Critical ordering (ermeme / MOSTRO-080):
+        // send succeeds → listener aborted → reply published before new sub is live →
+        // resurrected waiter with catch_up_since still observes the reply (no resend).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DmRouterCmd>();
+        set_dm_router_cmd_tx(tx).expect("publish router sender");
+
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sends_for_task = Arc::clone(&sends);
+        let trade_keys = Keys::generate();
+        let reply_keys = Keys::generate();
+        let reply = EventBuilder::new(nostr_sdk::prelude::Kind::TextNote, "gap-reply")
+            .finalize(&reply_keys)
+            .expect("sign reply");
+
+        let gap_reply = Arc::new(Mutex::new(None::<nostr_sdk::prelude::Event>));
+        let gap_reply_router = Arc::clone(&gap_reply);
+
+        let router = tokio::spawn(async move {
+            let mut phase = 0u8;
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    DmRouterCmd::RegisterWaiter {
+                        response_tx,
+                        admit_tx,
+                        catch_up_since,
+                        ..
+                    } => match phase {
+                        0 => {
+                            phase = 1;
+                            assert!(catch_up_since.is_none());
+                            let _ = admit_tx.send(WaiterAdmitResult::Admitted);
+                            // Abort after admit so send can complete, then drop waiter.
+                            drop(response_tx);
+                        }
+                        1 => {
+                            // Reply was published during the gap (before this sub is "live").
+                            let stored = gap_reply_router
+                                .lock()
+                                .expect("gap reply")
+                                .clone()
+                                .expect("gap reply must be published before resurrection");
+                            assert!(
+                                catch_up_since.is_some(),
+                                "second registration must catch up"
+                            );
+                            let _ = admit_tx.send(WaiterAdmitResult::Admitted);
+                            // Deliver via catch-up path (immediate), not a later live notify.
+                            let _ = response_tx.send(stored);
+                            break;
+                        }
+                        _ => break,
+                    },
+                    DmRouterCmd::TrackOrder { .. } => {}
+                }
+            }
+        });
+
+        let gap_reply_send = Arc::clone(&gap_reply);
+        let reply_for_send = reply.clone();
+        let result = wait_for_dm(&trade_keys, std::time::Duration::from_secs(2), async move {
+            sends_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Publish reply during the reconnect gap (before resurrected registration).
+            *gap_reply_send.lock().expect("store gap reply") = Some(reply_for_send);
+            Ok(())
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "catch-up must observe gap reply: {result:?}"
+        );
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let _ = router.await;
+    }
+
+    #[test]
+    fn waiter_catch_up_filter_uses_since_and_bounded_limit() {
+        let mostro = Keys::generate().public_key();
+        let waiter = Keys::generate().public_key();
+        let since = Timestamp::from(1_700_000_000u64);
+        let filter = waiter_catch_up_filter(Transport::Nip44Direct, mostro, waiter, since);
+        let json = filter.as_json();
+        assert!(json.contains(&format!("\"since\":{}", since.as_secs())));
+        assert!(json.contains(&format!("\"limit\":{WAIT_FOR_DM_CATCHUP_LIMIT}")));
     }
 }
