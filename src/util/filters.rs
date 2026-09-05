@@ -5,20 +5,11 @@ use nostr_sdk::prelude::*;
 
 use crate::util::types::ListKind;
 
-/// GiftWrap events (NIP-59) addressed to `pubkey` as recipient (`p` tag target).
-/// Chain `.since()`, `.limit()`, etc. for subscriptions or `fetch_events`.
-pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
-    Filter::new()
-        .pubkey(pubkey)
-        .kind(nostr_sdk::prelude::Kind::GiftWrap)
-}
-
-/// Protocol DM filter for inbound Mostro → client traffic on the active wire transport.
+/// Protocol DM filter for inbound Mostro → client traffic (signed kind 14).
 ///
-/// v1: GiftWrap addressed to the trade key (`p` tag).
-/// v2: signed kind-14 from Mostro with trade key in `#p`.
+/// Normal path: authored by Mostro with the trade key in `#p`.
 ///
-/// When `mostro_pubkey == trade_pubkey` on v2 (admin using the Mostro nsec), the
+/// When `mostro_pubkey == trade_pubkey` (admin using the Mostro nsec), the
 /// daemon may omit `#p` on self-addressed replies, so this path subscribes by
 /// author+kind only.
 ///
@@ -26,20 +17,19 @@ pub fn filter_giftwrap_to_recipient(pubkey: PublicKey) -> Filter {
 /// waiters ignore signed self-authored kind-14 events (`is_own_signed_v2_outbound`) so the
 /// request is not consumed as the daemon reply.
 pub fn filter_protocol_dm_from_mostro(
-    transport: Transport,
+    _transport: Transport,
     mostro_pubkey: PublicKey,
     trade_pubkey: PublicKey,
 ) -> Filter {
-    #[allow(deprecated)]
-    match transport {
-        Transport::GiftWrap => filter_giftwrap_to_recipient(trade_pubkey),
-        Transport::Nip44Direct if mostro_pubkey == trade_pubkey => Filter::new()
+    if mostro_pubkey == trade_pubkey {
+        Filter::new()
             .author(mostro_pubkey)
-            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage),
-        Transport::Nip44Direct => Filter::new()
+            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage)
+    } else {
+        Filter::new()
             .author(mostro_pubkey)
             .pubkey(trade_pubkey)
-            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage),
+            .kind(nostr_sdk::prelude::Kind::PrivateDirectMessage)
     }
 }
 
@@ -71,31 +61,10 @@ pub fn create_filter(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use mostro_core::prelude::Transport;
     use nostr_sdk::prelude::Keys;
-
-    #[test]
-    fn filter_protocol_dm_v1_matches_giftwrap_to_recipient() {
-        let trade = Keys::generate().public_key();
-        let mostro = Keys::generate().public_key();
-        let v1 = filter_protocol_dm_from_mostro(Transport::GiftWrap, mostro, trade);
-        let legacy = filter_giftwrap_to_recipient(trade);
-        assert_eq!(v1.as_json(), legacy.as_json());
-    }
-
-    #[test]
-    fn filter_protocol_dm_v1_does_not_filter_by_mostro_author() {
-        let trade = Keys::generate().public_key();
-        let mostro = Keys::generate().public_key();
-        let filter = filter_protocol_dm_from_mostro(Transport::GiftWrap, mostro, trade);
-        let json = filter.as_json();
-        assert!(json.contains(r#""kinds":[1059]"#));
-        assert!(json.contains(&format!("\"#p\":[\"{}\"]", trade)));
-        assert!(!json.contains(&format!(r#""authors":["{}"]"#, mostro)));
-    }
 
     #[test]
     fn filter_protocol_dm_v2_uses_mostro_author_trade_p_tag_and_kind_14() {

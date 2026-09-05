@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
@@ -7,6 +7,12 @@ use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::util::{
     format_instance_info_age, transport_from_instance, MostroInstanceInfo, Transport,
 };
+
+/// Inner-body height below which protocol/version lines come first and
+/// secondary daemon/LND/fiat sections are dropped so they cannot clip the
+/// v1-unsupported warning (e.g. a 40×8 terminal with tab + status chrome
+/// leaves a 3-row content area → 1 inner row after the panel borders).
+const COMPACT_DETAILS_HEIGHT: u16 = 6;
 
 pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let block = Block::default()
@@ -19,14 +25,6 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Min(0), // details
-        ],
-    )
-    .split(inner);
-
     match &app.mostro_info {
         None => {
             let message = Paragraph::new(Line::from(vec![
@@ -38,16 +36,16 @@ pub fn render_mostro_info_tab(f: &mut ratatui::Frame, area: Rect, app: &AppState
                 ),
             ]))
             .wrap(Wrap { trim: true });
-            f.render_widget(message, chunks[0]);
+            f.render_widget(message, inner);
         }
         Some(info) => {
-            render_info_details(f, chunks[0], info);
+            render_info_details(f, inner, info);
         }
     }
 }
 
 fn render_info_details(f: &mut ratatui::Frame, area: Rect, info: &MostroInstanceInfo) {
-    let lines = build_info_lines(info);
+    let lines = build_info_lines(info, area.height);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true }).block(
         Block::default()
             .borders(Borders::NONE)
@@ -57,10 +55,54 @@ fn render_info_details(f: &mut ratatui::Frame, area: Rect, info: &MostroInstance
     f.render_widget(paragraph, area);
 }
 
-fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
+fn protocol_version_label(info: &MostroInstanceInfo) -> String {
+    match info.protocol_version {
+        Some(v) => v.to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+/// Protocol version + unsupported warning, sized so a 1-row inner body still
+/// shows both on a 40-col panel.
+fn push_protocol_lines(lines: &mut Vec<Line<'static>>, info: &MostroInstanceInfo, compact: bool) {
+    let version = protocol_version_label(info);
+    if compact && info.protocol_version == Some(1) {
+        lines.push(Line::from(Span::styled(
+            format!("Protocol: {version} (unsupported)"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        return;
+    }
+    push_kv(lines, "Protocol version", &version);
+    if info.protocol_version == Some(1) {
+        lines.push(Line::from(Span::styled(
+            "This instance advertises protocol v1 (GiftWrap), which Mostrix no longer supports.",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+}
+
+fn build_info_lines(info: &MostroInstanceInfo, height: u16) -> Vec<Line<'static>> {
+    let compact = height < COMPACT_DETAILS_HEIGHT;
     let mut lines = Vec::new();
 
+    push_protocol_lines(&mut lines, info, compact);
+    if compact && height <= 1 {
+        return lines;
+    }
+    push_kv(
+        &mut lines,
+        "Wire transport",
+        transport_display_label(transport_from_instance(Some(info))),
+    );
+    if compact {
+        return lines;
+    }
+
     if let Some(ts) = &info.last_updated {
+        lines.push(Line::default());
         lines.push(Line::from(vec![
             Span::styled(
                 "Last updated: ",
@@ -74,10 +116,9 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
                 Style::default().fg(Color::Yellow),
             )));
         }
-        lines.push(Line::default());
     }
 
-    // Mostro daemon section
+    lines.push(Line::default());
     lines.push(section_title("Mostro daemon"));
     push_kv(
         &mut lines,
@@ -88,16 +129,6 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
         &mut lines,
         "Github commit hash",
         info.mostro_commit_hash.as_deref().unwrap_or("unknown"),
-    );
-    let protocol_version = match info.protocol_version {
-        Some(v) => v.to_string(),
-        None => "unknown".to_string(),
-    };
-    push_kv(&mut lines, "Protocol version", &protocol_version);
-    push_kv(
-        &mut lines,
-        "Wire transport",
-        transport_display_label(transport_from_instance(Some(info))),
     );
     push_opt_i64(&mut lines, "Max order amount (sats)", info.max_order_amount);
     push_opt_i64(&mut lines, "Min order amount (sats)", info.min_order_amount);
@@ -191,12 +222,8 @@ fn build_info_lines(info: &MostroInstanceInfo) -> Vec<Line<'static>> {
     lines
 }
 
-fn transport_display_label(transport: Transport) -> &'static str {
-    #[allow(deprecated)]
-    match transport {
-        Transport::GiftWrap => "GiftWrap (NIP-59)",
-        Transport::Nip44Direct => "NIP-44 direct",
-    }
+fn transport_display_label(_transport: Transport) -> &'static str {
+    "NIP-44 direct"
 }
 
 fn section_title(title: &str) -> Line<'static> {
@@ -249,4 +276,134 @@ fn push_list(lines: &mut Vec<Line<'static>>, label: &str, items: &[String]) {
 
     let joined = items.join(", ");
     push_kv(lines, label, &joined);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{AppState, Tab, UserRole, UserTab};
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::widgets::Paragraph;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn lines_text(info: &MostroInstanceInfo) -> String {
+        build_info_lines(info, 24)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn v1_protocol_version_shows_unsupported_warning() {
+        let info = MostroInstanceInfo {
+            protocol_version: Some(1),
+            ..Default::default()
+        };
+        let text = lines_text(&info);
+        assert!(text.contains("Protocol version: 1"));
+        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(text.contains(
+            "This instance advertises protocol v1 (GiftWrap), which Mostrix no longer supports."
+        ));
+    }
+
+    #[test]
+    fn v2_protocol_version_has_no_unsupported_warning() {
+        let info = MostroInstanceInfo {
+            protocol_version: Some(2),
+            ..Default::default()
+        };
+        let text = lines_text(&info);
+        assert!(text.contains("Protocol version: 2"));
+        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(!text.contains("no longer supports"));
+    }
+
+    #[test]
+    fn compact_inner_height_collapses_v1_warning_onto_protocol_line() {
+        let info = MostroInstanceInfo {
+            protocol_version: Some(1),
+            ..Default::default()
+        };
+        let text = build_info_lines(&info, 1)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Protocol: 1 (unsupported)"));
+        assert!(!text.contains("Mostro daemon"));
+        assert!(!text.contains("Github commit hash"));
+    }
+
+    /// 40×8 terminal with a status line matches `shell_chrome_heights(8, true)`:
+    /// 3 tab rows + 3 content rows + 2 status rows. The bordered panel then has
+    /// a 1-row inner body; protocol version and the v1 warning must still show.
+    #[test]
+    fn v1_warning_visible_on_40x8_terminal_with_status_line() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MostroInfo);
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            protocol_version: Some(1),
+            ..Default::default()
+        }));
+
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| {
+                let chunks = Layout::new(
+                    Direction::Vertical,
+                    [
+                        Constraint::Length(3),
+                        Constraint::Min(0),
+                        Constraint::Length(2),
+                    ],
+                )
+                .split(f.area());
+                render_mostro_info_tab(f, chunks[1], &app);
+                f.render_widget(Paragraph::new("status line 1"), chunks[2]);
+            })
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Mostro Instance Info"),
+            "bordered panel title must remain"
+        );
+        assert!(
+            buffer_contains(buf, "status line 1"),
+            "status line must remain on the 8-row terminal"
+        );
+        assert!(
+            buffer_contains(buf, "Protocol: 1"),
+            "protocol version must stay visible in the 3-row content area"
+        );
+        assert!(
+            buffer_contains(buf, "unsupported"),
+            "v1 unsupported warning must stay visible in the 3-row content area"
+        );
+    }
 }

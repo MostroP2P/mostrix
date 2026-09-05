@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |
 | `created_at` | `INTEGER` | Unix timestamp when the order was created. |
 | `expires_at` | `INTEGER` | Unix timestamp when the order expires (if applicable). |
-| `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade protocol DM for this order (GiftWrap or kind 14 per transport). Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
+| `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade protocol DM for this order (signed kind 14). Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
 
 #### Purpose
 

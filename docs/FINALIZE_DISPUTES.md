@@ -82,7 +82,7 @@ After a slash, the non-slashed party may receive `Action::AddBondInvoice` (`Payl
 
 ### Instance `bond_enabled` (kind 38385)
 
-Mostro always emits a `bond_enabled` tag (`"true"` / `"false"`). Mostrix reads it via [`instance_bonds_enabled()`](../src/util/mostro_info.rs): only `"true"` shows the Bond button and confirm bond recap. The same instance event may include **`protocol_version`** (`"1"` / `"2"`) for wire transport discovery — see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md). Fetch instance info from the **Mostro Info** tab (Enter) so gating reflects the connected daemon.
+Mostro always emits a `bond_enabled` tag (`"true"` / `"false"`). Mostrix reads it via [`instance_bonds_enabled()`](../src/util/mostro_info.rs): only `"true"` shows the Bond button and confirm bond recap. The same instance event may include **`protocol_version`** (`"1"` / `"2"`) — Mostrix speaks NIP-44 only; see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md). Fetch instance info from the **Mostro Info** tab (Enter) so gating reflects the connected daemon.
 
 ## UI Components
 

@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::ui::{AdminChatLastSeen, AppState, ChatParty};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 
-/// Subscription behavior for protocol DM filters (GiftWrap or NIP-44 direct).
+/// Subscription behavior for protocol DM filters (signed kind 14).
 pub(crate) enum DmSubscriptionMode {
     /// Startup catch-up: request the latest retained event for this pubkey.
     StartupCatchUp,
@@ -56,8 +56,7 @@ pub(crate) async fn ensure_order_dm_subscription(
         DmSubscriptionMode::StartupCatchUp => base.limit(1),
         DmSubscriptionMode::StartupSince(ts) => {
             let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_secs());
-            let since_ts = ts.saturating_sub(super::STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
-            base.since(Timestamp::from(since_ts))
+            base.since(Timestamp::from(ts))
         }
         // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
         // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created

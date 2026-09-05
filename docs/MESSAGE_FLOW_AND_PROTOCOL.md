@@ -12,35 +12,30 @@ Mostrix uses Nostr transports for two distinct purposes:
 
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
-| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | **Dual transport** via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs): v1 GiftWrap (1059) or v2 signed kind 14 | Selected from instance `protocol_version` on kind 38385 (inbound + outbound) |
+| **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | Signed kind 14 via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs) | Protocol v2 only (`Transport::Nip44Direct`). v1 GiftWrap instances are unsupported. |
 | **P2P order chat** (My Trades) and **admin dispute chat** | Kind 14 (`K_sign` / `K_conv`) via `mostro_core::chat`; dual-read legacy GiftWrap while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true | Unrelated to protocol v2 Mostro DMs; ECDH secret still stored, keys derived at runtime |
 
-### Protocol v2 discovery, outbound send, and subscriptions (partial)
+### Protocol v2 discovery, outbound send, and subscriptions
 
 Mostro daemons advertise wire format on the **instance status** event (kind **38385**):
 
-- Tag **`protocol_version`**: `"1"` → GiftWrap, `"2"` → NIP-44 direct messages.
-- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs) and resolves [`Transport`](../src/util/mod.rs) with [`transport_from_instance`](../src/util/mostro_info.rs). Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
-- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored).
-- The **Mostro Info** tab displays protocol version and resolved wire transport.
+- Tag **`protocol_version`**: `"2"` is the supported Mostrix wire. `"1"` (GiftWrap) is parsed for display only; Mostrix does not send or subscribe protocol GiftWrap ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
+- Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs). [`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct`. Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored). A v1 advertisement logs a warning.
+- The **Mostro Info** tab displays protocol version and wire transport (NIP-44), plus a warning when the instance advertises v1.
 
-**Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses `transport_from_instance` + [`wrap_message_with`](../src/util/mod.rs); v2 adds default NIP-40 expiration (30 days) when `expiration` is `None`.
+**Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs) with `Transport::Nip44Direct` and default NIP-40 expiration (30 days) when `expiration` is `None`.
 
-**Transport before listener:** startup awaits instance info; reload/reconnect uses [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
+**Transport before listener:** startup awaits instance info; reload/reconnect uses [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs). Offline/failed fetch defaults to NIP-44.
 
-**Relay filters (implemented):**
+**Relay filters (implemented):** `.author(mostro_pubkey).pubkey(trade_key).kind(14)` (self-admin omits `#p`).
 
-| Transport | Inbound filter (Mostro → client) |
-|-----------|----------------------------------|
-| v1 GiftWrap | `.pubkey(trade_key).kind(1059)` |
-| v2 NIP-44 | `.author(mostro_pubkey).pubkey(trade_key).kind(14)` |
+Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` via [`filter_protocol_dm_from_mostro`](../src/util/filters.rs).
 
-Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_startup_trade_dms`, and `RegisterWaiter` via [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with the resolved `transport`.
+### Envelope overview
 
-### Legacy overview
-
-1. **NIP-59 Gift Wrap (1059)**: Protocol v1 Mostro DMs. Also the **legacy** P2P / dispute-chat receive path while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true.
-2. **Kind 14**: Protocol v2 Mostro DMs (`wrap_message_with`) **and** current P2P / dispute chat (`wrap_chat_message`, subscribe `authors = [pub(K_sign)]`).
+1. **Kind 14**: Protocol v2 Mostro DMs (`wrap_message_with`) **and** current P2P / dispute chat (`wrap_chat_message`, subscribe `authors = [pub(K_sign)]`).
+2. **NIP-59 Gift Wrap (1059)**: **not** used for protocol DMs. Legacy P2P / dispute-chat receive path while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true.
 
 ### Proof-of-work (NIP-13)
 
@@ -66,11 +61,11 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct message (request_id, trade_index)
-    Client->>IdentityKey: Sign Seal
-    Client->>TradeKey: Sign Rumor
+    Client->>IdentityKey: Sign identity proof (ciphertext)
+    Client->>TradeKey: Sign kind-14 event
     Client->>Client: Register DM waiter in router
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
-    NostrRelays->>Mostro: Forward Gift Wrap
+    Client->>NostrRelays: Publish signed kind 14 (NIP-44)
+    NostrRelays->>Mostro: Forward protocol DM
     Mostro->>Mostro: Process NewOrder
     alt Bonds disabled or range order (Phase 5)
         Mostro->>NostrRelays: Action::NewOrder (pending)
@@ -78,7 +73,7 @@ sequenceDiagram
         Mostro->>NostrRelays: PayBondInvoice + PaymentRequest (waiting-maker-bond)
     end
     NostrRelays-->>Client: Receive response (timeout: 15s)
-    Client->>TradeKey: Decrypt Gift Wrap
+    Client->>TradeKey: Decrypt kind 14
     Client->>Client: Validate request_id
     Client->>DB: Save order + trade_keys + index + TrackOrder
     alt Action::NewOrder
@@ -148,10 +143,9 @@ A `Message` is constructed with:
 ```
 
 The message is sent via `send_dm`, which:
-- Resolves wire transport from cached instance info ([`transport_from_instance`](../src/util/mostro_info.rs))
-- Wraps with [`wrap_message_with`](../src/util/mod.rs): v1 NIP-59 Gift Wrap or v2 signed kind 14 (identity proof in ciphertext)
+- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14; identity proof in ciphertext)
 - Uses the **Identity Key** for reputation binding and the **Trade Key** to sign the published event and inner message tuple
-- On v2, adds a default NIP-40 expiration (30 days) when the caller passes `None`
+- Adds a default NIP-40 expiration (30 days) when the caller passes `None`
 
 ### 5. Waiting for Response
 **Source**: `src/util/order_utils/send_new_order.rs:141`
@@ -165,7 +159,7 @@ The `wait_for_dm` function now uses the shared DM router:
 1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
-4. The background DM listener decrypt-checks incoming protocol DM events (GiftWrap or kind 14 per transport) against pending waiters and delivers the first match to `wait_for_dm`
+4. The background DM listener decrypt-checks incoming protocol DM events (signed kind 14) against pending waiters and delivers the first match to `wait_for_dm`
 
 Waiter subscription detail:
 - `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only)
@@ -206,7 +200,7 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct TakeOrder message
-    Client->>NostrRelays: Subscribe + Publish NIP-59
+    Client->>NostrRelays: Subscribe + Publish kind 14
     NostrRelays->>Mostro: Forward TakeOrder
     Mostro->>Mostro: Validate & process
     alt Buy Order
@@ -342,37 +336,19 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 **Source**: `src/ui/helpers/startup.rs`, `src/ui/helpers/chat_storage.rs`, `src/ui/helpers/chat_visibility.rs`, `src/ui/helpers/attachments.rs`, `src/ui/helpers/order_chat_projection.rs`, `src/ui/save_attachment_popup.rs`, `src/ui/send_attachment_picker.rs`, `src/util/dm_utils/order_ch_mng.rs`, `src/util/chat_utils.rs`, `src/util/blossom.rs`, `src/util/file_validation.rs`, `src/util/send_attachment.rs`
 
 ### Message Parsing
-**Source**: `src/util/dm_utils/mod.rs:137`
-```137:159:src/util/dm_utils/mod.rs
-        let (created_at, message, sender) = match dm.kind {
-            nostr_sdk::Kind::GiftWrap => {
-                let unwrapped_gift = match nip59::extract_rumor(pubkey, dm).await {
-                    Ok(u) => u,
-                    Err(e) => {
-                        log::warn!("Could not decrypt gift wrap (event {}): {}", dm.id, e);
-                        continue;
-                    }
-                };
-                let (message, _): (Message, Option<String>) =
-                    match serde_json::from_str(&unwrapped_gift.rumor.content) {
-                        Ok(msg) => msg,
-                        Err(e) => {
-                            log::warn!("Could not parse message content (event {}): {}", dm.id, e);
-                            continue;
-                        }
-                    };
-
-                (
-                    unwrapped_gift.rumor.created_at,
-                    message,
-                    unwrapped_gift.sender,
-                )
+**Source**: [`parse_dm_events`](../src/util/dm_utils/mod.rs)
+```rust
+        let (created_at, message, sender) = match unwrap_incoming(dm, pubkey).await {
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!("Could not unwrap protocol DM (event {}): {}", dm.id, e);
+                continue;
             }
+            Ok(Some(u)) => (u.created_at, u.message, u.sender),
+        };
 ```
 
-The parser handles:
-- **NIP-59 Gift Wrap**: Extracts the rumor, decrypts using the trade key, and parses the JSON message
-- **NIP-44 Private Direct Messages**: Decrypts using the conversation key derived from the trade key and receiver's public key
+The parser decrypts signed kind-14 protocol DMs with [`unwrap_incoming`](../src/util/mod.rs) using the trade key and skips events that cannot be unwrapped.
 
 ## Sending Trade Messages
 
@@ -396,9 +372,9 @@ sequenceDiagram
     Client->>DB: Get identity keys
     DB-->>Client: identity_keys
     Client->>Client: Create payload & request_id
-    Client->>IdentityKey: Sign Seal
-    Client->>TradeKey: Sign Rumor
-    Client->>NostrRelays: Publish NIP-59 Gift Wrap
+    Client->>IdentityKey: Sign identity proof (ciphertext)
+    Client->>TradeKey: Sign kind-14 event
+    Client->>NostrRelays: Publish signed kind 14 (NIP-44)
     NostrRelays->>Mostro: Forward message
     Mostro->>Mostro: Process action
     Mostro->>NostrRelays: Acknowledgment
@@ -465,7 +441,7 @@ pub async fn execute_send_msg(
 
 Key points:
 - The **trade keys are retrieved from the database** (they were stored when the order was created/taken)
-- The **identity keys are used** for the Seal signature
+- The **identity proof lives in ciphertext** (identity keys sign that proof when they differ from the trade keys); the **kind-14 event is signed with the trade keys** before publication
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
 - For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism
@@ -549,7 +525,7 @@ See **[buy order flow.md](buy%20order%20flow.md)** and **[sell order flow.md](se
 ## Error Handling Patterns
 
 ### Timeout Handling
-If no waiter-matching GiftWrap arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds), `wait_for_dm` fails with a timeout error.
+If no waiter-matching protocol DM arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds), `wait_for_dm` fails with a timeout error.
 
 ### Request ID Mismatch
 **Source**: `src/util/order_utils/send_new_order.rs:199`
@@ -562,15 +538,12 @@ If no waiter-matching GiftWrap arrives within `FETCH_EVENTS_TIMEOUT` (15 seconds
 If the response's `request_id` doesn't match the sent request, the operation is rejected.
 
 ### Decryption Failures
-**Source**: `src/util/dm_utils/mod.rs:139`
-```139:144:src/util/dm_utils/mod.rs
-                let unwrapped_gift = match nip59::extract_rumor(pubkey, dm).await {
-                    Ok(u) => u,
-                    Err(e) => {
-                        log::warn!("Could not decrypt gift wrap (event {}): {}", dm.id, e);
-                        continue;
-                    }
-                };
+**Source**: [`parse_dm_events`](../src/util/dm_utils/mod.rs)
+```rust
+            Err(e) => {
+                log::warn!("Could not unwrap protocol DM (event {}): {}", dm.id, e);
+                continue;
+            }
 ```
 
 If a message cannot be decrypted (wrong key, corrupted data, etc.), it is logged and skipped rather than crashing the listener.
@@ -705,7 +678,7 @@ sequenceDiagram
     DB-->>Client: order_id, trade_index pairs
     loop For each order
         Client->>TradeKey: Re-derive key (trade_index)
-        Client->>NostrRelays: Query Gift Wrap events
+        Client->>NostrRelays: Query kind-14 protocol DMs
         NostrRelays-->>Client: Recent events
         Client->>TradeKey: Decrypt events
         Client->>Client: Parse & reconstruct state

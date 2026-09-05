@@ -307,7 +307,7 @@ sequenceDiagram
     DB-->>Client: admin_privkey
     Client->>AdminKey: Parse & sign with admin key
     Client->>Client: Construct TakeDispute message
-    Client->>NostrRelays: Publish protocol DM (GiftWrap or kind 14)
+    Client->>NostrRelays: Publish protocol DM (kind 14)
     Mostro->>Mostro: Validate admin key & assign dispute
     Mostro->>Mostro: Update dispute status: Initiated → InProgress
     Mostro->>NostrRelays: Confirmation
@@ -494,7 +494,7 @@ sequenceDiagram
         TUI->>Client: execute_admin_add_solver(solver_pubkey, admin_keys)
         Client->>AdminKey: Use live runtime admin key
         Client->>Client: Construct AdminAddSolver message
-        Client->>NostrRelays: Send protocol DM (GiftWrap or kind 14)
+        Client->>NostrRelays: Send protocol DM (kind 14)
         NostrRelays->>Mostro: Forward AdminAddSolver action
         Mostro->>Mostro: Validate & add solver
         Mostro->>NostrRelays: admin-add-solver response
@@ -529,7 +529,7 @@ sequenceDiagram
 - ✅ Adds a new public key to the list of authorized dispute solvers
 - ✅ The new solver can then take and resolve disputes
 - ✅ Helps distribute dispute resolution workload
-- ✅ Uses transport-aware protocol DMs (`wrap_message_with`: GiftWrap or kind 14 per instance `protocol_version`)
+- ✅ Uses protocol DMs (`wrap_message_with`: signed kind 14 / NIP-44)
 
 ### Chatting with Parties
 
@@ -810,7 +810,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 ### Communication Security
 
-- **Encrypted messages**: Protocol DMs use NIP-44 / NIP-59 per instance transport; P2P and dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true.
+- **Encrypted messages**: Protocol DMs use NIP-44 (signed kind 14); P2P and dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true.
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
 

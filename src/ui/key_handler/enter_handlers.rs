@@ -1351,7 +1351,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             {
                 // Post-retry replacement invoice: Mostro will not resend `add-invoice`.
                 // Reopen the popup even if the Messages row still shows Released /
-                // "Waiting for Payout" after Esc (GiftWrap timestamp skew).
+                // "Waiting for Payout" after Esc (out-of-order protocol DM timestamps).
                 if let Some(oid) = msg.order_id {
                     app.orders_needing_replacement_invoice.insert(oid);
                 }

@@ -229,9 +229,9 @@ pub async fn run_post_terminal_startup(
         }
     } else {
         log::info!(
-            "Relays unreachable; skipping instance info fetch, defaulting to GiftWrap transport"
+            "Relays unreachable; skipping instance info fetch, defaulting to NIP-44 transport"
         );
-        Transport::default()
+        Transport::Nip44Direct
     };
 
     let client_for_messages = client.clone();

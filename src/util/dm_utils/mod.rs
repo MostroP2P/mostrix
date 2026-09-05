@@ -39,9 +39,7 @@ use crate::util::chat_listener::{
 use crate::util::chat_utils::derive_shared_key_hex;
 use crate::util::db_utils::{delete_order_by_id, save_order, update_order_status};
 use crate::util::filters::filter_protocol_dm_from_mostro;
-use crate::util::mostro_info::{
-    nostr_pow_for_protocol_dm, transport_from_instance, MostroInstanceInfo,
-};
+use crate::util::mostro_info::{nostr_pow_for_protocol_dm, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
     should_strictly_advance_status,
@@ -50,6 +48,11 @@ use futures::StreamExt;
 use std::collections::BTreeSet;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Timeout error string from [`wait_for_dm`]. Callers that special-case a
+/// missing Mostro reply (e.g. AddBondInvoice) must match this exact text.
+pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event";
+
 const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_PENDING_WAITERS: usize = 32;
 
@@ -131,13 +134,14 @@ pub async fn unsubscribe_dm_listener_subscriptions(client: &Client) {
     }
 }
 
-/// Cumulative count of GiftWrap routes that ran the linear active-order decrypt fallback
-/// (`resolve_order_for_event`). Useful for monitoring how often the O(n) path runs.
-static GIFTWRAP_FALLBACK_DECRYPT_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Cumulative count of unknown-subscription routes that ran the linear
+/// active-order decrypt fallback (`resolve_order_for_event`). Useful for
+/// monitoring how often the O(n) path runs.
+static UNKNOWN_SUB_DECRYPT_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Last fallback scan: number of active orders considered.
-static GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
+static UNKNOWN_SUB_DECRYPT_LAST_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Last fallback scan: loop duration in milliseconds.
-static GIFTWRAP_FALLBACK_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+static UNKNOWN_SUB_DECRYPT_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 
 pub struct StartupDmHydration {
     pub active_order_trade_indices: HashMap<Uuid, i64>,
@@ -294,11 +298,7 @@ pub async fn send_dm(
     let action = message.get_inner_message_kind().action.clone();
     let pow = nostr_pow_for_protocol_dm(mostro_instance, &action);
     let identity_keys = identity_keys.unwrap_or(trade_keys);
-    let transport = transport_from_instance(mostro_instance);
-    let expiration = match (transport, expiration) {
-        (Transport::Nip44Direct, None) => Some(default_dm_expiration()),
-        (_, exp) => exp,
-    };
+    let expiration = expiration.or_else(|| Some(default_dm_expiration()));
     let wrap_opts = WrapOptions {
         pow,
         expiration,
@@ -307,7 +307,7 @@ pub async fn send_dm(
     // nostr 0.45 no longer strips self `#p` tags from EventBuilder, so the
     // core `wrap_message_nip44` path is correct for admin self-addressed DMs.
     let event = wrap_message_with(
-        transport,
+        Transport::Nip44Direct,
         &message,
         identity_keys,
         trade_keys,
@@ -357,7 +357,7 @@ where
     sent_message.await?;
     let event = tokio::time::timeout(timeout, response_rx)
         .await
-        .map_err(|_| anyhow::anyhow!("Timeout waiting for DM or gift wrap event"))?
+        .map_err(|_| anyhow::anyhow!(WAIT_FOR_DM_TIMEOUT_MSG))?
         .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
 
     let mut events = BTreeSet::new();
@@ -365,7 +365,7 @@ where
     Ok(events)
 }
 
-/// Parse DM events to extract Messages (v1 GiftWrap and v2 kind 14 via [`unwrap_incoming`]).
+/// Parse protocol DM events to extract Messages (signed kind 14 via [`unwrap_incoming`]).
 pub async fn parse_dm_events(
     events: BTreeSet<Event>,
     pubkey: &Keys,
@@ -1196,7 +1196,7 @@ async fn handle_trade_dm_for_order(
             let existing_action = &prior.action;
             let existing_order_status = prior.order_status;
             // Post-retry `add-invoice` must win over `released` / `payment-failed` even when
-            // GiftWrap rumor timestamps are out of order — Mostro will not resend it, and
+            // rumor timestamps are out of order — Mostro will not resend it, and
             // Enter on Messages must be able to reopen the invoice popup from this row.
             let force_post_retry_add_invoice = matches!(action, Action::AddInvoice)
                 && add_invoice_is_after_failed_payment(
@@ -1241,8 +1241,8 @@ async fn handle_trade_dm_for_order(
     }
 }
 
-/// How terminal order status is handled after each decoded GiftWrap in a batch.
-enum GiftWrapTerminalPolicy<'a> {
+/// How terminal order status is handled after each decoded protocol DM in a batch.
+enum TradeDmTerminalPolicy<'a> {
     /// Known `listen_for_order_messages` subscription: unsubscribe relay sub and stop batch.
     TrackedSubscription(&'a SubscriptionId),
     /// Unknown subscription id (e.g. parallel `wait_for_dm`): only local index/pubkey cleanup;
@@ -1263,9 +1263,9 @@ fn remove_order_from_messages(messages: &Arc<Mutex<Vec<OrderMessage>>>, order_id
     }
 }
 
-/// Shared path for parsed GiftWrap batches: `handle_trade_dm_for_order` plus terminal cleanup.
+/// Shared path for parsed protocol DM batches: `handle_trade_dm_for_order` plus terminal cleanup.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_giftwrap_batch(
+async fn dispatch_trade_dm_batch(
     parsed_messages: Vec<(Message, i64, PublicKey)>,
     order_id: Uuid,
     trade_index: i64,
@@ -1279,7 +1279,7 @@ async fn dispatch_giftwrap_batch(
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     client: &Client,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
-    terminal_policy: GiftWrapTerminalPolicy<'_>,
+    terminal_policy: TradeDmTerminalPolicy<'_>,
     notify: bool,
     dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
 ) {
@@ -1294,7 +1294,7 @@ async fn dispatch_giftwrap_batch(
     }
     let log_each_message = matches!(
         terminal_policy,
-        GiftWrapTerminalPolicy::TrackedSubscription(_)
+        TradeDmTerminalPolicy::TrackedSubscription(_)
     );
 
     for (message, timestamp, sender) in parsed_messages {
@@ -1345,7 +1345,7 @@ async fn dispatch_giftwrap_batch(
 
         if has_terminal_status {
             match terminal_policy {
-                GiftWrapTerminalPolicy::TrackedSubscription(subscription_id) => {
+                TradeDmTerminalPolicy::TrackedSubscription(subscription_id) => {
                     log::info!(
                         "[dm_listener] Terminal order status detected, cleaning up order_id={}, trade_index={}, subscription_id={}",
                         order_id,
@@ -1375,7 +1375,7 @@ async fn dispatch_giftwrap_batch(
                     }
                     break;
                 }
-                GiftWrapTerminalPolicy::UntrackedFallback => {
+                TradeDmTerminalPolicy::UntrackedFallback => {
                     {
                         match active_order_trade_indices.lock() {
                             Ok(mut indices) => {
@@ -1398,15 +1398,10 @@ async fn dispatch_giftwrap_batch(
     }
 }
 
-/// Look back window for startup GiftWrap replay (in-memory Messages tab has no local DB).
+/// Look back window for startup protocol DM replay (in-memory Messages tab has no local DB).
 const STARTUP_TRADE_DM_LOOKBACK_SECS: u64 = 12 * 60 * 60;
 /// Max events per trade key per startup fetch (relay-dependent; cap bandwidth).
 const STARTUP_TRADE_DM_FETCH_LIMIT: usize = 100;
-/// NIP-01 `since` matches the GiftWrap **envelope** `created_at`, but `last_seen_dm_ts` stores the
-/// decrypted **rumor** `created_at` (`parse_dm_events`). If the rumor clock runs ahead of the
-/// envelope (seen with Mostro), using the raw cursor as `since` drops that GiftWrap on replay and
-/// only newer envelopes (e.g. `waiting-seller-to-pay`) are returned.
-const STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS: u64 = 3 * 24 * 60 * 60;
 
 /// Outcome of replaying trade DMs for one active order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1477,11 +1472,9 @@ fn trade_dm_replay_fetch_filter(
     match last_seen_dm_ts.and_then(|ts| u64::try_from(ts).ok()) {
         None => base.limit(STARTUP_TRADE_DM_FETCH_LIMIT),
         Some(last_seen) => {
-            // `last_seen_dm_ts` is rumor time; relay `since` is envelope time — see
-            // `STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`. Combine with lookback (cold Messages list)
-            // then widen backward so the last processed DM's GiftWrap is not filtered out.
-            let combined_since = last_seen.min(lookback_start);
-            let since_ts = combined_since.saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+            // Combine with lookback (cold Messages list) so replay does not miss
+            // events older than the persisted cursor when the two clocks disagree.
+            let since_ts = last_seen.min(lookback_start);
             base.since(Timestamp::from(since_ts))
                 .limit(STARTUP_TRADE_DM_FETCH_LIMIT)
         }
@@ -1634,12 +1627,12 @@ async fn replay_single_trade_dm(
             let sub_id = pubkey_to_subscription
                 .get(&pubkey)
                 .expect("TrackedSubscription requires subscription id");
-            GiftWrapTerminalPolicy::TrackedSubscription(sub_id)
+            TradeDmTerminalPolicy::TrackedSubscription(sub_id)
         }
-        TradeDmReplayDispatchMode::UntrackedFallback => GiftWrapTerminalPolicy::UntrackedFallback,
+        TradeDmReplayDispatchMode::UntrackedFallback => TradeDmTerminalPolicy::UntrackedFallback,
     };
 
-    dispatch_giftwrap_batch(
+    dispatch_trade_dm_batch(
         vec![freshest],
         order_id,
         trade_index,
@@ -1822,15 +1815,15 @@ fn prune_closed_waiters(pending_waiters: &mut Vec<PendingDmWaiter>) {
     }
 }
 
-fn log_giftwrap_fallback_decrypt_stats(
+fn log_unknown_sub_decrypt_stats(
     active_orders_scanned: usize,
     decrypt_attempts: u32,
     duration_ms: u64,
     matched: bool,
 ) {
-    let cumulative = GIFTWRAP_FALLBACK_DECRYPT_TOTAL.load(Ordering::Relaxed);
+    let cumulative = UNKNOWN_SUB_DECRYPT_TOTAL.load(Ordering::Relaxed);
     log::debug!(
-        "[dm_listener] giftwrap_fallback_decrypt: cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
+        "[dm_listener] unknown_sub_decrypt: cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
         cumulative,
         active_orders_scanned,
         decrypt_attempts,
@@ -1840,7 +1833,7 @@ fn log_giftwrap_fallback_decrypt_stats(
     // Keep warn low-volume: large scans, slow decrypt loop, or successful match.
     if active_orders_scanned > 5 || duration_ms > 50 || matched {
         log::warn!(
-            "[dm_listener] giftwrap_fallback_decrypt(significant): cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
+            "[dm_listener] unknown_sub_decrypt(significant): cumulative_calls={} active_orders_scanned={} decrypt_attempts={} duration_ms={} matched={}",
             cumulative,
             active_orders_scanned,
             decrypt_attempts,
@@ -1855,7 +1848,7 @@ async fn resolve_order_for_event(
     user: &User,
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
 ) -> Option<(Uuid, i64, Keys, UnwrappedMessage)> {
-    GIFTWRAP_FALLBACK_DECRYPT_TOTAL.fetch_add(1, Ordering::Relaxed);
+    UNKNOWN_SUB_DECRYPT_TOTAL.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
 
     let active_orders = match active_order_trade_indices.lock() {
@@ -1869,7 +1862,7 @@ async fn resolve_order_for_event(
     };
 
     let active_count = active_orders.len();
-    GIFTWRAP_FALLBACK_LAST_ACTIVE_COUNT.store(active_count as u64, Ordering::Relaxed);
+    UNKNOWN_SUB_DECRYPT_LAST_ACTIVE_COUNT.store(active_count as u64, Ordering::Relaxed);
 
     let mut decrypt_attempts: u32 = 0;
     for (order_id, trade_index) in active_orders {
@@ -1881,13 +1874,8 @@ async fn resolve_order_for_event(
         match unwrap_incoming(event, &trade_keys).await {
             Ok(Some(unwrapped)) => {
                 let duration_ms = started.elapsed().as_millis() as u64;
-                GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
-                log_giftwrap_fallback_decrypt_stats(
-                    active_count,
-                    decrypt_attempts,
-                    duration_ms,
-                    true,
-                );
+                UNKNOWN_SUB_DECRYPT_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
+                log_unknown_sub_decrypt_stats(active_count, decrypt_attempts, duration_ms, true);
                 return Some((order_id, trade_index, trade_keys, unwrapped));
             }
             Ok(None) | Err(_) => continue,
@@ -1895,12 +1883,12 @@ async fn resolve_order_for_event(
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;
-    GIFTWRAP_FALLBACK_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
-    log_giftwrap_fallback_decrypt_stats(active_count, decrypt_attempts, duration_ms, false);
+    UNKNOWN_SUB_DECRYPT_LAST_DURATION_MS.store(duration_ms, Ordering::Relaxed);
+    log_unknown_sub_decrypt_stats(active_count, decrypt_attempts, duration_ms, false);
     None
 }
 
-/// Background DM router for Mostro protocol DM events (GiftWrap or signed kind 14).
+/// Background DM router for Mostro protocol DM events (signed kind 14).
 ///
 /// Responsibilities:
 /// - maintain relay subscriptions for tracked orders (`TrackOrder`) and temporary
@@ -2043,7 +2031,7 @@ pub async fn listen_for_order_messages(
                             order_id,
                             trade_index
                         );
-                        // Must run before any GiftWrap for this trade can hit the unknown-
+                        // Must run before any protocol DM for this trade can hit the unknown-
                         // subscription_id fallback (e.g. wait_for_dm's temporary subscribe). Main
                         // thread only inserts this map when take_order completes — too late.
                         {
@@ -2293,7 +2281,7 @@ pub async fn listen_for_order_messages(
                             trade_index,
                             subscription_id
                         );
-                        dispatch_giftwrap_batch(
+                        dispatch_trade_dm_batch(
                             parsed_messages,
                             order_id,
                             trade_index,
@@ -2307,7 +2295,7 @@ pub async fn listen_for_order_messages(
                             &mut subscribed_pubkeys,
                             &client,
                             &mut subscription_to_order,
-                            GiftWrapTerminalPolicy::TrackedSubscription(&subscription_id),
+                            TradeDmTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
                             &dropped_user_history_order_ids,
                         )
@@ -2330,7 +2318,7 @@ pub async fn listen_for_order_messages(
                             order_id,
                             trade_index
                         );
-                        dispatch_giftwrap_batch(
+                        dispatch_trade_dm_batch(
                             parsed_messages,
                             order_id,
                             trade_index,
@@ -2344,7 +2332,7 @@ pub async fn listen_for_order_messages(
                             &mut subscribed_pubkeys,
                             &client,
                             &mut subscription_to_order,
-                            GiftWrapTerminalPolicy::UntrackedFallback,
+                            TradeDmTerminalPolicy::UntrackedFallback,
                             true,
                             &dropped_user_history_order_ids,
                         )
@@ -2365,8 +2353,7 @@ mod tests {
         small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
         trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
-        TradeDmReplayDispatchMode, STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS,
-        STARTUP_TRADE_DM_FETCH_LIMIT,
+        TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
@@ -2971,7 +2958,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_dm_replay_with_cursor_applies_since_and_skew() {
+    fn trade_dm_replay_with_cursor_applies_since() {
         let trade = Keys::generate().public_key();
         let mostro = Keys::generate().public_key();
         let last_seen: i64 = 1_700_000_000;
@@ -2984,8 +2971,25 @@ mod tests {
             lookback_start,
         );
         let json = filter.as_json();
-        let expected_since = (last_seen as u64).saturating_sub(STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS);
+        let expected_since = last_seen as u64;
         assert!(json.contains(&format!("\"since\":{expected_since}")));
         assert!(json.contains(&format!("\"limit\":{}", STARTUP_TRADE_DM_FETCH_LIMIT)));
+    }
+
+    #[test]
+    fn trade_dm_replay_with_cursor_uses_older_lookback_when_smaller() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let last_seen: i64 = 1_700_000_000;
+        let lookback_start = (last_seen as u64).saturating_sub(3_600);
+        let filter = trade_dm_replay_fetch_filter(
+            Transport::Nip44Direct,
+            mostro,
+            trade,
+            Some(last_seen),
+            lookback_start,
+        );
+        let json = filter.as_json();
+        assert!(json.contains(&format!("\"since\":{lookback_start}")));
     }
 }

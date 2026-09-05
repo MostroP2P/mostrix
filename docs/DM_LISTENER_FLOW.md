@@ -5,42 +5,37 @@ This document explains the runtime flow inside `listen_for_order_messages` (in `
 - how the in-memory **message list** (`Vec<OrderMessage>`) is created/updated
 - how “preferences”/routing concepts work: **TrackOrder**, **Waiter**, **Database**, **Action**, **Status**, notifications, and terminal cleanup
 
-> **Protocol v2:** Mostrix **auto-selects** wire transport from kind **38385** `protocol_version` (`"1"` → GiftWrap, `"2"` → NIP-44 kind 14). Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) per resolved [`Transport`](../src/util/mod.rs). Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs); inbound parse, waiter match, and listener decrypt use [`unwrap_incoming`](../src/util/mod.rs). Event gate: `event.kind == transport.event_kind()`. On transport change after instance-info refresh, [`respawn_trade_dm_listener`](../src/ui/key_handler/async_tasks.rs) restarts this task. See [Protocol v2](README.md#protocol-v2-nip-44--protocol-dms-complete).
+> **Protocol v2:** Mostrix speaks signed kind 14 (NIP-44) for protocol DMs. Filters use [`filter_protocol_dm_from_mostro`](../src/util/filters.rs). Outbound [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs) (`Transport::Nip44Direct`); inbound parse, waiter match, and listener decrypt use [`unwrap_incoming`](../src/util/mod.rs). Event gate: `event.kind == Kind::PrivateDirectMessage`. See [Protocol v2](README.md#protocol-v2-nip-44--protocol-dms-complete).
 
-## Dual transport (v1 GiftWrap vs v2 NIP-44)
+## Protocol DMs (NIP-44 kind 14)
 
-Protocol DMs (orders, take, pay, release — **not** P2P order chat or admin dispute chat) share one listener but use different relay filters and event kinds:
+Protocol DMs (orders, take, pay, release — **not** P2P order chat or admin dispute chat) use one listener and one wire format:
 
-| | **v1** (`protocol_version: "1"` or missing) | **v2** (`protocol_version: "2"`) |
-|---|---|---|
-| **Subscribe filter** | `.pubkey(trade_key).kind(1059)` | `.author(mostro).pubkey(trade_key).kind(14)` |
-| **Inbound event kind** | GiftWrap (1059) | PrivateDirectMessage (14) |
-| **Outbound** | GiftWrap via `wrap_message_with` | Signed kind 14 + identity proof |
-| **Decrypt** | `unwrap_incoming` (both) | `unwrap_incoming` (both) |
-| **PoW** | Instance `pow` on GiftWrap outer | Instance `pow` on signed kind 14; v2 first-contact actions (`NewOrder`, `TakeBuy`, `TakeSell`) use `max(pow, pow_first_contact)` — see [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) |
+| | **v2** (NIP-44) |
+|---|---|
+| **Subscribe filter** | `.author(mostro).pubkey(trade_key).kind(14)` (self-admin omits `#p`) |
+| **Inbound event kind** | PrivateDirectMessage (14) |
+| **Outbound** | Signed kind 14 + identity proof via `wrap_message_with` |
+| **Decrypt** | `unwrap_incoming` |
+| **PoW** | Instance `pow` on signed kind 14; first-contact actions (`NewOrder`, `TakeBuy`, `TakeSell`) use `max(pow, pow_first_contact)` — see [POW_AND_OUTBOUND_EVENTS.md](POW_AND_OUTBOUND_EVENTS.md) |
 
-Transport is resolved in [`transport_from_instance`](../src/util/mostro_info.rs) and cached on [`AppState.transport`](../src/ui/app_state.rs). Startup **awaits** instance info before spawning the listener; reconnect and Mostro Info refresh reload transport via [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
+[`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct` and is cached on [`AppState.transport`](../src/ui/app_state.rs). Kind-38385 `protocol_version` is still parsed for the Mostro Info tab; a v1 advertisement is unsupported. Startup **awaits** instance info before spawning the listener; reconnect and Mostro Info refresh reload via [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs).
 
 ```mermaid
 flowchart LR
   subgraph discover [Instance info kind 38385]
     IV[protocol_version tag]
-    IV --> T{version}
-    T -->|1 or missing| GW[Transport::GiftWrap]
-    T -->|2| N44[Transport::Nip44Direct]
+    IV --> N44[Transport::Nip44Direct]
   end
 
   subgraph subscribe [Per trade key subscription]
-    GW --> F1["filter: p=trade, kind 1059"]
     N44 --> F2["filter: author=mostro, p=trade, kind 14"]
   end
 
   subgraph inbound [Relay event]
-    F1 --> E1[GiftWrap event]
     F2 --> E2[kind-14 event]
-    E1 --> U[unwrap_incoming]
-    E2 --> U
-    U --> R[parse_dm_events → handle_trade_dm_for_order]
+    E2 --> U[unwrap_incoming]
+    U --> R[parse_dm_events then handle_trade_dm_for_order]
   end
 ```
 
@@ -81,7 +76,7 @@ Mostrix has a **single background task** that:
 Before the listener task starts, `hydrate_startup_active_order_dm_state` (`src/util/dm_utils/mod.rs`) reads non-terminal orders from SQLite (`Order::get_startup_active_orders`) and builds:
 
 - **`active_order_trade_indices`**: `order_id → trade_index` (seeds the shared `Arc<Mutex<…>>` used by the UI and listener)
-- **`order_last_seen_dm_ts`**: optional per-order Unix cursor (max seen GiftWrap rumor time), used to choose the initial subscription filter
+- **`order_last_seen_dm_ts`**: optional per-order Unix cursor (max seen protocol DM rumor time), used to choose the initial subscription filter
 
 The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only the DB row (trade keys, index, cursor) survives restart.
 
@@ -103,9 +98,9 @@ Relay subscriptions alone often **do not** deliver enough stored history into th
 - Takes a **`DmListenerStartupReplay`** snapshot (`client`, `mostro_pubkey`, `transport`, `pool`, `user`, messages, notification maps, subscription maps).
 - For each startup order with a known subscription id, **queries relays** with `client.fetch_events` using [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) + `since` + limit 100 (12-hour lookback — `STARTUP_TRADE_DM_LOOKBACK_SECS` / `STARTUP_TRADE_DM_FETCH_LIMIT`).
 - Within that fetched window, decrypts each event with [`unwrap_incoming`](../src/util/mod.rs) and parses with **`parse_dm_events_single`**, then picks the **single** parsed triple **`(Message, rumor created_at, sender)`** whose **rumor timestamp is greatest** (tie-break: Nostr event id). Envelope order can disagree with rumor time; replaying the full batch in sort order could hydrate an **older** trade step, so only this **newest-rumor** line is replayed.
-- Dispatches **`dispatch_giftwrap_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
+- Dispatches **`dispatch_trade_dm_batch(vec![freshest], …, notify: false)`** — i.e. one message per order. The **`notify`** flag is passed through to **`handle_trade_dm_for_order`** so startup replay does not bump the unread badge or re-trigger invoice popups (`notify: false` here; live relay paths use **`notify: true`**).
 
-**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_giftwrap_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_giftwrap_batch`** in `src/util/dm_utils/mod.rs`.
+**Practical “where to look”**: `fetch_and_replay_startup_trade_dms`, struct **`DmListenerStartupReplay`**, **`dispatch_trade_dm_batch`** (batch of one at startup), and **`notify`** on **`handle_trade_dm_for_order`** / **`dispatch_trade_dm_batch`** in `src/util/dm_utils/mod.rs`.
 
 ### 4) Post-restore trade DM replay (session restore, no restart)
 
@@ -115,7 +110,7 @@ Cold startup replay runs inside `listen_for_order_messages` bootstrap (section 3
 2. **`prepare_post_restore_trade_dm_replay`** reloads `hydrate_startup_active_order_dm_state`, re-seeds `active_order_trade_indices` and `startup_popup_floor_ts` on `AppState`.
 3. **`replay_active_trade_dms`** (awaitable; also used from the orchestrator) fetches per active order with **`trade_dm_replay_fetch_filter`**:
    - **No `last_seen_dm_ts`** (post-wipe / fresh restore row): **limit-only** — no `since` — so relay retention bounds catch-up (not the 12h cold lookback).
-   - **Cursor present**: `since` from cursor ∩ lookback, minus GiftWrap envelope skew (`STARTUP_GIFTWRAP_ENVELOPE_SKEW_SECS`), plus fetch limit.
+   - **Cursor present**: `since` from cursor ∩ lookback, plus fetch limit.
 4. Dispatch uses **`UntrackedFallback`** when the live DM router has no `TrackOrder` subscription for the trade pubkey yet (common immediately after restore).
 5. Updates `AppState.messages` with **`notify: false`** (no duplicate popups). Completion is folded into **`RestoreHydrateReport.trade_dm`** on **`PostRestoreHydrateCompleted`**.
 
@@ -196,7 +191,7 @@ For the tracked order (or fallback-resolved order), the listener:
 `parse_dm_events` returns a sorted list:
 
 - **dedup**: drops duplicate Nostr event IDs
-- **decrypt**: [`unwrap_incoming`](../src/util/mod.rs) (GiftWrap or kind 14) and parses JSON into `mostro_core::Message`
+- **decrypt**: [`unwrap_incoming`](../src/util/mod.rs) (signed kind 14) and parses JSON into `mostro_core::Message`
 - **sort**: ascending by rumor created-at timestamp (oldest → newest)
 
 ### 2) Dispatch each parsed trade DM into the UI/DB pipeline
@@ -358,12 +353,11 @@ flowchart TD
 
 ## Manual verification (protocol v2)
 
-Use this checklist when validating dual-transport behavior against live nodes:
+Use this checklist when validating protocol DMs against a live v2 node:
 
-1. **v1 node** (`protocol_version: "1"`) — create order, take, pay invoice, release; flows unchanged (GiftWrap filters).
-2. **v2 node** (`protocol_version: "2"`) — same flows over kind-14 subscribe + `unwrap_incoming`.
-3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the active transport filter.
+1. **v2 node** (`protocol_version: "2"`) — create order, take, pay invoice, release over kind-14 subscribe + `unwrap_incoming`.
+2. **v1 node** (`protocol_version: "1"`) — Mostrix does **not** speak GiftWrap; Mostro Info shows an unsupported warning. Do not expect trade DMs to work.
+3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the kind-14 filter.
 4. **Session restore (no restart)** — Settings → Restore Session after seed import; Messages tab and My Trades peer chat hydrate via `spawn_post_restore_hydrate` without relaunching the DM listener. See [RESTORE_SESSION_ACCEPTANCE.md](RESTORE_SESSION_ACCEPTANCE.md).
-5. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol v2 Mostro DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
-6. **Transport flip** (rare) — refresh Mostro Info when `protocol_version` changes; listener respawns with new filter shape.
+5. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
 
