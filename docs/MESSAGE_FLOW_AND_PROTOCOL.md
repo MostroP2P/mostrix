@@ -441,7 +441,7 @@ pub async fn execute_send_msg(
 
 Key points:
 - The **trade keys are retrieved from the database** (they were stored when the order was created/taken)
-- The **identity keys are used** for the Seal signature
+- The **identity proof lives in ciphertext** (identity keys sign that proof when they differ from the trade keys); the **kind-14 event is signed with the trade keys** before publication
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
 - For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism
