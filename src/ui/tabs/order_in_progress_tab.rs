@@ -290,10 +290,13 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .map(|p| format!("{p}%"))
         .unwrap_or_else(|| "Unknown".to_string());
     let amount_line = match (selected.amount, &selected.fiat) {
-        (Some(sats), Some((fiat_amount, fiat_code))) => {
+        (Some(sats), Some((fiat_amount, fiat_code))) if sats > 0 => {
             format!("{sats} sats | {fiat_amount} {fiat_code}")
         }
-        (Some(sats), None) => format!("{sats} sats"),
+        (Some(sats), None) if sats > 0 => format!("{sats} sats"),
+        (_, Some((fiat_amount, fiat_code))) => {
+            format!("{fiat_amount} {fiat_code}")
+        }
         _ => "amount N/A".to_string(),
     };
 
@@ -368,40 +371,36 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::raw("  "),
+            Span::styled("Payment: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                payment_method.to_string(),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw("  "),
+            Span::styled("Premium: ", Style::default().fg(Color::Gray)),
+            Span::styled(premium_text, Style::default().fg(Color::Yellow)),
         ]),
     ];
 
     let gray = Style::default().fg(Color::Gray);
     let yellow = Style::default().fg(Color::Yellow);
-    let mut payment_row: Vec<Span> = Vec::new();
-    let mut any_rating = false;
     if let Some(ref info) = selected.buyer_reputation {
-        payment_row.push(Span::styled("Buyer Rating: ", gray));
-        payment_row.push(Span::styled(format_user_rating(Some(info)), yellow));
-        any_rating = true;
+        header_lines.push(Line::from(vec![
+            Span::styled("Buyer Rating: ", gray),
+            Span::styled(format_user_rating(Some(info)), yellow),
+        ]));
     }
     if let Some(ref info) = selected.seller_reputation {
-        if any_rating {
-            payment_row.push(Span::raw("  |  "));
-        }
-        payment_row.push(Span::styled("Seller Rating: ", gray));
-        payment_row.push(Span::styled(format_user_rating(Some(info)), yellow));
-        any_rating = true;
+        header_lines.push(Line::from(vec![
+            Span::styled("Seller Rating: ", gray),
+            Span::styled(format_user_rating(Some(info)), yellow),
+        ]));
     }
-    if any_rating {
-        payment_row.push(Span::raw("  |  "));
-    }
-    payment_row.push(Span::styled("Payment: ", gray));
-    payment_row.push(Span::styled(
-        payment_method.to_string(),
-        Style::default().fg(Color::White),
-    ));
-    payment_row.push(Span::raw("  "));
-    payment_row.push(Span::styled("Premium: ", gray));
-    payment_row.push(Span::styled(premium_text, yellow));
-    header_lines.push(Line::from(payment_row));
 
-    let header_height = header_lines.len() as u16;
+    // Borders::ALL consumes 2 rows (title sits on the top border). Without this,
+    // Amount / ratings / payment clip behind the chat panel.
+    let header_height = header_lines.len() as u16 + 2;
 
     let spare_below_header_input = main_area
         .height
@@ -761,7 +760,7 @@ mod tests {
         UserOrderChatMessage, UserRole, UserTab,
     };
     use crossterm::event::KeyCode;
-    use mostro_core::prelude::Status;
+    use mostro_core::prelude::{Status, UserInfo};
     use ratatui::backend::TestBackend;
     use ratatui::text::Span;
     use ratatui::Terminal;
@@ -916,6 +915,65 @@ mod tests {
         assert!(buffer_contains(buffer, "Please send the"));
         assert!(buffer_contains(buffer, "payment receipt"));
         assert!(!buffer_contains(buffer, "Ctrl+O: Send file"));
+    }
+
+    #[test]
+    fn render_order_info_shows_amount_payment_premium_and_ratings() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_static.insert(
+            Uuid::nil(),
+            OrderChatStaticHeader {
+                order_id: Uuid::nil(),
+                kind: None,
+                created_at: Some(1),
+                trade_index: 1,
+                initiator_trade_pubkey: "trade-pubkey".to_string(),
+                is_mine: false,
+                solver_pubkey: None,
+                dispute_id: None,
+            },
+        );
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id,
+            status: Some(Status::Success),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(2),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: Some(UserInfo {
+                rating: 4.5,
+                reviews: 12,
+                operating_days: 30,
+            }),
+            seller_reputation: Some(UserInfo {
+                rating: 3.0,
+                reviews: 4,
+                operating_days: 10,
+            }),
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert!(buffer_contains(buffer, "Amount:"));
+        assert!(buffer_contains(buffer, "1000 sats | 10 USD"));
+        assert!(buffer_contains(buffer, "Buyer Rating:"));
+        assert!(buffer_contains(buffer, "Seller Rating:"));
+        assert!(buffer_contains(buffer, "Payment:"));
+        assert!(buffer_contains(buffer, "cash"));
+        assert!(buffer_contains(buffer, "Premium:"));
+        assert!(buffer_contains(buffer, "2%"));
     }
 
     #[test]

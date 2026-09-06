@@ -490,6 +490,8 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         is_mine: Some(order.is_mine),
         order_status: status,
         order_snapshot: Some(payload_order),
+        buyer_reputation: None,
+        seller_reputation: None,
         read: true,
         auto_popup_shown: !matches!(
             status,

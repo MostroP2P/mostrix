@@ -787,9 +787,20 @@ struct PriorMessageSnapshot {
     is_mine: Option<bool>,
     order_status: Option<Status>,
     order_snapshot: Option<SmallOrder>,
+    buyer_reputation: Option<UserInfo>,
+    seller_reputation: Option<UserInfo>,
 }
 
-/// Take-sell buyer still waiting to submit a payout invoice (MOSTRO-078).
+/// Mostro `notify_taker_reputation`: `PayInvoice`/`AddInvoice` with `Payload::Peer`
+/// (empty pubkey, no bolt11). Must not be dropped by the invoice-required gate, and
+/// must not replace an existing invoice row.
+fn is_taker_reputation_peer_dm(action: &Action, payload: &Option<Payload>) -> bool {
+    matches!(action, Action::PayInvoice | Action::AddInvoice)
+        && matches!(
+            payload,
+            Some(Payload::Peer(peer)) if peer.reputation.is_some()
+        )
+}
 ///
 /// The DM listener must not frame sat amounts from an unvalidated daemon
 /// `Payload::Order` for this phase — only the take_order execute path (or a
@@ -964,9 +975,12 @@ async fn handle_trade_dm_for_order(
     };
 
     // PayInvoice/PayBondInvoice: require a non-empty invoice before continuing.
-    // AddInvoice actionable-ness is decided after role/status merge (MOSTRO-078).
+    // Exception: Mostro's taker-reputation notice reuses `PayInvoice` with `Payload::Peer`
+    // and no bolt11 (`notify_taker_reputation` after the buyer adds an invoice).
+    let taker_reputation_peer = is_taker_reputation_peer_dm(&action, &inner_kind.payload);
     if matches!(action, Action::PayInvoice | Action::PayBondInvoice)
         && !invoice.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
+        && !taker_reputation_peer
     {
         return;
     }
@@ -997,6 +1011,8 @@ async fn handle_trade_dm_for_order(
                 is_mine: m.is_mine,
                 order_status: m.order_status,
                 order_snapshot: m.order_snapshot.clone(),
+                buyer_reputation: m.buyer_reputation.clone(),
+                seller_reputation: m.seller_reputation.clone(),
             })
     };
 
@@ -1146,7 +1162,28 @@ async fn handle_trade_dm_for_order(
         }
     }
 
-    if notify && is_new_message && is_actionable_notification {
+    let mut buyer_reputation = existing_message_data
+        .as_ref()
+        .and_then(|p| p.buyer_reputation.clone());
+    let mut seller_reputation = existing_message_data
+        .as_ref()
+        .and_then(|p| p.seller_reputation.clone());
+    if !matches!(action, Action::AdminTookDispute) {
+        if let Some(Payload::Peer(peer)) = inner_kind.payload.as_ref() {
+            let snap = effective_order_snapshot.as_ref();
+            crate::ui::helpers::assign_peer_reputation(
+                snap.and_then(|o| o.buyer_trade_pubkey.as_deref()),
+                snap.and_then(|o| o.seller_trade_pubkey.as_deref()),
+                effective_is_mine,
+                effective_order_kind,
+                peer,
+                &mut buyer_reputation,
+                &mut seller_reputation,
+            );
+        }
+    }
+
+    if notify && is_new_message && is_actionable_notification && !taker_reputation_peer {
         match pending_notifications.lock() {
             Ok(mut pending_notifications) => {
                 *pending_notifications += 1;
@@ -1173,6 +1210,8 @@ async fn handle_trade_dm_for_order(
         is_mine: effective_is_mine,
         order_status: effective_order_status,
         order_snapshot: effective_order_snapshot,
+        buyer_reputation: buyer_reputation.clone(),
+        seller_reputation: seller_reputation.clone(),
         // Preserve popup-shown state for same-action updates (e.g. duplicate AddInvoice
         // carrying peer reputation payload but no amount), preventing noisy re-popups.
         auto_popup_shown: prior_auto_popup_shown,
@@ -1187,6 +1226,25 @@ async fn handle_trade_dm_for_order(
             return;
         }
     };
+    // Invoice-less `PayInvoice`/`AddInvoice` + `Payload::Peer` is reputation only: merge
+    // onto the existing row so we do not replace a real bolt11 PayInvoice.
+    if taker_reputation_peer {
+        if let Some(existing) = messages_lock
+            .iter_mut()
+            .find(|m| m.order_id == Some(order_id))
+        {
+            if buyer_reputation.is_some() {
+                existing.buyer_reputation = buyer_reputation;
+            }
+            if seller_reputation.is_some() {
+                existing.seller_reputation = seller_reputation;
+            }
+            return;
+        }
+        messages_lock.push(order_message);
+        messages_lock.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+        return;
+    }
     // Keep one row per order, but do not let older stale replay messages overwrite the
     // currently selected action row after startup/reconnect hydration.
     let should_replace_row = match &existing_message_data {
@@ -2349,20 +2407,157 @@ mod tests {
     use super::{
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
-        is_take_sell_buyer_waiting_invoice, new_order_would_regress_messages_row,
-        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
-        trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
+        new_order_would_regress_messages_row, small_order_pending_from_new_order_payload,
+        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
         TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
+    use crate::ui::OrderMessage;
     use mostro_core::prelude::{
-        Action, Message, Payload, SmallOrder, Status, Transport, UnwrappedMessage,
+        Action, Kind, Message, Payload, Peer, SmallOrder, Status, Transport, UnwrappedMessage,
+        UserInfo,
     };
     use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    async fn memory_orders_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+        pool
+    }
+
+    #[test]
+    fn taker_reputation_peer_matches_pay_invoice_without_bolt11() {
+        let peer = Payload::Peer(Peer {
+            pubkey: String::new(),
+            reputation: Some(UserInfo {
+                rating: 3.9,
+                reviews: 5,
+                operating_days: 9,
+            }),
+        });
+        assert!(is_taker_reputation_peer_dm(
+            &Action::PayInvoice,
+            &Some(peer.clone())
+        ));
+        assert!(is_taker_reputation_peer_dm(
+            &Action::AddInvoice,
+            &Some(peer)
+        ));
+        assert!(!is_taker_reputation_peer_dm(
+            &Action::PayInvoice,
+            &Some(Payload::PaymentRequest(None, "lnbc1".into(), None))
+        ));
+    }
+
+    #[tokio::test]
+    async fn pay_invoice_peer_reputation_merges_without_replacing_bolt11() {
+        let pool = memory_orders_pool().await;
+        let order_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, is_mine) VALUES (?, 'sell', 'waiting-payment', 1000, 'USD', 10, \
+             'bank', 0, 1)",
+        )
+        .bind(order_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("maker sell order");
+
+        let invoice_msg = Message::new_order(
+            Some(order_id),
+            None,
+            Some(1),
+            Action::PayInvoice,
+            Some(Payload::PaymentRequest(
+                None,
+                "lnbc1invoice".into(),
+                Some(1000),
+            )),
+        );
+        let messages = Arc::new(Mutex::new(vec![OrderMessage {
+            message: invoice_msg,
+            timestamp: 10,
+            sender: Keys::generate().public_key(),
+            order_id: Some(order_id),
+            trade_index: 1,
+            sat_amount: Some(1000),
+            buyer_invoice: Some("lnbc1invoice".into()),
+            order_kind: Some(Kind::Sell),
+            is_mine: Some(true),
+            order_status: Some(Status::WaitingPayment),
+            order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        }]));
+        let pending_notifications = Arc::new(Mutex::new(0));
+        let (notification_tx, mut notification_rx) = tokio::sync::mpsc::unbounded_channel();
+        let trade_keys = Keys::generate();
+        let reputation_dm = Message::new_order(
+            Some(order_id),
+            None,
+            None,
+            Action::PayInvoice,
+            Some(Payload::Peer(Peer {
+                pubkey: String::new(),
+                reputation: Some(UserInfo {
+                    rating: 3.9,
+                    reviews: 5,
+                    operating_days: 9,
+                }),
+            })),
+        );
+
+        handle_trade_dm_for_order(
+            &messages,
+            &pending_notifications,
+            &notification_tx,
+            order_id,
+            1,
+            reputation_dm,
+            20,
+            Keys::generate().public_key(),
+            &pool,
+            &trade_keys,
+            true,
+        )
+        .await;
+
+        let stored = messages.lock().expect("messages lock");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].buyer_invoice.as_deref(), Some("lnbc1invoice"));
+        assert_eq!(
+            stored[0].buyer_reputation.as_ref().map(|r| r.reviews),
+            Some(5)
+        );
+        assert!(stored[0].seller_reputation.is_none());
+        assert_eq!(*pending_notifications.lock().expect("pending lock"), 0);
+        assert!(notification_rx.try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn cant_do_surfaces_rejection_without_changing_order_status() {

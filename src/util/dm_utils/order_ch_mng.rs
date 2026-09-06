@@ -1,15 +1,16 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::{
-    strip_new_order_messages_and_clamp_selected, try_placeholder_order_message_from_success,
+    merge_order_snapshots, strip_new_order_messages_and_clamp_selected,
+    try_placeholder_order_message_from_payment_request, try_placeholder_order_message_from_success,
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
     AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection,
-    MessageNotification, OperationResult, UiMode, UserMode,
+    MessageNotification, OperationResult, OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
-use mostro_core::prelude::Action;
+use mostro_core::prelude::{Action, SmallOrder};
 use uuid::Uuid;
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
@@ -122,6 +123,60 @@ fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSucce
             if messages.iter().any(|m| m.order_id == Some(order_id)) {
                 return;
             }
+            messages.push(placeholder);
+            messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
+
+/// If `PaymentRequestRequired` arrived before any DM row (or the row has no snapshot),
+/// seed amount/payment/premium from the execute-path `SmallOrder`.
+fn maybe_insert_payment_request_placeholder(
+    app: &mut AppState,
+    order: &SmallOrder,
+    header: &OrderChatStaticHeader,
+    trade_index: i64,
+    sat_amount: Option<i64>,
+    action: Action,
+    invoice: &str,
+) {
+    let Some(order_id) = order.id else {
+        return;
+    };
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            if let Some(existing) = messages.iter_mut().find(|m| m.order_id == Some(order_id)) {
+                existing.order_snapshot = merge_order_snapshots(
+                    Some(order.clone()),
+                    existing.order_snapshot.clone(),
+                    None,
+                );
+                if existing.sat_amount.is_none() {
+                    existing.sat_amount = sat_amount;
+                }
+                if existing.order_kind.is_none() {
+                    existing.order_kind = order.kind.or(header.kind);
+                }
+                if existing.order_status.is_none() {
+                    existing.order_status = order.status;
+                }
+                return;
+            }
+            let Some(placeholder) = try_placeholder_order_message_from_payment_request(
+                order,
+                header,
+                trade_index,
+                sat_amount,
+                action,
+                invoice,
+            ) else {
+                return;
+            };
             messages.push(placeholder);
             messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         }
@@ -246,10 +301,19 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         invoice,
         sat_amount,
         trade_index,
-        static_header: _,
+        static_header,
         action,
     } = &result
     {
+        maybe_insert_payment_request_placeholder(
+            app,
+            order,
+            static_header,
+            *trade_index,
+            *sat_amount,
+            action.clone(),
+            invoice,
+        );
         // New-order bond invoice path succeeds here and returns before the
         // WaitingForMostro match below — clear the draft now so it cannot restore
         // a duplicate form after the maker pays the bond.
@@ -585,6 +649,8 @@ mod tests {
             is_mine: Some(false),
             order_status: Some(Status::WaitingBuyerInvoice),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: true,
             auto_popup_shown: true,
         };

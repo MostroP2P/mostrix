@@ -833,6 +833,8 @@ mod sidebar_tests {
             is_mine: None,
             order_status: None,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read,
             auto_popup_shown: false,
         }
@@ -978,6 +980,8 @@ mod trade_snapshot_tests {
             is_mine: None,
             order_status: status,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: true,
             auto_popup_shown: true,
         }
@@ -1000,6 +1004,8 @@ mod trade_snapshot_tests {
             is_mine: Some(true),
             order_status: Some(Status::FiatSent),
             order_snapshot: Some(snap.clone()),
+            buyer_reputation: None,
+            seller_reputation: None,
             read: true,
             auto_popup_shown: true,
         };
@@ -1018,6 +1024,8 @@ mod trade_snapshot_tests {
                 )),
             ),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             ..msg
         };
         assert_eq!(
@@ -1093,6 +1101,8 @@ mod layout_and_render_tests {
             is_mine: Some(true),
             order_status: Some(Status::WaitingPayment),
             order_snapshot: Some(snap),
+            buyer_reputation: None,
+            seller_reputation: None,
             read: false,
             auto_popup_shown: true,
         }
