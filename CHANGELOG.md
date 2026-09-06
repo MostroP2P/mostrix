@@ -21,81 +21,81 @@ gpg: Good signature from "Arkanoider <github.913zc@simplelogin.com>" [ultimate]
 That will verify the signature of the manifest file, which ensures integrity and authenticity of the archive you've downloaded locally containing the binaries. Next, depending on your operating system, you should then re-compute the sha256 hash of the archive with `shasum -a 256 <filename>`, compare it with the corresponding one in the manifest file, and ensure they match exactly.
 
 
-## What's Changed in 0.3.0
-
-### 🚀 Features
-
-
-* unify post-restore hydrate orchestrator by [@arkanoider](https://github.com/arkanoider)
-* rebuild peer order chat from relay after session restore by [@arkanoider](https://github.com/arkanoider)
-* await trade DM replay after session restore by [@arkanoider](https://github.com/arkanoider)
-* sync popup, retry, and startup alignment by [@arkanoider](https://github.com/arkanoider)
-* sync last trade index from Mostro after restore by [@arkanoider](https://github.com/arkanoider)
-* batch-fetch order details after restore-session by [@arkanoider](https://github.com/arkanoider)
-* copy seed words with C on View Seed popup by [@arkanoider](https://github.com/arkanoider)
-* import seed words with wipe and auto-restore by [@arkanoider](https://github.com/arkanoider)
-* add full local session wipe utility by [@arkanoider](https://github.com/arkanoider)
-* recover dispute id and solver chat by [@amuntri](https://github.com/amuntri)
-* log the request and the outcome by [@amuntri](https://github.com/amuntri)
-* recover orders and disputes from Mostro via Settings by [@amuntri](https://github.com/amuntri)
+## What's Changed in 0.3.1
 
 ### 🐛 Bug Fixes
 
 
-* record peer chat inner ids only after transcript save by [@arkanoider](https://github.com/arkanoider)
-* clear stale chat cursors after session wipe by [@arkanoider](https://github.com/arkanoider)
-* spawn post-restore trade DM replay off the UI loop by [@arkanoider](https://github.com/arkanoider)
-* use catch-up fetch when trade DM cursor is missing by [@arkanoider](https://github.com/arkanoider)
-* use trade side for matched maker Active rows by [@arkanoider](https://github.com/arkanoider)
-* map DB order status to Messages-tab actions on sync by [@arkanoider](https://github.com/arkanoider)
-* address review items for sync safety and popup layout by [@arkanoider](https://github.com/arkanoider)
-* correlate LastTradeIndex responses by request_id by [@arkanoider](https://github.com/arkanoider)
-* fail closed when LastTradeIndex omits trade_index by [@arkanoider](https://github.com/arkanoider)
-* preserve local order fields on insert_from_restore collision by [@arkanoider](https://github.com/arkanoider)
-* persist peer chat keys on fresh restore insert by [@arkanoider](https://github.com/arkanoider)
-* harden settings writes and staged-wipe cleanup by [@arkanoider](https://github.com/arkanoider)
-* rollback settings + DB together on import/wipe failure by [@arkanoider](https://github.com/arkanoider)
-* address CodeRabbit review — TUI degrade + staged wipe by [@arkanoider](https://github.com/arkanoider)
-* support Ctrl+V paste and multiline seed normalize by [@arkanoider](https://github.com/arkanoider)
-* address review round 3 by [@amuntri](https://github.com/amuntri)
-* data-integrity hardening from review by [@amuntri](https://github.com/amuntri)
-* actually send SessionRestored from the restore task by [@amuntri](https://github.com/amuntri)
-* size the operation-result popup from the real terminal width by [@amuntri](https://github.com/amuntri)
-* address review — sender check, role inference, UI resync by [@amuntri](https://github.com/amuntri)
+* join aborted fetch tasks before key-reload respawn by [@arkanoider](https://github.com/arkanoider)
+* snapshot waiter catch-up ids before spawn by [@arkanoider](https://github.com/arkanoider)
+* promote reputation row on PaymentRequestRequired by [@arkanoider](https://github.com/arkanoider)
+* keep Order Chat body visible under 60×15 shell chrome by [@arkanoider](https://github.com/arkanoider)
+* keep reputation DMs informational and header responsive by [@arkanoider](https://github.com/arkanoider)
+* show Order Chat amount, payment, and taker ratings by [@arkanoider](https://github.com/arkanoider)
+* bind waiter catch-up to ids snapshotted at spawn by [@arkanoider](https://github.com/arkanoider)
+* wait for a live relay and correlate waiter replies by [@arkanoider](https://github.com/arkanoider)
+* connect new client before aborting key-reload listener by [@arkanoider](https://github.com/arkanoider)
+* keep waiters registered while decrypting incoming DMs by [@arkanoider](https://github.com/arkanoider)
+* await aborted reconnect tasks and retry waiter subscribe by [@arkanoider](https://github.com/arkanoider)
+* keep wait_for_dm waiters across reconnect (MOSTRO-80) by [@arkanoider](https://github.com/arkanoider)
+* keep live outer ids retryable until persist succeeds by [@arkanoider](https://github.com/arkanoider)
+* skip inner ids until transcript persist succeeds by [@arkanoider](https://github.com/arkanoider)
+* match AddBondInvoice timeout to wait_for_dm by [@arkanoider](https://github.com/arkanoider)
+* keep v1 protocol warning visible on short terminals by [@arkanoider](https://github.com/arkanoider)
+* defer AddInvoice DB hydration until trusted amount exists (MOSTRO-078) by [@arkanoider](https://github.com/arkanoider)
+* fail-closed AddInvoice validation and gate listener framing (MOSTRO-078) by [@arkanoider](https://github.com/arkanoider)
+* validate take-sell AddInvoice sats against book order (MOSTRO-078) by [@arkanoider](https://github.com/arkanoider)
+* merge DM last_seen cursors by max on listener respawn by [@arkanoider](https://github.com/arkanoider)
+* dispatch TrackOrder via current global DM sender by [@arkanoider](https://github.com/arkanoider)
+* address CodeRabbit review on task alarms and backoff by [@arkanoider](https://github.com/arkanoider)
+* buffer router cmds during listener backoff and replay chats by [@arkanoider](https://github.com/arkanoider)
+* respawn critical background tasks individually on failure (MOSTRO-079) by [@arkanoider](https://github.com/arkanoider)
+* preserve cache on transient instance-info fetch failures by [@arkanoider](https://github.com/arkanoider)
+* preserve cached transport when instance-info auth rejects relay data by [@arkanoider](https://github.com/arkanoider)
+* bot rants fixed by [@arkanoider](https://github.com/arkanoider)
+* authenticate kind-38385 instance info before applying transport (MOSTRO-075) by [@arkanoider](https://github.com/arkanoider)
 
 ### 💼 Other
 
 
-* feat(restore): unify post-restore hydrate orchestrator (step 4) by [@arkanoider](https://github.com/arkanoider) in [#159](https://github.com/MostroP2P/mostrix/pull/159)
-* feat(restore): peer chat hydrate and cursor hygiene after session restore by [@arkanoider](https://github.com/arkanoider) in [#158](https://github.com/MostroP2P/mostrix/pull/158)
-* feat(restore): await trade DM replay after session restore (step 2) by [@arkanoider](https://github.com/arkanoider) in [#157](https://github.com/MostroP2P/mostrix/pull/157)
-* fix(restore): map DB status to Messages-tab actions (step 1) by [@arkanoider](https://github.com/arkanoider) in [#156](https://github.com/MostroP2P/mostrix/pull/156)
-* feat(trade-index): on-the-fly sync popup + startup alignment by [@arkanoider](https://github.com/arkanoider) in [#153](https://github.com/MostroP2P/mostrix/pull/153)
-* feat(restore): stage 3 — LastTradeIndex sync + shared helper by [@arkanoider](https://github.com/arkanoider) in [#152](https://github.com/MostroP2P/mostrix/pull/152)
-* feat(restore): orchestrator stage 2 — batch order details from Mostro by [@arkanoider](https://github.com/arkanoider) in [#151](https://github.com/MostroP2P/mostrix/pull/151)
-* feat(restore): recover orders and disputes from Mostro via Settings by [@arkanoider](https://github.com/arkanoider) in [#149](https://github.com/MostroP2P/mostrix/pull/149)
+* fix(liveness): keep wait_for_dm waiters across reconnect (MOSTRO-80) by [@arkanoider](https://github.com/arkanoider) in [#170](https://github.com/MostroP2P/mostrix/pull/170)
+* Merge branch 'main' into fix/mostro-080-resurrect-waiters-on-reconnect by [@arkanoider](https://github.com/arkanoider)
+* fix(ui): show Order Chat amount, payment, and taker ratings by [@arkanoider](https://github.com/arkanoider) in [#169](https://github.com/MostroP2P/mostrix/pull/169)
+* fix(chat): skip inner ids until transcript persist succeeds by [@arkanoider](https://github.com/arkanoider) in [#168](https://github.com/MostroP2P/mostrix/pull/168)
+* refactor(chat): drop GiftWrap dual-read, kind 14 only by [@arkanoider](https://github.com/arkanoider) in [#167](https://github.com/MostroP2P/mostrix/pull/167)
+* Merge commit 'a1937dba2fa5fc30b95c2734f069d0d5cb09c1f2' by [@arkanoider](https://github.com/arkanoider)
+* refactor(protocol): speak NIP-44 only for Mostro DMs by [@arkanoider](https://github.com/arkanoider) in [#166](https://github.com/MostroP2P/mostrix/pull/166)
+* fix(liveness): per-task respawn on background task failure (MOSTRO-079) by [@arkanoider](https://github.com/arkanoider) in [#161](https://github.com/MostroP2P/mostrix/pull/161)
+
+### 🚜 Refactor
+
+
+* drop GiftWrap dual-read, kind 14 only by [@arkanoider](https://github.com/arkanoider)
+* speak NIP-44 only for Mostro DMs by [@arkanoider](https://github.com/arkanoider)
+* drop unused show_result_toast and Applied instance-info path by [@arkanoider](https://github.com/arkanoider)
 
 ### 📚 Documentation
 
 
-* add session restore acceptance checklist (step 6) by [@arkanoider](https://github.com/arkanoider)
-* document post-restore hydrate pipeline (steps 2–4) by [@arkanoider](https://github.com/arkanoider)
-* align comments with post-restore chat hydrate by [@arkanoider](https://github.com/arkanoider)
+* describe kind-14 hydration, drop gift-wrap alias by [@arkanoider](https://github.com/arkanoider)
+* align comments with per-task background supervision by [@arkanoider](https://github.com/arkanoider)
 
 ### ⚙️ Miscellaneous Tasks
 
 
+* removed useless check of v1 by [@arkanoider](https://github.com/arkanoider)
+* fix comments by [@arkanoider](https://github.com/arkanoider)
 * cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
-* update comments by [@arkanoider](https://github.com/arkanoider)
-* update comments by [@arkanoider](https://github.com/arkanoider)
-* update comments by [@arkanoider](https://github.com/arkanoider)
+
+### 🛡️ Security
+
+
+* fix(security): validate take-sell AddInvoice sats against book order (MOSTRO-078) by [@arkanoider](https://github.com/arkanoider) in [#164](https://github.com/MostroP2P/mostrix/pull/164)
+* fix(security): authenticate kind-38385 instance info before applying transport (MOSTRO-075) by [@arkanoider](https://github.com/arkanoider) in [#160](https://github.com/MostroP2P/mostrix/pull/160)
 
 ## Contributors
-* [@arkanoider](https://github.com/arkanoider) made their contribution in [#159](https://github.com/MostroP2P/mostrix/pull/159)
-* [@amuntri](https://github.com/amuntri) made their contribution
+* [@arkanoider](https://github.com/arkanoider) made their contribution in [#170](https://github.com/MostroP2P/mostrix/pull/170)
 
-**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.2.9...0.3.0
+**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.0...0.3.1
 
 <!-- generated by git-cliff -->
