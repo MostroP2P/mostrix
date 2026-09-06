@@ -969,6 +969,20 @@ pub async fn active_peer_chat_order_ids_for_restore(pool: &SqlitePool) -> Vec<St
     }
 }
 
+/// When any transcript write in a batch failed, keep the previous last-seen
+/// cursor so a later hydrate/`since` can still observe the unpersisted gap.
+fn committed_chat_last_seen(
+    persist_failed: bool,
+    previous: Option<i64>,
+    candidate_max: i64,
+) -> Option<i64> {
+    if persist_failed {
+        previous
+    } else {
+        Some(clamp_chat_since_cursor_now(candidate_max))
+    }
+}
+
 /// Merge fetched user order chat updates into app state and persist them to file.
 ///
 /// On [`UserChatChannel::Peer`], relay rows from the local trade key are stored as **You**
@@ -977,7 +991,9 @@ pub async fn active_peer_chat_order_ids_for_restore(pool: &SqlitePool) -> Vec<St
 ///
 /// Durable inner-event ids are recorded only after a successful transcript
 /// [`save_order_chat_message`] / [`rewrite_order_chat_messages`]. On write
-/// failure the id is left unrecorded so a later delivery can retry.
+/// failure the id is left unrecorded so a later delivery can retry (the chat
+/// router consults this durable set and does not consume ids on emit), and the
+/// last-seen cursor is not advanced so hydrate/`since` cannot skip the gap.
 pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui::OrderChatUpdate>) {
     for update in updates {
         let order_id = update.order_id.clone();
@@ -989,10 +1005,11 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
             UserChatChannel::Peer => &mut app.order_chat_last_seen,
             UserChatChannel::Solver => &mut app.user_dispute_chat_last_seen,
         };
-        let mut max_ts = last_seen_map
+        let previous_last_seen = last_seen_map
             .get(&order_id)
-            .and_then(|s| s.last_seen_timestamp)
-            .unwrap_or(0);
+            .and_then(|s| s.last_seen_timestamp);
+        let mut max_ts = previous_last_seen.unwrap_or(0);
+        let mut persist_failed = false;
         for msg in update.messages {
             let content = msg.content;
             let ts = msg.timestamp;
@@ -1062,6 +1079,7 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                     };
                     if !rewrite_order_chat_messages(&order_id, messages_vec) {
                         messages_vec[idx] = previous;
+                        persist_failed = true;
                         log::warn!(
                             "Failed to persist order chat attachment upgrade for {order_id}; leaving inner id unrecorded"
                         );
@@ -1137,6 +1155,7 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 UserChatChannel::Solver => save_user_dispute_chat_message(&order_id, &msg),
             };
             if !saved {
+                persist_failed = true;
                 log::warn!(
                     "Failed to persist {} chat message for {order_id}; leaving inner id unrecorded",
                     update.channel
@@ -1156,23 +1175,28 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 max_ts = ts;
             }
         }
-        last_seen_map.insert(
-            order_id,
-            OrderChatLastSeen {
-                last_seen_timestamp: Some(clamp_chat_since_cursor_now(max_ts)),
-            },
-        );
+        if let Some(ts) = committed_chat_last_seen(persist_failed, previous_last_seen, max_ts) {
+            last_seen_map.insert(
+                order_id,
+                OrderChatLastSeen {
+                    last_seen_timestamp: Some(ts),
+                },
+            );
+        }
     }
 }
 
 /// Apply fetched admin chat updates back into the UI state and persist
-/// last_seen timestamps to the database.
+/// last_seen timestamps to the database (skipped when a transcript write in
+/// the batch failed).
 ///
 /// Inner signers that match neither the buyer nor the seller trade pubkey are
 /// dropped (not labeled Admin). Admin echoes are skipped via `admin_chat_pubkey`.
 /// Durable inner-event ids are recorded only after a successful transcript
 /// [`save_chat_message`] / [`rewrite_dispute_chat_messages`]. On write failure
-/// the id is left unrecorded so a later delivery can retry.
+/// the id is left unrecorded so a later delivery can retry (the chat router
+/// consults this durable set and does not consume ids on emit), and the
+/// last-seen cursor is not advanced so hydrate/`since` cannot skip the gap.
 pub async fn apply_admin_chat_updates(
     app: &mut AppState,
     updates: Vec<AdminChatUpdate>,
@@ -1192,6 +1216,7 @@ pub async fn apply_admin_chat_updates(
             .get(&(dispute_key.clone(), party))
             .and_then(|s| s.last_seen_timestamp)
             .unwrap_or(0);
+        let mut persist_failed = false;
 
         for msg in update.messages {
             let content = msg.content;
@@ -1267,6 +1292,7 @@ pub async fn apply_admin_chat_updates(
                     };
                     if !rewrite_dispute_chat_messages(&dispute_key, messages_vec) {
                         messages_vec[idx] = previous;
+                        persist_failed = true;
                         log::warn!(
                             "Failed to persist dispute chat attachment upgrade for {dispute_key}; leaving inner id unrecorded"
                         );
@@ -1327,6 +1353,7 @@ pub async fn apply_admin_chat_updates(
                 attachment,
             };
             if !save_chat_message(&dispute_key, &msg) {
+                persist_failed = true;
                 log::warn!(
                     "Failed to persist dispute chat message for {dispute_key}; leaving inner id unrecorded"
                 );
@@ -1337,6 +1364,11 @@ pub async fn apply_admin_chat_updates(
             if ts > max_ts {
                 max_ts = ts;
             }
+        }
+
+        if persist_failed {
+            log::warn!("Not advancing admin chat last-seen for {dispute_key}; persist failed");
+            continue;
         }
 
         let entry = app
@@ -1368,6 +1400,28 @@ pub async fn apply_admin_chat_updates(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod committed_chat_last_seen_tests {
+    use super::committed_chat_last_seen;
+
+    #[test]
+    fn persist_failure_keeps_previous_cursor() {
+        assert_eq!(
+            committed_chat_last_seen(true, Some(1_700), 1_800),
+            Some(1_700)
+        );
+        assert_eq!(committed_chat_last_seen(true, None, 1_800), None);
+    }
+
+    #[test]
+    fn persist_success_advances_to_candidate() {
+        assert_eq!(
+            committed_chat_last_seen(false, Some(1_700), 1_800),
+            Some(1_800)
+        );
+    }
 }
 
 #[cfg(test)]

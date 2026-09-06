@@ -29,6 +29,8 @@ pub use chat_storage::{
     remember_order_chat_inner_id, rewrite_dispute_chat_messages, rewrite_order_chat_messages,
     save_chat_message, save_order_chat_message,
 };
+#[cfg(test)]
+pub(crate) use chat_storage::{force_next_chat_save_failure, install_test_chat_home};
 pub use chat_storage::{
     load_user_dispute_chat_from_file, load_user_dispute_chat_inner_ids,
     remember_user_dispute_chat_inner_id, save_user_dispute_chat_message,

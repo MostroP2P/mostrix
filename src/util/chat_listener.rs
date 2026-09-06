@@ -12,7 +12,13 @@
 //! allow-list on [`ChatRouterCmd::TrackChatKey`]; messages whose inner event is
 //! not signed by an allowed trade/admin key are dropped. Decoded messages are
 //! emitted on the existing `admin_chat_updates` / `user_order_chat_updates`
-//! channels.
+//! channels. Inner-event replay protection uses the **durable** `.inner_ids`
+//! set (recorded by the UI only after transcript save). The router must not
+//! consume an inner id on emit — a failed persist would otherwise drop later
+//! deliveries for the rest of the session. The session outer-id LRU is the same
+//! contract: retain an outer event id only after a durable skip (inner already
+//! accepted) or a poison unwrap, so a relay redelivery of the same Nostr event
+//! can still retry a failed transcript write without restarting the listener.
 //!
 //! Lifecycle (see also `docs/DM_LISTENER_FLOW.md`): spawned via
 //! [`crate::util::spawn_supervised_chat_listener`] at startup (and on client
@@ -31,8 +37,9 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::helpers::{
-    load_dispute_chat_inner_ids, load_order_chat_inner_ids, load_user_dispute_chat_inner_ids,
-    order_chat_since_from_file,
+    dispute_chat_inner_id_known, load_dispute_chat_inner_ids, load_order_chat_inner_ids,
+    load_user_dispute_chat_inner_ids, order_chat_inner_id_known, order_chat_since_from_file,
+    user_dispute_chat_inner_id_known,
 };
 use crate::ui::{AdminChatUpdate, ChatParty, DecodedChatMessage, OrderChatUpdate, UserChatChannel};
 use crate::util::chat_security::{
@@ -264,7 +271,8 @@ pub async fn maybe_track_order_chat(pool: &sqlx::SqlitePool, order_id: Uuid, tra
 ///
 /// Reuses the same `AdminChatUpdate` / `OrderChatUpdate` shapes as the old
 /// polling path so `apply_admin_chat_updates` / `apply_user_order_chat_updates`
-/// (which dedupe by timestamp/last-seen) are unchanged.
+/// can merge, persist, and dedupe by durable inner-event id. This helper does
+/// not record inner ids.
 fn emit_messages(
     target: &ChatTarget,
     messages: Vec<DecodedChatMessage>,
@@ -317,6 +325,64 @@ fn emit_messages(
                 }],
                 "admin-chat",
             );
+        }
+    }
+}
+
+/// Result of one live kind-14 notification after the event has been routed to a
+/// tracked chat. Outer-id LRU insertion is a durable/poison ack, not a
+/// pre-emit reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveChatDisposition {
+    /// Outer id already retained (post-persist skip or poison unwrap).
+    DuplicateOuter,
+    /// Token bucket denied; outer id is left retryable.
+    RateLimited,
+    /// Decrypt/allow-list failed; outer id retained (retrying will not help).
+    UnwrapFailed,
+    /// Inner id already in the durable set; outer id retained.
+    AlreadyPersisted,
+    /// Emitted to the UI; outer id is **not** retained until persist records the inner id.
+    Emitted,
+}
+
+/// Spec order: outer-id lookup, then rate limit, then decrypt.
+///
+/// Unlike a consume-on-sight LRU, this only **inserts** `event.id` when the
+/// event is a poison unwrap or the inner id is already durably accepted.
+/// Emitted events stay retryable so a failed `save_order_chat_message` /
+/// `save_chat_message` can still be retried on the same outer redelivery.
+fn handle_live_chat_event(
+    event: &Event,
+    target: &ChatTarget,
+    seen_outer: &mut OuterIdLru,
+    rate_limiters: &mut ChatRateLimiters<ChatKeyId>,
+    admin_tx: &Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
+    user_tx: &Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
+) -> LiveChatDisposition {
+    if seen_outer.contains(&event.id) {
+        return LiveChatDisposition::DuplicateOuter;
+    }
+    if !rate_limiters.allow(&target.key_id) {
+        log::debug!(
+            "[chat_live] rate-limited chat event for {:?}",
+            target.key_id
+        );
+        return LiveChatDisposition::RateLimited;
+    }
+    match unwrap_chat_envelope(&target.shared_keys, event, &target.allowed_signers) {
+        Ok(msg) => {
+            if chat_inner_id_accepted(&target.key_id, &msg.inner_event_id) {
+                let _ = seen_outer.insert(event.id);
+                return LiveChatDisposition::AlreadyPersisted;
+            }
+            emit_messages(target, vec![msg], admin_tx, user_tx);
+            LiveChatDisposition::Emitted
+        }
+        Err(e) => {
+            log::warn!("[chat_live] failed to unwrap chat event {}: {e}", event.id);
+            let _ = seen_outer.insert(event.id);
+            LiveChatDisposition::UnwrapFailed
         }
     }
 }
@@ -424,9 +490,9 @@ struct CmdOutcome {
     needs_resubscribe: bool,
     /// A newly tracked key awaiting post-subscribe history hydration.
     hydrate: Option<PendingHydration>,
-    /// Key that was newly tracked (seed durable inner-id set).
+    /// Key that was newly tracked (warm durable inner-id cache).
     tracked: Option<ChatKeyId>,
-    /// Key that was removed (drop rate-limit / in-memory inner set).
+    /// Key that was removed (drop the per-key rate limiter).
     untracked: Option<ChatKeyId>,
 }
 
@@ -536,17 +602,45 @@ fn load_inner_ids_for_key(key_id: &ChatKeyId) -> HashSet<EventId> {
     }
 }
 
+/// True when this inner id is already in the durable `.inner_ids` set (UI records
+/// it only after a successful transcript save). Used to skip replay; must not be
+/// treated as "emitted this session".
+fn chat_inner_id_accepted(key_id: &ChatKeyId, id: &EventId) -> bool {
+    match key_id {
+        ChatKeyId::Order(order_id) => order_chat_inner_id_known(order_id, id),
+        ChatKeyId::UserDispute(order_id) => user_dispute_chat_inner_id_known(order_id, id),
+        ChatKeyId::Dispute(dispute_id, party) => {
+            dispute_chat_inner_id_known(dispute_id, *party, id)
+        }
+    }
+}
+
+/// Drop history rows already durably accepted, plus duplicates inside this fetch.
+/// Does **not** record new inner ids — a failed UI persist must still be retryable.
+fn filter_unpersisted_chat_history(
+    messages: Vec<DecodedChatMessage>,
+    cutoff: i64,
+    inner_already_accepted: impl Fn(&EventId) -> bool,
+) -> Vec<DecodedChatMessage> {
+    let mut batch_seen = HashSet::new();
+    messages
+        .into_iter()
+        .filter(|m| m.timestamp >= cutoff)
+        .filter(|m| !inner_already_accepted(&m.inner_event_id))
+        .filter(|m| batch_seen.insert(m.inner_event_id))
+        .collect()
+}
+
 /// Backfill one newly tracked chat's history **after** the live subscription is
 /// active (relay subscriptions alone don't replay history). Unwrap uses the
 /// target's inner-signer allow-list. Because the live filter already covers this
-/// key, any message published during the fetch is also delivered live and
-/// deduped by the last-seen cursor / inner-id set. No-op if the key was
-/// untracked within the same command burst.
+/// key, any message published during the fetch is also delivered live; the UI
+/// dedupes by durable inner id after persist. No-op if the key was untracked
+/// within the same command burst.
 async fn hydrate_history(
     client: &Client,
     targets: &HashMap<PublicKey, ChatTarget>,
     pending: &PendingHydration,
-    seen_inner: &mut HashMap<ChatKeyId, HashSet<EventId>>,
     admin_tx: &Sender<Result<Vec<AdminChatUpdate>, anyhow::Error>>,
     user_tx: &Sender<Result<Vec<OrderChatUpdate>, anyhow::Error>>,
 ) {
@@ -563,12 +657,9 @@ async fn hydrate_history(
     {
         Ok(messages) => {
             let cutoff = pending.since.unwrap_or(0);
-            let inner = seen_inner.entry(target.key_id.clone()).or_default();
-            let history: Vec<DecodedChatMessage> = messages
-                .into_iter()
-                .filter(|m| m.timestamp >= cutoff)
-                .filter(|m| inner.insert(m.inner_event_id))
-                .collect();
+            let history = filter_unpersisted_chat_history(messages, cutoff, |id| {
+                chat_inner_id_accepted(&target.key_id, id)
+            });
             emit_messages(target, history, admin_tx, user_tx);
         }
         Err(e) => log::warn!(
@@ -585,7 +676,11 @@ async fn hydrate_history(
 /// respawns this task on panic or unexpected exit. Consumes [`ChatRouterCmd`] for
 /// track/untrack and routes live kind-14 (`authors = pub(K_sign)`) events.
 /// Live unwrap and hydration require the per-key inner-signer allow-list from
-/// [`ChatRouterCmd::TrackChatKey`].
+/// [`ChatRouterCmd::TrackChatKey`]. Inner-event replay protection uses the
+/// durable `.inner_ids` set (UI records an id only after transcript save);
+/// emit does not consume ids. The outer-id LRU likewise retains an event id
+/// only after a durable inner-id skip or a poison unwrap, so the same Nostr
+/// event can be retried after a failed transcript write.
 ///
 /// Multiple buffered track/untrack commands are drained and applied before a single
 /// [`resubscribe`], so startup bursts (e.g. [`crate::ui::helpers::track_startup_chats`])
@@ -602,7 +697,6 @@ pub async fn listen_for_chat_messages(
     let mut current_subs = LiveSubs::default();
     let mut seen_outer = OuterIdLru::new(CHAT_SEEN_OUTER_CAP);
     let mut rate_limiters: ChatRateLimiters<ChatKeyId> = ChatRateLimiters::default();
-    let mut seen_inner: HashMap<ChatKeyId, HashSet<EventId>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -622,13 +716,12 @@ pub async fn listen_for_chat_messages(
                     needs_resubscribe |= outcome.needs_resubscribe;
                     pending_hydration.extend(outcome.hydrate);
                     if let Some(key_id) = outcome.tracked {
-                        seen_inner
-                            .entry(key_id.clone())
-                            .or_insert_with(|| load_inner_ids_for_key(&key_id));
+                        // Warm the durable inner-id cache; do not snapshot it into a
+                        // session set that would outrun transcript persist.
+                        let _ = load_inner_ids_for_key(&key_id);
                     }
                     if let Some(key_id) = outcome.untracked {
                         rate_limiters.remove(&key_id);
-                        seen_inner.remove(&key_id);
                     }
                 }
                 if needs_resubscribe {
@@ -642,7 +735,6 @@ pub async fn listen_for_chat_messages(
                         &client,
                         &targets,
                         pending,
-                        &mut seen_inner,
                         &admin_chat_updates_tx,
                         &user_order_chat_updates_tx,
                     )
@@ -661,39 +753,14 @@ pub async fn listen_for_chat_messages(
                 let Some(target) = resolve_chat_target(&targets, &event) else {
                     continue;
                 };
-                // Spec order: outer-id LRU, then rate limit — both before decrypt.
-                if !seen_outer.insert(event.id) {
-                    continue;
-                }
-                if !rate_limiters.allow(&target.key_id) {
-                    log::debug!(
-                        "[chat_live] rate-limited chat event for {:?}",
-                        target.key_id
-                    );
-                    continue;
-                }
-                match unwrap_chat_envelope(
-                    &target.shared_keys,
+                handle_live_chat_event(
                     &event,
-                    &target.allowed_signers,
-                ) {
-                    Ok(msg) => {
-                        let inner = seen_inner.entry(target.key_id.clone()).or_default();
-                        if !inner.insert(msg.inner_event_id) {
-                            continue;
-                        }
-                        emit_messages(
-                            target,
-                            vec![msg],
-                            &admin_chat_updates_tx,
-                            &user_order_chat_updates_tx,
-                        );
-                    }
-                    Err(e) => log::warn!(
-                        "[chat_live] failed to unwrap chat event {}: {e}",
-                        event.id
-                    ),
-                }
+                    target,
+                    &mut seen_outer,
+                    &mut rate_limiters,
+                    &admin_chat_updates_tx,
+                    &user_order_chat_updates_tx,
+                );
             }
         }
     }
@@ -713,7 +780,12 @@ fn resolve_chat_target<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mostro_core::chat::SharedKey;
+    use crate::ui::helpers::{
+        apply_user_order_chat_updates, force_next_chat_save_failure, install_test_chat_home,
+        order_chat_inner_id_known,
+    };
+    use crate::ui::{AppState, UserRole};
+    use mostro_core::chat::{wrap_chat_message, SharedKey};
 
     /// `ChatKeyId` equality backs both the untrack retention filter (`t.key_id != key_id`)
     /// and the track idempotency check, so it must distinguish order vs dispute and party.
@@ -932,5 +1004,163 @@ mod tests {
         assert!(!outcome.needs_resubscribe);
         assert!(outcome.hydrate.is_none());
         assert!(targets.is_empty());
+    }
+
+    fn fake_inner_id(byte: u8) -> EventId {
+        EventId::from_byte_array({
+            let mut hex = [0u8; 32];
+            hex[31] = byte;
+            hex
+        })
+    }
+
+    fn fake_decoded(ts: i64, id_byte: u8) -> DecodedChatMessage {
+        DecodedChatMessage {
+            content: format!("msg-{id_byte}"),
+            timestamp: ts,
+            sender: Keys::generate().public_key(),
+            inner_event_id: fake_inner_id(id_byte),
+        }
+    }
+
+    /// Hydrate must skip durably accepted ids without recording newly emitted ones,
+    /// so a failed transcript save can still be retried on a later delivery.
+    #[test]
+    fn hydrate_filter_skips_accepted_ids_without_consuming_new_ones() {
+        let accepted = HashSet::from([fake_inner_id(1)]);
+        let messages = vec![
+            fake_decoded(10, 1),
+            fake_decoded(11, 2),
+            fake_decoded(11, 2),
+            fake_decoded(5, 3),
+        ];
+        let out = filter_unpersisted_chat_history(messages, 10, |id| accepted.contains(id));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].inner_event_id, fake_inner_id(2));
+        assert!(!accepted.contains(&fake_inner_id(2)));
+    }
+
+    #[test]
+    fn hydrate_filter_emits_again_when_inner_id_was_never_accepted() {
+        let messages = vec![fake_decoded(10, 7), fake_decoded(10, 7)];
+        let first = filter_unpersisted_chat_history(messages.clone(), 0, |_| false);
+        assert_eq!(first.len(), 1);
+        // Simulate persist failure: durable set still empty, so a later delivery
+        // (second hydrate / live overlap) is not dropped at the router.
+        let second = filter_unpersisted_chat_history(messages, 0, |_| false);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].inner_event_id, fake_inner_id(7));
+    }
+
+    /// Live path: same outer event, forced transcript save failure, then redelivery
+    /// must emit again and persist/display without restarting the listener.
+    #[tokio::test]
+    async fn live_redelivery_retries_after_transcript_save_failure() {
+        let dir = std::env::temp_dir().join(format!("mostrix-chat-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp home");
+        let _home = install_test_chat_home(dir.clone());
+        let order_id = uuid::Uuid::new_v4().to_string();
+
+        let local = Keys::generate();
+        let peer = Keys::generate();
+        let shared = SharedKey::derive(local.secret_key(), &peer.public_key()).expect("ecdh");
+        let (conv, sign) = shared.chat_keys().expect("chat keys");
+        let event = wrap_chat_message(&peer, &conv, &sign, "retry me")
+            .await
+            .expect("wrap");
+
+        let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
+        let _ = apply_chat_router_cmd(
+            ChatRouterCmd::TrackChatKey {
+                key_id: ChatKeyId::Order(order_id.clone()),
+                shared_key_hex: shared.to_hex(),
+                local_trade_pubkey: Some(local.public_key()),
+                allowed_signers: vec![local.public_key(), peer.public_key()],
+                since: None,
+            },
+            &mut targets,
+        );
+        let target = targets.values().next().expect("tracked");
+
+        let mut seen_outer = OuterIdLru::new(CHAT_SEEN_OUTER_CAP);
+        let mut rate_limiters: ChatRateLimiters<ChatKeyId> = ChatRateLimiters::default();
+        let (admin_tx, _admin_rx) = mpsc::channel(8);
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let mut app = AppState::new(UserRole::User);
+
+        force_next_chat_save_failure();
+        assert_eq!(
+            handle_live_chat_event(
+                &event,
+                target,
+                &mut seen_outer,
+                &mut rate_limiters,
+                &admin_tx,
+                &user_tx,
+            ),
+            LiveChatDisposition::Emitted
+        );
+        assert!(
+            !seen_outer.contains(&event.id),
+            "emitted outer id must stay retryable until persist succeeds"
+        );
+
+        let first = user_rx.try_recv().expect("first emit").expect("ok");
+        let inner_id = first[0].messages[0].inner_event_id;
+        apply_user_order_chat_updates(&mut app, first);
+        assert!(
+            app.order_chats
+                .get(&order_id)
+                .is_none_or(|msgs| msgs.is_empty()),
+            "failed save must not display the message"
+        );
+        assert!(!order_chat_inner_id_known(&order_id, &inner_id));
+
+        // Same listener LRU / rate-limiter state — no restart, no re-track.
+        assert_eq!(
+            handle_live_chat_event(
+                &event,
+                target,
+                &mut seen_outer,
+                &mut rate_limiters,
+                &admin_tx,
+                &user_tx,
+            ),
+            LiveChatDisposition::Emitted
+        );
+        let second = user_rx.try_recv().expect("redelivery emit").expect("ok");
+        apply_user_order_chat_updates(&mut app, second);
+        let displayed = app.order_chats.get(&order_id).expect("chat row");
+        assert_eq!(displayed.len(), 1);
+        assert_eq!(displayed[0].content, "retry me");
+        assert!(order_chat_inner_id_known(&order_id, &inner_id));
+
+        assert_eq!(
+            handle_live_chat_event(
+                &event,
+                target,
+                &mut seen_outer,
+                &mut rate_limiters,
+                &admin_tx,
+                &user_tx,
+            ),
+            LiveChatDisposition::AlreadyPersisted
+        );
+        assert!(seen_outer.contains(&event.id));
+        assert!(user_rx.try_recv().is_err());
+
+        assert_eq!(
+            handle_live_chat_event(
+                &event,
+                target,
+                &mut seen_outer,
+                &mut rate_limiters,
+                &admin_tx,
+                &user_tx,
+            ),
+            LiveChatDisposition::DuplicateOuter
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

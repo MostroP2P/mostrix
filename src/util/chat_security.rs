@@ -2,7 +2,7 @@
 //!
 //! mostro-core's [`unwrap_chat_message`](mostro_core::chat::unwrap_chat_message)
 //! performs the cheap cryptographic/structural checks. Clients must still:
-//! * drop duplicate **outer** event ids (bounded LRU, pre-decrypt)
+//! * drop duplicate **outer** event ids already acknowledged (bounded LRU, pre-decrypt)
 //! * enforce a per-conversation **token bucket** (~30/min, burst 60) before decrypt
 //! * durably dedupe **inner** event ids (see [`crate::ui::helpers::chat_storage`])
 //! * isolate chat flood from the UI / DM path (bounded update channels)
@@ -91,6 +91,10 @@ impl<K: Eq + Hash + Clone> ChatRateLimiters<K> {
 ///
 /// Spec: cheap pre-decryption filter against duplicate relay deliveries — not a
 /// security boundary. Dropping old entries is safe.
+///
+/// The live listener records an id only after a durable skip (inner id already
+/// persisted) or a poison unwrap. Emitted-but-not-yet-saved events stay out of
+/// the set so the same outer id can be retried after a transcript write failure.
 #[derive(Debug)]
 pub struct OuterIdLru {
     set: HashSet<EventId>,
@@ -105,6 +109,11 @@ impl OuterIdLru {
             order: VecDeque::with_capacity(cap.min(64)),
             cap: cap.max(1),
         }
+    }
+
+    /// Whether `id` is currently retained as a durable/poison skip.
+    pub fn contains(&self, id: &EventId) -> bool {
+        self.set.contains(id)
     }
 
     /// Records `id`, returning `true` when it had not been seen (or was evicted).
@@ -188,10 +197,12 @@ mod tests {
         let b = fake_event_id(2);
         let c = fake_event_id(3);
         assert!(lru.insert(a));
+        assert!(lru.contains(&a));
         assert!(!lru.insert(a));
         assert!(lru.insert(b));
         assert!(lru.insert(c)); // evicts a
         assert_eq!(lru.len(), 2);
+        assert!(!lru.contains(&a));
         assert!(lru.insert(a)); // a was evicted, accepted again
     }
 

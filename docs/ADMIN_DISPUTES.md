@@ -701,7 +701,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Receiving messages**:
   - The shared-key chat subscription router (`listen_for_chat_messages`) hydrates history once per key on track, then receives newer events live.
   - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
-  - Uses `last_seen_timestamp` to only process messages created after the last processed one.
+  - Hydrate `since` uses `last_seen_timestamp`; already-accepted inner event ids are skipped from the durable `.inner_ids` set (the router does not consume an id on emit). Live outer-event ids are retained in the session LRU only after that durable skip or a poison unwrap.
   - Decrypts each event using `K_conv` / `K_sign`.
   - Skips messages signed by the admin identity (already added locally on send).
   - Inner signers outside the party+admin allow-list are dropped.
