@@ -475,6 +475,10 @@ async fn apply_pending_key_reload_from_settings<F, Fut>(
 
     order_fetch_task.abort();
     dispute_fetch_task.abort();
+    // Join before respawn so a finishing poll cannot write old-session results
+    // into the shared orders/disputes vecs after the replacement starts.
+    await_aborted_task(order_fetch_task).await;
+    await_aborted_task(dispute_fetch_task).await;
     let (o, d) = spawn_fetch_scheduler_loops(
         client.clone(),
         Arc::clone(current_mostro_pubkey),
@@ -630,6 +634,9 @@ pub async fn apply_pending_fetch_scheduler_reload(
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
+    await_aborted_task(message_listener_handle).await;
+    await_aborted_task(order_fetch_task).await;
+    await_aborted_task(dispute_fetch_task).await;
     unsubscribe_all_best_effort(client, "Fetch scheduler reload").await;
 
     connect_client_safely(client)
@@ -1457,6 +1464,51 @@ mod tests {
         assert!(
             handle.is_finished(),
             "placeholder handle must be a completed no-op so spawn can overwrite it"
+        );
+    }
+
+    /// Key reload joins aborted order/dispute fetch tasks before
+    /// `spawn_fetch_scheduler_loops` so a finishing old-session poll cannot
+    /// write into the shared vecs after the replacement starts.
+    #[tokio::test]
+    async fn key_reload_awaits_aborted_fetch_tasks_before_replacement_overlap() {
+        let writes = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (in_poll_tx, in_poll_rx) = tokio::sync::oneshot::channel::<()>();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let writes_old = Arc::clone(&writes);
+        let mut order_fetch_task = tokio::spawn(async move {
+            let _ = in_poll_tx.send(());
+            // Mid-poll hold: without join-after-abort, releasing this after
+            // "replacement started" would let a stale write race the new loop.
+            if finish_rx.await.is_ok() {
+                writes_old
+                    .lock()
+                    .expect("writes lock")
+                    .push("stale-old-session");
+            }
+        });
+        let mut dispute_fetch_task = tokio::spawn(std::future::pending());
+
+        in_poll_rx.await.expect("old order fetch entered poll");
+
+        // Same ordering as `apply_pending_key_reload_from_settings`.
+        order_fetch_task.abort();
+        dispute_fetch_task.abort();
+        await_aborted_task(&mut order_fetch_task).await;
+        await_aborted_task(&mut dispute_fetch_task).await;
+
+        writes
+            .lock()
+            .expect("writes lock")
+            .push("replacement-started");
+        let _ = finish_tx.send(());
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            *writes.lock().expect("writes lock"),
+            vec!["replacement-started"],
+            "old fetch must not write after await_aborted_task and replacement start"
         );
     }
 

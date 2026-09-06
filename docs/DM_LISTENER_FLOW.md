@@ -57,16 +57,16 @@ Mostrix has a **single background task** that:
 - **`subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)>`**  
   The “fast path” routing table: if an event arrives with a known `subscription_id`, we immediately know its `(order_id, trade_index)`.
 
-- **`pubkey_to_subscription: HashMap<PublicKey, SubscriptionId>`**  
+- **`pubkey_to_subscription: HashMap<PublicKey, SubscriptionId>`**
   Lets TrackOrder “rebind” a pubkey that was subscribed earlier by a waiter without subscribing twice.
 
-- **`pending_waiters`** (process-wide registry in `src/util/dm_utils/waiters.rs`)  
+- **`pending_waiters`** (process-wide registry in `src/util/dm_utils/waiters.rs`)
   Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation. Waiters are **not** stored in the listener task, so abort/reconnect/supervised respawn does not cancel in-flight `wait_for_dm` calls. The rebuilt listener re-subscribes waiter pubkeys and catch-up fetches events since each waiter's register timestamp.
 
-- **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*  
+- **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*
   Tracks which orders are currently “active” and which `trade_index` (hence which trade key) belongs to each `order_id`.
 
-- **`messages: Arc<Mutex<Vec<OrderMessage>>>`** *(shared with UI)*  
+- **`messages: Arc<Mutex<Vec<OrderMessage>>>`** *(shared with UI)*
   The in-memory list backing the “Messages”/flow UI. Important: this vector is **not a full history**; it stores **one “latest relevant” row per order**.
 
 ## Startup bootstrap (subscriptions + relay replay)
