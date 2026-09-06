@@ -746,6 +746,9 @@ pub fn load_order_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
 }
 
 /// Returns `true` if this inner id was already accepted for the order chat.
+///
+/// The live/hydrate router uses this as the emit skip set (not a session
+/// consume-on-emit cache).
 pub fn order_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
     match inner_ids_file_path(ChatStorageKind::Orders, order_id, None) {
         Some(path) => inner_id_known_at_path(&path, id),
@@ -774,6 +777,9 @@ pub fn load_user_dispute_chat_inner_ids(order_id: &str) -> HashSet<EventId> {
 }
 
 /// Returns `true` if this inner id was already accepted for the solver chat.
+///
+/// The live/hydrate router uses this as the emit skip set (not a session
+/// consume-on-emit cache).
 pub fn user_dispute_chat_inner_id_known(order_id: &str, id: &EventId) -> bool {
     match inner_ids_file_path(ChatStorageKind::UserDisputes, order_id, None) {
         Some(path) => inner_id_known_at_path(&path, id),
@@ -804,6 +810,9 @@ pub fn load_dispute_chat_inner_ids(dispute_id: &str, party: ChatParty) -> HashSe
 }
 
 /// Returns `true` if this inner id was already accepted for the dispute party chat.
+///
+/// The live/hydrate router uses this as the emit skip set (not a session
+/// consume-on-emit cache).
 pub fn dispute_chat_inner_id_known(dispute_id: &str, party: ChatParty, id: &EventId) -> bool {
     let sfx = match party {
         ChatParty::Buyer => "buyer",
