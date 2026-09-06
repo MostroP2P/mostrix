@@ -58,9 +58,10 @@ pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_
 pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event";
 
 use waiters::{
-    event_created_at_meets_waiter_since, prune_closed_pending_waiters, register_pending_waiter,
-    snapshot_pending_waiter_candidates, snapshot_pending_waiter_targets,
-    take_and_send_pending_waiter, waiter_since_now, PENDING_WAITER_GC_INTERVAL,
+    event_created_at_meets_waiter_since, protocol_dm_is_from_mostro, prune_closed_pending_waiters,
+    register_pending_waiter, snapshot_pending_waiter_candidates, snapshot_pending_waiter_targets,
+    take_and_send_pending_waiter, waiter_correlates_request_id, waiter_since_now,
+    PENDING_WAITER_GC_INTERVAL,
 };
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
@@ -93,6 +94,7 @@ fn is_own_signed_v2_outbound(
 struct CachedDmUnwrap {
     can_decrypt: bool,
     skip_for_waiter: bool,
+    request_id: Option<u64>,
 }
 
 /// Commands consumed by [`listen_for_order_messages`].
@@ -341,9 +343,13 @@ pub async fn send_dm(
 /// - [`WAIT_FOR_DM_BUSY_MSG`] if the registry is at cap (no protocol DM sent)
 /// - [`WAIT_FOR_DM_TIMEOUT_MSG`] if no matching event arrives in `timeout`
 /// - [`WAIT_FOR_DM_CANCELED_MSG`] if the oneshot is dropped (not a Mostro `CantDo`)
+///
+/// `expected_request_id` (`Some`) consumes only a decryptable Mostro reply that
+/// echoes that id. `None` is for flows that cannot correlate by id (restore).
 pub async fn wait_for_dm<F>(
     trade_keys: &Keys,
     timeout: std::time::Duration,
+    expected_request_id: Option<u64>,
     sent_message: F,
 ) -> Result<BTreeSet<Event>>
 where
@@ -354,7 +360,8 @@ where
     // Insert into the process-wide registry *before* sending the protocol DM so a
     // listener abort/reconnect cannot drop the oneshot (MOSTRO-80). Cap is checked
     // here, so a busy rejection happens before `sent_message`.
-    register_pending_waiter(trade_keys.clone(), response_tx).map_err(anyhow::Error::msg)?;
+    register_pending_waiter(trade_keys.clone(), response_tx, expected_request_id)
+        .map_err(anyhow::Error::msg)?;
     // Subscribe hint: lock the live sender at send time. If the listener is mid-restart
     // this may hit a closed channel; the rebuilt listener re-subscribes from the registry.
     send_register_waiter_cmd(trade_keys.clone());
@@ -1914,11 +1921,16 @@ async fn resolve_order_for_event(
 }
 
 const WAITER_CATCH_UP_FETCH_LIMIT: usize = 20;
+const WAITER_CATCH_UP_CONCURRENCY: usize = 4;
 
 async fn satisfy_pending_waiters_for_event(
     event: &Event,
+    mostro_pubkey: PublicKey,
     rumor_cache: &mut HashMap<PublicKey, CachedDmUnwrap>,
 ) {
+    if !protocol_dm_is_from_mostro(event, mostro_pubkey) {
+        return;
+    }
     let candidates = snapshot_pending_waiter_candidates();
     if candidates.is_empty() {
         return;
@@ -1935,17 +1947,22 @@ async fn satisfy_pending_waiters_for_event(
                 Ok(Some(u)) => CachedDmUnwrap {
                     can_decrypt: true,
                     skip_for_waiter: is_own_signed_v2_outbound(event, &candidate.trade_keys, &u),
+                    request_id: u.message.get_inner_message_kind().request_id,
                 },
                 _ => CachedDmUnwrap {
                     can_decrypt: false,
                     skip_for_waiter: false,
+                    request_id: None,
                 },
             };
             rumor_cache.insert(key, cached);
             cached
         };
 
-        if cached.can_decrypt && !cached.skip_for_waiter {
+        if cached.can_decrypt
+            && !cached.skip_for_waiter
+            && waiter_correlates_request_id(candidate.expected_request_id, cached.request_id)
+        {
             let _ = take_and_send_pending_waiter(candidate.id, event.clone());
         }
     }
@@ -1982,31 +1999,40 @@ async fn catch_up_pending_waiters(client: &Client, transport: Transport, mostro_
     if targets.is_empty() {
         return;
     }
-    for (pubkey, since) in targets {
-        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
-            .since(since)
-            .limit(WAITER_CATCH_UP_FETCH_LIMIT);
-        let events = match client
-            .fetch_events(filter)
-            .timeout(FETCH_EVENTS_TIMEOUT)
-            .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!("[dm_listener] waiter catch-up fetch failed for {pubkey}: {e}");
-                continue;
-            }
-        };
-        let mut ordered: Vec<Event> = events.into_iter().collect();
-        ordered.sort_by_key(|event| event.created_at.as_secs());
-        for event in ordered {
-            if event.kind != transport.event_kind() {
-                continue;
-            }
-            let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
-            satisfy_pending_waiters_for_event(&event, &mut rumor_cache).await;
+    let fetches = targets.into_iter().map(|(pubkey, since)| {
+        let client = client.clone();
+        async move {
+            let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
+                .since(since)
+                .limit(WAITER_CATCH_UP_FETCH_LIMIT);
+            let events = match client
+                .fetch_events(filter)
+                .timeout(FETCH_EVENTS_TIMEOUT)
+                .await
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    log::warn!("[dm_listener] waiter catch-up fetch failed for {pubkey}: {e}");
+                    return Vec::new();
+                }
+            };
+            let mut ordered: Vec<Event> = events.into_iter().collect();
+            ordered.sort_by_key(|event| event.created_at.as_secs());
+            ordered
         }
-    }
+    });
+    futures::stream::iter(fetches)
+        .buffer_unordered(WAITER_CATCH_UP_CONCURRENCY)
+        .for_each(|events| async move {
+            for event in events {
+                if event.kind != transport.event_kind() {
+                    continue;
+                }
+                let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
+                satisfy_pending_waiters_for_event(&event, mostro_pubkey, &mut rumor_cache).await;
+            }
+        })
+        .await;
 }
 
 /// Background DM router for Mostro protocol DM events (signed kind 14).
@@ -2144,7 +2170,10 @@ pub async fn listen_for_order_messages(
     )
     .await;
 
-    catch_up_pending_waiters(&client, transport, mostro_pubkey).await;
+    let catch_up_client = client.clone();
+    tokio::spawn(async move {
+        catch_up_pending_waiters(&catch_up_client, transport, mostro_pubkey).await;
+    });
 
     loop {
         tokio::select! {
@@ -2298,7 +2327,8 @@ pub async fn listen_for_order_messages(
                     // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
                     let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
 
-                    satisfy_pending_waiters_for_event(&event, &mut rumor_cache).await;
+                    satisfy_pending_waiters_for_event(&event, mostro_pubkey, &mut rumor_cache)
+                        .await;
 
                     if let Some((order_id, trade_index)) = subscription_to_order.get(&subscription_id).copied() {
                         log::info!(
@@ -2336,6 +2366,7 @@ pub async fn listen_for_order_messages(
                                 CachedDmUnwrap {
                                     can_decrypt: ok,
                                     skip_for_waiter: false,
+                                    request_id: None,
                                 },
                             );
                             ok

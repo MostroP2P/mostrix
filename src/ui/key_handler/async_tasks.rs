@@ -15,9 +15,9 @@ use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
-    any_relay_reachable, connect_client_safely, hydrate_startup_active_order_dm_state,
-    is_invalid_trade_index_error, set_chat_router_cmd_tx, set_dm_router_cmd_tx,
-    spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
+    any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
+    hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
     sync_trade_index_from_mostro_and_persist, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
     FatalNotify, OrderDmSubscriptionCmd, StartupDmHydration,
 };
@@ -404,7 +404,7 @@ pub async fn apply_pending_key_reload(
                 dispute_fetch_task,
                 dm_subscription_tx,
                 &latest_settings,
-                |c| async move { connect_client_safely(&c).await },
+                |c| async move { connect_and_wait_for_relay(&c).await },
             )
             .await;
         }
@@ -785,8 +785,8 @@ pub async fn apply_pending_runtime_reloads(
 
 /// Reconnect runtime background tasks after connectivity returns.
 ///
-/// Connects the Nostr client **before** aborting the DM listener so a failed
-/// handshake does not tear down in-flight [`crate::util::wait_for_dm`] waiters.
+/// Waits for a live Nostr relay (`Connected`) **before** aborting the DM listener
+/// so a failed handshake does not tear down in-flight [`crate::util::wait_for_dm`] waiters.
 /// After a successful connect the listener is still rebuilt; waiters persist in
 /// the process-wide registry and are re-subscribed on bootstrap.
 ///
@@ -808,10 +808,9 @@ pub async fn reload_runtime_session_after_reconnect(
         )
     })?;
 
-    // TCP reachability is not a live Nostr session. Connect first so a failed
-    // handshake does not abort in-flight `wait_for_dm` waiters. After connect
-    // the listener is still rebuilt; waiters live in the process-wide registry.
-    connect_client_safely(ctx.client)
+    // TCP reachability is not a live Nostr session. Wait until a relay is
+    // actually `Connected` before aborting in-flight `wait_for_dm` waiters.
+    connect_and_wait_for_relay(ctx.client)
         .await
         .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
 
@@ -1509,7 +1508,7 @@ mod tests {
         let wait_task = tokio::spawn({
             let trade_keys = trade_keys.clone();
             async move {
-                wait_for_dm(&trade_keys, Duration::from_secs(2), async move {
+                wait_for_dm(&trade_keys, Duration::from_secs(2), None, async move {
                     let _ = registered_tx.send(());
                     Ok(())
                 })

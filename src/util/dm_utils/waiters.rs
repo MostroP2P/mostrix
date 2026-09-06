@@ -34,6 +34,7 @@ pub(crate) struct PendingDmWaiter {
     pub(crate) trade_keys: Keys,
     pub(crate) response_tx: oneshot::Sender<Event>,
     pub(crate) since: Timestamp,
+    pub(crate) expected_request_id: Option<u64>,
 }
 
 /// Decrypt probe data only — oneshots stay in the registry until a match is taken by id.
@@ -42,6 +43,7 @@ pub(crate) struct PendingWaiterSnapshot {
     pub(crate) id: u64,
     pub(crate) trade_keys: Keys,
     pub(crate) since: Timestamp,
+    pub(crate) expected_request_id: Option<u64>,
 }
 
 pub(crate) struct PendingWaiterRegistry {
@@ -73,6 +75,7 @@ impl PendingWaiterRegistry {
         trade_keys: Keys,
         response_tx: oneshot::Sender<Event>,
         since: Timestamp,
+        expected_request_id: Option<u64>,
     ) -> Result<(), &'static str> {
         self.prune_closed();
         if self.waiters.len() >= MAX_PENDING_WAITERS {
@@ -85,6 +88,7 @@ impl PendingWaiterRegistry {
             trade_keys,
             response_tx,
             since,
+            expected_request_id,
         });
         Ok(())
     }
@@ -97,6 +101,7 @@ impl PendingWaiterRegistry {
                 id: w.id,
                 trade_keys: w.trade_keys.clone(),
                 since: w.since,
+                expected_request_id: w.expected_request_id,
             })
             .collect()
     }
@@ -164,12 +169,30 @@ pub(crate) fn event_created_at_meets_waiter_since(
     event_created_at.as_secs() >= waiter_since.as_secs()
 }
 
+/// `None` expected (restore / unsolicited) matches any decoded id. `Some` requires an exact echo.
+pub(crate) fn waiter_correlates_request_id(expected: Option<u64>, decoded: Option<u64>) -> bool {
+    match expected {
+        None => true,
+        Some(want) => decoded == Some(want),
+    }
+}
+
+pub(crate) fn protocol_dm_is_from_mostro(event: &Event, mostro_pubkey: PublicKey) -> bool {
+    event.pubkey == mostro_pubkey
+}
+
 pub(crate) fn register_pending_waiter(
     trade_keys: Keys,
     response_tx: oneshot::Sender<Event>,
+    expected_request_id: Option<u64>,
 ) -> Result<usize, &'static str> {
     let mut guard = PENDING_WAITERS.lock().map_err(|_| poisoned_registry())?;
-    guard.register(trade_keys, response_tx, waiter_since_now())?;
+    guard.register(
+        trade_keys,
+        response_tx,
+        waiter_since_now(),
+        expected_request_id,
+    )?;
     Ok(guard.len())
 }
 
@@ -263,7 +286,7 @@ mod tests {
         let mut registry = PendingWaiterRegistry::new();
         let (tx, mut rx) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx, waiter_since_now())
+            .register(Keys::generate(), tx, waiter_since_now(), None)
             .expect("register");
 
         // New design: the listener does not own waiters. Aborting it drops only a
@@ -283,7 +306,7 @@ mod tests {
         let mut registry = PendingWaiterRegistry::new();
         let (tx, mut rx) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx, waiter_since_now())
+            .register(Keys::generate(), tx, waiter_since_now(), None)
             .expect("register");
 
         // Old design: waiters lived in the listener task. Abort => drop vec => cancel.
@@ -304,12 +327,12 @@ mod tests {
             let (tx, rx) = oneshot::channel::<Event>();
             keep_alive.push(rx);
             registry
-                .register(Keys::generate(), tx, waiter_since_now())
+                .register(Keys::generate(), tx, waiter_since_now(), None)
                 .expect("under cap");
         }
         let (tx, _rx) = oneshot::channel::<Event>();
         assert_eq!(
-            registry.register(Keys::generate(), tx, waiter_since_now()),
+            registry.register(Keys::generate(), tx, waiter_since_now(), None),
             Err(WAIT_FOR_DM_BUSY_MSG)
         );
     }
@@ -319,7 +342,7 @@ mod tests {
         let mut registry = PendingWaiterRegistry::new();
         let (tx, rx) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx, waiter_since_now())
+            .register(Keys::generate(), tx, waiter_since_now(), None)
             .expect("register");
         drop(rx);
         assert_eq!(registry.prune_closed(), 1);
@@ -335,10 +358,10 @@ mod tests {
         let (tx_a, _rx_a) = oneshot::channel::<Event>();
         let (tx_b, _rx_b) = oneshot::channel::<Event>();
         registry
-            .register(keys.clone(), tx_a, newer)
+            .register(keys.clone(), tx_a, newer, None)
             .expect("register a");
         registry
-            .register(keys.clone(), tx_b, older)
+            .register(keys.clone(), tx_b, older, None)
             .expect("register b");
         let targets = registry.snapshot_targets();
         assert_eq!(targets.len(), 1);
@@ -351,7 +374,7 @@ mod tests {
         let mut registry = PendingWaiterRegistry::new();
         let (tx, mut rx) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx, waiter_since_now())
+            .register(Keys::generate(), tx, waiter_since_now(), None)
             .expect("register");
 
         let snapshot = registry.snapshot_candidates();
@@ -373,10 +396,10 @@ mod tests {
         let (tx_a, mut rx_a) = oneshot::channel::<Event>();
         let (tx_b, mut rx_b) = oneshot::channel::<Event>();
         registry
-            .register(keys_a.clone(), tx_a, waiter_since_now())
+            .register(keys_a.clone(), tx_a, waiter_since_now(), None)
             .expect("a");
         registry
-            .register(keys_b, tx_b, waiter_since_now())
+            .register(keys_b, tx_b, waiter_since_now(), None)
             .expect("b");
         let snap = registry.snapshot_candidates();
         let id_a = snap
@@ -412,12 +435,37 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn waiter_correlates_request_id_requires_exact_echo_when_expected() {
+        assert!(waiter_correlates_request_id(None, None));
+        assert!(waiter_correlates_request_id(None, Some(7)));
+        assert!(waiter_correlates_request_id(Some(7), Some(7)));
+        assert!(!waiter_correlates_request_id(Some(7), Some(8)));
+        assert!(!waiter_correlates_request_id(Some(7), None));
+    }
+
+    #[test]
+    fn protocol_dm_is_from_mostro_rejects_other_authors() {
+        let mostro = Keys::generate();
+        let attacker = Keys::generate();
+        let from_mostro = dummy_event(&mostro);
+        let from_attacker = dummy_event(&attacker);
+        assert!(protocol_dm_is_from_mostro(
+            &from_mostro,
+            mostro.public_key()
+        ));
+        assert!(!protocol_dm_is_from_mostro(
+            &from_attacker,
+            mostro.public_key()
+        ));
+    }
+
     #[tokio::test]
     async fn global_register_survives_take_from_empty_listener_vec() {
         let _lock = async_test_lock().await;
         reset_pending_waiters_for_tests();
         let (tx, mut rx) = oneshot::channel::<Event>();
-        let len = register_pending_waiter(Keys::generate(), tx).expect("register");
+        let len = register_pending_waiter(Keys::generate(), tx, None).expect("register");
         assert_eq!(len, 1);
         drop(Vec::<PendingDmWaiter>::new());
         assert!(matches!(
@@ -435,7 +483,7 @@ mod tests {
         set_dm_router_cmd_tx(tx).expect("router sender");
         drop(rx);
 
-        let result = wait_for_dm(&Keys::generate(), Duration::from_millis(80), async {
+        let result = wait_for_dm(&Keys::generate(), Duration::from_millis(80), None, async {
             Ok(())
         })
         .await;
@@ -459,15 +507,20 @@ mod tests {
         for _ in 0..MAX_PENDING_WAITERS {
             let (wtx, wrx) = oneshot::channel();
             keep_alive.push(wrx);
-            register_pending_waiter(Keys::generate(), wtx).expect("fill cap");
+            register_pending_waiter(Keys::generate(), wtx, None).expect("fill cap");
         }
 
         let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sent_flag = std::sync::Arc::clone(&sent);
-        let result = wait_for_dm(&Keys::generate(), Duration::from_millis(50), async move {
-            sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        })
+        let result = wait_for_dm(
+            &Keys::generate(),
+            Duration::from_millis(50),
+            None,
+            async move {
+                sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
         .await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), WAIT_FOR_DM_BUSY_MSG);

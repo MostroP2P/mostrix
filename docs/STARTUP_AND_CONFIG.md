@@ -172,7 +172,9 @@ Several background tasks are spawned to keep the UI and data in sync:
      and reload runtime background tasks. Nostr `connect` runs **before** aborting the DM listener
      so a failed handshake does not tear down in-flight `wait_for_dm` waiters. Waiters themselves
      live in a process-wide registry and are re-subscribed (plus catch-up fetch) on the rebuilt listener.
-     Key reload (`apply_pending_key_reload`) connects the **replacement** client first; if that
+     Reconnect waits until at least one relay is actually `Connected` (not just TCP-open /
+     `Client::connect().await`, which returns without a live session) before aborting the old listener.
+     Key reload (`apply_pending_key_reload`) connects the **replacement** client the same way; if that
      handshake fails, the current client and DM listener are kept so in-flight waiters stay live.
 5. **Shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`):
    - A **single long-lived task** (`spawn_supervised_chat_listener` in `src/startup.rs`, also respawned on reconnect/key reload **and** on panic/unexpected exit with backoff) maintains batched live subscriptions over **all** tracked chats — kind 14 `authors = [pub(K_sign)]` — the same model as Mostro Mobile's `SubscriptionManager`. No timed polling.
