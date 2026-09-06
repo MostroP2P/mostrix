@@ -1,6 +1,6 @@
 # MostriX 🧌
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Rust Version](https://img.shields.io/badge/rust-1.97.0%2B-blue.svg)](https://www.rust-lang.org)
 [![Coverage](https://img.shields.io/endpoint?url=https://mostrop2p.github.io/mostrix/coverage/badge.json)](https://mostrop2p.github.io/mostrix/coverage/)
 
@@ -212,3 +212,7 @@ Enable **GitHub Pages** for this repo with Source = **Deploy from a branch** →
 - [x] Dispute management (for admins): take dispute, chat with parties, finalize (Pay Buyer / Refund Seller), add solver
 
 **Note:** Many parts of the codebase still need thorough testing. Even features marked as complete may require additional testing, bug fixes, and refinement before production use.
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
