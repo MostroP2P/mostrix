@@ -769,7 +769,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - Pubkey-to-dispute routing uses `HashMap<PublicKey, (String, ChatParty)>` for O(1) lookups.
 - Chat message sending is spawned as an async task (`tokio::spawn`) to avoid blocking the UI thread.
-- Gift wrap fetching uses a 7-day rolling window to limit relay queries.
+- Kind-14 chat hydration uses `since = max(min(last_seen_timestamp, local_now), local_now - 7 days)` via [`fetch_chat_messages_for_shared_key`](../src/util/chat_utils.rs); newer events arrive on the live `authors = [pub(K_sign)]` subscription. GiftWrap is not fetched or subscribed.
 - Unified `update_chat_last_seen_by_dispute_id` function replaces separate buyer/seller update methods.
 
 **Source Files**:

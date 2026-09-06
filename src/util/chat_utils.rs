@@ -331,22 +331,12 @@ pub fn unwrap_chat_envelope(
     })
 }
 
-/// Fetch recent chat events for a shared ECDH key and return decoded messages.
+/// Fetch recent kind-14 chat events for a shared ECDH key and return decoded
+/// messages.
 ///
-/// Prefer [`fetch_chat_messages_for_shared_key`]. This name is kept as a
-/// thin alias for older call sites; the hydrate path is kind 14 by
-/// `authors = [pub(K_sign)]`.
-pub async fn fetch_gift_wraps_for_shared_key(
-    client: &Client,
-    shared_keys: &Keys,
-    allowed_signers: &[PublicKey],
-) -> Result<Vec<DecodedChatMessage>> {
-    fetch_chat_messages_for_shared_key(client, shared_keys, allowed_signers, None).await
-}
-
-/// Like [`fetch_gift_wraps_for_shared_key`], with a last-seen `since` cursor
-/// (clamped to local now; lookback capped at seven days when the cursor is older
-/// or absent). Inner events whose signer is not in `allowed_signers` are dropped.
+/// Hydrates kind 14 by `authors = [pub(K_sign)]`. Optional last-seen `since`
+/// is clamped to local now and floored at seven days. Inner events whose
+/// signer is not in `allowed_signers` are dropped.
 pub async fn fetch_chat_messages_for_shared_key(
     client: &Client,
     shared_keys: &Keys,

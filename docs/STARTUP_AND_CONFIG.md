@@ -204,7 +204,7 @@ In addition to the background scheduler, Mostrix restores admin chat state durin
   - Reads chat transcripts from `~/.mostrix/disputes_chat/<dispute_id>.txt` (if present).
   - Reconstructs `AppState.admin_dispute_chats` so the "Disputes in Progress" tab immediately shows prior messages.
   - Updates in‑memory `admin_chat_last_seen` entries for Buyer and Seller based on file timestamps.
-- Subsequent background NIP‑59 fetches use the stored `buyer_chat_last_seen` / `seller_chat_last_seen` values as cursors, ensuring:
+- Subsequent kind-14 hydration (`fetch_chat_messages_for_shared_key`) uses the stored `buyer_chat_last_seen` / `seller_chat_last_seen` values as cursors (`since = max(min(cursor, local_now), local_now - 7 days)`), then the chat router receives newer events on its batched `authors = [pub(K_sign)]` subscription, ensuring:
   - **Instant UI restore** after restart.
   - **Incremental network sync** without replaying the full chat history from relays.
 
