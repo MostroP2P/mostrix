@@ -3,7 +3,7 @@ name = "mostrix"
 version = "0.3.1"
 rust-version = "1.97.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 authors = ["Francisco Calderón <negrunch@grunch.dev>"]
 description = "Mostro TUI client"
 
