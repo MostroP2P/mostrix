@@ -60,7 +60,7 @@ pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event
 use waiters::{
     event_created_at_meets_waiter_since, prune_closed_pending_waiters, register_pending_waiter,
     restore_unmatched_waiters, snapshot_pending_waiter_targets, take_pending_waiters,
-    PENDING_WAITER_GC_INTERVAL,
+    waiter_since_now, PENDING_WAITER_GC_INTERVAL,
 };
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
@@ -1966,7 +1966,12 @@ async fn subscribe_pending_waiter_pubkeys(
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
 ) {
-    for (pubkey, since) in snapshot_pending_waiter_targets() {
+    let targets = snapshot_pending_waiter_targets();
+    for (pubkey, since) in dm_helpers::waiter_targets_needing_subscription(
+        &targets,
+        subscribed_pubkeys,
+        pubkey_to_subscription,
+    ) {
         let _ = dm_helpers::ensure_waiter_dm_subscription(
             client,
             transport,
@@ -2153,6 +2158,14 @@ pub async fn listen_for_order_messages(
         tokio::select! {
             _ = waiter_gc_interval.tick() => {
                 prune_closed_pending_waiters();
+                subscribe_pending_waiter_pubkeys(
+                    &client,
+                    transport,
+                    mostro_pubkey,
+                    &mut subscribed_pubkeys,
+                    &mut pubkey_to_subscription,
+                )
+                .await;
             }
             new_subscription_cmd = dm_subscription_rx.recv() => {
                 let Some(cmd_subscription) = new_subscription_cmd else {
@@ -2238,7 +2251,7 @@ pub async fn listen_for_order_messages(
                     DmRouterCmd::RegisterWaiter { trade_keys } => {
                         prune_closed_pending_waiters();
                         let waiter_pubkey = trade_keys.public_key();
-                        let _ = dm_helpers::ensure_waiter_dm_subscription(
+                        let live = dm_helpers::ensure_waiter_dm_subscription(
                             &client,
                             transport,
                             mostro_pubkey,
@@ -2248,6 +2261,23 @@ pub async fn listen_for_order_messages(
                             dm_helpers::DmSubscriptionMode::LiveOnly,
                         )
                         .await;
+                        if !live {
+                            let since = snapshot_pending_waiter_targets()
+                                .into_iter()
+                                .find(|(pk, _)| *pk == waiter_pubkey)
+                                .map(|(_, ts)| ts)
+                                .unwrap_or_else(waiter_since_now);
+                            let _ = dm_helpers::ensure_waiter_dm_subscription(
+                                &client,
+                                transport,
+                                mostro_pubkey,
+                                &mut subscribed_pubkeys,
+                                &mut pubkey_to_subscription,
+                                waiter_pubkey,
+                                dm_helpers::DmSubscriptionMode::WaiterCatchUp(since),
+                            )
+                            .await;
+                        }
                     }
                 }
             }

@@ -104,10 +104,40 @@ fn protocol_dm_filter_for_mode(base: Filter, mode: &DmSubscriptionMode) -> Filte
     }
 }
 
+/// Immediate subscribe attempts for a waiter pubkey (no sleep; GC retries with catch-up).
+const WAITER_SUBSCRIBE_ATTEMPTS: u8 = 2;
+
+/// Waiter pubkeys that still need a relay subscription after a failed LiveOnly subscribe.
+pub(crate) fn waiter_targets_needing_subscription(
+    targets: &[(PublicKey, Timestamp)],
+    subscribed_pubkeys: &HashSet<PublicKey>,
+    pubkey_to_subscription: &HashMap<PublicKey, SubscriptionId>,
+) -> Vec<(PublicKey, Timestamp)> {
+    targets
+        .iter()
+        .copied()
+        .filter(|(pk, _)| {
+            !subscribed_pubkeys.contains(pk) || !pubkey_to_subscription.contains_key(pk)
+        })
+        .collect()
+}
+
+pub(crate) fn note_waiter_subscribe_failure(
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
+    trade_pubkey: PublicKey,
+) {
+    subscribed_pubkeys.remove(&trade_pubkey);
+    pubkey_to_subscription.remove(&trade_pubkey);
+}
+
 /// Subscribe for a `wait_for_dm` trade pubkey without binding `subscription_id` → order.
 ///
-/// Returns `true` when a subscription is already active or was created. Subscribe failure
-/// does **not** drop the waiter — it lives in the process-wide registry until timeout or match.
+/// Returns `true` when a subscription is already active or was created. Subscribe
+/// failure does **not** drop the waiter — it lives in the process-wide registry until
+/// timeout or match. A failed attempt is cleared from the local maps so a later
+/// [`WaiterCatchUp`] retry (GC tick or immediate fallback) can subscribe again.
+/// Live subscribe is tried up to [`WAITER_SUBSCRIBE_ATTEMPTS`] times without sleeping.
 pub(crate) async fn ensure_waiter_dm_subscription(
     client: &Client,
     transport: Transport,
@@ -118,23 +148,35 @@ pub(crate) async fn ensure_waiter_dm_subscription(
     mode: DmSubscriptionMode,
 ) -> bool {
     if !subscribed_pubkeys.insert(trade_pubkey) {
-        return pubkey_to_subscription.contains_key(&trade_pubkey);
-    }
-    let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
-    let filter = protocol_dm_filter_for_mode(base, &mode);
-    match client.subscribe(filter).await {
-        Ok(output) => {
-            let sub_id = output.value;
-            pubkey_to_subscription.insert(trade_pubkey, sub_id.clone());
-            super::register_dm_listener_subscription(sub_id);
-            true
+        if pubkey_to_subscription.contains_key(&trade_pubkey) {
+            return true;
         }
-        Err(e) => {
-            subscribed_pubkeys.remove(&trade_pubkey);
-            log::warn!("Failed to subscribe waiter pubkey {}: {}", trade_pubkey, e);
-            false
+        log::warn!(
+            "[dm_listener] waiter pubkey {} marked subscribed but missing subscription id; retrying",
+            trade_pubkey
+        );
+    }
+    let mut last_err: Option<String> = None;
+    for _ in 0..WAITER_SUBSCRIBE_ATTEMPTS {
+        let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
+        let filter = protocol_dm_filter_for_mode(base, &mode);
+        match client.subscribe(filter).await {
+            Ok(output) => {
+                let sub_id = output.value;
+                pubkey_to_subscription.insert(trade_pubkey, sub_id.clone());
+                super::register_dm_listener_subscription(sub_id);
+                return true;
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+            }
         }
     }
+    note_waiter_subscribe_failure(subscribed_pubkeys, pubkey_to_subscription, trade_pubkey);
+    if let Some(e) = last_err {
+        log::warn!("Failed to subscribe waiter pubkey {trade_pubkey}: {e}");
+    }
+    false
 }
 
 /// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
@@ -189,5 +231,48 @@ mod tests {
         let filter = protocol_dm_filter_for_mode(base, &DmSubscriptionMode::LiveOnly);
         let json = filter.as_json();
         assert!(json.contains("\"limit\":0"));
+    }
+
+    #[test]
+    fn failed_live_subscribe_is_retried_then_recovers_on_success() {
+        let pk = Keys::generate().public_key();
+        let since = Timestamp::from(1_700_000_000);
+        let mut subscribed = HashSet::new();
+        let mut pubkey_to_subscription = HashMap::new();
+        let targets = vec![(pk, since)];
+
+        subscribed.insert(pk);
+        note_waiter_subscribe_failure(&mut subscribed, &mut pubkey_to_subscription, pk);
+        assert!(!subscribed.contains(&pk));
+        assert_eq!(
+            waiter_targets_needing_subscription(&targets, &subscribed, &pubkey_to_subscription),
+            vec![(pk, since)],
+            "after relay subscribe failure the waiter must still be eligible for catch-up retry"
+        );
+
+        subscribed.insert(pk);
+        pubkey_to_subscription.insert(pk, SubscriptionId::generate());
+        assert!(
+            waiter_targets_needing_subscription(&targets, &subscribed, &pubkey_to_subscription)
+                .is_empty(),
+            "successful resubscription must stop retrying this pubkey"
+        );
+    }
+
+    #[test]
+    fn missing_subscription_id_still_needs_retry() {
+        let pk = Keys::generate().public_key();
+        let since = Timestamp::from(1);
+        let mut subscribed = HashSet::new();
+        subscribed.insert(pk);
+        let pubkey_to_subscription = HashMap::new();
+        assert_eq!(
+            waiter_targets_needing_subscription(
+                &[(pk, since)],
+                &subscribed,
+                &pubkey_to_subscription
+            ),
+            vec![(pk, since)]
+        );
     }
 }

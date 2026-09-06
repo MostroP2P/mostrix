@@ -520,6 +520,15 @@ fn unsubscribe_all_warn_detail<T, E: std::fmt::Display>(
     }
 }
 
+/// Wait until an already-aborted task exits, leaving a no-op [`JoinHandle`] in place.
+///
+/// Used before `unsubscribe_all` / respawn so the old task cannot re-register
+/// subscription ids after they are taken, and so replacements do not overlap it.
+async fn await_aborted_task(handle: &mut JoinHandle<()>) {
+    let old = std::mem::replace(handle, tokio::spawn(async {}));
+    let _ = old.await;
+}
+
 /// Best-effort `unsubscribe_all` after fetch/DM tasks have been aborted.
 ///
 /// Partial relay CLOSE failures are routine on connectivity flaps. Treating them as
@@ -763,6 +772,9 @@ pub async fn reload_runtime_session_after_reconnect(
     ctx.message_listener_handle.abort();
     ctx.order_fetch_task.abort();
     ctx.dispute_fetch_task.abort();
+    await_aborted_task(ctx.message_listener_handle).await;
+    await_aborted_task(ctx.order_fetch_task).await;
+    await_aborted_task(ctx.dispute_fetch_task).await;
     unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
     *ctx.mostro_pubkey = new_mostro_pubkey;
     match ctx.current_mostro_pubkey.lock() {
@@ -1376,5 +1388,22 @@ mod tests {
     fn unsubscribe_all_err_is_warn_not_fatal() {
         let detail = unsubscribe_all_warn_detail::<(), _>(Err("pool closed")).expect("warn");
         assert_eq!(detail, "failed: pool closed");
+    }
+
+    #[tokio::test]
+    async fn await_aborted_task_waits_for_exit_before_returning() {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut handle = tokio::spawn(async move {
+            let _ = entered_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        entered_rx.await.expect("task started");
+        handle.abort();
+
+        await_aborted_task(&mut handle).await;
+        assert!(
+            handle.is_finished(),
+            "placeholder handle must be a completed no-op so spawn can overwrite it"
+        );
     }
 }
