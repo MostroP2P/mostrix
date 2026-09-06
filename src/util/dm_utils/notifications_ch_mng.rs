@@ -307,6 +307,16 @@ fn remember_open_invoice_order_message(app: &mut AppState, order_message: &Order
         if order_message.order_kind.is_some() {
             existing.order_kind = order_message.order_kind;
         }
+        if order_message.buyer_reputation.is_some() {
+            existing
+                .buyer_reputation
+                .clone_from(&order_message.buyer_reputation);
+        }
+        if order_message.seller_reputation.is_some() {
+            existing
+                .seller_reputation
+                .clone_from(&order_message.seller_reputation);
+        }
         return;
     }
     let mut stored = order_message.clone();
@@ -484,6 +494,8 @@ mod tests {
             is_mine: Some(is_mine),
             order_status: Some(Status::SettledHoldInvoice),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             auto_popup_shown: false,
         }
     }
@@ -628,6 +640,8 @@ mod tests {
             is_mine: Some(is_mine),
             order_status: Some(Status::SettledHoldInvoice),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             auto_popup_shown,
         }
     }
@@ -735,6 +749,8 @@ mod tests {
             // `add-invoice` must still open for the buyer.
             order_status: Some(Status::Success),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             auto_popup_shown: false,
         });
 

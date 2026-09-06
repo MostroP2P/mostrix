@@ -48,12 +48,14 @@ pub use dispute_selection::{
 };
 pub use formatting::{
     dispute_status_color, format_local_timestamp, format_order_id, format_premium,
-    format_user_rating, is_dispute_finalized, relative_time_compact, short_order_id,
+    format_user_rating, format_user_rating_compact, is_dispute_finalized, relative_time_compact,
+    short_order_id,
 };
 pub use layout::{
     create_centered_popup, render_help_text, render_table_list_scrollbar, render_yes_no_buttons,
     render_yes_no_cancel_buttons,
 };
+pub(crate) use order_chat_projection::assign_peer_reputation;
 pub use order_chat_projection::{
     active_order_chat_list_len, active_order_chat_list_snapshot, build_active_order_chat_list,
     order_chat_list_item_from_db_order, OrderChatListItem,

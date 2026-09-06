@@ -702,6 +702,53 @@ impl Order {
         Ok(())
     }
 
+    /// Persist counterparty reputation from Mostro `Payload::Peer` notices.
+    ///
+    /// `None` leaves the stored JSON for that side unchanged (`COALESCE`).
+    pub async fn update_trade_reputation(
+        pool: &SqlitePool,
+        order_id: &str,
+        buyer: Option<&UserInfo>,
+        seller: Option<&UserInfo>,
+    ) -> Result<()> {
+        let buyer_json = buyer.map(serde_json::to_string).transpose()?;
+        let seller_json = seller.map(serde_json::to_string).transpose()?;
+        sqlx::query(
+            r#"
+            UPDATE orders
+            SET buyer_reputation = COALESCE(?, buyer_reputation),
+                seller_reputation = COALESCE(?, seller_reputation)
+            WHERE id = ?
+            "#,
+        )
+        .bind(buyer_json)
+        .bind(seller_json)
+        .bind(order_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Load persisted buyer/seller reputation JSON (missing columns/rows → `None`).
+    pub async fn load_trade_reputation(
+        pool: &SqlitePool,
+        order_id: &str,
+    ) -> Result<(Option<UserInfo>, Option<UserInfo>)> {
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT buyer_reputation, seller_reputation FROM orders WHERE id = ?",
+        )
+        .bind(order_id)
+        .fetch_optional(pool)
+        .await?;
+        let Some((buyer_raw, seller_raw)) = row else {
+            return Ok((None, None));
+        };
+        Ok((
+            buyer_raw.and_then(|s| serde_json::from_str(&s).ok()),
+            seller_raw.and_then(|s| serde_json::from_str(&s).ok()),
+        ))
+    }
+
     pub async fn update_last_seen_dm_ts(pool: &SqlitePool, order_id: &str, ts: i64) -> Result<()> {
         sqlx::query(
             r#"

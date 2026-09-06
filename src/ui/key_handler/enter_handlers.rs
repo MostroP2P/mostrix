@@ -1560,6 +1560,8 @@ mod tests {
             is_mine,
             order_status: status,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             auto_popup_shown: false,
         }
     }

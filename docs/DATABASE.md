@@ -106,7 +106,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
 
 Migrations are automatically executed when an existing database is detected during startup.
 
-For the **`orders`** table, **`migrate_db`** in **`src/db.rs`** may add **`request_id`**, **`trade_index`**, and **`last_seen_dm_ts`** when upgrading older databases that predate those columns.
+For the **`orders`** table, **`migrate_db`** in **`src/db.rs`** may add **`request_id`**, **`trade_index`**, **`last_seen_dm_ts`**, **`buyer_reputation`**, and **`seller_reputation`** when upgrading older databases that predate those columns.
 
 ## Mode Separation
 
@@ -188,11 +188,13 @@ CREATE TABLE IF NOT EXISTS orders (
     trade_index INTEGER,
     created_at INTEGER,
     expires_at INTEGER,
-    last_seen_dm_ts INTEGER
+    last_seen_dm_ts INTEGER,
+    buyer_reputation TEXT,
+    seller_reputation TEXT
 );
 ```
 
-**Source**: `src/db.rs` (`init_db` creates the table; `migrate_db` adds `trade_index` / `last_seen_dm_ts` if missing on older DBs)
+**Source**: `src/db.rs` (`init_db` creates the table; `migrate_db` adds `trade_index` / `last_seen_dm_ts` / `buyer_reputation` / `seller_reputation` if missing on older DBs)
 
 #### Order Table Fields
 
@@ -218,6 +220,8 @@ CREATE TABLE IF NOT EXISTS orders (
 | `created_at` | `INTEGER` | Unix timestamp when the order was created. |
 | `expires_at` | `INTEGER` | Unix timestamp when the order expires (if applicable). |
 | `last_seen_dm_ts` | `INTEGER` | Optional cursor: Unix time (rumor / protocol) of the latest processed trade protocol DM for this order (signed kind 14). Updated when DMs are applied; used with `StartupSince` subscription mode and to reason about sync (the full message list remains in-memory only). |
+| `buyer_reputation` | `TEXT` | Optional JSON [`UserInfo`](https://docs.rs/mostro-core) for the buyer, recorded from Mostro `Payload::Peer` reputation notices so Order Chat ratings survive restart. |
+| `seller_reputation` | `TEXT` | Same as `buyer_reputation` for the seller. |
 
 #### Purpose
 

@@ -149,6 +149,8 @@ fn build_order_message_from_reply(
                 ..Default::default()
             }),
         ),
+        buyer_reputation: None,
+        seller_reputation: None,
         read: false,
         auto_popup_shown: false,
     }
