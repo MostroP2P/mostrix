@@ -235,6 +235,12 @@ pub(crate) fn reset_pending_waiters_for_tests() {
 }
 
 #[cfg(test)]
+pub(crate) async fn lock_pending_waiters_for_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::{set_dm_router_cmd_tx, wait_for_dm, WAIT_FOR_DM_TIMEOUT_MSG};
@@ -249,8 +255,7 @@ mod tests {
     }
 
     async fn async_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-        LOCK.lock().await
+        lock_pending_waiters_for_tests().await
     }
 
     #[test]

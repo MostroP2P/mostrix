@@ -5,7 +5,7 @@ mod dm_helpers;
 mod notifications_ch_mng;
 mod order_ch_mng;
 mod order_result_tx;
-mod waiters;
+pub(crate) mod waiters;
 
 pub use dm_helpers::seed_admin_chat_last_seen;
 pub use notifications_ch_mng::{
