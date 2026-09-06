@@ -144,7 +144,7 @@ What happens:
 - The listener command is a subscribe hint only. If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
-- If the listener is aborted (reconnect / key reload / panic respawn), the oneshot stays in the registry. Bootstrap re-subscribes with `WaiterCatchUp(since)` and **spawns** a bounded concurrent `fetch_events` catch-up so live notification routing is not blocked. That catch-up only take-and-sends waiter **ids snapshotted at spawn**, so a delayed result cannot consume a later same-key waiter. Events older than `since` are ignored so startup catch-up does not steal a stale trade DM as the in-flight response. Waiters with an expected `request_id` consume only a decryptable Mostro reply that echoes that id.
+- If the listener is aborted (reconnect / key reload / panic respawn), the oneshot stays in the registry. Bootstrap re-subscribes with `WaiterCatchUp(since)` and **spawns** a bounded concurrent `fetch_events` catch-up so live notification routing is not blocked. Waiter **ids are snapshotted synchronously before `tokio::spawn`** (not on the task’s first poll), so a delayed old-session catch-up cannot consume a later same-key waiter after key reload. Events older than `since` are ignored so startup catch-up does not steal a stale trade DM as the in-flight response. Waiters with an expected `request_id` consume only a decryptable Mostro reply that echoes that id.
 
 **Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”. Timeout (`WAIT_FOR_DM_TIMEOUT_MSG`) means no matching event arrived. Oneshot cancel (`WAIT_FOR_DM_CANCELED_MSG`) is not a Mostro rejection (`CantDo`).
 
@@ -159,7 +159,7 @@ For each waiter:
 - skip events whose `event.pubkey` is not the configured Mostro instance (relay author filters are not a trust boundary)
 - test whether [`unwrap_incoming`](../src/util/mod.rs) succeeds for `waiter.trade_keys` and the event
 - if it does **and** the decoded `request_id` correlates with the waiter (or the waiter has none), take-and-send the raw `event` into that waiter’s oneshot
-- catch-up results skip waiters whose id was not in the set snapshotted when that fetch was spawned
+- catch-up results skip waiters whose id was not in the set snapshotted synchronously before that fetch was spawned
 - otherwise, keep the waiter pending for the next event
 
 To avoid duplicate decrypt checks, the listener keeps a **per-event decryptability cache**:

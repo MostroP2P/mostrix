@@ -61,7 +61,7 @@ use waiters::{
     event_created_at_meets_waiter_since, protocol_dm_is_from_mostro, prune_closed_pending_waiters,
     register_pending_waiter, snapshot_pending_waiter_candidates, snapshot_pending_waiter_targets,
     take_and_send_pending_waiter, waiter_correlates_request_id, waiter_id_in_catch_up_scope,
-    waiter_since_now, PENDING_WAITER_GC_INTERVAL,
+    waiter_since_now, PendingWaiterSnapshot, PENDING_WAITER_GC_INTERVAL,
 };
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
@@ -2109,10 +2109,15 @@ async fn subscribe_pending_waiter_pubkeys(
     }
 }
 
-/// Fetch since the oldest scheduled waiter per pubkey. Apply results only to
-/// the waiter ids snapshotted here — not to waiters registered after spawn.
-async fn catch_up_pending_waiters(client: &Client, transport: Transport, mostro_pubkey: PublicKey) {
-    let scheduled = snapshot_pending_waiter_candidates();
+/// Fetch since the oldest scheduled waiter per pubkey. `scheduled` must be
+/// snapshotted **before** `tokio::spawn` so a delayed first poll cannot pick
+/// up waiters registered after this listener generation (key reload).
+async fn catch_up_pending_waiters(
+    client: &Client,
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    scheduled: Vec<PendingWaiterSnapshot>,
+) {
     if scheduled.is_empty() {
         return;
     }
@@ -2309,10 +2314,19 @@ pub async fn listen_for_order_messages(
     )
     .await;
 
-    let catch_up_client = client.clone();
-    tokio::spawn(async move {
-        catch_up_pending_waiters(&catch_up_client, transport, mostro_pubkey).await;
-    });
+    let catch_up_scheduled = snapshot_pending_waiter_candidates();
+    if !catch_up_scheduled.is_empty() {
+        let catch_up_client = client.clone();
+        tokio::spawn(async move {
+            catch_up_pending_waiters(
+                &catch_up_client,
+                transport,
+                mostro_pubkey,
+                catch_up_scheduled,
+            )
+            .await;
+        });
+    }
 
     loop {
         tokio::select! {
@@ -3033,6 +3047,68 @@ mod tests {
         assert!(
             matches!(rx_b.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
             "delayed catch-up for A must not consume later same-key waiter B"
+        );
+
+        reset_pending_waiters_for_tests();
+    }
+
+    #[tokio::test]
+    async fn unpolled_catch_up_spawn_does_not_consume_new_session_none_waiter() {
+        let _lock = lock_pending_waiters_for_tests().await;
+        reset_pending_waiters_for_tests();
+
+        // Snapshot at tokio::spawn — before the spawned future is polled.
+        let spawn_ids: HashSet<u64> = snapshot_pending_waiter_candidates()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert!(
+            spawn_ids.is_empty(),
+            "old listener generation had no waiters at spawn"
+        );
+
+        let old_mostro = Keys::generate();
+        let identity = Keys::generate();
+        let message = Message::new_restore(None);
+        let event = wrap_message_with(
+            Transport::Nip44Direct,
+            &message,
+            &old_mostro,
+            &old_mostro,
+            identity.public_key(),
+            WrapOptions {
+                signed: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("wrap old-session restore reply");
+
+        // Key rotation: replacement session registers a None waiter on the same keys.
+        let (tx_b, mut rx_b) = oneshot::channel();
+        register_pending_waiter(identity, tx_b, None).expect("register waiter B");
+
+        // Delayed first poll of the old catch-up: uses spawn-time ids + old Mostro.
+        // Re-snapshotting here would include B and consume it.
+        let mut rumor_cache = HashMap::new();
+        satisfy_pending_waiters_for_event(
+            &event,
+            old_mostro.public_key(),
+            &mut rumor_cache,
+            Some(&spawn_ids),
+        )
+        .await;
+        assert!(
+            matches!(rx_b.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "unpolled old-session catch-up must not consume a new-session None waiter"
+        );
+
+        let mut rumor_cache = HashMap::new();
+        satisfy_pending_waiters_for_event(&event, old_mostro.public_key(), &mut rumor_cache, None)
+            .await;
+        assert!(
+            rx_b.try_recv().is_ok(),
+            "event must still be a valid match for B on the live path"
         );
 
         reset_pending_waiters_for_tests();

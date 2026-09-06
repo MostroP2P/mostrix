@@ -6,7 +6,8 @@
 //! processed the action. This registry is process-wide: `wait_for_dm` inserts before
 //! sending the protocol DM, and a rebuilt listener re-subscribes plus catch-up fetches
 //! from each waiter's `since` timestamp. Catch-up apply is bound to waiter ids
-//! snapshotted at spawn so a delayed fetch cannot consume a later same-key waiter.
+//! snapshotted synchronously before `tokio::spawn` so a delayed first poll
+//! cannot consume a later same-key waiter from a replacement session.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
