@@ -1,15 +1,16 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
 use crate::ui::orders::{
-    strip_new_order_messages_and_clamp_selected, try_placeholder_order_message_from_success,
+    merge_order_snapshots, strip_new_order_messages_and_clamp_selected,
+    try_placeholder_order_message_from_payment_request, try_placeholder_order_message_from_success,
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
     AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection,
-    MessageNotification, OperationResult, UiMode, UserMode,
+    MessageNotification, OperationResult, OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
-use mostro_core::prelude::Action;
+use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
 use uuid::Uuid;
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
@@ -122,6 +123,86 @@ fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSucce
             if messages.iter().any(|m| m.order_id == Some(order_id)) {
                 return;
             }
+            messages.push(placeholder);
+            messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
+
+/// Invoice-less `PayInvoice`/`AddInvoice` + `Payload::Peer` is reputation only.
+fn existing_row_is_reputation_placeholder(msg: &crate::ui::OrderMessage) -> bool {
+    let inner = msg.message.get_inner_message_kind();
+    matches!(inner.action, Action::PayInvoice | Action::AddInvoice)
+        && matches!(inner.payload, Some(Payload::Peer(_)))
+        && !msg.buyer_invoice.as_ref().is_some_and(|s| !s.is_empty())
+}
+
+/// If `PaymentRequestRequired` arrived before any DM row (or the row is a reputation
+/// placeholder), seed the Messages row from the execute-path `SmallOrder` / BOLT11.
+fn maybe_insert_payment_request_placeholder(
+    app: &mut AppState,
+    order: &SmallOrder,
+    header: &OrderChatStaticHeader,
+    trade_index: i64,
+    sat_amount: Option<i64>,
+    action: Action,
+    invoice: &str,
+) {
+    let Some(order_id) = order.id else {
+        return;
+    };
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            if let Some(existing) = messages.iter_mut().find(|m| m.order_id == Some(order_id)) {
+                existing.order_snapshot = merge_order_snapshots(
+                    Some(order.clone()),
+                    existing.order_snapshot.clone(),
+                    None,
+                );
+                if existing.sat_amount.is_none() {
+                    existing.sat_amount = sat_amount;
+                }
+                if existing.order_kind.is_none() {
+                    existing.order_kind = order.kind.or(header.kind);
+                }
+                if existing.order_status.is_none() {
+                    existing.order_status = order.status;
+                }
+                if existing_row_is_reputation_placeholder(existing) && !invoice.is_empty() {
+                    let request_id = existing.message.get_inner_message_kind().request_id;
+                    existing.message = Message::new_order(
+                        Some(order_id),
+                        request_id,
+                        Some(trade_index),
+                        action,
+                        Some(Payload::PaymentRequest(
+                            Some(order.clone()),
+                            invoice.to_string(),
+                            sat_amount,
+                        )),
+                    );
+                    existing.buyer_invoice = Some(invoice.to_string());
+                    if sat_amount.is_some() {
+                        existing.sat_amount = sat_amount;
+                    }
+                }
+                return;
+            }
+            let Some(placeholder) = try_placeholder_order_message_from_payment_request(
+                order,
+                header,
+                trade_index,
+                sat_amount,
+                action,
+                invoice,
+            ) else {
+                return;
+            };
             messages.push(placeholder);
             messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         }
@@ -246,10 +327,19 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         invoice,
         sat_amount,
         trade_index,
-        static_header: _,
+        static_header,
         action,
     } = &result
     {
+        maybe_insert_payment_request_placeholder(
+            app,
+            order,
+            static_header,
+            *trade_index,
+            *sat_amount,
+            action.clone(),
+            invoice,
+        );
         // New-order bond invoice path succeeds here and returns before the
         // WaitingForMostro match below — clear the draft now so it cannot restore
         // a duplicate form after the maker pays the bond.
@@ -428,7 +518,7 @@ mod tests {
         order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
     };
     use crate::ui::{FormState, UserRole};
-    use mostro_core::prelude::{Message, Payload, SmallOrder, Status};
+    use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
 
     #[test]
@@ -545,6 +635,92 @@ mod tests {
     }
 
     #[test]
+    fn payment_request_required_promotes_add_invoice_peer_row() {
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        let buyer_info = UserInfo {
+            rating: 3.9,
+            reviews: 5,
+            operating_days: 9,
+        };
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                Some(1),
+                Action::AddInvoice,
+                Some(Payload::Peer(Peer {
+                    pubkey: String::new(),
+                    reputation: Some(buyer_info.clone()),
+                })),
+            ),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 1,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(true),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: None,
+            buyer_reputation: Some(buyer_info.clone()),
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    status: Some(Status::WaitingPayment),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1real".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 1,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    created_at: None,
+                    trade_index: 1,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: true,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        let inner = row.message.get_inner_message_kind();
+        assert_eq!(inner.action, Action::PayInvoice);
+        match &inner.payload {
+            Some(Payload::PaymentRequest(_, invoice, amount)) => {
+                assert_eq!(invoice, "lnbc1real");
+                assert_eq!(*amount, Some(1000));
+            }
+            other => panic!("expected PaymentRequest payload, got {other:?}"),
+        }
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1real"));
+        assert_eq!(row.sat_amount, Some(1000));
+        let stored = row.buyer_reputation.as_ref().expect("buyer rating");
+        assert_eq!(stored.rating, buyer_info.rating);
+        assert_eq!(stored.reviews, buyer_info.reviews);
+        assert!(row.seller_reputation.is_none());
+    }
+
+    #[test]
     fn take_add_invoice_from_waiting_opens_invoice_popup_not_created_success() {
         let mut app = AppState::new(UserRole::User);
         let order_id = uuid::Uuid::new_v4();
@@ -585,6 +761,8 @@ mod tests {
             is_mine: Some(false),
             order_status: Some(Status::WaitingBuyerInvoice),
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: true,
             auto_popup_shown: true,
         };

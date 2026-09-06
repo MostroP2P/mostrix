@@ -21,6 +21,16 @@ pub fn format_user_rating(info: Option<&UserInfo>) -> String {
     }
 }
 
+/// Compact rating for constrained Order Info headers (no star glyphs).
+pub fn format_user_rating_compact(info: &UserInfo) -> String {
+    format!(
+        "{:.1}/5 ({} · {}d)",
+        info.rating.clamp(0.0, 5.0),
+        info.reviews,
+        info.operating_days
+    )
+}
+
 /// Check if a dispute is finalized (Settled, SellerRefunded, or Released).
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
     Some(selected_dispute.is_finalized())
@@ -117,6 +127,23 @@ mod short_order_id_tests {
     #[test]
     fn none_renders_unknown() {
         assert_eq!(short_order_id(None), "unknown");
+    }
+}
+
+#[cfg(test)]
+mod rating_format_tests {
+    use super::*;
+    use mostro_core::prelude::UserInfo;
+
+    #[test]
+    fn compact_rating_omits_stars() {
+        let info = UserInfo {
+            rating: 3.9,
+            reviews: 5,
+            operating_days: 9,
+        };
+        assert_eq!(format_user_rating_compact(&info), "3.9/5 (5 · 9d)");
+        assert!(!format_user_rating_compact(&info).contains('⭐'));
     }
 }
 

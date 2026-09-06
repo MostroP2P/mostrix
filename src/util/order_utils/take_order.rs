@@ -505,6 +505,8 @@ fn take_add_invoice_operation_result(
         is_mine: Some(false),
         order_status,
         order_snapshot: Some(snapshot),
+        buyer_reputation: None,
+        seller_reputation: None,
         read: true,
         auto_popup_shown: true,
     };

@@ -116,6 +116,51 @@ pub(crate) fn try_placeholder_order_message_from_success(
         is_mine: Some(header.is_mine),
         order_status: os.status,
         order_snapshot: Some(small),
+        buyer_reputation: None,
+        seller_reputation: None,
+        read: true,
+        auto_popup_shown: true,
+    })
+}
+
+/// One synthetic [`OrderMessage`] when `PaymentRequestRequired` arrives before any DM row
+/// (take-buy / PayInvoice / PayBondInvoice). Keeps amount/payment/premium on My Trades
+/// even though the live payload is `PaymentRequest`, not `Payload::Order`.
+pub(crate) fn try_placeholder_order_message_from_payment_request(
+    order: &SmallOrder,
+    header: &OrderChatStaticHeader,
+    trade_index: i64,
+    sat_amount: Option<i64>,
+    action: Action,
+    invoice: &str,
+) -> Option<OrderMessage> {
+    let order_id = order.id?;
+    let sender = PublicKey::from_str(header.initiator_trade_pubkey.as_str()).ok()?;
+    let message = Message::new_order(
+        Some(order_id),
+        None,
+        Some(trade_index),
+        action,
+        Some(Payload::PaymentRequest(
+            Some(order.clone()),
+            invoice.to_string(),
+            sat_amount,
+        )),
+    );
+    Some(OrderMessage {
+        message,
+        timestamp: chrono::Utc::now().timestamp(),
+        sender,
+        order_id: Some(order_id),
+        trade_index,
+        sat_amount,
+        buyer_invoice: Some(invoice.to_string()).filter(|s| !s.is_empty()),
+        order_kind: order.kind.or(header.kind),
+        is_mine: Some(header.is_mine),
+        order_status: order.status,
+        order_snapshot: Some(order.clone()),
+        buyer_reputation: None,
+        seller_reputation: None,
         read: true,
         auto_popup_shown: true,
     })
@@ -391,6 +436,9 @@ pub struct OrderMessage {
     /// DMs that omit `Payload::Order` (e.g. `PaymentRequest`, payload-less
     /// `FiatSent` / `Release`) so Fiat/Premium/Method do not blank mid-trade.
     pub order_snapshot: Option<SmallOrder>,
+    /// Buyer/seller reputation from `Payload::Peer`, kept when a later DM replaces the row.
+    pub buyer_reputation: Option<UserInfo>,
+    pub seller_reputation: Option<UserInfo>,
     pub read: bool, // Whether the message has been read
     /// Whether we've already shown the automatic popup for this message
     pub auto_popup_shown: bool,
@@ -1952,6 +2000,8 @@ mod message_emoji_and_badge_tests {
             is_mine,
             order_status,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: true,
             auto_popup_shown: true,
         }
@@ -2193,6 +2243,8 @@ mod timeline_step_tests {
             is_mine,
             order_status,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: false,
             auto_popup_shown: false,
         }
@@ -2537,6 +2589,8 @@ mod invoice_popup_role_tests {
             is_mine,
             order_status,
             order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
             read: false,
             auto_popup_shown: false,
         }

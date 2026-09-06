@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use mostro_core::prelude::{
     Action, DisputeStatus, Kind as OrderKind, Message, Payload, SmallOrder, Status, Transport,
+    UserInfo,
 };
 use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use sqlx::SqlitePool;
@@ -434,7 +435,12 @@ pub(crate) fn history_action_for_db_order(order: &Order) -> Action {
     }
 }
 
-fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<OrderMessage> {
+fn db_order_to_history_message(
+    order: &Order,
+    sender: PublicKey,
+    buyer_reputation: Option<UserInfo>,
+    seller_reputation: Option<UserInfo>,
+) -> Option<OrderMessage> {
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
     let trade_index = order.trade_index?;
@@ -490,6 +496,8 @@ fn db_order_to_history_message(order: &Order, sender: PublicKey) -> Option<Order
         is_mine: Some(order.is_mine),
         order_status: status,
         order_snapshot: Some(payload_order),
+        buyer_reputation,
+        seller_reputation,
         read: true,
         auto_popup_shown: !matches!(
             status,
@@ -540,10 +548,20 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
             return;
         }
     };
-    let mut history_messages: Vec<OrderMessage> = rows
-        .iter()
-        .filter_map(|row| db_order_to_history_message(row, sender))
-        .collect();
+    let mut history_messages: Vec<OrderMessage> = Vec::new();
+    for row in &rows {
+        let (buyer_reputation, seller_reputation) = match row.id.as_deref() {
+            Some(id) => Order::load_trade_reputation(pool, id)
+                .await
+                .unwrap_or((None, None)),
+            None => (None, None),
+        };
+        if let Some(msg) =
+            db_order_to_history_message(row, sender, buyer_reputation, seller_reputation)
+        {
+            history_messages.push(msg);
+        }
+    }
     history_messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
     match app.messages.lock() {
@@ -1620,7 +1638,8 @@ mod clear_session_chat_projection_tests {
 mod history_action_for_db_order_tests {
     use super::history_action_for_db_order;
     use crate::models::Order;
-    use mostro_core::prelude::Action;
+    use mostro_core::prelude::{Action, UserInfo};
+    use nostr_sdk::prelude::Keys;
     use uuid::Uuid;
 
     fn sample_order(status: &str, is_mine: bool, kind: &str, counterparty: Option<&str>) -> Order {
@@ -1701,5 +1720,24 @@ mod history_action_for_db_order_tests {
     fn fiat_sent_uses_fiat_sent_ok() {
         let order = sample_order("fiat-sent", false, "sell", None);
         assert_eq!(history_action_for_db_order(&order), Action::FiatSentOk);
+    }
+
+    #[test]
+    fn history_message_restores_persisted_ratings() {
+        let order = sample_order("fiat-sent", true, "sell", None);
+        let buyer = UserInfo {
+            rating: 3.9,
+            reviews: 5,
+            operating_days: 9,
+        };
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            Some(buyer),
+            None,
+        )
+        .expect("history row");
+        assert_eq!(msg.buyer_reputation.as_ref().map(|r| r.reviews), Some(5));
+        assert!(msg.seller_reputation.is_none());
     }
 }
