@@ -700,10 +700,9 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - **Receiving messages**:
   - The shared-key chat subscription router (`listen_for_chat_messages`) hydrates history once per key on track, then receives newer events live.
-  - While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true (mostrix#102 dual-read window), inbound still accepts legacy NIP-59 GiftWrap `#p`-addressed to the ECDH pubkey. Set the const to `false` to drop GiftWrap receive after coordinated deprecation.
   - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
   - Uses `last_seen_timestamp` to only process messages created after the last processed one.
-  - Decrypts each event using `K_conv` / `K_sign` (or the legacy shared-key GiftWrap unwrap).
+  - Decrypts each event using `K_conv` / `K_sign`.
   - Skips messages signed by the admin identity (already added locally on send).
   - Inner signers outside the party+admin allow-list are dropped.
 
@@ -720,7 +719,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
       - Rebuilds `admin_dispute_chats` so existing disputes immediately show their chat history in the UI.
       - Computes per‑party max timestamps and updates `AppState.admin_chat_last_seen`.
     - These timestamps are also stored in the `admin_disputes` table as `buyer_chat_last_seen` and `seller_chat_last_seen`.
-    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_chat_messages_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched dual-read subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
+    - The shared-key chat subscription router (`listen_for_chat_messages` in `src/util/chat_listener.rs`) uses these DB fields as cursors to hydrate history once per key on track (`fetch_chat_messages_for_shared_key` with the party+admin inner-signer allow-list), then receives newer events live over one batched kind-14 subscription. Disputes are tracked via `track_dispute_chat` when taken and re-tracked by `track_startup_chats` at startup/reconnect.
   - This hybrid approach keeps the protocol stateless while giving admins a smooth, restart-safe chat experience across application restarts.
 
 #### Keyboard Shortcuts
@@ -786,7 +785,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - `src/ui/helpers/chat_storage.rs` - Chat transcript parsing/loading/saving and idempotent append logic
 - `src/ui/helpers/attachments.rs` - Attachment parsing, placeholder text, and attachment toast helpers
 - `src/ui/helpers/chat_render.rs` / `src/ui/helpers/chat_visibility.rs` - Chat list/scrollview rendering and party visibility filtering
-- `src/util/chat_utils.rs` - Kind-14 chat wrap/unwrap (plus dual-read GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true), HashMap-based message routing
+- `src/util/chat_utils.rs` - Kind-14 chat wrap/unwrap, HashMap-based message routing
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 
@@ -810,7 +809,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 
 ### Communication Security
 
-- **Encrypted messages**: Protocol DMs use NIP-44 (signed kind 14); P2P and dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true.
+- **Encrypted messages**: Protocol DMs use NIP-44 (signed kind 14); P2P and dispute chat use kind 14 (`K_sign` / `K_conv`).
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
 

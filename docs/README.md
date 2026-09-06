@@ -42,11 +42,11 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Protocol v2 (NIP-44) — protocol DMs complete
 
-Mostrix speaks **protocol v2** (signed kind 14 / NIP-44) for Mostro **protocol DMs**. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`) and dual-read legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (mostrix#102). Protocol v1 GiftWrap Mostro instances are unsupported ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
+Mostrix speaks **protocol v2** (signed kind 14 / NIP-44) for Mostro **protocol DMs**. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`) only. Protocol v1 GiftWrap Mostro instances are unsupported ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
 
 | Status | What |
 |--------|------|
-| **Done** | Protocol DMs are NIP-44 only: [`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct`; [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs) kind 14; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) is author+kind-14; first-contact PoW always applies. `protocol_version` on kind **38385** is still shown on the Mostro Info tab (v1 advertises a warning). P2P/dispute chat kind-14 send + dual-read + Observer `K_conv` disclosure remain until Phase 2 ([CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md)). |
+| **Done** | Protocol DMs are NIP-44 only: [`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct`; [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs) kind 14; [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) is author+kind-14; first-contact PoW always applies. `protocol_version` on kind **38385** is still shown on the Mostro Info tab (v1 advertises a warning). P2P / dispute chat is kind 14 only ([CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md)). |
 
-**v2 end-to-end:** Protocol DMs subscribe and unwrap signed kind 14. P2P / dispute chat is kind 14 outbound with a GiftWrap dual-read receive window (`CHAT_ACCEPT_LEGACY_GIFTWRAP`). Manual test checklist: [DM_LISTENER_FLOW.md — Manual verification](DM_LISTENER_FLOW.md#manual-verification-protocol-v2).
+**v2 end-to-end:** Protocol DMs subscribe and unwrap signed kind 14. P2P / dispute chat is kind 14 send and receive. Manual test checklist: [DM_LISTENER_FLOW.md — Manual verification](DM_LISTENER_FLOW.md#manual-verification-protocol-v2).
 

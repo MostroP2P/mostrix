@@ -59,7 +59,7 @@ Recent migrations for the `admin_disputes` table add the following fields:
 - **`initiator_info` / `counterpart_info`**: JSON-encoded user info for each party.
 - **`fiat_code`**: Fiat currency code for the disputed order.
 - **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
-- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 (and dual-read GiftWrap) hydrate and chat restore at startup.
+- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 hydrate and chat restore at startup.
 - **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded ECDH IKM between the admin key and each party’s trade pubkey. Runtime chat derives `K_conv` / `K_sign` from this secret (kind-14 wrap/unwrap).
 
 **Source**: `src/db.rs:113`
@@ -310,8 +310,8 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 | `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created (if available). |
 | `taken_at` | `INTEGER` | Unix timestamp when the admin took the dispute. |
 | `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
-| `buyer_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the buyer side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
-| `seller_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the seller side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
+| `buyer_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the buyer side (kind 14; used for incremental fetch and restore). |
+| `seller_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the seller side (kind 14; used for incremental fetch and restore). |
 | `buyer_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the buyer’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
 | `seller_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the seller’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
 

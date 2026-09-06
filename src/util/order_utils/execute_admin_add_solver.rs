@@ -61,7 +61,7 @@ pub async fn execute_admin_add_solver(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM using admin keys (signed gift wrap)
+    // Send the DM using admin keys (signed kind 14)
     // Note: Following the example pattern, we don't wait for a response
     let sent_message = send_dm(
         client,
