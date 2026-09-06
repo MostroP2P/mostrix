@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -20,6 +22,52 @@ use super::chat_render::wrap_text_to_lines;
 const DISPUTES_CHAT_DIR: &str = "disputes_chat";
 const ORDERS_CHAT_DIR: &str = "orders_chat";
 const USER_DISPUTES_CHAT_DIR: &str = "user_disputes_chat";
+
+#[cfg(test)]
+thread_local! {
+    static TEST_MOSTRIX_HOME: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static FORCE_CHAT_SAVE_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn mostrix_home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(dir) = TEST_MOSTRIX_HOME.with(|c| c.borrow().clone()) {
+            return Some(dir);
+        }
+    }
+    dirs::home_dir()
+}
+
+/// Next [`save_order_chat_message`] / [`save_chat_message`] / user-dispute save
+/// returns `false` once, then clears (test-only persist-failure injection).
+#[cfg(test)]
+pub(crate) fn force_next_chat_save_failure() {
+    FORCE_CHAT_SAVE_FAILURE.with(|c| c.set(true));
+}
+
+/// Redirect `~/.mostrix` chat paths to `dir` for the current thread until dropped.
+#[cfg(test)]
+pub(crate) fn install_test_chat_home(dir: PathBuf) -> TestChatHomeGuard {
+    TEST_MOSTRIX_HOME.with(|c| *c.borrow_mut() = Some(dir));
+    TestChatHomeGuard
+}
+
+#[cfg(test)]
+pub(crate) struct TestChatHomeGuard;
+
+#[cfg(test)]
+impl Drop for TestChatHomeGuard {
+    fn drop(&mut self) {
+        TEST_MOSTRIX_HOME.with(|c| *c.borrow_mut() = None);
+        FORCE_CHAT_SAVE_FAILURE.with(|c| c.set(false));
+    }
+}
+
+#[cfg(test)]
+fn consume_forced_chat_save_failure() -> bool {
+    FORCE_CHAT_SAVE_FAILURE.with(|c| c.replace(false))
+}
 
 #[derive(Clone, Copy)]
 enum ChatStorageKind {
@@ -186,7 +234,7 @@ fn chat_file_path(kind: ChatStorageKind, chat_id: &str) -> Option<PathBuf> {
     if uuid::Uuid::parse_str(chat_id).is_err() {
         return None;
     }
-    let home_dir = dirs::home_dir()?;
+    let home_dir = mostrix_home_dir()?;
     Some(
         home_dir
             .join(".mostrix")
@@ -262,6 +310,11 @@ fn save_user_chat_message_by_kind(
     chat_id: &str,
     message: &UserOrderChatMessage,
 ) -> bool {
+    #[cfg(test)]
+    if consume_forced_chat_save_failure() {
+        log::warn!("test: forcing {} transcript save failure", kind.log_label());
+        return false;
+    }
     let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
@@ -544,6 +597,11 @@ fn save_chat_message_by_kind(
     chat_id: &str,
     message: &DisputeChatMessage,
 ) -> bool {
+    #[cfg(test)]
+    if consume_forced_chat_save_failure() {
+        log::warn!("test: forcing {} transcript save failure", kind.log_label());
+        return false;
+    }
     let file_path = match chat_file_path(kind, chat_id) {
         Some(path) => path,
         None => {
@@ -646,7 +704,7 @@ fn inner_ids_file_path(
     if uuid::Uuid::parse_str(chat_id).is_err() {
         return None;
     }
-    let home_dir = dirs::home_dir()?;
+    let home_dir = mostrix_home_dir()?;
     let name = match party_suffix {
         Some(sfx) => format!("{chat_id}.{sfx}.inner_ids"),
         None => format!("{chat_id}.inner_ids"),
