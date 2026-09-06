@@ -36,7 +36,7 @@ pub use dm_utils::{
     send_dm, send_track_order_cmd, set_dm_router_cmd_tx, set_order_result_tx,
     try_notify_my_trades_maker_book_changed, unsubscribe_dm_listener_subscriptions, wait_for_dm,
     OrderDmSubscriptionCmd, StartupDmHydration, TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT,
-    WAIT_FOR_DM_TIMEOUT_MSG,
+    WAIT_FOR_DM_CANCELED_MSG, WAIT_FOR_DM_TIMEOUT_MSG,
 };
 pub use fatal::{
     fatal_requested, install_background_panic_hook, next_backoff_secs, request_fatal_restart,

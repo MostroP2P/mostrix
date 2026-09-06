@@ -15,6 +15,8 @@ pub(crate) enum DmSubscriptionMode {
     StartupSince(i64),
     /// Live-only stream: no backlog replay, only events after subscription.
     LiveOnly,
+    /// Stored events since an in-flight waiter registered, then live (reconnect resurrection).
+    WaiterCatchUp(Timestamp),
 }
 
 /// Metadata/config used when binding a subscription id to an order.
@@ -52,18 +54,7 @@ pub(crate) async fn ensure_order_dm_subscription(
         );
     }
     let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
-    let filter = match options.mode {
-        DmSubscriptionMode::StartupCatchUp => base.limit(1),
-        DmSubscriptionMode::StartupSince(ts) => {
-            let ts = u64::try_from(ts).unwrap_or(Timestamp::now().as_secs());
-            base.since(Timestamp::from(ts))
-        }
-        // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
-        // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
-        // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
-        // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
-        DmSubscriptionMode::LiveOnly => base.limit(0),
-    };
+    let filter = protocol_dm_filter_for_mode(base, &options.mode);
 
     match client.subscribe(filter).await {
         Ok(output) => {
@@ -97,6 +88,55 @@ pub(crate) async fn ensure_order_dm_subscription(
     }
 }
 
+fn protocol_dm_filter_for_mode(base: Filter, mode: &DmSubscriptionMode) -> Filter {
+    match mode {
+        DmSubscriptionMode::StartupCatchUp => base.limit(1),
+        DmSubscriptionMode::StartupSince(ts) => {
+            let ts = u64::try_from(*ts).unwrap_or(Timestamp::now().as_secs());
+            base.since(Timestamp::from(ts))
+        }
+        // Live-only: match `RegisterWaiter` in `listen_for_order_messages` (`.limit(0)`).
+        // `take_order` sends `TrackOrder` before `wait_for_dm`, so this subscription is created
+        // first; if we used `.since(now)` here, same-second Mostro responses could be missed and
+        // `RegisterWaiter` would not add a second subscription (pubkey already subscribed).
+        DmSubscriptionMode::LiveOnly => base.limit(0),
+        DmSubscriptionMode::WaiterCatchUp(ts) => base.since(*ts),
+    }
+}
+
+/// Subscribe for a `wait_for_dm` trade pubkey without binding `subscription_id` → order.
+///
+/// Returns `true` when a subscription is already active or was created. Subscribe failure
+/// does **not** drop the waiter — it lives in the process-wide registry until timeout or match.
+pub(crate) async fn ensure_waiter_dm_subscription(
+    client: &Client,
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
+    trade_pubkey: PublicKey,
+    mode: DmSubscriptionMode,
+) -> bool {
+    if !subscribed_pubkeys.insert(trade_pubkey) {
+        return pubkey_to_subscription.contains_key(&trade_pubkey);
+    }
+    let base = filter_protocol_dm_from_mostro(transport, mostro_pubkey, trade_pubkey);
+    let filter = protocol_dm_filter_for_mode(base, &mode);
+    match client.subscribe(filter).await {
+        Ok(output) => {
+            let sub_id = output.value;
+            pubkey_to_subscription.insert(trade_pubkey, sub_id.clone());
+            super::register_dm_listener_subscription(sub_id);
+            true
+        }
+        Err(e) => {
+            subscribed_pubkeys.remove(&trade_pubkey);
+            log::warn!("Failed to subscribe waiter pubkey {}: {}", trade_pubkey, e);
+            false
+        }
+    }
+}
+
 /// Seed `app.admin_chat_last_seen` with last_seen timestamps per (dispute, party)
 /// from the list of admin disputes (DB fields buyer_chat_last_seen / seller_chat_last_seen).
 pub fn seed_admin_chat_last_seen(app: &mut AppState) {
@@ -121,5 +161,33 @@ pub fn seed_admin_chat_last_seen(app: &mut AppState) {
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mostro_core::prelude::Transport;
+
+    #[test]
+    fn waiter_catch_up_filter_includes_since() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let base = filter_protocol_dm_from_mostro(Transport::Nip44Direct, mostro, trade);
+        let ts = Timestamp::from(1_700_000_000);
+        let filter = protocol_dm_filter_for_mode(base, &DmSubscriptionMode::WaiterCatchUp(ts));
+        let json = filter.as_json();
+        assert!(json.contains("\"since\":1700000000"));
+        assert!(json.contains(&format!("\"#p\":[\"{trade}\"]")));
+    }
+
+    #[test]
+    fn live_only_waiter_filter_uses_limit_zero() {
+        let trade = Keys::generate().public_key();
+        let mostro = Keys::generate().public_key();
+        let base = filter_protocol_dm_from_mostro(Transport::Nip44Direct, mostro, trade);
+        let filter = protocol_dm_filter_for_mode(base, &DmSubscriptionMode::LiveOnly);
+        let json = filter.as_json();
+        assert!(json.contains("\"limit\":0"));
     }
 }

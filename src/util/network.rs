@@ -37,6 +37,9 @@ fn relay_host_port(relay: &str) -> Option<(String, u16)> {
 /// Returns `true` if at least one configured relay host:port accepts a TCP connection
 /// within a short timeout. This avoids calling `nostr-sdk` connect paths that may panic
 /// when the machine has no network.
+///
+/// TCP success is not a live Nostr session. Callers that rebuild the DM listener
+/// must [`connect_client_safely`] before aborting in-flight `wait_for_dm` waiters.
 pub async fn any_relay_reachable(relays: &[String]) -> bool {
     for relay in relays {
         let Some((host, port)) = relay_host_port(relay) else {

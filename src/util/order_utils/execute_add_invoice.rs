@@ -465,12 +465,13 @@ pub async fn execute_add_bond_invoice(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::WAIT_FOR_DM_CANCELED_MSG;
 
     #[test]
     fn wait_for_dm_timeout_is_recognized_for_add_bond_invoice() {
         let timeout = anyhow::anyhow!(WAIT_FOR_DM_TIMEOUT_MSG);
         assert!(is_wait_for_dm_timeout(&timeout));
-        let canceled = anyhow::anyhow!("DM waiter canceled before receiving an event");
+        let canceled = anyhow::anyhow!(WAIT_FOR_DM_CANCELED_MSG);
         assert!(!is_wait_for_dm_timeout(&canceled));
     }
 }

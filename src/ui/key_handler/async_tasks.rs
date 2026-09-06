@@ -263,7 +263,9 @@ async fn dm_transport_for_mostro(
 /// Abort and respawn the trade DM listener (e.g. after `protocol_version` / transport changes).
 ///
 /// Replaces the [`JoinHandle`] with [`crate::util::spawn_supervised_trade_dm_listener`]
-/// so the new task still recovers from panic/exit independently.
+/// so the new task still recovers from panic/exit independently. In-flight
+/// [`crate::util::wait_for_dm`] oneshots are not owned by this task; the new
+/// listener re-subscribes them from the process-wide registry.
 #[allow(clippy::too_many_arguments)]
 pub async fn respawn_trade_dm_listener(
     app: &mut AppState,
@@ -728,6 +730,11 @@ pub async fn apply_pending_runtime_reloads(
 
 /// Reconnect runtime background tasks after connectivity returns.
 ///
+/// Connects the Nostr client **before** aborting the DM listener so a failed
+/// handshake does not tear down in-flight [`crate::util::wait_for_dm`] waiters.
+/// After a successful connect the listener is still rebuilt; waiters persist in
+/// the process-wide registry and are re-subscribed on bootstrap.
+///
 /// Mirrors the `apply_pending_key_reload` flow (abort/respawn fetch loops and DM listener).
 /// Identity keys are unchanged; [`Self::mostro_pubkey`] / [`Self::current_mostro_pubkey`] are
 /// refreshed from `settings` so they match disk (e.g. if the Mostro instance pubkey changed).
@@ -739,21 +746,24 @@ pub async fn reload_runtime_session_after_reconnect(
         return Err("No internet / relays unreachable".to_string());
     }
 
-    ctx.message_listener_handle.abort();
-    ctx.order_fetch_task.abort();
-    ctx.dispute_fetch_task.abort();
-    unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
-
-    connect_client_safely(ctx.client)
-        .await
-        .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
-
     let new_mostro_pubkey = PublicKey::from_str(&ctx.settings.mostro_pubkey).map_err(|e| {
         format!(
             "Reconnect: invalid Mostro pubkey in settings ({}): {e}",
             ctx.settings.mostro_pubkey
         )
     })?;
+
+    // TCP reachability is not a live Nostr session. Connect first so a failed
+    // handshake does not abort in-flight `wait_for_dm` waiters. After connect
+    // the listener is still rebuilt; waiters live in the process-wide registry.
+    connect_client_safely(ctx.client)
+        .await
+        .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
+
+    ctx.message_listener_handle.abort();
+    ctx.order_fetch_task.abort();
+    ctx.dispute_fetch_task.abort();
+    unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
     *ctx.mostro_pubkey = new_mostro_pubkey;
     match ctx.current_mostro_pubkey.lock() {
         Ok(mut active_pubkey) => {

@@ -60,8 +60,8 @@ Mostrix has a **single background task** that:
 - **`pubkey_to_subscription: HashMap<PublicKey, SubscriptionId>`**  
   Lets TrackOrder “rebind” a pubkey that was subscribed earlier by a waiter without subscribing twice.
 
-- **`pending_waiters: Vec<PendingDmWaiter>`**  
-  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation.
+- **`pending_waiters`** (process-wide registry in `src/util/dm_utils/waiters.rs`)  
+  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation. Waiters are **not** stored in the listener task, so abort/reconnect/supervised respawn does not cancel in-flight `wait_for_dm` calls. The rebuilt listener re-subscribes waiter pubkeys and catch-up fetches events since each waiter's register timestamp.
 
 - **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*  
   Tracks which orders are currently “active” and which `trade_index` (hence which trade key) belongs to each `order_id`.
@@ -134,19 +134,19 @@ What happens:
 
 **Conceptually:** TrackOrder is long-lived; it binds the pubkey to a concrete order and makes the tracked-order path reliable and O(1).
 
-### 2) `RegisterWaiter { trade_keys, response_tx }`
+### 2) `RegisterWaiter { trade_keys }`
 
 Use case: “I’m about to send a request DM; wait for the first decryptable response for these trade keys”.
 
 What happens:
 
-- Waiters are bounded (`MAX_PENDING_WAITERS`), and periodically garbage-collected (drops closed oneshots).
-- If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(transport, …).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
+- `wait_for_dm` inserts the oneshot into the **process-wide** waiter registry (bounded by `MAX_PENDING_WAITERS`) **before** sending the protocol DM. A full registry fails the command without sending, so Mostro is not left with an unacked action.
+- The listener command is a subscribe hint only. If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(transport, …).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
-- The waiter is pushed into `pending_waiters`.
+- If the listener is aborted (reconnect / key reload / panic respawn), the oneshot stays in the registry. Bootstrap re-subscribes with `WaiterCatchUp(since)` and `fetch_events` so a reply that landed during the flap can still satisfy the waiter. Events older than `since` are ignored so startup catch-up does not steal a stale trade DM as the in-flight response.
 
-**Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”.
+**Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”. Timeout (`WAIT_FOR_DM_TIMEOUT_MSG`) means no matching event arrived. Oneshot cancel (`WAIT_FOR_DM_CANCELED_MSG`) is not a Mostro rejection (`CantDo`).
 
 ## Incoming protocol DM event routing (the heart of the flow)
 
@@ -319,13 +319,14 @@ When a terminal message is detected:
 flowchart TD
   A[listen_for_order_messages start] --> B[Load User from DB]
   B --> C[Bootstrap subs for active_order_trade_indices]
-  C --> C2[fetch_events replay into messages notify=false]
+  C --> C1[Re-subscribe in-flight wait_for_dm waiters + catch-up fetch]
+  C1 --> C2[fetch_events replay into messages notify=false]
   C2 --> D{loop: select}
 
   D -->|tick| GC[Prune closed waiters]
   D -->|cmd| CMD{DmRouterCmd}
   CMD -->|TrackOrder| TO[Update active_order_trade_indices; ensure subscription; bind subscription_id -> order]
-  CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; push PendingDmWaiter]
+  CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; oneshot already in process-wide registry]
 
   D -->|relay event| E[protocol DM event arrives]
   E --> WA[Try match pending waiters (decrypt check)]

@@ -131,6 +131,9 @@ async fn merge_durable_dm_tracks(
 }
 
 /// Spawn the trade DM listener with per-task panic/exit recovery and command-channel refresh.
+///
+/// Each run of [`crate::util::listen_for_order_messages`] re-subscribes in-flight
+/// [`crate::util::wait_for_dm`] waiters from the process-wide registry.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_supervised_trade_dm_listener(
     client: Client,

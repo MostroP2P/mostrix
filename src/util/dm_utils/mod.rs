@@ -5,6 +5,7 @@ mod dm_helpers;
 mod notifications_ch_mng;
 mod order_ch_mng;
 mod order_result_tx;
+mod waiters;
 
 pub use dm_helpers::seed_admin_chat_last_seen;
 pub use notifications_ch_mng::{
@@ -12,6 +13,7 @@ pub use notifications_ch_mng::{
 };
 pub use order_ch_mng::handle_operation_result;
 pub use order_result_tx::{set_order_result_tx, try_notify_my_trades_maker_book_changed};
+pub use waiters::{WAIT_FOR_DM_BUSY_MSG, WAIT_FOR_DM_CANCELED_MSG};
 
 use anyhow::Result;
 use mostro_core::prelude::*;
@@ -51,10 +53,15 @@ pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 /// Timeout error string from [`wait_for_dm`]. Callers that special-case a
 /// missing Mostro reply (e.g. AddBondInvoice) must match this exact text.
+/// Distinct from [`WAIT_FOR_DM_CANCELED_MSG`] (oneshot dropped) and
+/// [`WAIT_FOR_DM_BUSY_MSG`] (registry cap; the protocol DM was not sent).
 pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event";
 
-const PENDING_WAITER_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-const MAX_PENDING_WAITERS: usize = 32;
+use waiters::{
+    event_created_at_meets_waiter_since, prune_closed_pending_waiters, register_pending_waiter,
+    restore_unmatched_waiters, snapshot_pending_waiter_targets, take_pending_waiters,
+    PENDING_WAITER_GC_INTERVAL,
+};
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
 const DEFAULT_DM_EXPIRATION_DAYS: u64 = 30;
@@ -88,16 +95,16 @@ struct CachedDmUnwrap {
     skip_for_waiter: bool,
 }
 
+/// Commands consumed by [`listen_for_order_messages`].
 #[derive(Debug)]
 pub enum DmRouterCmd {
-    TrackOrder {
-        order_id: Uuid,
-        trade_index: i64,
-    },
-    RegisterWaiter {
-        trade_keys: Keys,
-        response_tx: oneshot::Sender<Event>,
-    },
+    /// Long-lived trade-key subscription bound to `(order_id, trade_index)`.
+    TrackOrder { order_id: Uuid, trade_index: i64 },
+    /// Subscribe hint for an in-flight [`wait_for_dm`].
+    ///
+    /// The oneshot lives in the process-wide waiter registry, not on this
+    /// variant, so listener abort/reconnect cannot cancel the waiter.
+    RegisterWaiter { trade_keys: Keys },
 }
 
 pub type OrderDmSubscriptionCmd = DmRouterCmd;
@@ -158,7 +165,8 @@ impl StartupDmHydration {
     }
 }
 
-/// Publishes the global sender consumed by `listen_for_order_messages` and `wait_for_dm`.
+/// Publishes the global sender consumed by [`send_track_order_cmd`],
+/// [`send_register_waiter_cmd`], and [`wait_for_dm`].
 ///
 /// Returns `Err` if the mutex is poisoned (the sender was **not** updated).
 pub fn set_dm_router_cmd_tx(tx: mpsc::UnboundedSender<DmRouterCmd>) -> Result<(), &'static str> {
@@ -321,8 +329,18 @@ pub async fn send_dm(
     Ok(())
 }
 
-/// Wait for a direct message response from Mostro
-/// Registers a router waiter, then sends the message (to avoid missing responses).
+/// Wait for a Mostro protocol DM reply after `sent_message`.
+///
+/// Inserts a oneshot into the process-wide waiter registry, then sends
+/// [`DmRouterCmd::RegisterWaiter`] as a subscribe hint (the oneshot is not
+/// owned by the listener task). The protocol DM is sent only after that
+/// registration so a listener abort/reconnect cannot drop the waiter.
+///
+/// # Errors
+///
+/// - [`WAIT_FOR_DM_BUSY_MSG`] if the registry is at cap (no protocol DM sent)
+/// - [`WAIT_FOR_DM_TIMEOUT_MSG`] if no matching event arrives in `timeout`
+/// - [`WAIT_FOR_DM_CANCELED_MSG`] if the oneshot is dropped (not a Mostro `CantDo`)
 pub async fn wait_for_dm<F>(
     trade_keys: &Keys,
     timeout: std::time::Duration,
@@ -331,38 +349,49 @@ pub async fn wait_for_dm<F>(
 where
     F: std::future::Future<Output = Result<()>> + Send,
 {
-    let dm_router_tx = match DM_ROUTER_CMD_TX.lock() {
-        Ok(guard) => guard.clone().ok_or_else(|| {
-            anyhow::anyhow!("DM router is not ready. Please retry after listener initialization.")
-        })?,
-        Err(_) => {
-            crate::util::request_fatal_restart(
-                "Mostrix encountered an internal error (poisoned DM router lock). Please restart the app."
-                    .to_string(),
-            );
-            return Err(anyhow::anyhow!(
-                "DM router mutex poisoned; restart the application."
-            ));
-        }
-    };
+    ensure_dm_router_ready()?;
     let (response_tx, response_rx) = oneshot::channel::<Event>();
-    dm_router_tx
-        .send(DmRouterCmd::RegisterWaiter {
-            trade_keys: trade_keys.clone(),
-            response_tx,
-        })
-        .map_err(|_| anyhow::anyhow!("Failed to register DM waiter: router channel closed"))?;
+    // Insert into the process-wide registry *before* sending the protocol DM so a
+    // listener abort/reconnect cannot drop the oneshot (MOSTRO-80). Cap is checked
+    // here, so a busy rejection happens before `sent_message`.
+    register_pending_waiter(trade_keys.clone(), response_tx).map_err(anyhow::Error::msg)?;
+    // Subscribe hint: lock the live sender at send time. If the listener is mid-restart
+    // this may hit a closed channel; the rebuilt listener re-subscribes from the registry.
+    send_register_waiter_cmd(trade_keys.clone());
 
     // Send message only after waiter registration to avoid races.
     sent_message.await?;
     let event = tokio::time::timeout(timeout, response_rx)
         .await
         .map_err(|_| anyhow::anyhow!(WAIT_FOR_DM_TIMEOUT_MSG))?
-        .map_err(|_| anyhow::anyhow!("DM waiter canceled before receiving an event"))?;
+        .map_err(|_| anyhow::anyhow!(WAIT_FOR_DM_CANCELED_MSG))?;
 
     let mut events = BTreeSet::new();
     events.insert(event);
     Ok(events)
+}
+
+fn ensure_dm_router_ready() -> Result<()> {
+    match DM_ROUTER_CMD_TX.lock() {
+        Ok(guard) => {
+            if guard.is_some() {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "DM router is not ready. Please retry after listener initialization."
+                ))
+            }
+        }
+        Err(_) => {
+            crate::util::request_fatal_restart(
+                "Mostrix encountered an internal error (poisoned DM router lock). Please restart the app."
+                    .to_string(),
+            );
+            Err(anyhow::anyhow!(
+                "DM router mutex poisoned; restart the application."
+            ))
+        }
+    }
 }
 
 /// Parse protocol DM events to extract Messages (signed kind 14 via [`unwrap_incoming`]).
@@ -596,6 +625,20 @@ pub fn send_track_order_cmd(order_id: Uuid, trade_index: i64) {
             order_id,
             trade_index,
         });
+    }
+}
+
+/// Ask the live DM listener to subscribe the waiter trade pubkey.
+///
+/// The oneshot itself lives in the process-wide waiter registry used by
+/// [`wait_for_dm`]. A closed/rotated command channel is ignored; the next
+/// listener bootstrap re-subscribes from that registry.
+pub fn send_register_waiter_cmd(trade_keys: Keys) {
+    let Ok(guard) = DM_ROUTER_CMD_TX.lock() else {
+        return;
+    };
+    if let Some(tx) = guard.as_ref() {
+        let _ = tx.send(DmRouterCmd::RegisterWaiter { trade_keys });
     }
 }
 
@@ -1797,24 +1840,6 @@ async fn fetch_and_replay_startup_trade_dms(
     );
 }
 
-struct PendingDmWaiter {
-    trade_keys: Keys,
-    response_tx: oneshot::Sender<Event>,
-}
-
-fn prune_closed_waiters(pending_waiters: &mut Vec<PendingDmWaiter>) {
-    let before = pending_waiters.len();
-    pending_waiters.retain(|w| !w.response_tx.is_closed());
-    let pruned = before.saturating_sub(pending_waiters.len());
-    if pruned > 0 {
-        log::debug!(
-            "[dm_listener] pruned {} closed waiter(s); pending_waiters={}",
-            pruned,
-            pending_waiters.len()
-        );
-    }
-}
-
 fn log_unknown_sub_decrypt_stats(
     active_orders_scanned: usize,
     decrypt_attempts: u32,
@@ -1888,13 +1913,113 @@ async fn resolve_order_for_event(
     None
 }
 
+const WAITER_CATCH_UP_FETCH_LIMIT: usize = 20;
+
+async fn satisfy_pending_waiters_for_event(
+    event: &Event,
+    rumor_cache: &mut HashMap<PublicKey, CachedDmUnwrap>,
+) {
+    let waiters = take_pending_waiters();
+    if waiters.is_empty() {
+        return;
+    }
+    let mut still_pending = Vec::with_capacity(waiters.len());
+    for waiter in waiters {
+        if waiter.response_tx.is_closed() {
+            continue;
+        }
+        if !event_created_at_meets_waiter_since(event.created_at, waiter.since) {
+            still_pending.push(waiter);
+            continue;
+        }
+        let key = waiter.trade_keys.public_key();
+        let cached = if let Some(cached) = rumor_cache.get(&key) {
+            *cached
+        } else {
+            let cached = match unwrap_incoming(event, &waiter.trade_keys).await {
+                Ok(Some(u)) => CachedDmUnwrap {
+                    can_decrypt: true,
+                    skip_for_waiter: is_own_signed_v2_outbound(event, &waiter.trade_keys, &u),
+                },
+                _ => CachedDmUnwrap {
+                    can_decrypt: false,
+                    skip_for_waiter: false,
+                },
+            };
+            rumor_cache.insert(key, cached);
+            cached
+        };
+
+        if cached.can_decrypt && !cached.skip_for_waiter {
+            let _ = waiter.response_tx.send(event.clone());
+        } else {
+            still_pending.push(waiter);
+        }
+    }
+    restore_unmatched_waiters(still_pending);
+}
+
+async fn subscribe_pending_waiter_pubkeys(
+    client: &Client,
+    transport: Transport,
+    mostro_pubkey: PublicKey,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    pubkey_to_subscription: &mut HashMap<PublicKey, SubscriptionId>,
+) {
+    for (pubkey, since) in snapshot_pending_waiter_targets() {
+        let _ = dm_helpers::ensure_waiter_dm_subscription(
+            client,
+            transport,
+            mostro_pubkey,
+            subscribed_pubkeys,
+            pubkey_to_subscription,
+            pubkey,
+            dm_helpers::DmSubscriptionMode::WaiterCatchUp(since),
+        )
+        .await;
+    }
+}
+
+async fn catch_up_pending_waiters(client: &Client, transport: Transport, mostro_pubkey: PublicKey) {
+    let targets = snapshot_pending_waiter_targets();
+    if targets.is_empty() {
+        return;
+    }
+    for (pubkey, since) in targets {
+        let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, pubkey)
+            .since(since)
+            .limit(WAITER_CATCH_UP_FETCH_LIMIT);
+        let events = match client
+            .fetch_events(filter)
+            .timeout(FETCH_EVENTS_TIMEOUT)
+            .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("[dm_listener] waiter catch-up fetch failed for {pubkey}: {e}");
+                continue;
+            }
+        };
+        let mut ordered: Vec<Event> = events.into_iter().collect();
+        ordered.sort_by_key(|event| event.created_at.as_secs());
+        for event in ordered {
+            if event.kind != transport.event_kind() {
+                continue;
+            }
+            let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
+            satisfy_pending_waiters_for_event(&event, &mut rumor_cache).await;
+        }
+    }
+}
+
 /// Background DM router for Mostro protocol DM events (signed kind 14).
 ///
 /// Responsibilities:
 /// - maintain relay subscriptions for tracked orders (`TrackOrder`) and temporary
 ///   request/response waiters (`RegisterWaiter` / `wait_for_dm`)
 /// - route each incoming protocol DM through two complementary paths:
-///   1) waiter path: satisfy in-flight `wait_for_dm` calls
+///   1) waiter path: satisfy in-flight `wait_for_dm` calls (process-wide registry;
+///      survives listener abort/reconnect)
 ///   2) tracked-order path: parse and dispatch updates to the order/UI pipeline
 /// - reuse decryptability checks across both paths for the same incoming event
 ///   and trade pubkey (`HashMap<PublicKey, bool>` scoped to one notification; the
@@ -1904,8 +2029,10 @@ async fn resolve_order_for_event(
 /// Lifecycle notes:
 /// - spawned via [`crate::util::spawn_supervised_trade_dm_listener`] (startup, reload,
 ///   reconnect, and panic/exit recovery); on failure the supervisor publishes a fresh
-///   command sender **before** backoff so `TrackOrder` / waiters buffer, then this
-///   loop re-bootstraps from `active_order_trade_indices` (merged with DB hydration)
+///   command sender **before** backoff so `TrackOrder` / `RegisterWaiter` subscribe
+///   hints buffer, then this loop re-bootstraps from `active_order_trade_indices`
+///   (merged with DB hydration) **and** re-subscribes in-flight `wait_for_dm`
+///   waiters from the process-wide registry
 /// - bootstrap subscriptions for already-active orders at startup
 /// - continue processing relay notifications even if `dm_subscription_rx` is closed
 ///   (no new dynamic subscriptions, existing ones remain active)
@@ -1936,7 +2063,6 @@ pub async fn listen_for_order_messages(
     let mut subscribed_pubkeys: HashSet<PublicKey> = HashSet::new();
     let mut subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)> = HashMap::new();
     let mut pubkey_to_subscription: HashMap<PublicKey, SubscriptionId> = HashMap::new();
-    let mut pending_waiters: Vec<PendingDmWaiter> = Vec::new();
     let mut waiter_gc_interval = tokio::time::interval(PENDING_WAITER_GC_INTERVAL);
     // First tick is immediate; skip it so the first cleanup runs after the interval.
     waiter_gc_interval.tick().await;
@@ -1991,6 +2117,15 @@ pub async fn listen_for_order_messages(
         .await;
     }
 
+    subscribe_pending_waiter_pubkeys(
+        &client,
+        transport,
+        mostro_pubkey,
+        &mut subscribed_pubkeys,
+        &mut pubkey_to_subscription,
+    )
+    .await;
+
     fetch_and_replay_startup_trade_dms(
         DmListenerStartupReplay {
             client: &client,
@@ -2012,10 +2147,12 @@ pub async fn listen_for_order_messages(
     )
     .await;
 
+    catch_up_pending_waiters(&client, transport, mostro_pubkey).await;
+
     loop {
         tokio::select! {
             _ = waiter_gc_interval.tick() => {
-                prune_closed_waiters(&mut pending_waiters);
+                prune_closed_pending_waiters();
             }
             new_subscription_cmd = dm_subscription_rx.recv() => {
                 let Some(cmd_subscription) = new_subscription_cmd else {
@@ -2098,60 +2235,19 @@ pub async fn listen_for_order_messages(
                             continue;
                         }
                     }
-                    DmRouterCmd::RegisterWaiter {
-                        trade_keys,
-                        response_tx,
-                    } => {
-                        prune_closed_waiters(&mut pending_waiters);
-                        if pending_waiters.len() >= MAX_PENDING_WAITERS {
-                            log::warn!(
-                                "[dm_listener] rejecting waiter registration: pending_waiters={} (cap={})",
-                                pending_waiters.len(),
-                                MAX_PENDING_WAITERS
-                            );
-                            // Dropping `response_tx` cancels waiter immediately in `wait_for_dm`.
-                            continue;
-                        }
-                        let before = pending_waiters.len();
+                    DmRouterCmd::RegisterWaiter { trade_keys } => {
+                        prune_closed_pending_waiters();
                         let waiter_pubkey = trade_keys.public_key();
-                        if subscribed_pubkeys.insert(waiter_pubkey) {
-                            let filter = filter_protocol_dm_from_mostro(
-                                transport,
-                                mostro_pubkey,
-                                waiter_pubkey,
-                            )
-                            .limit(0);
-                            match client.subscribe(filter).await {
-                                Ok(output) => {
-                                    // Remember the subscription id so a later TrackOrder can
-                                    // rebind this pubkey to a concrete order_id without requiring
-                                    // a second relay subscription.
-                                    register_dm_listener_subscription(output.value.clone());
-                                    pubkey_to_subscription.insert(waiter_pubkey, output.value);
-                                }
-                                Err(e) => {
-                                    subscribed_pubkeys.remove(&waiter_pubkey);
-                                    log::warn!(
-                                        "Failed to subscribe waiter pubkey {}: {}",
-                                        waiter_pubkey,
-                                        e
-                                    );
-                                    // Immediate waiter cancellation path: do not queue this waiter
-                                    // when we could not subscribe. Dropping response_tx here makes
-                                    // wait_for_dm receive oneshot cancellation right away.
-                                    continue;
-                                }
-                            }
-                        }
-                        pending_waiters.push(PendingDmWaiter {
-                            trade_keys,
-                            response_tx,
-                        });
-                        log::trace!(
-                            "[dm_listener] waiter queued pending_before={} pending_after={}",
-                            before,
-                            pending_waiters.len()
-                        );
+                        let _ = dm_helpers::ensure_waiter_dm_subscription(
+                            &client,
+                            transport,
+                            mostro_pubkey,
+                            &mut subscribed_pubkeys,
+                            &mut pubkey_to_subscription,
+                            waiter_pubkey,
+                            dm_helpers::DmSubscriptionMode::LiveOnly,
+                        )
+                        .await;
                     }
                 }
             }
@@ -2180,49 +2276,7 @@ pub async fn listen_for_order_messages(
                     // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
                     let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
 
-                    if !pending_waiters.is_empty() {
-                        let mut still_pending: Vec<PendingDmWaiter> =
-                            Vec::with_capacity(pending_waiters.len());
-                        // Try to satisfy in-flight `wait_for_dm` calls first.
-                        // Non-matching waiters are re-queued and will be checked again on the
-                        // next protocol DM event.
-                        for waiter in pending_waiters.drain(..) {
-                            // Drop promptly when wait_for_dm timed out (receiver gone); no decrypt.
-                            if waiter.response_tx.is_closed() {
-                                continue;
-                            }
-                            let key = waiter.trade_keys.public_key();
-                            let cached = if let Some(cached) = rumor_cache.get(&key) {
-                                *cached
-                            } else {
-                                let cached = match unwrap_incoming(&event, &waiter.trade_keys).await
-                                {
-                                    Ok(Some(u)) => CachedDmUnwrap {
-                                        can_decrypt: true,
-                                        skip_for_waiter: is_own_signed_v2_outbound(
-                                            &event,
-                                            &waiter.trade_keys,
-                                            &u,
-                                        ),
-                                    },
-                                    _ => CachedDmUnwrap {
-                                        can_decrypt: false,
-                                        skip_for_waiter: false,
-                                    },
-                                };
-                                rumor_cache.insert(key, cached);
-                                cached
-                            };
-
-                            if cached.can_decrypt && !cached.skip_for_waiter {
-                                let _ = waiter.response_tx.send(event.clone());
-                            } else {
-                                // Not for this waiter, or our own echoed outbound request.
-                                still_pending.push(waiter);
-                            }
-                        }
-                        pending_waiters = still_pending;
-                    }
+                    satisfy_pending_waiters_for_event(&event, &mut rumor_cache).await;
 
                     if let Some((order_id, trade_index)) = subscription_to_order.get(&subscription_id).copied() {
                         log::info!(
