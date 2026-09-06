@@ -43,10 +43,35 @@ fn sidebar_order_list_label(order_id: &str, inner_width: u16) -> String {
     format!("{head}...")
 }
 
-/// Keep a bordered chat pane with room for a sender line plus a wrapped message.
-/// Widget height includes `Borders::ALL` (2 rows); inner height is this minus 2.
-const ORDER_INFO_MIN_CHAT: u16 = 6;
-const ORDER_INFO_MIN_FOOTER: u16 = 1;
+/// Comfortable bordered chat pane (4 inner rows). Widget height includes `Borders::ALL`.
+const ORDER_INFO_CHAT_COMFORT: u16 = 6;
+/// Minimum bordered chat pane: top border + one body row + bottom border.
+const ORDER_INFO_CHAT_MIN: u16 = 3;
+const ORDER_INFO_HEADER_MIN: u16 = 3;
+const ORDER_INFO_INPUT: u16 = 3;
+
+/// `(max_header, input, footer)` so a 60×9 post-chrome pane still keeps one chat body row.
+fn allocate_order_chat_vertical(main_height: u16, toast: bool) -> (u16, u16, u16) {
+    let input = ORDER_INFO_INPUT.min(main_height);
+    let toast_extra = u16::from(toast);
+    let leftover = main_height.saturating_sub(input);
+
+    let mut footer = 1u16.saturating_add(toast_extra);
+    let mut chat_reserve = ORDER_INFO_CHAT_COMFORT;
+    let header_plus = |chat: u16, foot: u16| {
+        ORDER_INFO_HEADER_MIN
+            .saturating_add(chat)
+            .saturating_add(foot)
+    };
+    if leftover < header_plus(chat_reserve, footer) {
+        footer = toast_extra;
+    }
+    if leftover < header_plus(chat_reserve, footer) {
+        chat_reserve = ORDER_INFO_CHAT_MIN;
+    }
+    let max_header = leftover.saturating_sub(footer).saturating_sub(chat_reserve);
+    (max_header, input, footer)
+}
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
@@ -380,7 +405,7 @@ fn build_order_chat_content(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
     let max_content_width = (content_width / 2).max(1);
-    for msg in messages {
+    for (idx, msg) in messages.iter().enumerate() {
         starts.push(lines.len());
         let sender = msg.sender;
         let label = match sender {
@@ -421,7 +446,9 @@ fn build_order_chat_content(
                 )));
             }
         }
-        lines.push(Line::from(""));
+        if idx + 1 < messages.len() {
+            lines.push(Line::from(""));
+        }
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -521,7 +548,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     f.render_widget(List::new(items).block(sidebar_block), sidebar_area);
 
     let selected = &active_orders[selected_idx];
-    let input_height: u16 = 3;
+    let (max_header, input_height, reserved_footer) =
+        allocate_order_chat_vertical(main_area.height, app.attachment_toast.is_some());
 
     let status_label = selected
         .status
@@ -643,16 +671,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     ]);
     let header_inner_width = main_area.width.saturating_sub(2);
 
-    // Borders::ALL consumes 2 rows. Cap the header so chat/input/footer still fit on
-    // short terminals (a 60×15 post-chrome pane must keep a usable chat row).
-    let max_header = main_area
-        .height
-        .saturating_sub(
-            input_height
-                .saturating_add(ORDER_INFO_MIN_FOOTER)
-                .saturating_add(ORDER_INFO_MIN_CHAT),
-        )
-        .max(3);
+    // Cap the header so chat/input still fit. On a 60×15 shell, ui_draw leaves 60×9 here.
     let max_body = max_header.saturating_sub(2) as usize;
     let header_lines = assemble_order_info_header(
         max_body,
@@ -668,30 +687,31 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             seller: selected.seller_reputation.as_ref(),
         },
     );
-    let header_height = (header_lines.len() as u16)
-        .saturating_add(2)
-        .min(max_header)
-        .max(3);
+    let header_height = if max_header == 0 {
+        0
+    } else {
+        (header_lines.len() as u16)
+            .saturating_add(2)
+            .min(max_header)
+    };
 
+    let toast_extra = u16::from(app.attachment_toast.is_some());
     let spare_below_header_input = main_area
         .height
         .saturating_sub(header_height.saturating_add(input_height));
-    // Footer grows only when chat still keeps ORDER_INFO_MIN_CHAT rows.
-    let can_fit_three_line_footer = spare_below_header_input >= 3 + ORDER_INFO_MIN_CHAT;
-    let can_fit_two_line_footer = spare_below_header_input >= 2 + ORDER_INFO_MIN_CHAT;
-    // Prefer 3 rows for My Trades hints (many shortcuts); wrap needs one Paragraph over full height
-    // — never split into per-line widgets of height 1 or wrapped text has nowhere to go.
-    let footer_height: u16 = if main_area.width < 50 {
-        1
-    } else if can_fit_three_line_footer {
-        3
-    } else if can_fit_two_line_footer {
-        2
+    // Grow footer only when the comfort chat reserve still fits; never reintroduce
+    // a hint row that was dropped to keep one chat body row.
+    let footer_height: u16 = if reserved_footer == 0 {
+        0
+    } else if spare_below_header_input >= 3 + ORDER_INFO_CHAT_COMFORT + toast_extra {
+        3 + toast_extra
+    } else if spare_below_header_input >= 2 + ORDER_INFO_CHAT_COMFORT + toast_extra {
+        2 + toast_extra
     } else {
-        1
+        reserved_footer
     };
-    let footer_height =
-        footer_height.saturating_add(if app.attachment_toast.is_some() { 1 } else { 0 });
+    let can_fit_three_line_footer = footer_height.saturating_sub(toast_extra) >= 3;
+    let can_fit_two_line_footer = footer_height.saturating_sub(toast_extra) >= 2;
 
     let file_count = if active_channel == UserChatChannel::Peer {
         count_order_attachments(app, &selected.order_id)
@@ -844,156 +864,158 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[2],
     );
 
-    // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
-    let footer_area = main_chunks[3];
-    let footer_width = footer_area.width;
-    let base_footer_lines: u16 = if footer_width < 50 {
-        1
-    } else if can_fit_three_line_footer {
-        3
-    } else if can_fit_two_line_footer {
-        2
-    } else {
-        1
-    };
-    let has_toast = app.attachment_toast.is_some();
-    let hint_lines = base_footer_lines;
+    if footer_height > 0 {
+        // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
+        let footer_area = main_chunks[3];
+        let footer_width = footer_area.width;
+        let base_footer_lines: u16 = if footer_width < 50 {
+            1
+        } else if can_fit_three_line_footer {
+            3
+        } else if can_fit_two_line_footer {
+            2
+        } else {
+            1
+        };
+        let has_toast = app.attachment_toast.is_some();
+        let hint_lines = base_footer_lines;
 
-    let footer_body: Text<'static> = if footer_width < 50 {
-        Text::raw(format!("{HELP_KEY}{attach_hints}"))
-    } else if hint_lines >= 3 {
-        if app.order_chat_input_enabled {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {} | {}",
+        let footer_body: Text<'static> = if footer_width < 50 {
+            Text::raw(format!("{HELP_KEY}{attach_hints}"))
+        } else if hint_lines >= 3 {
+            if app.order_chat_input_enabled {
+                Text::from(vec![
+                    Line::from(format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_MYTRADES_SELECT_ORDER,
+                        FOOTER_MYTRADES_ENTER_SEND,
+                        FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {}",
+                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {}{}",
+                        FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                        FOOTER_MYTRADES_END_BOTTOM,
+                        FOOTER_MYTRADES_SHIFT_V_RATE,
+                        FOOTER_MYTRADES_SHIFT_K_KCONV,
+                        attach_hints,
+                    )),
+                ])
+            } else {
+                Text::from(vec![
+                    Line::from(format!(
+                        "{} | {} | {}",
+                        HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {}",
+                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {}{}",
+                        FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                        FOOTER_MYTRADES_END_BOTTOM,
+                        FOOTER_MYTRADES_SHIFT_V_RATE,
+                        FOOTER_MYTRADES_SHIFT_K_KCONV,
+                        attach_hints,
+                    )),
+                ])
+            }
+        } else if hint_lines >= 2 {
+            if app.order_chat_input_enabled {
+                Text::from(vec![
+                    Line::from(format!(
+                        "{} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_MYTRADES_SELECT_ORDER,
+                        FOOTER_MYTRADES_ENTER_SEND,
+                        FOOTER_MYTRADES_SHIFT_I_DISABLE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {} | {}{}",
+                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                        FOOTER_MYTRADES_SHIFT_V_RATE,
+                        attach_hints,
+                    )),
+                ])
+            } else {
+                Text::from(vec![
+                    Line::from(format!(
+                        "{} | {} | {} | {} | {}",
+                        HELP_KEY,
+                        FOOTER_MYTRADES_SELECT_ORDER,
+                        FOOTER_MYTRADES_SHIFT_I_ENABLE,
+                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
+                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
+                    )),
+                    Line::from(format!(
+                        "{} | {} | {} | {}{}",
+                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
+                        FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
+                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
+                        FOOTER_MYTRADES_SHIFT_V_RATE,
+                        attach_hints,
+                    )),
+                ])
+            }
+        } else {
+            let base = if app.order_chat_input_enabled {
+                format!(
+                    "{} | {} | {} | {} | {} | {}",
                     HELP_KEY,
                     FOOTER_MYTRADES_SELECT_ORDER,
                     FOOTER_MYTRADES_ENTER_SEND,
                     FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}",
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    FOOTER_MYTRADES_SHIFT_K_KCONV,
-                    attach_hints,
-                )),
-            ])
-        } else {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {}",
-                    HELP_KEY, FOOTER_MYTRADES_SELECT_ORDER, FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_END_BOTTOM,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    FOOTER_MYTRADES_SHIFT_K_KCONV,
-                    attach_hints,
-                )),
-            ])
-        }
-    } else if hint_lines >= 2 {
-        if app.order_chat_input_enabled {
-            Text::from(vec![
-                Line::from(format!(
-                    "{} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_ENTER_SEND,
-                    FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    attach_hints,
-                )),
-            ])
-        } else {
-            Text::from(vec![
-                Line::from(format!(
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE
+                )
+            } else {
+                format!(
                     "{} | {} | {} | {} | {}",
                     HELP_KEY,
                     FOOTER_MYTRADES_SELECT_ORDER,
                     FOOTER_MYTRADES_SHIFT_I_ENABLE,
                     FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                )),
-                Line::from(format!(
-                    "{} | {} | {} | {}{}",
-                    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                    FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    FOOTER_MYTRADES_SHIFT_V_RATE,
-                    attach_hints,
-                )),
-            ])
-        }
-    } else {
-        let base = if app.order_chat_input_enabled {
-            format!(
-                "{} | {} | {} | {} | {} | {}",
-                HELP_KEY,
-                FOOTER_MYTRADES_SELECT_ORDER,
-                FOOTER_MYTRADES_ENTER_SEND,
-                FOOTER_MYTRADES_SHIFT_I_DISABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                FOOTER_MYTRADES_SHIFT_D_DISPUTE
-            )
-        } else {
-            format!(
-                "{} | {} | {} | {} | {}",
-                HELP_KEY,
-                FOOTER_MYTRADES_SELECT_ORDER,
-                FOOTER_MYTRADES_SHIFT_I_ENABLE,
-                FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                FOOTER_MYTRADES_SHIFT_D_DISPUTE
-            )
+                    FOOTER_MYTRADES_SHIFT_D_DISPUTE
+                )
+            };
+            Text::raw(format!("{base}{attach_hints}"))
         };
-        Text::raw(format!("{base}{attach_hints}"))
-    };
 
-    if has_toast {
-        let chunks = Layout::new(
-            Direction::Vertical,
-            [Constraint::Length(1), Constraint::Length(hint_lines.max(1))],
-        )
-        .split(footer_area);
-        let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
-        f.render_widget(
-            Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
-            chunks[0],
-        );
-        f.render_widget(
-            Paragraph::new(footer_body).wrap(Wrap { trim: true }),
-            chunks[1],
-        );
-    } else {
-        f.render_widget(
-            Paragraph::new(footer_body).wrap(Wrap { trim: true }),
-            footer_area,
-        );
+        if has_toast {
+            let chunks = Layout::new(
+                Direction::Vertical,
+                [Constraint::Length(1), Constraint::Length(hint_lines.max(1))],
+            )
+            .split(footer_area);
+            let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
+            f.render_widget(
+                Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new(footer_body).wrap(Wrap { trim: true }),
+                chunks[1],
+            );
+        } else {
+            f.render_widget(
+                Paragraph::new(footer_body).wrap(Wrap { trim: true }),
+                footer_area,
+            );
+        }
     }
 }
 
@@ -1022,7 +1044,10 @@ pub fn push_local_order_chat_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{render_order_in_progress, trailing_order_chat_input};
+    use super::{
+        allocate_order_chat_vertical, render_order_in_progress, trailing_order_chat_input,
+    };
+    use crate::ui::draw::ui_draw;
     use crate::ui::helpers::OrderChatListItem;
     use crate::ui::key_handler::handle_tab_navigation;
     use crate::ui::{
@@ -1030,10 +1055,11 @@ mod tests {
         UserOrderChatMessage, UserRole, UserTab,
     };
     use crossterm::event::KeyCode;
-    use mostro_core::prelude::{Status, UserInfo};
+    use mostro_core::prelude::{Dispute, Status, UserInfo};
     use ratatui::backend::TestBackend;
     use ratatui::text::Span;
     use ratatui::Terminal;
+    use std::sync::{Arc, Mutex};
     use uuid::Uuid;
 
     #[test]
@@ -1299,8 +1325,16 @@ mod tests {
 
         let backend = TestBackend::new(60, 15);
         let mut terminal = Terminal::new(backend).unwrap();
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let orders = Arc::new(Mutex::new(Vec::<mostro_core::prelude::SmallOrder>::new()));
+        let disputes = Arc::new(Mutex::new(Vec::<Dispute>::new()));
+        let status = [
+            "status line 1".to_string(),
+            "status line 2".to_string(),
+            "status line 3".to_string(),
+        ];
         terminal
-            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .draw(|frame| ui_draw(frame, &mut app, &orders, &disputes, Some(&status)))
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert!(buffer_contains(buffer, "Amount:"));
@@ -1312,6 +1346,12 @@ mod tests {
                 || buffer_contains(buffer, "posted")
                 || buffer_contains(buffer, "pay")
         );
+    }
+
+    #[test]
+    fn allocate_order_chat_vertical_keeps_one_chat_row_at_post_chrome_height() {
+        assert_eq!(allocate_order_chat_vertical(9, false), (3, 3, 0));
+        assert_eq!(allocate_order_chat_vertical(15, false), (5, 3, 1));
     }
 
     #[test]
