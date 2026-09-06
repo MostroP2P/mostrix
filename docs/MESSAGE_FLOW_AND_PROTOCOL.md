@@ -156,13 +156,14 @@ The message is sent via `send_dm`, which:
 ```
 
 The `wait_for_dm` function now uses the shared DM router:
-1. **Registers a waiter** (`RegisterWaiter`) for the specific `trade_keys`
+1. **Registers a waiter** in the process-wide registry, then sends `RegisterWaiter` (subscribe hint) for the specific `trade_keys`
 2. **Sends the message** after waiter registration
 3. **Waits up to 15 seconds** (`FETCH_EVENTS_TIMEOUT`) on a oneshot response channel
 4. The background DM listener decrypt-checks incoming protocol DM events (signed kind 14) against pending waiters and delivers the first match to `wait_for_dm`
 
 Waiter subscription detail:
-- `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only)
+- Live `RegisterWaiter` uses [`filter_protocol_dm_from_mostro`](../src/util/filters.rs) with `.limit(0)` (live-only)
+- After reconnect the rebuilt listener catch-up-subscribes and fetches events since the waiter’s register timestamp so a reply that arrived during the flap is not lost. Timeout means no matching event; oneshot cancel is not a Mostro `CantDo`.
 
 ### 6. Parsing and Handling Response
 **Source**: [`src/util/order_utils/send_new_order.rs`](../src/util/order_utils/send_new_order.rs)
@@ -269,7 +270,7 @@ sequenceDiagram
 
     Cmd->>Router: TrackOrder(order_id, trade_index)
     Router->>Relays: subscribe protocol DM filter (transport-aware)
-    Cmd->>Router: RegisterWaiter(trade_keys, response_tx)
+    Cmd->>Router: RegisterWaiter(trade_keys)
     Router->>Relays: (if needed) subscribe waiter pubkey
     Relays-->>Router: RelayPoolNotification::Event(protocol DM)
     Router->>Router: Gate: event.kind == transport.event_kind(); try waiter decrypt match

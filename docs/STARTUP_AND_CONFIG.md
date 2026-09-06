@@ -169,7 +169,13 @@ Several background tasks are spawned to keep the UI and data in sync:
    - Re-checks relay reachability from disk settings and emits `NetworkStatus::Offline/Online`.
    - On `Offline`, startup overlay text indicates automatic retry.
    - On `Online`, `main.rs` triggers `reload_runtime_session_after_reconnect(...)` to reconnect
-     and reload runtime background tasks.
+     and reload runtime background tasks. Nostr `connect` runs **before** aborting the DM listener
+     so a failed handshake does not tear down in-flight `wait_for_dm` waiters. Waiters themselves
+     live in a process-wide registry and are re-subscribed (plus catch-up fetch) on the rebuilt listener.
+     Reconnect waits until at least one relay is actually `Connected` (not just TCP-open /
+     `Client::connect().await`, which returns without a live session) before aborting the old listener.
+     Key reload (`apply_pending_key_reload`) connects the **replacement** client the same way; if that
+     handshake fails, the current client and DM listener are kept so in-flight waiters stay live.
 5. **Shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`):
    - A **single long-lived task** (`spawn_supervised_chat_listener` in `src/startup.rs`, also respawned on reconnect/key reload **and** on panic/unexpected exit with backoff) maintains batched live subscriptions over **all** tracked chats — kind 14 `authors = [pub(K_sign)]` — the same model as Mostro Mobile's `SubscriptionManager`. No timed polling.
    - **Track/untrack** via the global command channel (`ChatRouterCmd`, published by `set_chat_router_cmd_tx`). Helpers: `track_order_chat` / `untrack_order_chat` / `track_dispute_chat` / `untrack_dispute_chat`.
@@ -187,13 +193,13 @@ Several background tasks are spawned to keep the UI and data in sync:
    - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.
    - `listen_for_order_messages(client, mostro_pubkey, transport, pool, …, order_last_seen_dm_ts, …, dm_subscription_rx)` runs as the single router loop consuming:
      - `TrackOrder` commands for long-lived trade subscriptions.
-     - `RegisterWaiter` commands for one-shot request/response waits.
+     - `RegisterWaiter` subscribe hints for one-shot request/response waits (oneshots live in the process-wide waiter registry).
    - After bootstrapping per-order protocol-DM subscriptions (`ensure_order_dm_subscription`), the listener performs a **`fetch_events` replay** (`fetch_and_replay_startup_trade_dms`) so the Messages UI is populated from relay history (in-memory messages are not stored in the DB). Replay uses `notify: false` to avoid duplicate popups/badge noise.
    - **Startup transport:** `startup.rs` awaits instance info when relays are reachable, then spawns the listener with resolved `app.transport`.
    - **Reload / reconnect transport:** [`dm_transport_for_mostro`](../src/ui/key_handler/async_tasks.rs) re-fetches instance info and updates `app.transport` **before** respawning the listener (key reload, fetch-scheduler reload, network reconnect).
    - This unifies in-flight response handling and background trade notifications on top of one notification stream.
 
-See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for `DmSubscriptionMode` (`StartupCatchUp`, `StartupSince`, `LiveOnly`), [`filter_protocol_dm_from_mostro`](../src/util/filters.rs), waiter vs `TrackOrder` ordering, and replay details.
+See **[DM_LISTENER_FLOW.md](DM_LISTENER_FLOW.md)** for `DmSubscriptionMode` (`StartupCatchUp`, `StartupSince`, `LiveOnly`, `WaiterCatchUp`), [`filter_protocol_dm_from_mostro`](../src/util/filters.rs), waiter vs `TrackOrder` ordering, and replay details.
 
 ### Admin Chat Restore at Startup
 

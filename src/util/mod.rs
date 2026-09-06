@@ -36,7 +36,7 @@ pub use dm_utils::{
     send_dm, send_track_order_cmd, set_dm_router_cmd_tx, set_order_result_tx,
     try_notify_my_trades_maker_book_changed, unsubscribe_dm_listener_subscriptions, wait_for_dm,
     OrderDmSubscriptionCmd, StartupDmHydration, TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT,
-    WAIT_FOR_DM_TIMEOUT_MSG,
+    WAIT_FOR_DM_CANCELED_MSG, WAIT_FOR_DM_TIMEOUT_MSG,
 };
 pub use fatal::{
     fatal_requested, install_background_panic_hook, next_backoff_secs, request_fatal_restart,
@@ -58,7 +58,7 @@ pub use mostro_info::{
     transport_from_instance, MostroInstanceInfo, MostroInstanceInfoFetch,
     MOSTRO_INSTANCE_INFO_KIND,
 };
-pub use network::{any_relay_reachable, connect_client_safely};
+pub use network::{any_relay_reachable, connect_and_wait_for_relay, connect_client_safely};
 pub use order_utils::{
     execute_restore_session, fetch_events_list, get_disputes, get_orders,
     restore_completion_result, send_new_order, take_order,

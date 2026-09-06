@@ -57,16 +57,16 @@ Mostrix has a **single background task** that:
 - **`subscription_to_order: HashMap<SubscriptionId, (Uuid, i64)>`**  
   The “fast path” routing table: if an event arrives with a known `subscription_id`, we immediately know its `(order_id, trade_index)`.
 
-- **`pubkey_to_subscription: HashMap<PublicKey, SubscriptionId>`**  
+- **`pubkey_to_subscription: HashMap<PublicKey, SubscriptionId>`**
   Lets TrackOrder “rebind” a pubkey that was subscribed earlier by a waiter without subscribing twice.
 
-- **`pending_waiters: Vec<PendingDmWaiter>`**  
-  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation.
+- **`pending_waiters`** (process-wide registry in `src/util/dm_utils/waiters.rs`)
+  Each waiter is a oneshot sender plus the `trade_keys` to test whether the incoming protocol DM can be decrypted for that operation. Waiters are **not** stored in the listener task, so abort/reconnect/supervised respawn does not cancel in-flight `wait_for_dm` calls. The rebuilt listener re-subscribes waiter pubkeys and catch-up fetches events since each waiter's register timestamp.
 
-- **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*  
+- **`active_order_trade_indices: Arc<Mutex<HashMap<Uuid, i64>>>`** *(shared with the rest of the app)*
   Tracks which orders are currently “active” and which `trade_index` (hence which trade key) belongs to each `order_id`.
 
-- **`messages: Arc<Mutex<Vec<OrderMessage>>>`** *(shared with UI)*  
+- **`messages: Arc<Mutex<Vec<OrderMessage>>>`** *(shared with UI)*
   The in-memory list backing the “Messages”/flow UI. Important: this vector is **not a full history**; it stores **one “latest relevant” row per order**.
 
 ## Startup bootstrap (subscriptions + relay replay)
@@ -85,7 +85,7 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 `listen_for_order_messages(client, mostro_pubkey, transport, …)` clones the active-order map and, for each `(order_id, trade_index)`:
 
 1. derives `trade_keys` from the persisted `User` seed + trade index
-2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro(transport, …)`) with a mode from `DmSubscriptionMode`:
+2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro(…)`) with a mode from `DmSubscriptionMode`:
    - **`StartupCatchUp`** (no `last_seen_dm_ts` yet): latest retained event (`limit(1)`) — tight catch-up
    - **`StartupSince(ts)`** (cursor present): `since(ts)` for incremental subscription
    - **`LiveOnly`** (used after `TrackOrder` during live flows, e.g. take-order): **`.limit(0)`** live stream — **not** `.since(now)`, so Same-second Mostro replies are not dropped when `take_order` sends an early `TrackOrder` before `wait_for_dm` (the pubkey is already subscribed once; a second waiter subscription is skipped)
@@ -134,19 +134,19 @@ What happens:
 
 **Conceptually:** TrackOrder is long-lived; it binds the pubkey to a concrete order and makes the tracked-order path reliable and O(1).
 
-### 2) `RegisterWaiter { trade_keys, response_tx }`
+### 2) `RegisterWaiter { trade_keys }`
 
 Use case: “I’m about to send a request DM; wait for the first decryptable response for these trade keys”.
 
 What happens:
 
-- Waiters are bounded (`MAX_PENDING_WAITERS`), and periodically garbage-collected (drops closed oneshots).
-- If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(transport, …).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
+- `wait_for_dm` inserts the oneshot into the **process-wide** waiter registry (bounded by `MAX_PENDING_WAITERS`) **before** sending the protocol DM. A full registry fails the command without sending, so Mostro is not left with an unacked action.
+- The listener command is a subscribe hint only. If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
-- The waiter is pushed into `pending_waiters`.
+- If the listener is aborted (reconnect / key reload / panic respawn), the oneshot stays in the registry. Bootstrap re-subscribes with `WaiterCatchUp(since)` and **spawns** a bounded concurrent `fetch_events` catch-up so live notification routing is not blocked. Waiter **ids are snapshotted synchronously before `tokio::spawn`** (not on the task’s first poll), so a delayed old-session catch-up cannot consume a later same-key waiter after key reload. Events older than `since` are ignored so startup catch-up does not steal a stale trade DM as the in-flight response. Waiters with an expected `request_id` consume only a decryptable Mostro reply that echoes that id.
 
-**Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”.
+**Conceptually:** a Waiter is short-lived. It does not know `order_id`; it only knows “this key should decrypt the response”. Timeout (`WAIT_FOR_DM_TIMEOUT_MSG`) means no matching event arrived. Oneshot cancel (`WAIT_FOR_DM_CANCELED_MSG`) is not a Mostro rejection (`CantDo`).
 
 ## Incoming protocol DM event routing (the heart of the flow)
 
@@ -156,8 +156,10 @@ When a relay event arrives (`RelayPoolNotification::Event`) and `event.kind == t
 
 For each waiter:
 
+- skip events whose `event.pubkey` is not the configured Mostro instance (relay author filters are not a trust boundary)
 - test whether [`unwrap_incoming`](../src/util/mod.rs) succeeds for `waiter.trade_keys` and the event
-- if it does, send the raw `event` into the waiter oneshot (`response_tx.send(event.clone())`)
+- if it does **and** the decoded `request_id` correlates with the waiter (or the waiter has none), take-and-send the raw `event` into that waiter’s oneshot
+- catch-up results skip waiters whose id was not in the set snapshotted synchronously before that fetch was spawned
 - otherwise, keep the waiter pending for the next event
 
 To avoid duplicate decrypt checks, the listener keeps a **per-event decryptability cache**:
@@ -319,13 +321,14 @@ When a terminal message is detected:
 flowchart TD
   A[listen_for_order_messages start] --> B[Load User from DB]
   B --> C[Bootstrap subs for active_order_trade_indices]
-  C --> C2[fetch_events replay into messages notify=false]
+  C --> C1[Re-subscribe in-flight wait_for_dm waiters + catch-up fetch]
+  C1 --> C2[fetch_events replay into messages notify=false]
   C2 --> D{loop: select}
 
   D -->|tick| GC[Prune closed waiters]
   D -->|cmd| CMD{DmRouterCmd}
   CMD -->|TrackOrder| TO[Update active_order_trade_indices; ensure subscription; bind subscription_id -> order]
-  CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; push PendingDmWaiter]
+  CMD -->|RegisterWaiter| W[Ensure waiter pubkey subscription; oneshot already in process-wide registry]
 
   D -->|relay event| E[protocol DM event arrives]
   E --> WA[Try match pending waiters (decrypt check)]

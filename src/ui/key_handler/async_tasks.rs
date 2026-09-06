@@ -15,15 +15,16 @@ use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::{
-    any_relay_reachable, connect_client_safely, hydrate_startup_active_order_dm_state,
-    is_invalid_trade_index_error, set_chat_router_cmd_tx, set_dm_router_cmd_tx,
-    spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
+    any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
+    hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
     sync_trade_index_from_mostro_and_persist, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
     FatalNotify, OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -263,7 +264,9 @@ async fn dm_transport_for_mostro(
 /// Abort and respawn the trade DM listener (e.g. after `protocol_version` / transport changes).
 ///
 /// Replaces the [`JoinHandle`] with [`crate::util::spawn_supervised_trade_dm_listener`]
-/// so the new task still recovers from panic/exit independently.
+/// so the new task still recovers from panic/exit independently. In-flight
+/// [`crate::util::wait_for_dm`] oneshots are not owned by this task; the new
+/// listener re-subscribes them from the process-wide registry.
 #[allow(clippy::too_many_arguments)]
 pub async fn respawn_trade_dm_listener(
     app: &mut AppState,
@@ -323,9 +326,53 @@ pub async fn respawn_trade_dm_listener(
     Ok(())
 }
 
+/// Build and connect a replacement Nostr client from disk settings.
+///
+/// Does not touch the live session. The caller may abort the DM listener only
+/// after this succeeds; a failed handshake keeps the current client/listener.
+async fn prepare_connected_key_reload_client<F, Fut>(
+    latest_settings: &Settings,
+    connect: F,
+) -> Result<(Client, PublicKey), String>
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let new_identity_keys = latest_settings
+        .nsec_privkey
+        .parse::<Keys>()
+        .map_err(|e| format!("Invalid identity key after reload: {e}"))?;
+    let new_client = Client::builder()
+        .authenticator(SignerAuthenticator::new(new_identity_keys.clone()))
+        .build();
+    for relay in &latest_settings.relays {
+        let relay = relay.trim();
+        if relay.is_empty() {
+            continue;
+        }
+        if let Err(e) = new_client.add_relay(relay).await {
+            return Err(format!("Failed to add relay during key reload: {e}"));
+        }
+    }
+    let new_mostro_pubkey = PublicKey::from_str(&latest_settings.mostro_pubkey).map_err(|_| {
+        format!(
+            "Invalid Mostro pubkey after key reload: {}",
+            latest_settings.mostro_pubkey
+        )
+    })?;
+    connect(new_client.clone())
+        .await
+        .map_err(|e| format!("Key reload: failed to connect Nostr client: {e}"))?;
+    Ok((new_client, new_mostro_pubkey))
+}
+
 /// Reload Nostr client, Mostro pubkey, and message listener after the user persisted new keys
 /// (`pending_key_reload`). Updates `app` and shared runtime state on success; sets an error
 /// [`OperationResult`] on failure.
+///
+/// Connects the replacement client **before** aborting the DM listener. If that
+/// handshake fails, the current client and listener stay running so in-flight
+/// [`crate::util::wait_for_dm`] waiters remain serviced.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_pending_key_reload(
     app: &mut AppState,
@@ -342,145 +389,25 @@ pub async fn apply_pending_key_reload(
     dm_subscription_tx: &mut UnboundedSender<OrderDmSubscriptionCmd>,
 ) {
     match load_settings_from_disk() {
-        Ok(latest_settings) => match latest_settings.nsec_privkey.parse::<Keys>() {
-            Ok(new_identity_keys) => {
-                let new_client = Client::builder()
-                    .authenticator(SignerAuthenticator::new(new_identity_keys.clone()))
-                    .build();
-                let mut reload_error: Option<String> = None;
-                for relay in &latest_settings.relays {
-                    let relay = relay.trim();
-                    if relay.is_empty() {
-                        continue;
-                    }
-                    if let Err(e) = new_client.add_relay(relay).await {
-                        reload_error =
-                            Some(format!("Failed to add relay during key reload: {}", e));
-                        break;
-                    }
-                }
-                if let Some(err) = reload_error {
-                    app.pending_key_reload = false;
-                    app.mode = UiMode::operation_result(OperationResult::Error(err));
-                } else if let Ok(new_mostro_pubkey) =
-                    PublicKey::from_str(&latest_settings.mostro_pubkey)
-                {
-                    message_listener_handle.abort();
-                    if let Err(e) = connect_client_safely(&new_client).await {
-                        log::warn!("Key reload: failed to connect Nostr client: {e}");
-                    }
-
-                    *client = new_client;
-                    *mostro_pubkey = new_mostro_pubkey;
-                    match current_mostro_pubkey.lock() {
-                        Ok(mut active_pubkey) => {
-                            *active_pubkey = new_mostro_pubkey;
-                        }
-                        Err(e) => {
-                            request_fatal_restart(format!(
-                                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
-                            ));
-                            app.pending_key_reload = false;
-                            app.fatal_exit_on_close = true;
-                            app.mode = UiMode::operation_result(OperationResult::Error(
-                                "Internal error. Please restart Mostrix.".to_string(),
-                            ));
-                            return;
-                        }
-                    }
-                    app.currencies_filter = latest_settings.currencies_filter.clone();
-                    hydrate_app_admin_keys_from_privkey(app, &latest_settings.admin_privkey);
-                    clear_runtime_session_state(app);
-
-                    order_fetch_task.abort();
-                    dispute_fetch_task.abort();
-                    let (o, d) = spawn_fetch_scheduler_loops(
-                        client.clone(),
-                        Arc::clone(current_mostro_pubkey),
-                        Arc::clone(&orders),
-                        Arc::clone(&disputes),
-                        &latest_settings,
-                        pool.clone(),
-                    );
-                    *order_fetch_task = o;
-                    *dispute_fetch_task = d;
-
-                    let client_for_messages = client.clone();
-                    let pool_for_messages = pool.clone();
-                    let startup_dm_hydration =
-                        match hydrate_startup_active_order_dm_state(pool).await {
-                            Ok(h) => h,
-                            Err(e) => {
-                                log::warn!(
-                                "Key reload: failed to hydrate startup active order DM state: {}",
-                                e
-                            );
-                                StartupDmHydration::empty()
-                            }
-                        };
-                    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
-                        *indices = startup_dm_hydration.active_order_trade_indices.clone();
-                    }
-                    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
-                    let active_order_trade_indices_clone =
-                        Arc::clone(&app.active_order_trade_indices);
-                    let order_last_seen_dm_ts_clone =
-                        startup_dm_hydration.order_last_seen_dm_ts.clone();
-                    let messages_clone = Arc::clone(&app.messages);
-                    let message_notification_tx_clone = message_notification_tx.clone();
-                    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
-                    let dropped_user_history_clone =
-                        Arc::clone(&app.dropped_user_history_order_ids);
-                    let (new_dm_tx, new_dm_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
-                    *dm_subscription_tx = new_dm_tx;
-                    let router_reg = set_dm_router_cmd_tx(dm_subscription_tx.clone());
-                    if let Err(msg) = &router_reg {
-                        log::error!("[dm_listener] {}", msg);
-                    }
-                    let dm_mostro_pubkey = new_mostro_pubkey;
-                    let dm_transport =
-                        dm_transport_for_mostro(client, new_mostro_pubkey, app, "Key reload").await;
-                    *message_listener_handle = spawn_supervised_trade_dm_listener(
-                        client_for_messages,
-                        dm_mostro_pubkey,
-                        dm_transport,
-                        pool_for_messages,
-                        active_order_trade_indices_clone,
-                        order_last_seen_dm_ts_clone,
-                        messages_clone,
-                        message_notification_tx_clone,
-                        pending_notifications_clone,
-                        dropped_user_history_clone,
-                        new_dm_rx,
-                    );
-
-                    app.backup_requires_restart = false;
-                    app.pending_key_reload = false;
-                    app.mode = match router_reg {
-                        Ok(()) => UiMode::operation_result(OperationResult::Info(
-                            "Keys reloaded. Active session state has been reset.".to_string(),
-                        )),
-                        Err(msg) => UiMode::operation_result(OperationResult::Error(format!(
-                            "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
-                        ))),
-                    };
-                } else {
-                    app.pending_key_reload = false;
-                    app.mode = UiMode::operation_result(OperationResult::Error(format!(
-                        "Invalid Mostro pubkey after key reload: {}",
-                        latest_settings.mostro_pubkey
-                    )));
-                }
-            }
-            Err(e) => {
-                app.pending_key_reload = false;
-                app.mode = UiMode::operation_result(OperationResult::Error(format!(
-                    "Invalid identity key after reload: {}",
-                    e
-                )));
-            }
-        },
+        Ok(latest_settings) => {
+            apply_pending_key_reload_from_settings(
+                app,
+                client,
+                mostro_pubkey,
+                current_mostro_pubkey,
+                pool,
+                message_listener_handle,
+                message_notification_tx,
+                orders,
+                disputes,
+                order_fetch_task,
+                dispute_fetch_task,
+                dm_subscription_tx,
+                &latest_settings,
+                |c| async move { connect_and_wait_for_relay(&c).await },
+            )
+            .await;
+        }
         Err(e) => {
             app.pending_key_reload = false;
             app.mode = UiMode::operation_result(OperationResult::Error(format!(
@@ -489,6 +416,131 @@ pub async fn apply_pending_key_reload(
             )));
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_pending_key_reload_from_settings<F, Fut>(
+    app: &mut AppState,
+    client: &mut Client,
+    mostro_pubkey: &mut PublicKey,
+    current_mostro_pubkey: &Arc<Mutex<PublicKey>>,
+    pool: &SqlitePool,
+    message_listener_handle: &mut JoinHandle<()>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    orders: Arc<Mutex<Vec<SmallOrder>>>,
+    disputes: Arc<Mutex<Vec<Dispute>>>,
+    order_fetch_task: &mut JoinHandle<()>,
+    dispute_fetch_task: &mut JoinHandle<()>,
+    dm_subscription_tx: &mut UnboundedSender<OrderDmSubscriptionCmd>,
+    latest_settings: &Settings,
+    connect: F,
+) where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let (new_client, new_mostro_pubkey) =
+        match prepare_connected_key_reload_client(latest_settings, connect).await {
+            Ok(pair) => pair,
+            Err(err) => {
+                app.pending_key_reload = false;
+                app.mode = UiMode::operation_result(OperationResult::Error(err));
+                return;
+            }
+        };
+
+    message_listener_handle.abort();
+    await_aborted_task(message_listener_handle).await;
+
+    *client = new_client;
+    *mostro_pubkey = new_mostro_pubkey;
+    match current_mostro_pubkey.lock() {
+        Ok(mut active_pubkey) => {
+            *active_pubkey = new_mostro_pubkey;
+        }
+        Err(e) => {
+            request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+            ));
+            app.pending_key_reload = false;
+            app.fatal_exit_on_close = true;
+            app.mode = UiMode::operation_result(OperationResult::Error(
+                "Internal error. Please restart Mostrix.".to_string(),
+            ));
+            return;
+        }
+    }
+    app.currencies_filter = latest_settings.currencies_filter.clone();
+    hydrate_app_admin_keys_from_privkey(app, &latest_settings.admin_privkey);
+    clear_runtime_session_state(app);
+
+    order_fetch_task.abort();
+    dispute_fetch_task.abort();
+    // Join before respawn so a finishing poll cannot write old-session results
+    // into the shared orders/disputes vecs after the replacement starts.
+    await_aborted_task(order_fetch_task).await;
+    await_aborted_task(dispute_fetch_task).await;
+    let (o, d) = spawn_fetch_scheduler_loops(
+        client.clone(),
+        Arc::clone(current_mostro_pubkey),
+        Arc::clone(&orders),
+        Arc::clone(&disputes),
+        latest_settings,
+        pool.clone(),
+    );
+    *order_fetch_task = o;
+    *dispute_fetch_task = d;
+
+    let client_for_messages = client.clone();
+    let pool_for_messages = pool.clone();
+    let startup_dm_hydration = match hydrate_startup_active_order_dm_state(pool).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("Key reload: failed to hydrate startup active order DM state: {e}");
+            StartupDmHydration::empty()
+        }
+    };
+    if let Ok(mut indices) = app.active_order_trade_indices.lock() {
+        *indices = startup_dm_hydration.active_order_trade_indices.clone();
+    }
+    app.startup_popup_floor_ts = startup_dm_hydration.order_last_seen_dm_ts.clone();
+    let active_order_trade_indices_clone = Arc::clone(&app.active_order_trade_indices);
+    let order_last_seen_dm_ts_clone = startup_dm_hydration.order_last_seen_dm_ts.clone();
+    let messages_clone = Arc::clone(&app.messages);
+    let message_notification_tx_clone = message_notification_tx.clone();
+    let pending_notifications_clone = Arc::clone(&app.pending_notifications);
+    let dropped_user_history_clone = Arc::clone(&app.dropped_user_history_order_ids);
+    let (new_dm_tx, new_dm_rx) = tokio::sync::mpsc::unbounded_channel::<OrderDmSubscriptionCmd>();
+    *dm_subscription_tx = new_dm_tx;
+    let router_reg = set_dm_router_cmd_tx(dm_subscription_tx.clone());
+    if let Err(msg) = &router_reg {
+        log::error!("[dm_listener] {msg}");
+    }
+    let dm_mostro_pubkey = new_mostro_pubkey;
+    let dm_transport = dm_transport_for_mostro(client, new_mostro_pubkey, app, "Key reload").await;
+    *message_listener_handle = spawn_supervised_trade_dm_listener(
+        client_for_messages,
+        dm_mostro_pubkey,
+        dm_transport,
+        pool_for_messages,
+        active_order_trade_indices_clone,
+        order_last_seen_dm_ts_clone,
+        messages_clone,
+        message_notification_tx_clone,
+        pending_notifications_clone,
+        dropped_user_history_clone,
+        new_dm_rx,
+    );
+
+    app.backup_requires_restart = false;
+    app.pending_key_reload = false;
+    app.mode = match router_reg {
+        Ok(()) => UiMode::operation_result(OperationResult::Info(
+            "Keys reloaded. Active session state has been reset.".to_string(),
+        )),
+        Err(msg) => UiMode::operation_result(OperationResult::Error(format!(
+            "Keys reloaded but DM router registration failed ({msg}). Background trade messages still run; one-shot DM waits may fail until you restart the app."
+        ))),
+    };
 }
 
 /// Join `{relay}: {error}` pairs from `unsubscribe_all` per-relay failures.
@@ -516,6 +568,15 @@ fn unsubscribe_all_warn_detail<T, E: std::fmt::Display>(
         )),
         Err(e) => Some(format!("failed: {e}")),
     }
+}
+
+/// Wait until an already-aborted task exits, leaving a no-op [`JoinHandle`] in place.
+///
+/// Used before `unsubscribe_all` / respawn so the old task cannot re-register
+/// subscription ids after they are taken, and so replacements do not overlap it.
+async fn await_aborted_task(handle: &mut JoinHandle<()>) {
+    let old = std::mem::replace(handle, tokio::spawn(async {}));
+    let _ = old.await;
 }
 
 /// Best-effort `unsubscribe_all` after fetch/DM tasks have been aborted.
@@ -573,6 +634,9 @@ pub async fn apply_pending_fetch_scheduler_reload(
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
+    await_aborted_task(message_listener_handle).await;
+    await_aborted_task(order_fetch_task).await;
+    await_aborted_task(dispute_fetch_task).await;
     unsubscribe_all_best_effort(client, "Fetch scheduler reload").await;
 
     connect_client_safely(client)
@@ -728,6 +792,11 @@ pub async fn apply_pending_runtime_reloads(
 
 /// Reconnect runtime background tasks after connectivity returns.
 ///
+/// Waits for a live Nostr relay (`Connected`) **before** aborting the DM listener
+/// so a failed handshake does not tear down in-flight [`crate::util::wait_for_dm`] waiters.
+/// After a successful connect the listener is still rebuilt; waiters persist in
+/// the process-wide registry and are re-subscribed on bootstrap.
+///
 /// Mirrors the `apply_pending_key_reload` flow (abort/respawn fetch loops and DM listener).
 /// Identity keys are unchanged; [`Self::mostro_pubkey`] / [`Self::current_mostro_pubkey`] are
 /// refreshed from `settings` so they match disk (e.g. if the Mostro instance pubkey changed).
@@ -739,21 +808,26 @@ pub async fn reload_runtime_session_after_reconnect(
         return Err("No internet / relays unreachable".to_string());
     }
 
-    ctx.message_listener_handle.abort();
-    ctx.order_fetch_task.abort();
-    ctx.dispute_fetch_task.abort();
-    unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
-
-    connect_client_safely(ctx.client)
-        .await
-        .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
-
     let new_mostro_pubkey = PublicKey::from_str(&ctx.settings.mostro_pubkey).map_err(|e| {
         format!(
             "Reconnect: invalid Mostro pubkey in settings ({}): {e}",
             ctx.settings.mostro_pubkey
         )
     })?;
+
+    // TCP reachability is not a live Nostr session. Wait until a relay is
+    // actually `Connected` before aborting in-flight `wait_for_dm` waiters.
+    connect_and_wait_for_relay(ctx.client)
+        .await
+        .map_err(|e| format!("Reconnect: failed to connect Nostr client: {e}"))?;
+
+    ctx.message_listener_handle.abort();
+    ctx.order_fetch_task.abort();
+    ctx.dispute_fetch_task.abort();
+    await_aborted_task(ctx.message_listener_handle).await;
+    await_aborted_task(ctx.order_fetch_task).await;
+    await_aborted_task(ctx.dispute_fetch_task).await;
+    unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
     *ctx.mostro_pubkey = new_mostro_pubkey;
     match ctx.current_mostro_pubkey.lock() {
         Ok(mut active_pubkey) => {
@@ -1322,7 +1396,15 @@ pub fn spawn_load_seed_words_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_sdk::prelude::RelayUrl;
+    use crate::settings::{Settings, MOSTRO_STAGING_PUBKEY};
+    use crate::ui::UserRole;
+    use crate::util::dm_utils::waiters::{
+        lock_pending_waiters_for_tests, reset_pending_waiters_for_tests,
+        snapshot_pending_waiter_candidates, take_and_send_pending_waiter,
+    };
+    use crate::util::{set_dm_router_cmd_tx, wait_for_dm};
+    use nostr_sdk::prelude::{Event, EventBuilder, FinalizeEvent, Kind, RelayUrl, Tag, ToBech32};
+    use std::time::Duration;
 
     #[test]
     fn format_unsubscribe_failures_joins_url_and_error() {
@@ -1366,5 +1448,176 @@ mod tests {
     fn unsubscribe_all_err_is_warn_not_fatal() {
         let detail = unsubscribe_all_warn_detail::<(), _>(Err("pool closed")).expect("warn");
         assert_eq!(detail, "failed: pool closed");
+    }
+
+    #[tokio::test]
+    async fn await_aborted_task_waits_for_exit_before_returning() {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut handle = tokio::spawn(async move {
+            let _ = entered_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        entered_rx.await.expect("task started");
+        handle.abort();
+
+        await_aborted_task(&mut handle).await;
+        assert!(
+            handle.is_finished(),
+            "placeholder handle must be a completed no-op so spawn can overwrite it"
+        );
+    }
+
+    /// Key reload joins aborted order/dispute fetch tasks before
+    /// `spawn_fetch_scheduler_loops` so a finishing old-session poll cannot
+    /// write into the shared vecs after the replacement starts.
+    #[tokio::test]
+    async fn key_reload_awaits_aborted_fetch_tasks_before_replacement_overlap() {
+        let writes = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (in_poll_tx, in_poll_rx) = tokio::sync::oneshot::channel::<()>();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let writes_old = Arc::clone(&writes);
+        let mut order_fetch_task = tokio::spawn(async move {
+            let _ = in_poll_tx.send(());
+            // Mid-poll hold: without join-after-abort, releasing this after
+            // "replacement started" would let a stale write race the new loop.
+            if finish_rx.await.is_ok() {
+                writes_old
+                    .lock()
+                    .expect("writes lock")
+                    .push("stale-old-session");
+            }
+        });
+        let mut dispute_fetch_task = tokio::spawn(std::future::pending());
+
+        in_poll_rx.await.expect("old order fetch entered poll");
+
+        // Same ordering as `apply_pending_key_reload_from_settings`.
+        order_fetch_task.abort();
+        dispute_fetch_task.abort();
+        await_aborted_task(&mut order_fetch_task).await;
+        await_aborted_task(&mut dispute_fetch_task).await;
+
+        writes
+            .lock()
+            .expect("writes lock")
+            .push("replacement-started");
+        let _ = finish_tx.send(());
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            *writes.lock().expect("writes lock"),
+            vec!["replacement-started"],
+            "old fetch must not write after await_aborted_task and replacement start"
+        );
+    }
+
+    fn dummy_kind14(keys: &Keys) -> Event {
+        EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
+            .tags([Tag::public_key(keys.public_key())])
+            .finalize(keys)
+            .expect("sign kind-14")
+    }
+
+    #[tokio::test]
+    async fn failed_key_reload_keeps_live_session_and_services_in_flight_waiter() {
+        let _lock = lock_pending_waiters_for_tests().await;
+        reset_pending_waiters_for_tests();
+
+        let old_keys = Keys::generate();
+        let new_keys = Keys::generate();
+        let mut client = Client::builder()
+            .authenticator(SignerAuthenticator::new(old_keys))
+            .build();
+        let mut mostro_pubkey =
+            PublicKey::from_str(MOSTRO_STAGING_PUBKEY).expect("staging mostro pubkey");
+        let original_mostro = mostro_pubkey;
+        let current_mostro_pubkey = Arc::new(Mutex::new(mostro_pubkey));
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        let (deliver_tx, deliver_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut message_listener_handle = tokio::spawn(async move {
+            if deliver_rx.await.is_ok() {
+                for candidate in snapshot_pending_waiter_candidates() {
+                    let event = dummy_kind14(&candidate.trade_keys);
+                    let _ = take_and_send_pending_waiter(candidate.id, event);
+                }
+            }
+        });
+        let (message_notification_tx, _message_notification_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let disputes = Arc::new(Mutex::new(Vec::new()));
+        let mut order_fetch_task = tokio::spawn(std::future::pending());
+        let mut dispute_fetch_task = tokio::spawn(std::future::pending());
+        let (dm_tx, _dm_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut dm_subscription_tx = dm_tx;
+        set_dm_router_cmd_tx(dm_subscription_tx.clone()).expect("router sender");
+
+        let trade_keys = Keys::generate();
+        let (registered_tx, registered_rx) = tokio::sync::oneshot::channel::<()>();
+        let wait_task = tokio::spawn({
+            let trade_keys = trade_keys.clone();
+            async move {
+                wait_for_dm(&trade_keys, Duration::from_secs(2), None, async move {
+                    let _ = registered_tx.send(());
+                    Ok(())
+                })
+                .await
+            }
+        });
+        registered_rx.await.expect("waiter registered");
+
+        let mut app = AppState::new(UserRole::User);
+        app.pending_key_reload = true;
+        let latest_settings = Settings {
+            mostro_pubkey: MOSTRO_STAGING_PUBKEY.to_string(),
+            nsec_privkey: new_keys.secret_key().to_bech32().expect("nsec"),
+            relays: vec!["wss://127.0.0.1:1".to_string()],
+            ..Settings::default()
+        };
+
+        apply_pending_key_reload_from_settings(
+            &mut app,
+            &mut client,
+            &mut mostro_pubkey,
+            &current_mostro_pubkey,
+            &pool,
+            &mut message_listener_handle,
+            &message_notification_tx,
+            orders,
+            disputes,
+            &mut order_fetch_task,
+            &mut dispute_fetch_task,
+            &mut dm_subscription_tx,
+            &latest_settings,
+            |_| async { Err("offline".to_string()) },
+        )
+        .await;
+
+        assert!(
+            !message_listener_handle.is_finished(),
+            "failed connect must not abort the live DM listener"
+        );
+        assert_eq!(mostro_pubkey, original_mostro);
+        assert!(matches!(
+            app.mode,
+            UiMode::OperationResult(ref boxed)
+                if matches!(boxed.as_ref(), OperationResult::Error(msg) if msg.contains("failed to connect"))
+        ));
+
+        deliver_tx
+            .send(())
+            .expect("retained listener must still accept the live-session delivery");
+        let events = wait_task
+            .await
+            .expect("wait_for_dm task")
+            .expect("waiter serviced through retained session");
+        assert!(!events.is_empty());
+
+        order_fetch_task.abort();
+        dispute_fetch_task.abort();
+        reset_pending_waiters_for_tests();
     }
 }

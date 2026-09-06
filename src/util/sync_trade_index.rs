@@ -55,7 +55,13 @@ pub async fn fetch_last_trade_index_from_mostro(
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(identity_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        identity_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
     let messages = parse_dm_events(recv_event, identity_keys, None).await;
 
     let Some((response_message, _, sender)) = messages.first() else {

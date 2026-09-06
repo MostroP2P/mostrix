@@ -93,7 +93,13 @@ pub async fn execute_send_msg(
     );
 
     // Wait for the DM response from Mostro
-    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        &order_trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
@@ -183,7 +189,13 @@ pub async fn execute_dispute(
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        &order_trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
     let Some((response_message, _, _)) = messages.first() else {
@@ -251,7 +263,13 @@ pub async fn execute_rate_user(
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(&order_trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        &order_trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
     let messages = parse_dm_events(recv_event, &order_trade_keys, None).await;
 
     let Some((response_message, _, _)) = messages.first() else {

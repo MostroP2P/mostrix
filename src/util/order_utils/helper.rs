@@ -778,7 +778,26 @@ pub(super) fn handle_mostro_response(
 ) -> Result<&mostro_core::message::MessageKind> {
     let inner_message = response_message.get_inner_message_kind();
 
-    // Check for CantDo payload first (error response)
+    match inner_message.request_id {
+        Some(id) if id != expected_request_id => {
+            log::warn!(
+                "Received response with mismatched request_id. Expected: {}, Got: {}",
+                expected_request_id,
+                id
+            );
+            return Err(anyhow::anyhow!("Mismatched request_id"));
+        }
+        None => {
+            log::warn!(
+                "Received response with null request_id. Expected: {}",
+                expected_request_id
+            );
+            return Err(anyhow::anyhow!("Response with null request_id"));
+        }
+        Some(_) => {}
+    }
+
+    // Check for CantDo payload only after the in-flight request_id correlates.
     if let Some(Payload::CantDo(reason)) = &inner_message.payload {
         if let Some(r) = reason {
             log::error!("Received CantDo error: {}", get_cant_do_description(r));
@@ -790,25 +809,7 @@ pub(super) fn handle_mostro_response(
         ));
     }
 
-    // Waiter path: every response must carry the in-flight request_id (see take_order.rs).
-    match inner_message.request_id {
-        Some(id) if id != expected_request_id => {
-            log::warn!(
-                "Received response with mismatched request_id. Expected: {}, Got: {}",
-                expected_request_id,
-                id
-            );
-            Err(anyhow::anyhow!("Mismatched request_id"))
-        }
-        Some(_) => Ok(inner_message),
-        None => {
-            log::warn!(
-                "Received response with null request_id. Expected: {}",
-                expected_request_id
-            );
-            Err(anyhow::anyhow!("Response with null request_id"))
-        }
-    }
+    Ok(inner_message)
 }
 
 #[cfg(test)]
@@ -819,7 +820,9 @@ mod tests {
         should_apply_status_transition, should_strictly_advance_status, AdminFinalizeAck,
     };
     use crate::models::TERMINAL_ORDER_HISTORY_STATUSES;
-    use mostro_core::prelude::{Action, DisputeStatus, Message, Status, NOSTR_DISPUTE_EVENT_KIND};
+    use mostro_core::prelude::{
+        Action, CantDoReason, DisputeStatus, Message, Payload, Status, NOSTR_DISPUTE_EVENT_KIND,
+    };
     use nostr_sdk::prelude::*;
     use std::collections::BTreeSet;
     use std::str::FromStr;
@@ -1169,5 +1172,33 @@ mod tests {
         let err = handle_mostro_response(&message, EXPECTED_RID)
             .expect_err("mismatched request_id must be rejected");
         assert!(err.to_string().contains("Mismatched request_id"));
+    }
+
+    #[test]
+    fn handle_mostro_response_rejects_cant_do_before_request_id_correlates() {
+        const EXPECTED_RID: u64 = 0xC0FF_EE00_1234_5678;
+        let message = Message::cant_do(
+            None,
+            Some(EXPECTED_RID.wrapping_add(1)),
+            Some(Payload::CantDo(Some(CantDoReason::InvalidAction))),
+        );
+        let err = handle_mostro_response(&message, EXPECTED_RID)
+            .expect_err("CantDo must not skip request_id correlation");
+        assert!(
+            err.to_string().contains("Mismatched request_id"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn handle_mostro_response_accepts_cant_do_with_matching_request_id() {
+        const EXPECTED_RID: u64 = 0xC0FF_EE00_1234_5678;
+        let message = Message::cant_do(
+            None,
+            Some(EXPECTED_RID),
+            Some(Payload::CantDo(Some(CantDoReason::InvalidAction))),
+        );
+        let err = handle_mostro_response(&message, EXPECTED_RID).expect_err("CantDo");
+        assert!(err.to_string().contains("Invalid action"), "got {err}");
     }
 }

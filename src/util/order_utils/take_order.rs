@@ -138,7 +138,13 @@ pub async fn take_order(
     );
 
     // Wait for Mostro response (subscribes first, then sends message to avoid missing messages)
-    let recv_event = wait_for_dm(&trade_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        &trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
 
     // Parse DM events
     let messages = parse_dm_events(recv_event, &trade_keys, None).await;

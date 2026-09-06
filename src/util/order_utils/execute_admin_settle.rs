@@ -73,7 +73,13 @@ pub async fn execute_admin_settle(
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(admin_keys, FETCH_EVENTS_TIMEOUT, sent_message).await?;
+    let recv_event = wait_for_dm(
+        admin_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
     let messages = parse_dm_events(recv_event, admin_keys, None).await;
     let Some((response_message, _, sender_pubkey)) = messages.first() else {
         return Err(anyhow::anyhow!("No response received from Mostro"));
