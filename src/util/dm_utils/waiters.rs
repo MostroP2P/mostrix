@@ -5,9 +5,10 @@
 //! it canceled oneshots and surfaced a command failure while Mostro may already have
 //! processed the action. This registry is process-wide: `wait_for_dm` inserts before
 //! sending the protocol DM, and a rebuilt listener re-subscribes plus catch-up fetches
-//! from each waiter's `since` timestamp.
+//! from each waiter's `since` timestamp. Catch-up apply is bound to waiter ids
+//! snapshotted at spawn so a delayed fetch cannot consume a later same-key waiter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -179,6 +180,13 @@ pub(crate) fn waiter_correlates_request_id(expected: Option<u64>, decoded: Optio
 
 pub(crate) fn protocol_dm_is_from_mostro(event: &Event, mostro_pubkey: PublicKey) -> bool {
     event.pubkey == mostro_pubkey
+}
+
+/// Live notifications pass `None` (all current waiters). Detached catch-up
+/// passes the ids snapshotted when the fetch was scheduled so a late result
+/// cannot consume a later same-key waiter.
+pub(crate) fn waiter_id_in_catch_up_scope(id: u64, scheduled_ids: Option<&HashSet<u64>>) -> bool {
+    scheduled_ids.is_none_or(|ids| ids.contains(&id))
 }
 
 pub(crate) fn register_pending_waiter(
@@ -442,6 +450,15 @@ mod tests {
         assert!(waiter_correlates_request_id(Some(7), Some(7)));
         assert!(!waiter_correlates_request_id(Some(7), Some(8)));
         assert!(!waiter_correlates_request_id(Some(7), None));
+    }
+
+    #[test]
+    fn waiter_id_in_catch_up_scope_binds_late_results_to_scheduled_ids() {
+        let scheduled = HashSet::from([1]);
+        assert!(waiter_id_in_catch_up_scope(1, None));
+        assert!(waiter_id_in_catch_up_scope(99, None));
+        assert!(waiter_id_in_catch_up_scope(1, Some(&scheduled)));
+        assert!(!waiter_id_in_catch_up_scope(2, Some(&scheduled)));
     }
 
     #[test]

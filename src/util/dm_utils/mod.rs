@@ -60,8 +60,8 @@ pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event
 use waiters::{
     event_created_at_meets_waiter_since, protocol_dm_is_from_mostro, prune_closed_pending_waiters,
     register_pending_waiter, snapshot_pending_waiter_candidates, snapshot_pending_waiter_targets,
-    take_and_send_pending_waiter, waiter_correlates_request_id, waiter_since_now,
-    PENDING_WAITER_GC_INTERVAL,
+    take_and_send_pending_waiter, waiter_correlates_request_id, waiter_id_in_catch_up_scope,
+    waiter_since_now, PENDING_WAITER_GC_INTERVAL,
 };
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
@@ -1923,10 +1923,16 @@ async fn resolve_order_for_event(
 const WAITER_CATCH_UP_FETCH_LIMIT: usize = 20;
 const WAITER_CATCH_UP_CONCURRENCY: usize = 4;
 
+/// Try to consume a matching waiter for `event`.
+///
+/// `scheduled_ids` is `None` on the live notification path (all current
+/// waiters). Detached catch-up passes the ids snapshotted when the fetch
+/// was scheduled so a delayed result cannot consume a later same-key waiter.
 async fn satisfy_pending_waiters_for_event(
     event: &Event,
     mostro_pubkey: PublicKey,
     rumor_cache: &mut HashMap<PublicKey, CachedDmUnwrap>,
+    scheduled_ids: Option<&HashSet<u64>>,
 ) {
     if !protocol_dm_is_from_mostro(event, mostro_pubkey) {
         return;
@@ -1936,6 +1942,9 @@ async fn satisfy_pending_waiters_for_event(
         return;
     }
     for candidate in candidates {
+        if !waiter_id_in_catch_up_scope(candidate.id, scheduled_ids) {
+            continue;
+        }
         if !event_created_at_meets_waiter_since(event.created_at, candidate.since) {
             continue;
         }
@@ -1994,10 +2003,25 @@ async fn subscribe_pending_waiter_pubkeys(
     }
 }
 
+/// Fetch since the oldest scheduled waiter per pubkey. Apply results only to
+/// the waiter ids snapshotted here — not to waiters registered after spawn.
 async fn catch_up_pending_waiters(client: &Client, transport: Transport, mostro_pubkey: PublicKey) {
-    let targets = snapshot_pending_waiter_targets();
-    if targets.is_empty() {
+    let scheduled = snapshot_pending_waiter_candidates();
+    if scheduled.is_empty() {
         return;
+    }
+    let scheduled_ids: HashSet<u64> = scheduled.iter().map(|c| c.id).collect();
+    let mut targets: HashMap<PublicKey, Timestamp> = HashMap::new();
+    for candidate in &scheduled {
+        let pubkey = candidate.trade_keys.public_key();
+        targets
+            .entry(pubkey)
+            .and_modify(|existing| {
+                if candidate.since.as_secs() < existing.as_secs() {
+                    *existing = candidate.since;
+                }
+            })
+            .or_insert(candidate.since);
     }
     let fetches = targets.into_iter().map(|(pubkey, since)| {
         let client = client.clone();
@@ -2023,13 +2047,22 @@ async fn catch_up_pending_waiters(client: &Client, transport: Transport, mostro_
     });
     futures::stream::iter(fetches)
         .buffer_unordered(WAITER_CATCH_UP_CONCURRENCY)
-        .for_each(|events| async move {
-            for event in events {
-                if event.kind != transport.event_kind() {
-                    continue;
+        .for_each(|events| {
+            let scheduled_ids = scheduled_ids.clone();
+            async move {
+                for event in events {
+                    if event.kind != transport.event_kind() {
+                        continue;
+                    }
+                    let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
+                    satisfy_pending_waiters_for_event(
+                        &event,
+                        mostro_pubkey,
+                        &mut rumor_cache,
+                        Some(&scheduled_ids),
+                    )
+                    .await;
                 }
-                let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
-                satisfy_pending_waiters_for_event(&event, mostro_pubkey, &mut rumor_cache).await;
             }
         })
         .await;
@@ -2327,8 +2360,13 @@ pub async fn listen_for_order_messages(
                     // This avoids duplicate `unwrap_incoming` calls between waiter and tracked paths.
                     let mut rumor_cache: HashMap<PublicKey, CachedDmUnwrap> = HashMap::new();
 
-                    satisfy_pending_waiters_for_event(&event, mostro_pubkey, &mut rumor_cache)
-                        .await;
+                    satisfy_pending_waiters_for_event(
+                        &event,
+                        mostro_pubkey,
+                        &mut rumor_cache,
+                        None,
+                    )
+                    .await;
 
                     if let Some((order_id, trade_index)) = subscription_to_order.get(&subscription_id).copied() {
                         log::info!(
@@ -2457,19 +2495,80 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         is_take_sell_buyer_waiting_invoice, new_order_would_regress_messages_row,
-        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
-        trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
+        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
         TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
     use crate::models::Order;
     use crate::ui::orders::message_action_compact_label_for_message;
+    use crate::util::dm_utils::waiters::{
+        lock_pending_waiters_for_tests, register_pending_waiter, reset_pending_waiters_for_tests,
+        snapshot_pending_waiter_candidates,
+    };
+    use crate::util::wrap_message_with;
     use mostro_core::prelude::{
-        Action, Message, Payload, SmallOrder, Status, Transport, UnwrappedMessage,
+        Action, Message, Payload, SmallOrder, Status, Transport, UnwrappedMessage, WrapOptions,
     };
     use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn catch_up_does_not_consume_later_same_key_none_waiter() {
+        let _lock = lock_pending_waiters_for_tests().await;
+        reset_pending_waiters_for_tests();
+
+        let mostro = Keys::generate();
+        let trade = Keys::generate();
+        let message = Message::new_restore(None);
+        let event = wrap_message_with(
+            Transport::Nip44Direct,
+            &message,
+            &mostro,
+            &mostro,
+            trade.public_key(),
+            WrapOptions {
+                signed: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("wrap Mostro restore reply");
+
+        let (tx_a, mut rx_a) = oneshot::channel();
+        register_pending_waiter(trade.clone(), tx_a, None).expect("register waiter A");
+        let scheduled_ids: HashSet<u64> = snapshot_pending_waiter_candidates()
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(scheduled_ids.len(), 1);
+
+        let mut rumor_cache = HashMap::new();
+        satisfy_pending_waiters_for_event(&event, mostro.public_key(), &mut rumor_cache, None)
+            .await;
+        assert!(rx_a.try_recv().is_ok(), "live path must consume waiter A");
+
+        let (tx_b, mut rx_b) = oneshot::channel();
+        register_pending_waiter(trade, tx_b, None).expect("register waiter B");
+
+        let mut rumor_cache = HashMap::new();
+        satisfy_pending_waiters_for_event(
+            &event,
+            mostro.public_key(),
+            &mut rumor_cache,
+            Some(&scheduled_ids),
+        )
+        .await;
+        assert!(
+            matches!(rx_b.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "delayed catch-up for A must not consume later same-key waiter B"
+        );
+
+        reset_pending_waiters_for_tests();
+    }
 
     #[tokio::test]
     async fn cant_do_surfaces_rejection_without_changing_order_status() {
