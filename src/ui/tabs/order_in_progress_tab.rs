@@ -18,11 +18,12 @@ use crate::ui::constants::{
 };
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
-    format_user_rating,
+    format_user_rating_compact,
 };
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UserChatChannel, UserChatSender};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
+use mostro_core::prelude::UserInfo;
 
 /// `Order ID: …` for the sidebar — same style as disputes; shows the full id when it fits the column.
 fn sidebar_order_list_label(order_id: &str, inner_width: u16) -> String {
@@ -40,6 +41,285 @@ fn sidebar_order_list_label(order_id: &str, inner_width: u16) -> String {
     }
     let head: String = full.chars().take(w.saturating_sub(3)).collect();
     format!("{head}...")
+}
+
+/// Keep a bordered chat pane with room for a sender line plus a wrapped message.
+/// Widget height includes `Borders::ALL` (2 rows); inner height is this minus 2.
+const ORDER_INFO_MIN_CHAT: u16 = 6;
+const ORDER_INFO_MIN_FOOTER: u16 = 1;
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+fn truncate_to_width(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if Span::raw(s).width() <= max {
+        return s.to_string();
+    }
+    if max <= 3 {
+        return ".".repeat(max);
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    let budget = max - 3;
+    for ch in s.chars() {
+        let cw = Span::raw(ch.to_string()).width();
+        if w + cw > budget {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push_str("...");
+    out
+}
+
+fn labeled_value_line(
+    label: &str,
+    value: &str,
+    value_style: Style,
+    inner_width: u16,
+) -> Line<'static> {
+    let gray = Style::default().fg(Color::Gray);
+    let label_text = format!("{label} ");
+    let label_w = Span::raw(label_text.as_str()).width();
+    let avail = (inner_width as usize).saturating_sub(label_w);
+    let shown = truncate_to_width(value, avail);
+    Line::from(vec![
+        Span::styled(label_text, gray),
+        Span::styled(shown, value_style),
+    ])
+}
+
+fn packed_economics_line(
+    inner_width: u16,
+    amount_line: &str,
+    payment_method: &str,
+    premium_text: &str,
+) -> Line<'static> {
+    let gray = Style::default().fg(Color::Gray);
+    let amount_style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let payment_style = Style::default().fg(Color::White);
+    let premium_style = Style::default().fg(Color::Yellow);
+    let amount_prefix_w = Span::raw("Amount: ").width()
+        + Span::raw(amount_line).width()
+        + Span::raw("  Payment: ").width();
+    let premium_suffix_w = Span::raw("  Premium: ").width() + Span::raw(premium_text).width();
+    let full_w = amount_prefix_w + Span::raw(payment_method).width() + premium_suffix_w;
+    let include_premium = full_w <= inner_width as usize
+        || (inner_width as usize).saturating_sub(amount_prefix_w) > premium_suffix_w;
+    let payment_budget = if include_premium {
+        (inner_width as usize)
+            .saturating_sub(amount_prefix_w)
+            .saturating_sub(premium_suffix_w)
+    } else {
+        (inner_width as usize).saturating_sub(amount_prefix_w)
+    };
+    let payment = truncate_to_width(payment_method, payment_budget);
+    let mut spans = vec![
+        Span::styled("Amount: ", gray),
+        Span::styled(amount_line.to_string(), amount_style),
+        Span::raw("  "),
+        Span::styled("Payment: ", gray),
+        Span::styled(payment, payment_style),
+    ];
+    if include_premium {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("Premium: ", gray));
+        spans.push(Span::styled(premium_text.to_string(), premium_style));
+    }
+    Line::from(spans)
+}
+
+fn order_info_economics_lines(
+    inner_width: u16,
+    amount_line: &str,
+    payment_method: &str,
+    premium_text: &str,
+    allow_stack: bool,
+) -> Vec<Line<'static>> {
+    let gray = Style::default().fg(Color::Gray);
+    let one_line = Line::from(vec![
+        Span::styled("Amount: ", gray),
+        Span::styled(
+            amount_line.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Payment: ", gray),
+        Span::styled(
+            payment_method.to_string(),
+            Style::default().fg(Color::White),
+        ),
+        Span::raw("  "),
+        Span::styled("Premium: ", gray),
+        Span::styled(premium_text.to_string(), Style::default().fg(Color::Yellow)),
+    ]);
+    if inner_width > 0 && spans_width(&one_line.spans) <= inner_width as usize {
+        return vec![one_line];
+    }
+    if allow_stack {
+        let amount_style = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        vec![
+            labeled_value_line("Amount:", amount_line, amount_style, inner_width),
+            labeled_value_line(
+                "Payment:",
+                payment_method,
+                Style::default().fg(Color::White),
+                inner_width,
+            ),
+            labeled_value_line(
+                "Premium:",
+                premium_text,
+                Style::default().fg(Color::Yellow),
+                inner_width,
+            ),
+        ]
+    } else {
+        vec![packed_economics_line(
+            inner_width,
+            amount_line,
+            payment_method,
+            premium_text,
+        )]
+    }
+}
+
+fn order_info_rating_lines(
+    inner_width: u16,
+    buyer: Option<&UserInfo>,
+    seller: Option<&UserInfo>,
+) -> Vec<Line<'static>> {
+    let yellow = Style::default().fg(Color::Yellow);
+    match (buyer, seller) {
+        (Some(b), Some(s)) => {
+            let combined = format!(
+                "Buyer: {}  Seller: {}",
+                format_user_rating_compact(b),
+                format_user_rating_compact(s)
+            );
+            if inner_width > 0 && Span::raw(combined.as_str()).width() <= inner_width as usize {
+                vec![Line::from(Span::styled(combined, yellow))]
+            } else {
+                vec![
+                    labeled_value_line(
+                        "Buyer Rating:",
+                        &format_user_rating_compact(b),
+                        yellow,
+                        inner_width,
+                    ),
+                    labeled_value_line(
+                        "Seller Rating:",
+                        &format_user_rating_compact(s),
+                        yellow,
+                        inner_width,
+                    ),
+                ]
+            }
+        }
+        (Some(b), None) => vec![labeled_value_line(
+            "Buyer Rating:",
+            &format_user_rating_compact(b),
+            yellow,
+            inner_width,
+        )],
+        (None, Some(s)) => vec![labeled_value_line(
+            "Seller Rating:",
+            &format_user_rating_compact(s),
+            yellow,
+            inner_width,
+        )],
+        (None, None) => vec![],
+    }
+}
+
+#[cfg(test)]
+fn order_info_economics_and_ratings(
+    inner_width: u16,
+    amount_line: &str,
+    payment_method: &str,
+    premium_text: &str,
+    buyer: Option<&UserInfo>,
+    seller: Option<&UserInfo>,
+) -> Vec<Line<'static>> {
+    let mut lines =
+        order_info_economics_lines(inner_width, amount_line, payment_method, premium_text, true);
+    lines.extend(order_info_rating_lines(inner_width, buyer, seller));
+    lines
+}
+
+struct OrderInfoEconomics<'a> {
+    amount_line: &'a str,
+    payment_method: &'a str,
+    premium_text: &'a str,
+    buyer: Option<&'a UserInfo>,
+    seller: Option<&'a UserInfo>,
+}
+
+fn assemble_order_info_header(
+    max_body: usize,
+    identity_id: Line<'static>,
+    context_line: Line<'static>,
+    prefer_context: bool,
+    inner_width: u16,
+    economics: OrderInfoEconomics<'_>,
+) -> Vec<Line<'static>> {
+    let economics_stacked = order_info_economics_lines(
+        inner_width,
+        economics.amount_line,
+        economics.payment_method,
+        economics.premium_text,
+        true,
+    );
+    let ratings = order_info_rating_lines(inner_width, economics.buyer, economics.seller);
+    let mut full = vec![identity_id.clone(), context_line.clone()];
+    full.extend(economics_stacked.iter().cloned());
+    full.extend(ratings.iter().cloned());
+    if full.len() <= max_body {
+        return full;
+    }
+
+    let mut lines = Vec::new();
+    if prefer_context {
+        lines.push(context_line.clone());
+    }
+    let room = max_body.saturating_sub(lines.len());
+    if economics_stacked.len() <= room {
+        lines.extend(economics_stacked);
+    } else if room >= 1 {
+        lines.extend(order_info_economics_lines(
+            inner_width,
+            economics.amount_line,
+            economics.payment_method,
+            economics.premium_text,
+            false,
+        ));
+    }
+    let room = max_body.saturating_sub(lines.len());
+    if ratings.len() <= room {
+        lines.extend(ratings);
+    }
+    if lines.len() < max_body {
+        if prefer_context {
+            lines.insert(0, identity_id);
+        } else {
+            lines.push(identity_id);
+            if lines.len() < max_body {
+                lines.push(context_line);
+            }
+        }
+    }
+    lines.truncate(max_body);
+    lines
 }
 
 fn build_order_chat_content(
@@ -333,82 +613,72 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             Span::styled(created_str, Style::default().fg(Color::Yellow)),
         ])
     };
-    let mut header_lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                order_id_display,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("Trade ID: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                trade_id,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("Type: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                order_kind,
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("Status: ", Style::default().fg(Color::Gray)),
-            Span::styled(status_label, Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+    let identity_id = Line::from(vec![
+        Span::styled("Order ID: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            order_id_display,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Trade ID: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            trade_id,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Type: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            order_kind,
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Status: ", Style::default().fg(Color::Gray)),
+        Span::styled(status_label, Style::default().add_modifier(Modifier::BOLD)),
+    ]);
+    let header_inner_width = main_area.width.saturating_sub(2);
+
+    // Borders::ALL consumes 2 rows. Cap the header so chat/input/footer still fit on
+    // short terminals (a 60×15 post-chrome pane must keep a usable chat row).
+    let max_header = main_area
+        .height
+        .saturating_sub(
+            input_height
+                .saturating_add(ORDER_INFO_MIN_FOOTER)
+                .saturating_add(ORDER_INFO_MIN_CHAT),
+        )
+        .max(3);
+    let max_body = max_header.saturating_sub(2) as usize;
+    let header_lines = assemble_order_info_header(
+        max_body,
+        identity_id,
         context_line,
-        Line::from(vec![
-            Span::styled("Amount: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                amount_line,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("Payment: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                payment_method.to_string(),
-                Style::default().fg(Color::White),
-            ),
-            Span::raw("  "),
-            Span::styled("Premium: ", Style::default().fg(Color::Gray)),
-            Span::styled(premium_text, Style::default().fg(Color::Yellow)),
-        ]),
-    ];
-
-    let gray = Style::default().fg(Color::Gray);
-    let yellow = Style::default().fg(Color::Yellow);
-    if let Some(ref info) = selected.buyer_reputation {
-        header_lines.push(Line::from(vec![
-            Span::styled("Buyer Rating: ", gray),
-            Span::styled(format_user_rating(Some(info)), yellow),
-        ]));
-    }
-    if let Some(ref info) = selected.seller_reputation {
-        header_lines.push(Line::from(vec![
-            Span::styled("Seller Rating: ", gray),
-            Span::styled(format_user_rating(Some(info)), yellow),
-        ]));
-    }
-
-    // Borders::ALL consumes 2 rows (title sits on the top border). Without this,
-    // Amount / ratings / payment clip behind the chat panel.
-    let header_height = header_lines.len() as u16 + 2;
+        dispute_id.is_some(),
+        header_inner_width,
+        OrderInfoEconomics {
+            amount_line: &amount_line,
+            payment_method,
+            premium_text: &premium_text,
+            buyer: selected.buyer_reputation.as_ref(),
+            seller: selected.seller_reputation.as_ref(),
+        },
+    );
+    let header_height = (header_lines.len() as u16)
+        .saturating_add(2)
+        .min(max_header)
+        .max(3);
 
     let spare_below_header_input = main_area
         .height
         .saturating_sub(header_height.saturating_add(input_height));
-    // Bias toward keeping at least one row for chat: don't take a tall footer unless spare exceeds
-    // footer height (e.g. spare 3 + 3-line footer ⇒ 0 chat rows with the old >=3 / >=2 thresholds).
-    let can_fit_three_line_footer = spare_below_header_input >= 4;
-    let can_fit_two_line_footer = spare_below_header_input >= 3;
+    // Footer grows only when chat still keeps ORDER_INFO_MIN_CHAT rows.
+    let can_fit_three_line_footer = spare_below_header_input >= 3 + ORDER_INFO_MIN_CHAT;
+    let can_fit_two_line_footer = spare_below_header_input >= 2 + ORDER_INFO_MIN_CHAT;
     // Prefer 3 rows for My Trades hints (many shortcuts); wrap needs one Paragraph over full height
     // — never split into per-line widgets of height 1 or wrapped text has nowhere to go.
     let footer_height: u16 = if main_area.width < 50 {
@@ -968,12 +1238,113 @@ mod tests {
 
         assert!(buffer_contains(buffer, "Amount:"));
         assert!(buffer_contains(buffer, "1000 sats | 10 USD"));
-        assert!(buffer_contains(buffer, "Buyer Rating:"));
-        assert!(buffer_contains(buffer, "Seller Rating:"));
+        assert!(buffer_contains(buffer, "4.5/5"));
+        assert!(buffer_contains(buffer, "3.0/5"));
         assert!(buffer_contains(buffer, "Payment:"));
         assert!(buffer_contains(buffer, "cash"));
         assert!(buffer_contains(buffer, "Premium:"));
         assert!(buffer_contains(buffer, "2%"));
+    }
+
+    #[test]
+    fn render_order_info_keeps_chat_on_short_narrow_viewport() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_static.insert(
+            Uuid::nil(),
+            OrderChatStaticHeader {
+                order_id: Uuid::nil(),
+                kind: None,
+                created_at: Some(1),
+                trade_index: 1,
+                initiator_trade_pubkey: "trade-pubkey".to_string(),
+                is_mine: false,
+                solver_pubkey: None,
+                dispute_id: None,
+            },
+        );
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: order_id.clone(),
+            status: Some(Status::Active),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("SEPA bank transfer to ES9121000418450200051332".to_string()),
+            premium: Some(2),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: Some(UserInfo {
+                rating: 4.5,
+                reviews: 12,
+                operating_days: 30,
+            }),
+            seller_reputation: Some(UserInfo {
+                rating: 3.0,
+                reviews: 4,
+                operating_days: 10,
+            }),
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.order_chats.insert(
+            order_id,
+            vec![UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: "invoice posted please pay".to_string(),
+                timestamp: 1,
+                attachment: None,
+            }],
+        );
+
+        let backend = TestBackend::new(60, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer_contains(buffer, "Amount:"));
+        assert!(buffer_contains(buffer, "Payment:"));
+        assert!(buffer_contains(buffer, "SEPA"));
+        assert!(buffer_contains(buffer, "Peer Chat"));
+        assert!(
+            buffer_contains(buffer, "invoice")
+                || buffer_contains(buffer, "posted")
+                || buffer_contains(buffer, "pay")
+        );
+    }
+
+    #[test]
+    fn order_info_economics_stack_when_narrower_than_combined_line() {
+        let buyer = UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+        };
+        let lines = super::order_info_economics_and_ratings(
+            40,
+            "1000 sats | 10 USD",
+            "SEPA bank transfer",
+            "2%",
+            Some(&buyer),
+            None,
+        );
+        let joined: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Amount:"));
+        assert!(joined.contains("Payment:"));
+        assert!(joined.contains("Premium:"));
+        assert!(joined.matches("Amount:").count() == 1);
+        assert!(joined.contains("Buyer Rating:"));
+        assert!(!joined.contains("Payment: SEPA bank transfer  Premium:"));
     }
 
     #[test]
