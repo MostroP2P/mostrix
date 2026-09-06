@@ -59,7 +59,7 @@ Recent migrations for the `admin_disputes` table add the following fields:
 - **`initiator_info` / `counterpart_info`**: JSON-encoded user info for each party.
 - **`fiat_code`**: Fiat currency code for the disputed order.
 - **`dispute_id`**: Persistent dispute identifier (separate from order `id`).
-- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 (and dual-read GiftWrap) hydrate and chat restore at startup.
+- **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 hydrate and chat restore at startup.
 - **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded ECDH IKM between the admin key and each party’s trade pubkey. Runtime chat derives `K_conv` / `K_sign` from this secret (kind-14 wrap/unwrap).
 
 **Source**: `src/db.rs:113`
@@ -310,8 +310,8 @@ CREATE TABLE IF NOT EXISTS admin_disputes (
 | `invoice_held_at` | `INTEGER` | Unix timestamp when the invoice was held/created (if available). |
 | `taken_at` | `INTEGER` | Unix timestamp when the admin took the dispute. |
 | `created_at` | `INTEGER` | Unix timestamp when the dispute was created. |
-| `buyer_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the buyer side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
-| `seller_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the seller side (kind 14 / dual-read GiftWrap; used for incremental fetch and restore). |
+| `buyer_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the buyer side (kind 14; used for incremental fetch and restore). |
+| `seller_chat_last_seen` | `INTEGER` | Last processed dispute-chat timestamp for the seller side (kind 14; used for incremental fetch and restore). |
 | `buyer_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the buyer’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
 | `seller_shared_key_hex` | `TEXT` | Hex‑encoded ECDH IKM between the admin key and the seller’s trade pubkey; runtime chat derives `K_conv` / `K_sign` from this secret. |
 
@@ -415,7 +415,7 @@ Mostrix uses a hybrid message recovery strategy that combines stateless fetch-on
   - Each file contains a chronological log of messages with headers like `Admin to Buyer - dd-mm-yyyy - HH:MM:SS`. **Attachment metadata** is stored as **JSON** (`image_encrypted` / `file_encrypted`) via `serialize_attachment_for_transcript` so save popups work after restart; older `[Image: … - Ctrl+S to save]` placeholders are upgraded in memory when relay returns the same file.
   - At startup, `recover_admin_chat_from_files` rebuilds `admin_dispute_chats` in memory from these files and computes the latest buyer/seller timestamps.
   - These timestamps are persisted in `admin_disputes.buyer_chat_last_seen` and `admin_disputes.seller_chat_last_seen` via `update_chat_last_seen_by_dispute_id` (unified function that handles both parties based on an `is_buyer` flag and returns affected row count).
-  - Background NIP‑59 fetches use the stored timestamps as cursors (7-day rolling window) to request only newer events, providing:
+  - Kind-14 hydration (`fetch_chat_messages_for_shared_key`) uses the stored timestamps as cursors (`since = max(min(cursor, local_now), local_now - 7 days)`); newer events arrive on the batched live `authors = [pub(K_sign)]` subscription, providing:
     - **Instant UI restore** for existing disputes.
     - **Incremental network sync** without replaying full history.
 

@@ -13,7 +13,7 @@ Mostrix uses Nostr transports for two distinct purposes:
 | Traffic | Transport | Notes |
 |---------|-----------|--------|
 | **Mostro protocol DMs** (orders, take, pay, release, admin actions to daemon) | Signed kind 14 via [`send_dm`](../src/util/dm_utils/mod.rs) → [`wrap_message_with`](../src/util/mod.rs) | Protocol v2 only (`Transport::Nip44Direct`). v1 GiftWrap instances are unsupported. |
-| **P2P order chat** (My Trades) and **admin dispute chat** | Kind 14 (`K_sign` / `K_conv`) via `mostro_core::chat`; dual-read legacy GiftWrap while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true | Unrelated to protocol v2 Mostro DMs; ECDH secret still stored, keys derived at runtime |
+| **P2P order chat** (My Trades) and **admin dispute chat** | Kind 14 (`K_sign` / `K_conv`) via `mostro_core::chat` | Unrelated to protocol v2 Mostro DMs; ECDH secret still stored, keys derived at runtime |
 
 ### Protocol v2 discovery, outbound send, and subscriptions
 
@@ -35,7 +35,7 @@ Used by `dm_helpers::ensure_order_dm_subscription`, startup `fetch_and_replay_st
 ### Envelope overview
 
 1. **Kind 14**: Protocol v2 Mostro DMs (`wrap_message_with`) **and** current P2P / dispute chat (`wrap_chat_message`, subscribe `authors = [pub(K_sign)]`).
-2. **NIP-59 Gift Wrap (1059)**: **not** used for protocol DMs. Legacy P2P / dispute-chat receive path while [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is true.
+2. **NIP-59 Gift Wrap (1059)**: **not** used for protocol DMs or P2P / dispute chat.
 
 ### Proof-of-work (NIP-13)
 
@@ -309,7 +309,7 @@ In addition to relay-driven trade DMs, Mostrix keeps a lightweight local transcr
 - **Path**: `~/.mostrix/orders_chat/<order_id>.txt`
 - **Startup restore**: `load_user_order_chats_at_startup` restores cached chat into `AppState.order_chats` and seeds `order_chat_last_seen` from on-disk transcripts. Relay backfill is done once by the chat router on `TrackChatKey` after `track_startup_chats` (not a separate poll).
 - **Session restore (no restart)**: after Settings → **Restore Session**, `clear_session_chat_projection` clears stale chat maps, DB rows are re-synced to the UI, then **`spawn_post_restore_hydrate`** rebuilds peer transcripts from relay in the background and re-runs `track_startup_chats` on `PostRestoreHydrateCompleted`. See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
-- **Live relay sync (User role)**: the **shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`) maintains a batched kind-14 subscription (`authors = [pub(K_sign)]`) over all active order chats and routes by outer author. While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true, it also dual-reads legacy GiftWrap `#p` = ECDH pubkey. `track_startup_chats` seeds the active-order set at startup; the DM router tracks/untracks orders when the shared key becomes resolvable or the order hits a chat-terminal status ([`TERMINAL_DM_STATUSES`](../src/models.rs) — **`success` keeps chat live**). Dynamic tracks pass a hydrate `since` from the on-disk transcript max timestamp when present. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
+- **Live relay sync (User role)**: the **shared-key chat subscription router** (`listen_for_chat_messages` in `src/util/chat_listener.rs`) maintains a batched kind-14 subscription (`authors = [pub(K_sign)]`) over all active order chats and routes by outer author. `track_startup_chats` seeds the active-order set at startup; the DM router tracks/untracks orders when the shared key becomes resolvable or the order hits a chat-terminal status ([`TERMINAL_DM_STATUSES`](../src/models.rs) — **`success` keeps chat live**). Dynamic tracks pass a hydrate `since` from the on-disk transcript max timestamp when present. Shared keys come from persisted `order_chat_shared_key_hex` when set, otherwise ECDH from local `trade_keys` + `counterparty_pubkey` (`src/util/chat_utils.rs`).
 - **Incremental merge**: `apply_user_order_chat_updates` in `src/ui/helpers/startup.rs`:
   - **Peer channel — own relay rows**: each `OrderChatUpdate` carries `local_trade_pubkey`. On **`UserChatChannel::Peer`**, messages from the local trade key are stored as **You** unless the inner event id is already known or an optimistic local **You** line exists at the same timestamp (live-send echo). This allows post-restore relay rebuild to include the user's own history when the on-disk transcript was empty.
   - **Solver channel — own relay rows**: still skips all messages whose decrypted `sender_pubkey` matches `local_trade_pubkey` (admin/solver chat convention).
@@ -558,11 +558,11 @@ Trade DMs carrying `CantDo` are not upserted into the Messages list ([DM_LISTENE
 
 ## Admin Chat (Shared-Key Subscription Router)
 
-When the user is in **Admin** mode, the shared-key chat subscription router keeps the "Disputes in Progress" tab up to date with kind-14 chat events (and, during the migration window, legacy NIP‑59 GiftWrap) exchanged over **per‑dispute shared keys** — live via a relay subscription, not a timer.
+When the user is in **Admin** mode, the shared-key chat subscription router keeps the "Disputes in Progress" tab up to date with kind-14 chat events exchanged over **per‑dispute shared keys** — live via a relay subscription, not a timer.
 
 - **Trigger**: `execute_take_dispute` calls `track_dispute_chat` for the buyer and seller when a dispute is taken; `track_startup_chats` re-tracks all `InProgress` disputes at startup and on reconnect. Untracked when the dispute leaves `InProgress`.
 - **Shared keys**: For each `AdminDispute` in `InProgress` state, the database holds `buyer_shared_key_hex` / `seller_shared_key_hex`, converted back to `Keys` via `keys_from_shared_hex` in `src/util/chat_utils.rs`.
-- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) always subscribes kind 14 by `authors = [pub(K_sign)]`. While `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true (mostrix#102 dual-read window), it also subscribes legacy GiftWrap `#p` = ECDH pubkey. Hydration (`fetch_chat_messages_for_shared_key`, 7‑day window, `last_seen` cursor, party+admin allow-list) uses the same dual-read. Live kind 14 is routed by `pub(K_sign)`; GiftWrap by `p` tag. Outbound chat is **only** kind 14.
+- **Router**: `listen_for_chat_messages` (`src/util/chat_listener.rs`) subscribes kind 14 by `authors = [pub(K_sign)]`. Hydration (`fetch_chat_messages_for_shared_key`, 7‑day window, `last_seen` cursor, party+admin allow-list) uses the same kind-14 filter. Live kind 14 is routed by `pub(K_sign)`. Outbound chat is **only** kind 14.
 - **Application**: The main loop receives results on `admin_chat_updates_rx` and applies them via `apply_admin_chat_updates`, which:
   - Drops inner signers only when they match neither the buyer key, seller key, nor admin key (not labeled Admin). Admin inner signers stay valid: they are on the unwrap allow-list, and local admin sends are echo-skipped rather than treated as unknown.
   - Appends new `DisputeChatMessage` items into `AppState.admin_dispute_chats`.

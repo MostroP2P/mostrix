@@ -1,13 +1,11 @@
 //! Shared-key chat subscription router (P2P order chat + admin dispute chat).
 //!
-//! Live kind-14 subscription (`authors: [pub(K_sign)]`). While
-//! `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true, also dual-reads legacy GiftWrap
-//! (`kind: 1059`, `#p: [ECDH pubkeys]`). Outbound chat is always kind 14.
+//! Live kind-14 subscription (`authors: [pub(K_sign)]`). Outbound chat is
+//! always kind 14. GiftWrap (kind 1059) is not subscribed or unwrapped.
 //!
 //! Live kind-14 traffic is routed **only** by outer author ∈ tracked `pub(K_sign)`
-//! (never by `#p` alone). GiftWrap dual-read still matches `#p` = ECDH pubkey.
-//! Hydration and last-seen cursors use `min(accepted_ts, local_now)` so a
-//! far-future timestamp cannot poison `since`.
+//! (never by `#p` alone). Hydration and last-seen cursors use
+//! `min(accepted_ts, local_now)` so a far-future timestamp cannot poison `since`.
 //!
 //! Incoming events are decrypted with the per-channel ECDH secret (`K_conv` /
 //! `K_sign` derived at unwrap). Unwrap requires a non-empty inner-signer
@@ -43,7 +41,7 @@ use crate::util::chat_security::{
 use crate::util::chat_utils::{
     chat_keys_from_ecdh, clamp_chat_since_cursor_now, derive_shared_key_hex,
     fetch_chat_messages_for_shared_key, keys_from_shared_hex, order_chat_allowed_signers,
-    unwrap_giftwrap_with_shared_key, CHAT_ACCEPT_LEGACY_GIFTWRAP,
+    unwrap_chat_envelope,
 };
 use futures::StreamExt;
 
@@ -81,7 +79,7 @@ pub enum ChatRouterCmd {
 /// Per-tracked-key routing metadata.
 struct ChatTarget {
     key_id: ChatKeyId,
-    /// ECDH IKM keys (persisted hex); GiftWrap `#p` lookup uses [`Keys::public_key`].
+    /// ECDH IKM keys (persisted hex); HashMap key is the ECDH pubkey.
     shared_keys: Keys,
     /// `pub(K_sign)` — kind-14 outer author used for live `authors` filter / routing.
     sign_pubkey: PublicKey,
@@ -91,20 +89,14 @@ struct ChatTarget {
     allowed_signers: Vec<PublicKey>,
 }
 
-/// Live subscription ids for the dual-read migration window.
+/// Live kind-14 subscription id.
 #[derive(Default)]
 struct LiveSubs {
-    giftwrap: Option<SubscriptionId>,
     kind14: Option<SubscriptionId>,
 }
 
 impl LiveSubs {
     async fn clear(&mut self, client: &Client) {
-        if let Some(id) = self.giftwrap.take() {
-            if let Err(e) = client.unsubscribe(&id).await {
-                log::debug!("unsubscribe failed: {e}");
-            }
-        }
         if let Some(id) = self.kind14.take() {
             if let Err(e) = client.unsubscribe(&id).await {
                 log::debug!("unsubscribe failed: {e}");
@@ -331,9 +323,8 @@ fn emit_messages(
 
 /// Rebuild live subscriptions from the current tracked set.
 ///
-/// Kind-14 `authors = [pub(K_sign)]`, plus GiftWrap `#p` while
-/// [`CHAT_ACCEPT_LEGACY_GIFTWRAP`] is true. Make-before-break: only drop previous
-/// subscriptions after the replacements are live. Uses `.limit(0)` (live-only);
+/// Kind-14 `authors = [pub(K_sign)]`. Make-before-break: only drop the previous
+/// subscription after the replacement is live. Uses `.limit(0)` (live-only);
 /// history is hydrated separately.
 async fn resubscribe(
     client: &Client,
@@ -345,65 +336,34 @@ async fn resubscribe(
         return;
     }
 
-    let ecdh_pubkeys: Vec<PublicKey> = targets.keys().copied().collect();
     let sign_pubkeys: Vec<PublicKey> = targets.values().map(|t| t.sign_pubkey).collect();
-    let (giftwrap_filter, kind14_filter) =
-        live_chat_filters(&ecdh_pubkeys, &sign_pubkeys, CHAT_ACCEPT_LEGACY_GIFTWRAP);
-
-    let mut new_giftwrap: Option<SubscriptionId> = None;
-    if let Some(filter) = giftwrap_filter {
-        match subscribe_chat_filter(client, filter, "GiftWrap").await {
-            Some(id) => new_giftwrap = Some(id),
-            None => {
-                log::error!(
-                    "[chat_live] GiftWrap subscribe failed; keeping previous subscriptions alive"
-                );
-                return;
-            }
-        }
-    }
+    let kind14_filter = live_chat_filters(&sign_pubkeys);
 
     let new_kind14 = match subscribe_chat_filter(client, kind14_filter, "kind-14").await {
         Some(id) => id,
         None => {
-            log::error!("[chat_live] kind-14 subscribe failed; rolling back new GiftWrap sub");
-            if let Some(id) = new_giftwrap.take() {
-                if let Err(e) = client.unsubscribe(&id).await {
-                    log::debug!("unsubscribe failed: {e}");
-                }
-            }
+            log::error!(
+                "[chat_live] kind-14 subscribe failed; keeping previous subscription alive"
+            );
             return;
         }
     };
 
     log::debug!(
-        "[chat_live] subscribed to {} chat(s) giftwrap={:?} kind14={:?}",
+        "[chat_live] subscribed to {} chat(s) kind14={:?}",
         targets.len(),
-        new_giftwrap,
         new_kind14
     );
 
-    replace_live_sub(client, &mut current_subs.giftwrap, new_giftwrap).await;
     replace_live_sub(client, &mut current_subs.kind14, Some(new_kind14)).await;
 }
 
-/// Live filters for the tracked set. GiftWrap is omitted after dual-read cutover.
-fn live_chat_filters(
-    ecdh_pubkeys: &[PublicKey],
-    sign_pubkeys: &[PublicKey],
-    accept_legacy: bool,
-) -> (Option<Filter>, Filter) {
-    let giftwrap = accept_legacy.then(|| {
-        Filter::new()
-            .kind(Kind::GiftWrap)
-            .pubkeys(ecdh_pubkeys.iter().copied())
-            .limit(0)
-    });
-    let kind14 = Filter::new()
+/// Live kind-14 filter for the tracked set (`authors = [pub(K_sign)]`).
+fn live_chat_filters(sign_pubkeys: &[PublicKey]) -> Filter {
+    Filter::new()
         .kind(Kind::PrivateDirectMessage)
         .authors(sign_pubkeys.iter().copied())
-        .limit(0);
-    (giftwrap, kind14)
+        .limit(0)
 }
 
 async fn subscribe_chat_filter(
@@ -623,7 +583,7 @@ async fn hydrate_history(
 /// Spawned via [`crate::util::spawn_supervised_chat_listener`] at startup and on
 /// client reload/reconnect (mirrors the trade DM listener). The supervisor also
 /// respawns this task on panic or unexpected exit. Consumes [`ChatRouterCmd`] for
-/// track/untrack and routes live GiftWrap (`#p`) and kind-14 (`authors = pub(K_sign)`) events.
+/// track/untrack and routes live kind-14 (`authors = pub(K_sign)`) events.
 /// Live unwrap and hydration require the per-key inner-signer allow-list from
 /// [`ChatRouterCmd::TrackChatKey`].
 ///
@@ -712,12 +672,11 @@ pub async fn listen_for_chat_messages(
                     );
                     continue;
                 }
-                match unwrap_giftwrap_with_shared_key(
+                match unwrap_chat_envelope(
                     &target.shared_keys,
                     &event,
                     &target.allowed_signers,
-                )
-                .await {
+                ) {
                     Ok(msg) => {
                         let inner = seen_inner.entry(target.key_id.clone()).or_default();
                         if !inner.insert(msg.inner_event_id) {
@@ -740,24 +699,12 @@ pub async fn listen_for_chat_messages(
     }
 }
 
-/// Route a live event to its tracked chat (GiftWrap by `#p`, kind 14 by author).
+/// Route a live event to its tracked chat (kind 14 by outer author).
 fn resolve_chat_target<'a>(
     targets: &'a HashMap<PublicKey, ChatTarget>,
     event: &Event,
 ) -> Option<&'a ChatTarget> {
-    resolve_chat_target_with(targets, event, CHAT_ACCEPT_LEGACY_GIFTWRAP)
-}
-
-fn resolve_chat_target_with<'a>(
-    targets: &'a HashMap<PublicKey, ChatTarget>,
-    event: &Event,
-    accept_legacy: bool,
-) -> Option<&'a ChatTarget> {
     match event.kind {
-        Kind::GiftWrap if accept_legacy => {
-            let target_pubkey = event.tags.public_keys().next()?;
-            targets.get(&target_pubkey)
-        }
         Kind::PrivateDirectMessage => targets.values().find(|t| t.sign_pubkey == event.pubkey),
         _ => None,
     }
@@ -904,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_chat_target_routes_giftwrap_by_p_tag_while_legacy_enabled() {
+    fn resolve_chat_target_ignores_giftwrap() {
         let mut targets: HashMap<PublicKey, ChatTarget> = HashMap::new();
         let shared_hex = sample_shared_hex();
         let _ = apply_chat_router_cmd(track_order_cmd(shared_hex, None), &mut targets);
@@ -915,26 +862,13 @@ mod tests {
             .finalize(&ephemeral)
             .expect("sign");
 
-        let resolved = resolve_chat_target_with(&targets, &event, true).expect("route giftwrap");
-        assert_eq!(resolved.key_id, ChatKeyId::Order("order-1".to_string()));
-        assert!(resolve_chat_target_with(&targets, &event, false).is_none());
-    }
-
-    #[test]
-    fn live_chat_filters_omit_giftwrap_after_cutover() {
-        let ecdh = vec![Keys::generate().public_key()];
-        let sign = vec![Keys::generate().public_key()];
-        let (legacy_on, _kind14) = live_chat_filters(&ecdh, &sign, true);
-        assert!(legacy_on.is_some());
-        let (legacy_off, _) = live_chat_filters(&ecdh, &sign, false);
-        assert!(legacy_off.is_none());
+        assert!(resolve_chat_target(&targets, &event).is_none());
     }
 
     #[test]
     fn live_chat_filters_kind14_uses_authors_not_p_tags() {
-        let ecdh = vec![Keys::generate().public_key()];
         let sign = vec![Keys::generate().public_key()];
-        let (_legacy, kind14) = live_chat_filters(&ecdh, &sign, true);
+        let kind14 = live_chat_filters(&sign);
         let json = serde_json::to_value(&kind14).expect("filter json");
         let authors = json.get("authors").expect("authors");
         assert!(authors

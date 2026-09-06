@@ -55,7 +55,7 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 - **Usage**:
   - The shared keys act as **per‑(dispute, party) chat identities**:
     - Outgoing admin chat messages are kind 14 signed by `K_sign` (`wrap_chat_message`); `p` = `pub(K_conv)`.
-    - Incoming messages are fetched by `authors = [pub(K_sign)]` (kind 14) and, while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true, also by GiftWrap `#p` = ECDH pubkey.
+    - Incoming messages are fetched by `authors = [pub(K_sign)]` (kind 14).
   - Both admin and counterparty can independently derive the same shared key, mirroring the `mostro-chat` model.
   - Per‑party last‑seen timestamps (`buyer_chat_last_seen`, `seller_chat_last_seen`) are used together with these keys to implement incremental, restart‑safe admin chat sync.
 
@@ -63,7 +63,7 @@ In admin mode, Mostrix also uses **per‑dispute shared keys** for the dispute c
 
 ## Protocol v2 kind 14 (Mostro DMs)
 
-Mostrix implements **protocol v2** signed kind 14 for Mostro DMs via [`wrap_message_with`](../src/util/mod.rs). Protocol v1 NIP-59 GiftWrap is not used. **P2P / dispute chat** uses kind 14 (`K_sign` / `K_conv`) and dual-reads legacy GiftWrap until `CHAT_ACCEPT_LEGACY_GIFTWRAP` is flipped (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
+Mostrix implements **protocol v2** signed kind 14 for Mostro DMs via [`wrap_message_with`](../src/util/mod.rs). Protocol v1 NIP-59 GiftWrap is not used. **P2P / dispute chat** uses kind 14 (`K_sign` / `K_conv`) only (see [MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)).
 
 ### 1. Normal Mode (Reputation Enabled)
 In this mode, Mostro can link the trade to your identity key for reputation purposes, but other Nostr users cannot.
@@ -133,6 +133,6 @@ Mostrix avoids storing full message histories locally. Instead, it uses the dete
 1. On startup, the client retrieves all active order IDs and their associated `trade_index` from the database.
 2. It re-derives the corresponding `Trade Keys`.
 3. It queries Nostr relays for recent **protocol DM** events directed to those trade public keys — signed kind 14 from Mostro (`filter_protocol_dm_from_mostro`).
-4. Separately, **P2P / dispute chat** is hydrated by the shared-key chat router (kind 14 `authors = [pub(K_sign)]`, plus legacy GiftWrap `#p` while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true).
+4. Separately, **P2P / dispute chat** is hydrated by the shared-key chat router (kind 14 `authors = [pub(K_sign)]`).
 5. After **session restore** or **seed import / key reload**, `clear_session_chat_projection` clears stale in-memory chat cursors before relay re-hydrate (`src/ui/helpers/startup.rs`, `clear_runtime_session_state` in `src/ui/key_handler/async_tasks.rs`). See [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md) — "Session restore hydrate".
 6. This allows the client to reconstruct the current state of any active trade without needing a heavy local message database.

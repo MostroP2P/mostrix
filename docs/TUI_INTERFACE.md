@@ -427,7 +427,7 @@ Mostrix uses a consistent color palette defined in `src/ui/mod.rs`:
 
 **Status**: ✅ **Fully Implemented (kind 14 + ECDH shared keys)**
 
-The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using kind-14 chat envelopes (`K_sign` / `K_conv`, with dual-read of legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true) and per‑dispute ECDH shared keys derived between the admin key and each party’s trade pubkey.
+The admin chat system in the "Disputes in Progress" tab provides real-time, Nostr-based communication using kind-14 chat envelopes (`K_sign` / `K_conv`) and per‑dispute ECDH shared keys derived between the admin key and each party’s trade pubkey.
 
 #### Helper module organization (readability refactor)
 
@@ -501,7 +501,7 @@ The key handler processes input in this order:
 
 #### Kind-14 Chat Internals (Shared Key Model)
 
-Active admin-chat transport is kind 14 (`K_sign` / `K_conv`). GiftWrap is inbound-only during the `CHAT_ACCEPT_LEGACY_GIFTWRAP` dual-read window, not the send path.
+Active admin-chat transport is kind 14 (`K_sign` / `K_conv`).
 
 - **Shared key derivation**:
   - When a dispute is taken (`AdminDispute::new`), per-party ECDH shared secrets are eagerly derived (`derive_shared_key_hex`) and stored as hex in `buyer_shared_key_hex` / `seller_shared_key_hex`. Chat wrap/unwrap derives `K_conv` / `K_sign` from that IKM at runtime.
@@ -513,14 +513,14 @@ Active admin-chat transport is kind 14 (`K_sign` / `K_conv`). GiftWrap is inboun
 - **Sending messages**:
   - Admin messages are sent via `send_admin_chat_message_via_shared_key` (spawned as an async task to avoid blocking the UI):
     - Inner event is a kind-1 text note signed by the admin key.
-    - Outer envelope is always kind 14 (`wrap_chat_message`); GiftWrap is receive-only during the dual-read window.
+    - Outer envelope is always kind 14 (`wrap_chat_message`).
     - Published to relays without blocking the main UI thread.
 
 - **Receiving messages**:
-  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched subscription (kind 14 always; GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true). Disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup, reconnect, and after **session restore** (`PostRestoreHydrateCompleted`). History is hydrated once per key on track.
+  - The shared-key chat subscription router (`listen_for_chat_messages`) delivers messages live over a batched kind-14 subscription. Disputes are tracked via `track_dispute_chat` when taken (with a party+admin inner-signer allow-list) and re-tracked by `track_startup_chats` at startup, reconnect, and after **session restore** (`PostRestoreHydrateCompleted`). History is hydrated once per key on track.
   - For each in-progress dispute, the fetch:
     - Rebuilds buyer/seller shared `Keys` from the stored hex.
-    - Fetches history with kind-14 `authors = [pub(K_sign)]`, plus a legacy `kind: 1059` `#p` query while dual-read is on (7-day rolling window; GiftWrap `created_at` is randomized so that query keeps the wide floor).
+    - Fetches history with kind-14 `authors = [pub(K_sign)]` (7-day rolling window).
     - Decrypts each event using the shared key (`K_conv` / `K_sign`) and rejects inner signers outside the party+admin allow-list.
     - Uses `last_seen_timestamp` to skip already-processed events.
     - Skips events signed by the admin identity to avoid duplicating locally-sent messages.

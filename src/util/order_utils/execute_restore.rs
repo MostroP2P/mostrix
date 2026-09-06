@@ -156,7 +156,7 @@ pub async fn execute_restore_session(
     // The restore request carries no request id, so unlike the order flows the
     // response cannot be tied back by a random id only Mostro could echo. The
     // sender check is the only thing standing between us and a forged
-    // gift-wrapped RestoreData seeding attacker-controlled orders.
+    // kind-14 RestoreData seeding attacker-controlled orders.
     if sender != &mostro_pubkey {
         return Err(anyhow::anyhow!(
             "Restore response signed by {sender}, expected the configured Mostro instance"

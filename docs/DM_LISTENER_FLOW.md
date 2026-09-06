@@ -359,5 +359,5 @@ Use this checklist when validating protocol DMs against a live v2 node:
 2. **v1 node** (`protocol_version: "1"`) — Mostrix does **not** speak GiftWrap; Mostro Info shows an unsupported warning. Do not expect trade DMs to work.
 3. **Mid-trade restart** — quit and relaunch Mostrix; startup `fetch_events` replay hydrates Messages tab state via the kind-14 filter.
 4. **Session restore (no restart)** — Settings → Restore Session after seed import; Messages tab and My Trades peer chat hydrate via `spawn_post_restore_hydrate` without relaunching the DM listener. See [RESTORE_SESSION_ACCEPTANCE.md](RESTORE_SESSION_ACCEPTANCE.md).
-5. **P2P order chat** — kind 14 outbound (`chat_utils.rs`); inbound still dual-reads legacy GiftWrap while `CHAT_ACCEPT_LEGACY_GIFTWRAP` is true. Unrelated to protocol DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
+5. **P2P order chat** — kind 14 only (`chat_utils.rs`). Unrelated to protocol DM cutover. Full #102 matrix: [CHAT_KIND14_ACCEPTANCE.md](CHAT_KIND14_ACCEPTANCE.md).
 

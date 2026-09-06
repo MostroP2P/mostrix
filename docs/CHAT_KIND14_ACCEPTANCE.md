@@ -19,15 +19,13 @@ manual checklist below (relay storage caveat in the protocol docs).
 | Dispute admin↔party uses the same envelope | `user_solver_chat_roundtrip_accepts_only_conversation_parties`; `dispute_chat_allowed_signers_includes_admin_and_party` | Admin Disputes in Progress chat both ways |
 | Protocol v2 Mostro DMs still work (author routing intact) | `filter_protocol_dm_v2_*` (`filters.rs`); chat live filter is `authors=[pub(K_sign)]` so node-authored kind-14 stays on the DM listener | Order create/take/pay/release on a v2 node |
 
-## Dual-read window
+## Dual-read window (closed)
 
-While [`CHAT_ACCEPT_LEGACY_GIFTWRAP`](../src/util/chat_utils.rs) is `true`:
+P2P / dispute chat is kind 14 only:
 
-- **Outbound** P2P / dispute chat: kind 14 only.
-- **Inbound**: kind 14 + legacy GiftWrap (`#p` = ECDH pubkey).
+- **Outbound** and **inbound**: kind 14 (`authors = [pub(K_sign)]`).
 - **Observer**: kind 14 + `K_conv` only (cannot unwrap GiftWrap).
-
-Flip the const to `false` after coordinated deprecation with mobile / other clients.
+- GiftWrap (kind 1059) is rejected on unwrap and is not subscribed.
 
 ## Manual smoke (optional for CI)
 
@@ -38,5 +36,5 @@ Flip the const to `false` after coordinated deprecation with mobile / other clie
 
 ## Related
 
-- Migration steps 1–7 shipped via kind-14 PRs (core bump, adapters, listener, security, dual-read, Observer, docs).
+- Migration steps 1–8 shipped via kind-14 PRs (core bump, adapters, listener, security, dual-read window, Observer, docs, GiftWrap receive cutover).
 - Tracking issue: [#102](https://github.com/MostroP2P/mostrix/issues/102).

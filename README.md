@@ -40,7 +40,7 @@ The **documentation index** is **[docs/README.md](docs/README.md)** — architec
 
 **Quick links:** [Startup & config](docs/STARTUP_AND_CONFIG.md) · [DM listener / Messages sync](docs/DM_LISTENER_FLOW.md) · [Database](docs/DATABASE.md) · [Message flow & protocol](docs/MESSAGE_FLOW_AND_PROTOCOL.md) · [Key management](docs/KEY_MANAGEMENT.md) · [Coding standards](docs/CODING_STANDARDS.md)
 
-Mostrix speaks **protocol v2** (signed kind 14 / NIP-44) for Mostro protocol DMs and shows the advertised `protocol_version` on the **Mostro Info** tab. Protocol v1 GiftWrap instances are unsupported. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`), with optional dual-read of legacy GiftWrap. Details: [docs/README.md — Protocol v2](docs/README.md#protocol-v2-nip-44--protocol-dms-complete).
+Mostrix speaks **protocol v2** (signed kind 14 / NIP-44) for Mostro protocol DMs and shows the advertised `protocol_version` on the **Mostro Info** tab. Protocol v1 GiftWrap instances are unsupported. P2P order chat and admin dispute chat use kind 14 (`K_sign` / `K_conv`) only. Details: [docs/README.md — Protocol v2](docs/README.md#protocol-v2-nip-44--protocol-dms-complete).
 
 ### Settings (`settings.toml`)
 
@@ -159,7 +159,7 @@ When `user_mode = "admin"` and `admin_privkey` is set in `settings.toml`, Mostri
 - **Disputes Pending**: Lists disputes with status `Initiated`. Select one and press **Enter** to take the dispute (ownership moves to you; other admins cannot take it). Order fiat code is fetched from the relay when taking a dispute, so admins do not need the order in their local database.
 - **Disputes in Progress**: Workspace for disputes you have taken (`InProgress`). Per-dispute sidebar, header with full dispute info (parties, amounts, currency, ratings), and an integrated **shared-keys chat** with buyer and seller:
   - For each `(dispute, party)` pair, a shared key is derived between the admin key and the party’s trade pubkey and stored as hex in the local DB.
-  - Admin and party chat via NIP‑59 gift-wrap events addressed to the shared key’s public key, providing restart‑safe, per‑dispute conversations.
+  - Admin and party chat via kind-14 events (`K_sign` / `K_conv`) addressed to `pub(K_conv)`, providing restart‑safe, per‑dispute conversations.
   - Use **Tab** to switch chat view, **Shift+I** to enable/disable chat input, **PageUp** / **PageDown** to scroll, **End** to jump to latest. Press **Ctrl+S** to save the selected attachment to `~/.mostrix/downloads/`. Press **Shift+F** to open the finalization popup.
 - **Finalization**: **Shift+F** opens one popup: **💰 Pay buyer** / **↩️ Refund seller** / **Bond** (only when instance info has `bond_enabled: true` on kind 38385). Inline slash overlay; confirm shows bond recap when bonds are on. Wire payload via [`BondSlashChoice`](src/util/order_utils/bond_resolution.rs). **Esc** exits. Post-slash traders may get **AddBondInvoice** payout popups — see [docs/FINALIZE_DISPUTES.md](docs/FINALIZE_DISPUTES.md). Finalized disputes cannot be settled/canceled again.
 - **Settings (admin)**: **Add Dispute Solver** (add another solver by `npub`), **Change Admin Key** (update `admin_privkey`).

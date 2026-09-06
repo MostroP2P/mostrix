@@ -67,7 +67,8 @@ Mostrix does not currently operate a paid bug bounty program.
 - Key generation, derivation, storage, and rotation (see
   [docs/KEY_MANAGEMENT.md](docs/KEY_MANAGEMENT.md)).
 - Handling and validation of Nostr events and Mostro protocol messages,
-  including NIP-44 and NIP-59 gift-wrapped direct messages.
+  including NIP-44 signed kind-14 protocol DMs and kind-14 P2P / dispute chat
+  (NIP-59 GiftWrap envelopes are not accepted).
 - Local data handling: SQLite database, `settings.toml`, log files.
 - Build and release workflows under [.github/workflows/](.github/workflows/), and
   the integrity of published release artifacts.
