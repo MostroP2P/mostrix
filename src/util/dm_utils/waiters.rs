@@ -30,13 +30,23 @@ pub const WAIT_FOR_DM_BUSY_MSG: &str = "Too many in-flight Mostro requests; plea
 const WAITER_SINCE_SKEW_SECS: u64 = 2;
 
 pub(crate) struct PendingDmWaiter {
+    pub(crate) id: u64,
     pub(crate) trade_keys: Keys,
     pub(crate) response_tx: oneshot::Sender<Event>,
     pub(crate) since: Timestamp,
 }
 
+/// Decrypt probe data only — oneshots stay in the registry until a match is taken by id.
+#[derive(Clone)]
+pub(crate) struct PendingWaiterSnapshot {
+    pub(crate) id: u64,
+    pub(crate) trade_keys: Keys,
+    pub(crate) since: Timestamp,
+}
+
 pub(crate) struct PendingWaiterRegistry {
     waiters: Vec<PendingDmWaiter>,
+    next_id: u64,
 }
 
 impl PendingWaiterRegistry {
@@ -44,6 +54,7 @@ impl PendingWaiterRegistry {
     pub(crate) fn new() -> Self {
         Self {
             waiters: Vec::new(),
+            next_id: 1,
         }
     }
 
@@ -67,7 +78,10 @@ impl PendingWaiterRegistry {
         if self.waiters.len() >= MAX_PENDING_WAITERS {
             return Err(WAIT_FOR_DM_BUSY_MSG);
         }
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
         self.waiters.push(PendingDmWaiter {
+            id,
             trade_keys,
             response_tx,
             since,
@@ -75,12 +89,30 @@ impl PendingWaiterRegistry {
         Ok(())
     }
 
-    pub(crate) fn take_all(&mut self) -> Vec<PendingDmWaiter> {
-        std::mem::take(&mut self.waiters)
+    pub(crate) fn snapshot_candidates(&self) -> Vec<PendingWaiterSnapshot> {
+        self.waiters
+            .iter()
+            .filter(|w| !w.response_tx.is_closed())
+            .map(|w| PendingWaiterSnapshot {
+                id: w.id,
+                trade_keys: w.trade_keys.clone(),
+                since: w.since,
+            })
+            .collect()
     }
 
-    pub(crate) fn restore(&mut self, waiters: Vec<PendingDmWaiter>) {
-        self.waiters.extend(waiters);
+    /// Remove and send on a matched waiter. Holds the registry lock for the send.
+    pub(crate) fn take_and_send(&mut self, id: u64, event: Event) -> bool {
+        let Some(pos) = self.waiters.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        let waiter = self.waiters.remove(pos);
+        waiter.response_tx.send(event).is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_all(&mut self) -> Vec<PendingDmWaiter> {
+        std::mem::take(&mut self.waiters)
     }
 
     /// Unique trade pubkeys with the oldest `since` per key (reconnect catch-up window).
@@ -106,6 +138,7 @@ impl PendingWaiterRegistry {
 
 static PENDING_WAITERS: Mutex<PendingWaiterRegistry> = Mutex::new(PendingWaiterRegistry {
     waiters: Vec::new(),
+    next_id: 1,
 });
 
 fn poisoned_registry() -> &'static str {
@@ -171,9 +204,12 @@ pub(crate) fn snapshot_pending_waiter_targets() -> Vec<(PublicKey, Timestamp)> {
     }
 }
 
-pub(crate) fn take_pending_waiters() -> Vec<PendingDmWaiter> {
+pub(crate) fn snapshot_pending_waiter_candidates() -> Vec<PendingWaiterSnapshot> {
     match PENDING_WAITERS.lock() {
-        Ok(mut guard) => guard.take_all(),
+        Ok(mut guard) => {
+            guard.prune_closed();
+            guard.snapshot_candidates()
+        }
         Err(_) => {
             let _ = poisoned_registry();
             Vec::new()
@@ -181,14 +217,12 @@ pub(crate) fn take_pending_waiters() -> Vec<PendingDmWaiter> {
     }
 }
 
-pub(crate) fn restore_unmatched_waiters(waiters: Vec<PendingDmWaiter>) {
-    if waiters.is_empty() {
-        return;
-    }
+pub(crate) fn take_and_send_pending_waiter(id: u64, event: Event) -> bool {
     match PENDING_WAITERS.lock() {
-        Ok(mut guard) => guard.restore(waiters),
+        Ok(mut guard) => guard.take_and_send(id, event),
         Err(_) => {
             let _ = poisoned_registry();
+            false
         }
     }
 }
@@ -204,8 +238,15 @@ pub(crate) fn reset_pending_waiters_for_tests() {
 mod tests {
     use super::*;
     use crate::util::{set_dm_router_cmd_tx, wait_for_dm, WAIT_FOR_DM_TIMEOUT_MSG};
-    use nostr_sdk::prelude::Keys;
+    use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, Tag};
     use tokio::sync::oneshot;
+
+    fn dummy_event(keys: &Keys) -> Event {
+        EventBuilder::new(Kind::PrivateDirectMessage, "ciphertext")
+            .tags([Tag::public_key(keys.public_key())])
+            .finalize(keys)
+            .expect("sign kind-14")
+    }
 
     async fn async_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -301,19 +342,52 @@ mod tests {
     }
 
     #[test]
-    fn restore_keeps_waiters_registered_during_match() {
+    fn snapshot_drop_does_not_cancel_oneshot() {
         let mut registry = PendingWaiterRegistry::new();
-        let (tx_old, _rx_old) = oneshot::channel::<Event>();
+        let (tx, mut rx) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx_old, waiter_since_now())
-            .expect("old");
-        let taken = registry.take_all();
-        let (tx_new, _rx_new) = oneshot::channel::<Event>();
+            .register(Keys::generate(), tx, waiter_since_now())
+            .expect("register");
+
+        let snapshot = registry.snapshot_candidates();
+        assert_eq!(snapshot.len(), 1);
+        drop(snapshot);
+
+        assert!(
+            matches!(rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "probe snapshot must not own the oneshot"
+        );
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn take_and_send_removes_only_matched_waiter() {
+        let mut registry = PendingWaiterRegistry::new();
+        let keys_a = Keys::generate();
+        let keys_b = Keys::generate();
+        let (tx_a, mut rx_a) = oneshot::channel::<Event>();
+        let (tx_b, mut rx_b) = oneshot::channel::<Event>();
         registry
-            .register(Keys::generate(), tx_new, waiter_since_now())
-            .expect("new during match");
-        registry.restore(taken);
-        assert_eq!(registry.len(), 2);
+            .register(keys_a.clone(), tx_a, waiter_since_now())
+            .expect("a");
+        registry
+            .register(keys_b, tx_b, waiter_since_now())
+            .expect("b");
+        let snap = registry.snapshot_candidates();
+        let id_a = snap
+            .iter()
+            .find(|s| s.trade_keys.public_key() == keys_a.public_key())
+            .expect("waiter a")
+            .id;
+        let event = dummy_event(&keys_a);
+
+        assert!(registry.take_and_send(id_a, event.clone()));
+        assert_eq!(registry.len(), 1);
+        assert!(rx_a.try_recv().is_ok());
+        assert!(matches!(
+            rx_b.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

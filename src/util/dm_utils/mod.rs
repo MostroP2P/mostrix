@@ -59,8 +59,8 @@ pub const WAIT_FOR_DM_TIMEOUT_MSG: &str = "Timeout waiting for protocol DM event
 
 use waiters::{
     event_created_at_meets_waiter_since, prune_closed_pending_waiters, register_pending_waiter,
-    restore_unmatched_waiters, snapshot_pending_waiter_targets, take_pending_waiters,
-    waiter_since_now, PENDING_WAITER_GC_INTERVAL,
+    snapshot_pending_waiter_candidates, snapshot_pending_waiter_targets,
+    take_and_send_pending_waiter, waiter_since_now, PENDING_WAITER_GC_INTERVAL,
 };
 
 /// Default NIP-40 expiration window for outbound v2 protocol DMs (mirrors daemon `dm_days`).
@@ -1919,27 +1919,22 @@ async fn satisfy_pending_waiters_for_event(
     event: &Event,
     rumor_cache: &mut HashMap<PublicKey, CachedDmUnwrap>,
 ) {
-    let waiters = take_pending_waiters();
-    if waiters.is_empty() {
+    let candidates = snapshot_pending_waiter_candidates();
+    if candidates.is_empty() {
         return;
     }
-    let mut still_pending = Vec::with_capacity(waiters.len());
-    for waiter in waiters {
-        if waiter.response_tx.is_closed() {
+    for candidate in candidates {
+        if !event_created_at_meets_waiter_since(event.created_at, candidate.since) {
             continue;
         }
-        if !event_created_at_meets_waiter_since(event.created_at, waiter.since) {
-            still_pending.push(waiter);
-            continue;
-        }
-        let key = waiter.trade_keys.public_key();
+        let key = candidate.trade_keys.public_key();
         let cached = if let Some(cached) = rumor_cache.get(&key) {
             *cached
         } else {
-            let cached = match unwrap_incoming(event, &waiter.trade_keys).await {
+            let cached = match unwrap_incoming(event, &candidate.trade_keys).await {
                 Ok(Some(u)) => CachedDmUnwrap {
                     can_decrypt: true,
-                    skip_for_waiter: is_own_signed_v2_outbound(event, &waiter.trade_keys, &u),
+                    skip_for_waiter: is_own_signed_v2_outbound(event, &candidate.trade_keys, &u),
                 },
                 _ => CachedDmUnwrap {
                     can_decrypt: false,
@@ -1951,12 +1946,9 @@ async fn satisfy_pending_waiters_for_event(
         };
 
         if cached.can_decrypt && !cached.skip_for_waiter {
-            let _ = waiter.response_tx.send(event.clone());
-        } else {
-            still_pending.push(waiter);
+            let _ = take_and_send_pending_waiter(candidate.id, event.clone());
         }
     }
-    restore_unmatched_waiters(still_pending);
 }
 
 async fn subscribe_pending_waiter_pubkeys(

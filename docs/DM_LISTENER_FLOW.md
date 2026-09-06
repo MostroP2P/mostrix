@@ -85,7 +85,7 @@ The in-memory **Messages** list (`Vec<OrderMessage>`) is **not** persisted. Only
 `listen_for_order_messages(client, mostro_pubkey, transport, …)` clones the active-order map and, for each `(order_id, trade_index)`:
 
 1. derives `trade_keys` from the persisted `User` seed + trade index
-2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro(transport, …)`) with a mode from `DmSubscriptionMode`:
+2. subscribes via `dm_helpers::ensure_order_dm_subscription` (filter = `filter_protocol_dm_from_mostro(…)`) with a mode from `DmSubscriptionMode`:
    - **`StartupCatchUp`** (no `last_seen_dm_ts` yet): latest retained event (`limit(1)`) — tight catch-up
    - **`StartupSince(ts)`** (cursor present): `since(ts)` for incremental subscription
    - **`LiveOnly`** (used after `TrackOrder` during live flows, e.g. take-order): **`.limit(0)`** live stream — **not** `.since(now)`, so Same-second Mostro replies are not dropped when `take_order` sends an early `TrackOrder` before `wait_for_dm` (the pubkey is already subscribed once; a second waiter subscription is skipped)
@@ -141,7 +141,7 @@ Use case: “I’m about to send a request DM; wait for the first decryptable re
 What happens:
 
 - `wait_for_dm` inserts the oneshot into the **process-wide** waiter registry (bounded by `MAX_PENDING_WAITERS`) **before** sending the protocol DM. A full registry fails the command without sending, so Mostro is not left with an unacked action.
-- The listener command is a subscribe hint only. If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(transport, …).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
+- The listener command is a subscribe hint only. If this trade pubkey is not yet subscribed, the listener subscribes with `filter_protocol_dm_from_mostro(…).limit(0)` and records the `SubscriptionId` in `pubkey_to_subscription`.
 - The waiter subscription uses a **live-only** filter (`.limit(0)`), which avoids
   replay backlog and prevents missing immediate responses due to same-second `since(now)` cutoff.
 - If the listener is aborted (reconnect / key reload / panic respawn), the oneshot stays in the registry. Bootstrap re-subscribes with `WaiterCatchUp(since)` and `fetch_events` so a reply that landed during the flap can still satisfy the waiter. Events older than `since` are ignored so startup catch-up does not steal a stale trade DM as the in-flight response.
