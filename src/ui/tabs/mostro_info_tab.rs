@@ -4,9 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
-use crate::util::{
-    format_instance_info_age, transport_from_instance, MostroInstanceInfo, Transport,
-};
+use crate::util::{format_instance_info_age, MostroInstanceInfo, Transport};
 
 /// Inner-body height below which protocol/version lines come first and
 /// secondary daemon/LND/fiat sections are dropped so they cannot clip the
@@ -95,7 +93,7 @@ fn build_info_lines(info: &MostroInstanceInfo, height: u16) -> Vec<Line<'static>
     push_kv(
         &mut lines,
         "Wire transport",
-        transport_display_label(transport_from_instance(Some(info))),
+        &Transport::Nip44Direct.to_string(),
     );
     if compact {
         return lines;
@@ -222,10 +220,6 @@ fn build_info_lines(info: &MostroInstanceInfo, height: u16) -> Vec<Line<'static>
     lines
 }
 
-fn transport_display_label(_transport: Transport) -> &'static str {
-    "NIP-44 direct"
-}
-
 fn section_title(title: &str) -> Line<'static> {
     Line::from(vec![Span::styled(
         title.to_string(),
@@ -319,7 +313,7 @@ mod tests {
         };
         let text = lines_text(&info);
         assert!(text.contains("Protocol version: 1"));
-        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(text.contains("Wire transport: nip44"));
         assert!(text.contains(
             "This instance advertises protocol v1 (GiftWrap), which Mostrix no longer supports."
         ));
@@ -333,7 +327,7 @@ mod tests {
         };
         let text = lines_text(&info);
         assert!(text.contains("Protocol version: 2"));
-        assert!(text.contains("Wire transport: NIP-44 direct"));
+        assert!(text.contains("Wire transport: nip44"));
         assert!(!text.contains("no longer supports"));
     }
 

@@ -21,7 +21,7 @@ use crate::ui::orders::{
     MessageViewState, OperationResult, OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::user_state::UserMode;
-use crate::util::{transport_from_instance, MostroInstanceInfo};
+use crate::util::MostroInstanceInfo;
 use nostr_sdk::prelude::Keys;
 
 #[derive(Debug)]
@@ -423,7 +423,7 @@ impl AppState {
                 }
             }
         }
-        self.transport = transport_from_instance(info.as_ref());
+        self.transport = Transport::Nip44Direct;
         if info.as_ref().and_then(|i| i.protocol_version) == Some(1) {
             log::warn!(
                 "Mostro instance advertises protocol_version=1 (GiftWrap); Mostrix speaks NIP-44 (protocol v2) only"
