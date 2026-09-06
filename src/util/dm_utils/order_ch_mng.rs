@@ -10,7 +10,7 @@ use crate::ui::{
     MessageNotification, OperationResult, OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
-use mostro_core::prelude::{Action, SmallOrder};
+use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
 use uuid::Uuid;
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
@@ -134,8 +134,16 @@ fn maybe_insert_my_trade_placeholder_message(app: &mut AppState, os: &OrderSucce
     }
 }
 
-/// If `PaymentRequestRequired` arrived before any DM row (or the row has no snapshot),
-/// seed amount/payment/premium from the execute-path `SmallOrder`.
+/// Invoice-less `PayInvoice`/`AddInvoice` + `Payload::Peer` is reputation only.
+fn existing_row_is_reputation_placeholder(msg: &crate::ui::OrderMessage) -> bool {
+    let inner = msg.message.get_inner_message_kind();
+    matches!(inner.action, Action::PayInvoice | Action::AddInvoice)
+        && matches!(inner.payload, Some(Payload::Peer(_)))
+        && !msg.buyer_invoice.as_ref().is_some_and(|s| !s.is_empty())
+}
+
+/// If `PaymentRequestRequired` arrived before any DM row (or the row is a reputation
+/// placeholder), seed the Messages row from the execute-path `SmallOrder` / BOLT11.
 fn maybe_insert_payment_request_placeholder(
     app: &mut AppState,
     order: &SmallOrder,
@@ -164,6 +172,24 @@ fn maybe_insert_payment_request_placeholder(
                 }
                 if existing.order_status.is_none() {
                     existing.order_status = order.status;
+                }
+                if existing_row_is_reputation_placeholder(existing) && !invoice.is_empty() {
+                    let request_id = existing.message.get_inner_message_kind().request_id;
+                    existing.message = Message::new_order(
+                        Some(order_id),
+                        request_id,
+                        Some(trade_index),
+                        action,
+                        Some(Payload::PaymentRequest(
+                            Some(order.clone()),
+                            invoice.to_string(),
+                            sat_amount,
+                        )),
+                    );
+                    existing.buyer_invoice = Some(invoice.to_string());
+                    if sat_amount.is_some() {
+                        existing.sat_amount = sat_amount;
+                    }
                 }
                 return;
             }
@@ -492,7 +518,7 @@ mod tests {
         order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
     };
     use crate::ui::{FormState, UserRole};
-    use mostro_core::prelude::{Message, Payload, SmallOrder, Status};
+    use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
 
     #[test]
@@ -606,6 +632,92 @@ mod tests {
 
         assert!(app.order_form_draft.is_none());
         assert!(matches!(app.mode, UiMode::NewMessageNotification(_, _, _)));
+    }
+
+    #[test]
+    fn payment_request_required_promotes_add_invoice_peer_row() {
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        let buyer_info = UserInfo {
+            rating: 3.9,
+            reviews: 5,
+            operating_days: 9,
+        };
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(
+                Some(order_id),
+                None,
+                Some(1),
+                Action::AddInvoice,
+                Some(Payload::Peer(Peer {
+                    pubkey: String::new(),
+                    reputation: Some(buyer_info.clone()),
+                })),
+            ),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 1,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(true),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: None,
+            buyer_reputation: Some(buyer_info.clone()),
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    status: Some(Status::WaitingPayment),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1real".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 1,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    created_at: None,
+                    trade_index: 1,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: true,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        let inner = row.message.get_inner_message_kind();
+        assert_eq!(inner.action, Action::PayInvoice);
+        match &inner.payload {
+            Some(Payload::PaymentRequest(_, invoice, amount)) => {
+                assert_eq!(invoice, "lnbc1real");
+                assert_eq!(*amount, Some(1000));
+            }
+            other => panic!("expected PaymentRequest payload, got {other:?}"),
+        }
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1real"));
+        assert_eq!(row.sat_amount, Some(1000));
+        let stored = row.buyer_reputation.as_ref().expect("buyer rating");
+        assert_eq!(stored.rating, buyer_info.rating);
+        assert_eq!(stored.reviews, buyer_info.reviews);
+        assert!(row.seller_reputation.is_none());
     }
 
     #[test]
