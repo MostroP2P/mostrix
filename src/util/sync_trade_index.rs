@@ -28,8 +28,12 @@ pub fn effective_last_trade_index(restore_max: i64, mostro_last: i64) -> i64 {
 
 /// Ask Mostro for this identity's last used trade index (`Action::LastTradeIndex`).
 ///
-/// Uses identity keys (account-scoped, same as restore session). The response
-/// carries the index on the inner [`MessageKind::trade_index`] field.
+/// Account-scoped: the identity travels only inside the encrypted identity
+/// proof (the daemon resolves the account from `event.identity`). The outer
+/// kind-14 is authored by a fresh ephemeral key — never the identity key,
+/// which would publish a permanent identity→Mostro link on every relay —
+/// and Mostro replies to that ephemeral key. The response carries the index
+/// on the inner [`MessageKind::trade_index`] field.
 pub async fn fetch_last_trade_index_from_mostro(
     client: &Client,
     identity_keys: &Keys,
@@ -45,10 +49,16 @@ pub async fn fetch_last_trade_index_from_mostro(
 
     log::info!("Requesting last trade index from {mostro_pubkey}");
 
+    // Ephemeral author: the daemon resolves the account from the identity
+    // proof and uses this key only as the reply address. Not a wallet trade
+    // key — the daemon skips the trade-index check for this action, so no
+    // index is burned.
+    let ephemeral_trade_keys = Keys::generate();
+
     let sent_message = send_dm(
         client,
         Some(identity_keys),
-        identity_keys,
+        &ephemeral_trade_keys,
         &mostro_pubkey,
         message_json,
         None,
@@ -56,13 +66,13 @@ pub async fn fetch_last_trade_index_from_mostro(
     );
 
     let recv_event = wait_for_dm(
-        identity_keys,
+        &ephemeral_trade_keys,
         FETCH_EVENTS_TIMEOUT,
         Some(request_id),
         sent_message,
     )
     .await?;
-    let messages = parse_dm_events(recv_event, identity_keys, None).await;
+    let messages = parse_dm_events(recv_event, &ephemeral_trade_keys, None).await;
 
     let Some((response_message, _, sender)) = messages.first() else {
         return Err(anyhow::anyhow!(
