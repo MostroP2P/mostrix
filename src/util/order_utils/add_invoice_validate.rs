@@ -7,10 +7,13 @@ use mostro_core::prelude::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeeCheck {
     /// Sync `take_order`: fee is required; amount must equal book − split fee.
+    /// `requested.amount` is the **book** gross.
     ExactRequired,
-    /// DM listener after bond: if fee is known, exact match; otherwise accept
-    /// `0 < returned.amount <= book` after identity/fiat checks.
-    ExactOrUpperBound,
+    /// DM listener after bond: if fee is known, treat `requested.amount` as book and
+    /// require exact net. If fee is missing, require `returned.amount == requested.amount`
+    /// (local row must already hold the trusted buyer-invoice net from the take path).
+    /// Never accept an arbitrary positive amount below book (bond floor would pass).
+    ExactOrMatchLocal,
 }
 
 /// Mostro split fee charged to each party (`fee_rate * amount / 2`, rounded).
@@ -130,7 +133,8 @@ pub fn validate_take_sell_add_invoice_reply_with_fee_check(
         ));
     }
 
-    // Fixed-price book orders: buyer invoice is amount − Mostro split fee.
+    // Fixed-price: buyer invoice is amount − Mostro split fee (when `requested` is book),
+    // or an exact match to a locally trusted net already persisted at take/bond time.
     if requested.amount > 0 {
         if let Some(rate) = fee_rate {
             let expected = expected_buyer_invoice_sats(requested.amount, rate);
@@ -150,19 +154,14 @@ pub fn validate_take_sell_add_invoice_reply_with_fee_check(
                     "Cannot verify AddInvoice sats without Mostro fee from instance info"
                 ));
             }
-            FeeCheck::ExactOrUpperBound => {
-                if returned.amount <= 0 || returned.amount > requested.amount {
+            FeeCheck::ExactOrMatchLocal => {
+                if returned.amount <= 0 || returned.amount != requested.amount {
                     return Err(anyhow::anyhow!(
-                        "AddInvoice sats out of range without fee: got {} (book {})",
+                        "AddInvoice sats mismatch without fee: got {} (local trusted {})",
                         returned.amount,
                         requested.amount
                     ));
                 }
-                log::warn!(
-                    "AddInvoice sats accepted with upper-bound check only (fee unavailable): {} <= book {}",
-                    returned.amount,
-                    requested.amount
-                );
                 return Ok(returned.amount);
             }
         }
@@ -236,9 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_add_invoice_upper_bound_without_fee() {
+    fn validate_add_invoice_match_local_without_fee() {
         let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
+        let mut requested = sample_small_order(id);
+        // Local row already stores trusted buyer-invoice net from take/bond.
+        requested.amount = 20_895;
         let mut returned = sample_small_order(id);
         returned.amount = 20_895;
         let sats = validate_take_sell_add_invoice_reply_with_fee_check(
@@ -246,21 +247,99 @@ mod tests {
             &returned,
             None,
             None,
-            FeeCheck::ExactOrUpperBound,
+            FeeCheck::ExactOrMatchLocal,
         )
         .unwrap();
         assert_eq!(sats, 20_895);
 
-        returned.amount = 21_001;
+        // Bond floor / forged under-amount must not pass.
+        returned.amount = 1_000;
         let err = validate_take_sell_add_invoice_reply_with_fee_check(
             &requested,
             &returned,
             None,
             None,
-            FeeCheck::ExactOrUpperBound,
+            FeeCheck::ExactOrMatchLocal,
         )
-        .expect_err("above book must fail");
-        assert!(err.to_string().contains("out of range"));
+        .expect_err("bond-sized amount must fail");
+        assert!(err.to_string().contains("mismatch without fee"));
+    }
+
+    #[test]
+    fn validate_add_invoice_rejects_omitted_identity_fields() {
+        let id = uuid::Uuid::new_v4();
+        let requested = sample_small_order(id);
+        let net = expected_buyer_invoice_sats(21_000, 0.01);
+
+        let mut missing_id = sample_small_order(id);
+        missing_id.id = None;
+        missing_id.amount = net;
+        assert!(
+            validate_take_sell_add_invoice_reply(&requested, &missing_id, None, Some(0.01))
+                .unwrap_err()
+                .to_string()
+                .contains("missing order id")
+        );
+
+        let mut missing_kind = sample_small_order(id);
+        missing_kind.kind = None;
+        missing_kind.amount = net;
+        assert!(
+            validate_take_sell_add_invoice_reply(&requested, &missing_kind, None, Some(0.01))
+                .unwrap_err()
+                .to_string()
+                .contains("missing order kind")
+        );
+
+        let mut missing_status = sample_small_order(id);
+        missing_status.status = None;
+        missing_status.amount = net;
+        assert!(validate_take_sell_add_invoice_reply(
+            &requested,
+            &missing_status,
+            None,
+            Some(0.01)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing order status"));
+
+        let mut empty_fiat_code = sample_small_order(id);
+        empty_fiat_code.fiat_code.clear();
+        empty_fiat_code.amount = net;
+        assert!(validate_take_sell_add_invoice_reply(
+            &requested,
+            &empty_fiat_code,
+            None,
+            Some(0.01)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing fiat code"));
+
+        let mut wrong_kind = sample_small_order(id);
+        wrong_kind.kind = Some(mostro_core::order::Kind::Buy);
+        wrong_kind.amount = net;
+        let wrong_kind_err =
+            validate_take_sell_add_invoice_reply(&requested, &wrong_kind, None, Some(0.01))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            wrong_kind_err.contains("kind mismatch") || wrong_kind_err.contains("must be a sell"),
+            "got: {wrong_kind_err}"
+        );
+
+        // Same identity failures apply under the listener policy.
+        assert!(validate_take_sell_add_invoice_reply_with_fee_check(
+            &requested,
+            &missing_id,
+            None,
+            None,
+            FeeCheck::ExactOrMatchLocal,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing order id"));
     }
 
     #[test]

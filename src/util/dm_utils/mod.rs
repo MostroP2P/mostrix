@@ -931,8 +931,10 @@ fn is_take_sell_buyer_waiting_invoice(
 /// Resolve trusted buyer-invoice sats for take-sell `AddInvoice` on the DM path.
 ///
 /// - If a prior Messages row already carried a trusted `AddInvoice` amount, reuse it.
+/// - An amount-less prior `AddInvoice` (e.g. reputation-only peer DM) does **not** count —
+///   fall through and validate the current `Payload::Order`.
 /// - Otherwise (typical post-`PayBondInvoice` path) validate the daemon payload against
-///   the local book row. Bond sats must never be treated as trusted here.
+///   the local row. Bond sats must never be treated as trusted here.
 fn resolve_take_sell_add_invoice_trusted_sats(
     action: &Action,
     payload: &Option<Payload>,
@@ -957,7 +959,10 @@ fn resolve_take_sell_add_invoice_trusted_sats(
     }
 
     if matches!(prior_action, Some(Action::AddInvoice)) {
-        return prior_sat_amount;
+        if let Some(sats) = prior_sat_amount {
+            return Some(sats);
+        }
+        // Reputation-only / amount-less AddInvoice row: keep validating this payload.
     }
 
     let Payload::Order(returned) = payload.as_ref()? else {
@@ -966,12 +971,15 @@ fn resolve_take_sell_add_invoice_trusted_sats(
     let requested = db_order.map(small_order_from_db_order)?;
     let take_fiat = (requested.fiat_amount > 0).then_some(requested.fiat_amount);
 
+    // Local fixed-price amount is the trusted buyer-invoice net persisted at
+    // PayBondInvoice (when fee was known). Match exactly — never upper-bound,
+    // or the bond floor would pass as trade sats.
     match validate_take_sell_add_invoice_reply_with_fee_check(
         &requested,
         returned,
         take_fiat,
         None,
-        FeeCheck::ExactOrUpperBound,
+        FeeCheck::ExactOrMatchLocal,
     ) {
         Ok(sats) => Some(sats),
         Err(e) => {
@@ -3766,6 +3774,134 @@ mod tests {
         );
         assert_eq!(trusted, Some(trade_sats));
         assert_ne!(trusted, Some(bond_sats));
+    }
+
+    #[test]
+    fn resolve_add_invoice_falls_through_amountless_prior_add_invoice() {
+        // Reputation-only AddInvoice row (no sat_amount) must not block validation
+        // of the later Payload::Order with the real trade quote.
+        let order_id = Uuid::new_v4();
+        let trade_sats = 79_600_i64;
+        let db_row = Order {
+            id: Some(order_id.to_string()),
+            kind: Some("sell".to_string()),
+            status: Some("waiting-buyer-invoice".to_string()),
+            amount: 0,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 75,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(3),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        };
+        let payload = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: trade_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 75,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        let trusted = resolve_take_sell_add_invoice_trusted_sats(
+            &Action::AddInvoice,
+            &payload,
+            Some(&db_row),
+            Some(false),
+            Some(&Action::AddInvoice),
+            None, // amount-less reputation row
+        );
+        assert_eq!(trusted, Some(trade_sats));
+    }
+
+    #[test]
+    fn resolve_fixed_price_rejects_bond_floor_as_trade_sats() {
+        let order_id = Uuid::new_v4();
+        let trusted_net = 20_895_i64;
+        let bond_sats = 1_000_i64;
+        let db_row = Order {
+            id: Some(order_id.to_string()),
+            kind: Some("sell".to_string()),
+            status: Some("waiting-buyer-invoice".to_string()),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(3),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        };
+        let forged = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &forged,
+                Some(&db_row),
+                Some(false),
+                Some(&Action::PayBondInvoice),
+                Some(bond_sats),
+            ),
+            None,
+            "bond floor must not become trusted trade sats"
+        );
+
+        let honest = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &honest,
+                Some(&db_row),
+                Some(false),
+                Some(&Action::PayBondInvoice),
+                Some(bond_sats),
+            ),
+            Some(trusted_net)
+        );
     }
 
     #[tokio::test]

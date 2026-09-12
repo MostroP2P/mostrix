@@ -10,7 +10,9 @@ use crate::util::dm_utils::{
     parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::add_invoice_validate::validate_take_sell_add_invoice_reply;
+use crate::util::order_utils::add_invoice_validate::{
+    expected_buyer_invoice_sats, validate_take_sell_add_invoice_reply,
+};
 use crate::util::order_utils::helper::{handle_mostro_response, payment_request_operation_result};
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -242,9 +244,18 @@ async fn process_take_order_reply(
             amount,
         } => {
             // PayBondInvoice SmallOrder.amount is the bond floor (often 1000), not
-            // trade sats — persist the book amount; bond stays in sat_amount only.
-            let trade_amount_to_persist =
-                matches!(action, Action::PayBondInvoice).then_some(requested.amount);
+            // trade sats. Persist the trusted buyer-invoice net when fee is known
+            // (so the DM listener can exact-match without fee); otherwise the book
+            // amount. Bond stays in sat_amount only.
+            let trade_amount_to_persist = matches!(action, Action::PayBondInvoice).then(|| {
+                if requested.amount > 0 {
+                    fee_rate
+                        .map(|r| expected_buyer_invoice_sats(requested.amount, r))
+                        .unwrap_or(requested.amount)
+                } else {
+                    0
+                }
+            });
             payment_request_operation_result(
                 action,
                 order,
