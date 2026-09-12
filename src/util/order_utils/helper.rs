@@ -659,6 +659,10 @@ pub(super) fn build_order_chat_static_header(
 }
 
 /// Persist order + track subscription, then build `PaymentRequestRequired` for invoice popups.
+///
+/// For `PayBondInvoice`, `trade_amount_to_persist` is written to `orders.amount` (book/trade
+/// sats, or `0` for market/range). Bond sats stay in `sat_amount` for the bond popup only —
+/// never persist the bond floor as the trade amount.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn payment_request_operation_result(
     inner_action: Action,
@@ -673,6 +677,7 @@ pub(super) async fn payment_request_operation_result(
     is_mine: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
     log_prefix: &str,
+    trade_amount_to_persist: Option<i64>,
 ) -> Result<OperationResult> {
     let popup_action = match inner_action {
         Action::PayBondInvoice => Action::PayBondInvoice,
@@ -703,6 +708,13 @@ pub(super) async fn payment_request_operation_result(
     log::info!(
         "[{log_prefix}] Action::{popup_action:?} response mapped to effective_order_id={effective_order_id}, trade_index={next_idx}"
     );
+
+    // Capture bond/invoice sats before overwriting amount for PayBondInvoice persist.
+    let popup_sat_amount = opt_amount.or(Some(order_to_save.amount));
+
+    if matches!(popup_action, Action::PayBondInvoice) {
+        order_to_save.amount = trade_amount_to_persist.unwrap_or(0);
+    }
 
     if let Err(e) = save_order(
         order_to_save.clone(),
@@ -736,7 +748,11 @@ pub(super) async fn payment_request_operation_result(
             },
         )?;
 
-    let sat_amount = opt_amount.or(Some(order_to_save.amount));
+    let sat_amount = if matches!(popup_action, Action::PayBondInvoice) {
+        popup_sat_amount
+    } else {
+        opt_amount.or(Some(order_to_save.amount))
+    };
 
     Ok(OperationResult::PaymentRequestRequired {
         order: order_to_save,

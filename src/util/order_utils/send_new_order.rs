@@ -226,6 +226,7 @@ pub async fn send_new_order(
                                     true,
                                     dm_subscription_tx,
                                     "send_new_order",
+                                    Some(amount),
                                 )
                                 .await
                             } else {

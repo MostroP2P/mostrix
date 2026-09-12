@@ -44,7 +44,7 @@ use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{nostr_pow_for_protocol_dm, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
-    should_strictly_advance_status,
+    should_strictly_advance_status, validate_take_sell_add_invoice_reply_with_fee_check, FeeCheck,
 };
 use futures::StreamExt;
 use std::collections::BTreeSet;
@@ -550,6 +550,9 @@ async fn drop_pre_active_taker_take(
 
 /// Refreshes the local `orders` row from embedded order data on trade DMs that carry a full
 /// `SmallOrder` (e.g. `add-invoice`, `pay-invoice`, `buyer-took-order`, `hold-invoice-payment-accepted`).
+///
+/// `trusted_add_invoice_sats` — when set for `AddInvoice`, persist that amount (MOSTRO-078 /
+/// post-bond validation) instead of the daemon payload or a stale bond amount.
 async fn upsert_order_from_trade_dm(
     pool: &sqlx::SqlitePool,
     order_id: Uuid,
@@ -557,36 +560,49 @@ async fn upsert_order_from_trade_dm(
     payload: &Option<Payload>,
     request_id: Option<u64>,
     trade_keys: &Keys,
+    trusted_add_invoice_sats: Option<i64>,
 ) {
     let (label, small_order) = match (action, payload.as_ref()) {
         (Action::AddInvoice, Some(Payload::Order(o))) => {
             // MOSTRO-078: never hydrate SQLite from unvalidated daemon sats.
             // TrackOrder-before-save_order has no local row yet — defer until
-            // take_order persists a trusted amount. If a row exists but amount
-            // is still 0, wait as well.
+            // take_order persists a row. Post-bond range rows may have amount 0;
+            // hydrate only when validation supplied trusted_add_invoice_sats.
             let Ok(existing) = Order::get_by_id(pool, &order_id.to_string()).await else {
                 log::info!(
-                    "Deferring AddInvoice DB hydration for order {} until a local trusted amount exists",
+                    "Deferring AddInvoice DB hydration for order {} until a local row exists",
                     order_id
                 );
                 return;
             };
-            if existing.amount <= 0 {
+            let trusted = if let Some(sats) = trusted_add_invoice_sats {
+                sats
+            } else if existing.amount > 0 {
+                // Keep a previously trusted trade amount over a forged payload.
+                existing.amount
+            } else {
                 log::info!(
-                    "Deferring AddInvoice DB hydration for order {}: local amount is not trusted yet",
+                    "Deferring AddInvoice DB hydration for order {}: no trusted sats yet",
                     order_id
                 );
                 return;
-            }
+            };
             let mut order = o.clone();
-            order.amount = existing.amount;
+            order.amount = trusted;
             ("AddInvoice", order)
         }
         (Action::PayInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
             ("PayInvoice", o.clone())
         }
         (Action::PayBondInvoice, Some(Payload::PaymentRequest(Some(o), _, _))) => {
-            ("PayBondInvoice", o.clone())
+            // Bond SmallOrder.amount is the bond floor — never write it as trade sats.
+            let mut order = o.clone();
+            if let Ok(existing) = Order::get_by_id(pool, &order_id.to_string()).await {
+                order.amount = existing.amount;
+            } else {
+                order.amount = 0;
+            }
+            ("PayBondInvoice", order)
         }
         (Action::BuyerTookOrder, Some(Payload::Order(o))) => ("BuyerTookOrder", o.clone()),
         (Action::HoldInvoicePaymentAccepted, Some(Payload::Order(o))) => {
@@ -677,6 +693,7 @@ async fn revert_maker_to_pending_on_book_republish(
         &inner_kind.payload,
         inner_kind.request_id,
         trade_keys,
+        None,
     )
     .await;
     if let Err(e) = update_order_status(pool, &order_id.to_string(), Status::Pending).await {
@@ -911,6 +928,62 @@ fn is_take_sell_buyer_waiting_invoice(
         && matches!(order_status, Some(Status::WaitingBuyerInvoice) | None)
 }
 
+/// Resolve trusted buyer-invoice sats for take-sell `AddInvoice` on the DM path.
+///
+/// - If a prior Messages row already carried a trusted `AddInvoice` amount, reuse it.
+/// - Otherwise (typical post-`PayBondInvoice` path) validate the daemon payload against
+///   the local book row. Bond sats must never be treated as trusted here.
+fn resolve_take_sell_add_invoice_trusted_sats(
+    action: &Action,
+    payload: &Option<Payload>,
+    db_order: Option<&Order>,
+    is_mine: Option<bool>,
+    prior_action: Option<&Action>,
+    prior_sat_amount: Option<i64>,
+) -> Option<i64> {
+    let kind_from_db = db_order.and_then(|r| {
+        r.kind
+            .as_ref()
+            .and_then(|s| mostro_core::order::Kind::from_str(s).ok())
+    });
+    let kind_from_payload = small_order_ref_from_payload(payload).and_then(|o| o.kind);
+    let order_kind = kind_from_db.or(kind_from_payload);
+    let status_from_db = db_order.and_then(order_status_from_row);
+    let status_from_payload = small_order_ref_from_payload(payload).and_then(|o| o.status);
+    let order_status = status_from_payload.or(status_from_db);
+
+    if !is_take_sell_buyer_waiting_invoice(action, is_mine, order_kind, order_status) {
+        return None;
+    }
+
+    if matches!(prior_action, Some(Action::AddInvoice)) {
+        return prior_sat_amount;
+    }
+
+    let Payload::Order(returned) = payload.as_ref()? else {
+        return None;
+    };
+    let requested = db_order.map(small_order_from_db_order)?;
+    let take_fiat = (requested.fiat_amount > 0).then_some(requested.fiat_amount);
+
+    match validate_take_sell_add_invoice_reply_with_fee_check(
+        &requested,
+        returned,
+        take_fiat,
+        None,
+        FeeCheck::ExactOrUpperBound,
+    ) {
+        Ok(sats) => Some(sats),
+        Err(e) => {
+            log::warn!(
+                "Rejecting untrusted take-sell AddInvoice sats for order {:?}: {e}",
+                requested.id
+            );
+            None
+        }
+    }
+}
+
 /// Handle a single decoded trade DM for a given order/trade index.
 #[allow(clippy::too_many_arguments)]
 async fn handle_trade_dm_for_order(
@@ -980,6 +1053,52 @@ async fn handle_trade_dm_for_order(
         return;
     }
 
+    // Prior Messages snapshot before upsert — needed to avoid treating bond sats as
+    // trusted AddInvoice amounts (post-PayBondInvoice take-sell path).
+    let existing_message_data = {
+        let messages_lock = match messages.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                crate::util::request_fatal_restart(format!(
+                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+                ));
+                return;
+            }
+        };
+        messages_lock
+            .iter()
+            .filter(|m| m.order_id == Some(order_id))
+            .max_by_key(|m| m.timestamp)
+            .map(|m| PriorMessageSnapshot {
+                timestamp: m.timestamp,
+                action: m.message.get_inner_message_kind().action.clone(),
+                sat_amount: m.sat_amount,
+                buyer_invoice: m.buyer_invoice.clone(),
+                auto_popup_shown: m.auto_popup_shown,
+                order_kind: m.order_kind,
+                is_mine: m.is_mine,
+                order_status: m.order_status,
+                order_snapshot: m.order_snapshot.clone(),
+                buyer_reputation: m.buyer_reputation.clone(),
+                seller_reputation: m.seller_reputation.clone(),
+            })
+    };
+    let prior_sat_amount = existing_message_data.as_ref().and_then(|p| p.sat_amount);
+    let prior_action = existing_message_data.as_ref().map(|p| &p.action);
+    let is_mine_for_gate = db_order
+        .as_ref()
+        .map(|o| o.is_mine)
+        .or(existing_message_data.as_ref().and_then(|p| p.is_mine));
+
+    let trusted_add_invoice_sats = resolve_take_sell_add_invoice_trusted_sats(
+        &action,
+        &inner_kind.payload,
+        db_order.as_ref(),
+        is_mine_for_gate,
+        prior_action,
+        prior_sat_amount,
+    );
+
     if !matches!(action, Action::CantDo) && !taker_reputation_peer {
         upsert_order_from_trade_dm(
             pool,
@@ -988,6 +1107,7 @@ async fn handle_trade_dm_for_order(
             &inner_kind.payload,
             inner_kind.request_id,
             trade_keys,
+            trusted_add_invoice_sats,
         )
         .await;
     }
@@ -1044,14 +1164,13 @@ async fn handle_trade_dm_for_order(
     maybe_track_order_chat(pool, order_id, trade_keys).await;
 
     // Extract invoice and sat_amount from payload based on action type.
-    // For `PayBondInvoice` mostrod populates the bond satoshis in the third
-    // `Option<Amount>` field of `Payload::PaymentRequest` (the SmallOrder is
-    // `None` per mostro-core 0.11.0 wire format); for `PayInvoice` it may come
-    // either as that explicit override or via the embedded order's `amount`.
+    // For `PayBondInvoice` mostrod puts bond sats in `SmallOrder.amount` (third
+    // `PaymentRequest` field is usually `None`). For `PayInvoice` the amount may
+    // come from that override or the embedded order's `amount`.
     //
-    // MOSTRO-078: `AddInvoice` sats from `Payload::Order` are **not** trusted on
-    // this listener path for take-sell waiting-buyer framing — see
-    // [`is_take_sell_buyer_waiting_invoice`] / `effective_sat_amount` below.
+    // MOSTRO-078: `AddInvoice` sats from `Payload::Order` are validated before
+    // framing on the take-sell waiting-buyer path — see
+    // [`resolve_take_sell_add_invoice_trusted_sats`] / `effective_sat_amount`.
     let (sat_amount, invoice) = match &action {
         Action::PayInvoice | Action::PayBondInvoice => match &inner_kind.payload {
             Some(Payload::PaymentRequest(opt_order, invoice, opt_amount)) => {
@@ -1081,37 +1200,6 @@ async fn handle_trade_dm_for_order(
         return;
     }
 
-    // Lock `messages` only long enough to extract comparison data, then drop it
-    // before touching `pending_notifications` to avoid lock-order deadlocks.
-    let existing_message_data = {
-        let messages_lock = match messages.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                crate::util::request_fatal_restart(format!(
-                    "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
-                ));
-                return;
-            }
-        };
-        messages_lock
-            .iter()
-            .filter(|m| m.order_id == Some(order_id))
-            .max_by_key(|m| m.timestamp)
-            .map(|m| PriorMessageSnapshot {
-                timestamp: m.timestamp,
-                action: m.message.get_inner_message_kind().action.clone(),
-                sat_amount: m.sat_amount,
-                buyer_invoice: m.buyer_invoice.clone(),
-                auto_popup_shown: m.auto_popup_shown,
-                order_kind: m.order_kind,
-                is_mine: m.is_mine,
-                order_status: m.order_status,
-                order_snapshot: m.order_snapshot.clone(),
-                buyer_reputation: m.buyer_reputation.clone(),
-                seller_reputation: m.seller_reputation.clone(),
-            })
-    };
-
     // Only increment pending notifications if this is a truly new message.
     // Relay delivery can be out-of-order: a later protocol step may carry an older Nostr
     // `created_at` than a message we already stored. If we only compared timestamps,
@@ -1127,7 +1215,6 @@ async fn handle_trade_dm_for_order(
         }
     };
 
-    let prior_sat_amount = existing_message_data.as_ref().and_then(|p| p.sat_amount);
     let prior_invoice = existing_message_data
         .as_ref()
         .and_then(|p| p.buyer_invoice.clone());
@@ -1225,9 +1312,13 @@ async fn handle_trade_dm_for_order(
         effective_order_status,
     );
     let effective_sat_amount = if take_sell_waiting {
-        // MOSTRO-078: ignore daemon Payload::Order.amount until execute-path
-        // (or a prior trusted Messages row) supplies sats.
-        prior_sat_amount
+        // Prefer validated post-bond / listener sats; only reuse prior when it was
+        // already a trusted AddInvoice (not PayBondInvoice bond floor).
+        trusted_add_invoice_sats.or(if matches!(prior_action, Some(Action::AddInvoice)) {
+            prior_sat_amount
+        } else {
+            None
+        })
     } else {
         sat_amount.or(prior_sat_amount)
     };
@@ -1250,9 +1341,9 @@ async fn handle_trade_dm_for_order(
     );
     if take_sell_waiting {
         // Keep snapshot sats aligned with framing: never leave a fabricated daemon
-        // amount for Messages Enter to fall back to when sat_amount is absent.
+        // amount (or bond floor) for Messages Enter to fall back to.
         if let Some(ref mut snap) = effective_order_snapshot {
-            snap.amount = prior_sat_amount.unwrap_or(0);
+            snap.amount = effective_sat_amount.unwrap_or(0);
         }
     }
 
@@ -2615,9 +2706,9 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
-        new_order_would_regress_messages_row, satisfy_pending_waiters_for_event,
-        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
-        trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        new_order_would_regress_messages_row, resolve_take_sell_add_invoice_trusted_sats,
+        satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
+        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
         TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
@@ -3540,6 +3631,7 @@ mod tests {
             })),
             Some(1),
             &trade_keys,
+            None,
         )
         .await;
 
@@ -3611,6 +3703,7 @@ mod tests {
             })),
             Some(1),
             &trade_keys,
+            None,
         )
         .await;
 
@@ -3619,6 +3712,195 @@ mod tests {
             .expect("order still present");
         assert_eq!(stored.amount, trusted_amount);
         assert_ne!(stored.amount, forged_amount);
+    }
+
+    #[test]
+    fn resolve_add_invoice_after_bond_uses_trade_sats_not_bond() {
+        // Range take-sell: local amount is 0 (book), prior Messages action was
+        // PayBondInvoice with bond sat_amount — must validate daemon trade quote.
+        let order_id = Uuid::new_v4();
+        let trade_sats = 79_600_i64;
+        let bond_sats = 1_000_i64;
+        let db_row = Order {
+            id: Some(order_id.to_string()),
+            kind: Some("sell".to_string()),
+            status: Some("waiting-taker-bond".to_string()),
+            amount: 0,
+            fiat_code: "USD".to_string(),
+            min_amount: Some(50),
+            max_amount: Some(200),
+            fiat_amount: 75,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(3),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        };
+        let payload = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: trade_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 75,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        let trusted = resolve_take_sell_add_invoice_trusted_sats(
+            &Action::AddInvoice,
+            &payload,
+            Some(&db_row),
+            Some(false),
+            Some(&Action::PayBondInvoice),
+            Some(bond_sats),
+        );
+        assert_eq!(trusted, Some(trade_sats));
+        assert_ne!(trusted, Some(bond_sats));
+    }
+
+    #[tokio::test]
+    async fn add_invoice_dm_hydrates_zero_local_amount_with_trusted_sats() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
+                buyer_reputation TEXT, seller_reputation TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let order_id = Uuid::new_v4();
+        let trade_sats = 79_600_i64;
+        let trade_keys = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, trade_keys, is_mine, trade_index) \
+             VALUES (?, 'sell', 'waiting-taker-bond', 0, 'USD', 75, 'SEPA', 0, ?, 0, 3)",
+        )
+        .bind(order_id.to_string())
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed post-bond range row");
+
+        upsert_order_from_trade_dm(
+            &pool,
+            order_id,
+            &Action::AddInvoice,
+            &Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                amount: trade_sats,
+                fiat_code: "USD".to_string(),
+                fiat_amount: 75,
+                payment_method: "SEPA".to_string(),
+                ..Default::default()
+            })),
+            Some(1),
+            &trade_keys,
+            Some(trade_sats),
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order present");
+        assert_eq!(stored.amount, trade_sats);
+    }
+
+    #[tokio::test]
+    async fn pay_bond_invoice_dm_does_not_overwrite_trade_amount_with_bond() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
+                buyer_reputation TEXT, seller_reputation TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+
+        let order_id = Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let trade_keys = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, trade_keys, is_mine, trade_index) \
+             VALUES (?, 'sell', 'waiting-taker-bond', ?, 'USD', 100, 'SEPA', 0, ?, 0, 3)",
+        )
+        .bind(order_id.to_string())
+        .bind(book_amount)
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed book amount row");
+
+        upsert_order_from_trade_dm(
+            &pool,
+            order_id,
+            &Action::PayBondInvoice,
+            &Some(Payload::PaymentRequest(
+                Some(SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    status: Some(Status::WaitingTakerBond),
+                    amount: bond_sats,
+                    fiat_code: "USD".to_string(),
+                    fiat_amount: 100,
+                    payment_method: "SEPA".to_string(),
+                    ..Default::default()
+                }),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+            Some(1),
+            &trade_keys,
+            None,
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order present");
+        assert_eq!(stored.amount, book_amount);
+        assert_ne!(stored.amount, bond_sats);
     }
 
     #[test]
