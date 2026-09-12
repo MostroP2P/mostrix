@@ -79,6 +79,11 @@ pub async fn take_order(
         }
     };
 
+    // Fixed-price take-sell needs Mostro fee before we reserve an index or send
+    // TakeSell — otherwise Mostro may already move the order off the book while
+    // we later abort in process_take_order_reply without showing the bond invoice.
+    ensure_fee_for_fixed_take_sell(&action, order, mostro_instance.and_then(|i| i.fee))?;
+
     let order_id = order
         .id
         .ok_or_else(|| anyhow::anyhow!("Order ID is missing"))?;
@@ -180,6 +185,21 @@ pub async fn take_order(
         log::error!("No response received from Mostro");
         Err(anyhow::anyhow!("No response received from Mostro"))
     }
+}
+
+/// Fail closed before reservation/send when a fixed-price take-sell cannot compute
+/// the buyer-invoice net (needed for PayBondInvoice persist and later AddInvoice).
+fn ensure_fee_for_fixed_take_sell(
+    action: &Action,
+    order: &SmallOrder,
+    fee_rate: Option<f64>,
+) -> Result<()> {
+    if matches!(action, Action::TakeSell) && order.amount > 0 && fee_rate.is_none() {
+        return Err(anyhow::anyhow!(
+            "Cannot take fixed-price sell without Mostro fee from instance info"
+        ));
+    }
+    Ok(())
 }
 
 /// Dispatch a take-order Mostro reply by **action** (not payload alone).
@@ -522,6 +542,25 @@ mod tests {
             }
             other => panic!("expected OpenInvoicePopup, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ensure_fee_for_fixed_take_sell_runs_before_protocol_send() {
+        let fixed = sample_small_order(uuid::Uuid::new_v4());
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, None)
+            .expect_err("fixed take-sell without fee must abort before reserve/send");
+        assert!(err.to_string().contains("fee"));
+
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, Some(0.01))
+            .expect("fee present allows take");
+
+        let mut range = fixed.clone();
+        range.amount = 0;
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, None)
+            .expect("range/market take-sell does not require fee preflight");
+
+        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, None)
+            .expect("take-buy is not the fixed take-sell bond path");
     }
 
     #[tokio::test]

@@ -86,6 +86,10 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::PriceTooStale => {
             "Price quote is too stale — refresh the rate and try again".to_string()
         }
+        CantDoReason::MaintenanceMode => {
+            "Mostro is in maintenance mode — try again later".to_string()
+        }
+        CantDoReason::Unknown => "Mostro refused the request".to_string(),
     }
 }
 
