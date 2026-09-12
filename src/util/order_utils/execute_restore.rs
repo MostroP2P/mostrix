@@ -99,10 +99,13 @@ pub fn restore_completion_result(outcome: &Result<RestoreSummary>) -> crate::ui:
 /// Ask Mostro for this identity's session state (`Action::RestoreSession`) and
 /// rebuild the local database from the answer.
 ///
-/// Restore is account-scoped: Mostro indexes users by identity pubkey, so the
-/// whole exchange (send, wait, decrypt) runs on the identity keys — a trade key
-/// would look like an unknown user and recovery would return nothing. The
-/// request carries no request id (`Message::new_restore`), so the response is
+/// Restore is account-scoped: Mostro indexes users by identity pubkey, which
+/// travels inside the encrypted identity proof (the daemon resolves the
+/// account from `event.identity`). The outer kind-14 is authored by a fresh
+/// ephemeral key — never the identity key, which would publish a permanent
+/// identity→Mostro link on every relay — and the daemon addresses its reply
+/// to that ephemeral key, so wait and decrypt run on it too. The request
+/// carries no request id (`Message::new_restore`), so the response is
 /// validated by action instead of by id.
 ///
 /// For every order Mostro reports, the trade keys are re-derived from the
@@ -132,23 +135,35 @@ pub async fn execute_restore_session(
         .as_json()
         .map_err(|e| anyhow::anyhow!("Failed to serialize message: {e}"))?;
 
+    // Ephemeral author: the daemon resolves the account from the identity
+    // proof and replies to this key. A fresh key per run also bounds replay —
+    // a genuine restore reply from an earlier run was encrypted to that run's
+    // key, so this run cannot decrypt (and thus cannot consume) it.
+    let ephemeral_trade_keys = Keys::generate();
+
     log::info!(
-        "Restore: requesting session state from {mostro_pubkey} as {}",
-        identity_keys.public_key()
+        "Restore: requesting session state from {mostro_pubkey} via ephemeral key {}",
+        ephemeral_trade_keys.public_key()
     );
 
     let sent_message = send_dm(
         client,
         Some(&identity_keys),
-        &identity_keys,
+        &ephemeral_trade_keys,
         &mostro_pubkey,
         message_json,
         None,
         mostro_instance,
     );
 
-    let recv_event = wait_for_dm(&identity_keys, FETCH_EVENTS_TIMEOUT, None, sent_message).await?;
-    let messages = parse_dm_events(recv_event, &identity_keys, None).await;
+    let recv_event = wait_for_dm(
+        &ephemeral_trade_keys,
+        FETCH_EVENTS_TIMEOUT,
+        None,
+        sent_message,
+    )
+    .await?;
+    let messages = parse_dm_events(recv_event, &ephemeral_trade_keys, None).await;
 
     let Some((response_message, _, sender)) = messages.first() else {
         return Err(anyhow::anyhow!("No response received from Mostro"));
@@ -156,7 +171,9 @@ pub async fn execute_restore_session(
     // The restore request carries no request id, so unlike the order flows the
     // response cannot be tied back by a random id only Mostro could echo. The
     // sender check is the only thing standing between us and a forged
-    // kind-14 RestoreData seeding attacker-controlled orders.
+    // kind-14 RestoreData seeding attacker-controlled orders. Replayed
+    // *genuine* replies from earlier runs are excluded upstream: each run's
+    // ephemeral key cannot decrypt a reply addressed to a previous one.
     if sender != &mostro_pubkey {
         return Err(anyhow::anyhow!(
             "Restore response signed by {sender}, expected the configured Mostro instance"
@@ -402,10 +419,14 @@ async fn fetch_order_details_from_mostro(
         order_ids.len()
     );
 
+    // Ephemeral author: account resolved from the identity proof, reply
+    // addressed here. See `execute_restore_session` for the rationale.
+    let ephemeral_trade_keys = Keys::generate();
+
     let sent_message = send_dm(
         client,
         Some(identity_keys),
-        identity_keys,
+        &ephemeral_trade_keys,
         &mostro_pubkey,
         message_json,
         None,
@@ -413,13 +434,13 @@ async fn fetch_order_details_from_mostro(
     );
 
     let recv_event = wait_for_dm(
-        identity_keys,
+        &ephemeral_trade_keys,
         FETCH_EVENTS_TIMEOUT,
         Some(request_id),
         sent_message,
     )
     .await?;
-    let messages = parse_dm_events(recv_event, identity_keys, None).await;
+    let messages = parse_dm_events(recv_event, &ephemeral_trade_keys, None).await;
 
     let Some((response_message, _, sender)) = messages.first() else {
         return Err(anyhow::anyhow!("No response received for Action::Orders"));

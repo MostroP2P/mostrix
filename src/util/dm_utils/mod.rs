@@ -293,7 +293,21 @@ fn trade_message_is_terminal(message: &Message) -> bool {
     message_has_terminal_order_status(message)
 }
 
-/// Send a direct message to a receiver
+/// Send a direct message to a receiver.
+///
+/// Key roles (mostro-core `wrap_message_nip44`):
+/// * `trade_keys` author and sign the outer kind-14 — the pubkey relays see —
+///   and are the key the receiver replies to.
+/// * `identity_keys` travel only inside the NIP-44 ciphertext as the identity
+///   proof; the daemon resolves the account from it. `None` (or the same keys
+///   as `trade_keys`) means full-privacy mode: the proof is omitted and the
+///   receiver treats the trade key as the identity.
+///
+/// Never pass the long-lived identity key as `trade_keys` — that authors a
+/// public, permanent identity→receiver link on every relay and drops the
+/// proof. Account-scoped requests with no per-trade key (restore session,
+/// last-trade-index) use a fresh ephemeral key instead. The admin flows are
+/// the intentional exception: the admin key *is* the account.
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
