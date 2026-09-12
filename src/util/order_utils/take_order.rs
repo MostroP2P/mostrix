@@ -245,17 +245,23 @@ async fn process_take_order_reply(
         } => {
             // PayBondInvoice SmallOrder.amount is the bond floor (often 1000), not
             // trade sats. Persist the trusted buyer-invoice net when fee is known
-            // (so the DM listener can exact-match without fee); otherwise the book
-            // amount. Bond stays in sat_amount only.
-            let trade_amount_to_persist = matches!(action, Action::PayBondInvoice).then(|| {
+            // (so the DM listener can ExactOrMatchLocal). Never fall back to gross
+            // book amount — that sticks the trade at ExactOrMatchLocal forever.
+            // Bond stays in popup sat_amount only.
+            let trade_amount_to_persist = if matches!(action, Action::PayBondInvoice) {
                 if requested.amount > 0 {
-                    fee_rate
-                        .map(|r| expected_buyer_invoice_sats(requested.amount, r))
-                        .unwrap_or(requested.amount)
+                    let Some(rate) = fee_rate else {
+                        return Err(anyhow::anyhow!(
+                            "Cannot process fixed-price take-sell bond without Mostro fee from instance info"
+                        ));
+                    };
+                    Some(expected_buyer_invoice_sats(requested.amount, rate))
                 } else {
-                    0
+                    Some(0)
                 }
-            });
+            } else {
+                None
+            };
             payment_request_operation_result(
                 action,
                 order,
@@ -608,6 +614,75 @@ mod tests {
         );
         assert_ne!(stored.amount, bond_sats);
         assert_ne!(stored.amount, book_amount);
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_fixed_without_fee_aborts() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(7),
+            Some(3),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let err = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            None, // fee unavailable — must not persist gross book
+            7,
+            3,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect_err("fixed PayBondInvoice without fee must abort");
+        assert!(
+            err.to_string().contains("fee"),
+            "error should mention missing fee, got: {err}"
+        );
+        assert!(
+            Order::get_by_id(&pool, &order_id.to_string())
+                .await
+                .is_err(),
+            "must not persist an order when fee is missing"
+        );
     }
 
     #[tokio::test]
