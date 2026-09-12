@@ -768,6 +768,11 @@ mod tests {
         };
         let notification = order_message_to_notification(&order_message);
 
+        // Pin the manual-invoice branch so a machine-local saved `ln_address` in
+        // `~/.mostrix/settings.toml` can't route this to the saved-address confirm popup.
+        app.buyer_invoice_preference
+            .insert(order_id, BuyerInvoicePreference::ManualInvoice);
+
         handle_operation_result(
             OperationResult::OpenInvoicePopup {
                 notification,
