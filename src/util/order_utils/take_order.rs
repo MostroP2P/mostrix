@@ -414,6 +414,7 @@ fn take_add_invoice_operation_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Order;
     use mostro_core::prelude::{Action, Payload, Status};
 
     fn sample_small_order(id: uuid::Uuid) -> SmallOrder {
@@ -427,6 +428,30 @@ mod tests {
             payment_method: "SEPA".to_string(),
             ..Default::default()
         }
+    }
+
+    async fn memory_orders_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+        pool
     }
 
     #[test]
@@ -491,5 +516,251 @@ mod tests {
             }
             other => panic!("expected OpenInvoicePopup, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_fixed_persists_net_keeps_bond_in_popup() {
+        // Regression: removing trade_amount_to_persist must fail this test.
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let fee_rate = 0.01_f64;
+        let expected_net = expected_buyer_invoice_sats(book_amount, fee_rate);
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(7),
+            Some(3),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+        let sender = Keys::generate().public_key();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            sender,
+            &requested,
+            None,
+            Some(fee_rate),
+            7,
+            3,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("PayBondInvoice take reply");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                invoice,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats), "popup must show bond sats");
+                assert_eq!(
+                    order.amount, expected_net,
+                    "result order must carry trusted buyer-invoice net, not bond"
+                );
+                assert_eq!(invoice, "lnbc1bond");
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(
+            stored.amount, expected_net,
+            "SQLite amount must be fee-adjusted net, not bond floor"
+        );
+        assert_ne!(stored.amount, bond_sats);
+        assert_ne!(stored.amount, book_amount);
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_range_persists_zero_keeps_bond_in_popup() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let bond_sats = 1_000_i64;
+        let take_fiat = 75_i64;
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: 0,
+            min_amount: Some(50),
+            max_amount: Some(200),
+            fiat_code: "USD".to_string(),
+            fiat_amount: 0,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: take_fiat,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(8),
+            Some(4),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1rangebond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            Some(take_fiat),
+            Some(0.01),
+            8,
+            4,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("range PayBondInvoice");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats));
+                assert_eq!(
+                    order.amount, 0,
+                    "range/market book amount stays 0 until AddInvoice"
+                );
+                assert_eq!(order.fiat_amount, take_fiat);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, 0);
+        assert_eq!(stored.fiat_amount, take_fiat);
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_pay_invoice_preserves_payload_amount() {
+        // Non-bond path must not apply trade_amount_to_persist override.
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let hold_sats = 21_105_i64;
+
+        let requested = sample_small_order(order_id);
+        let hold_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingPayment),
+            amount: hold_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(9),
+            Some(5),
+            Action::PayInvoice,
+            Some(Payload::PaymentRequest(
+                Some(hold_small),
+                "lnbc1hold".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            Some(0.01),
+            9,
+            5,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("PayInvoice take reply");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayInvoice);
+                assert_eq!(sat_amount, Some(hold_sats));
+                assert_eq!(order.amount, hold_sats);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, hold_sats);
     }
 }

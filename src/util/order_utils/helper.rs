@@ -660,9 +660,10 @@ pub(super) fn build_order_chat_static_header(
 
 /// Persist order + track subscription, then build `PaymentRequestRequired` for invoice popups.
 ///
-/// For `PayBondInvoice`, `trade_amount_to_persist` is written to `orders.amount` (book/trade
-/// sats, or `0` for market/range). Bond sats stay in `sat_amount` for the bond popup only —
-/// never persist the bond floor as the trade amount.
+/// For `PayBondInvoice`, `trade_amount_to_persist` is written to `orders.amount`
+/// (buyer-invoice net when fee was known at take, book amount otherwise, or `0` for
+/// market/range). Bond sats stay in `sat_amount` for the bond popup only — never
+/// persist the bond floor as the trade amount.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn payment_request_operation_result(
     inner_action: Action,
