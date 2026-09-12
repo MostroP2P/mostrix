@@ -79,10 +79,16 @@ pub async fn take_order(
         }
     };
 
-    // Fixed-price take-sell needs Mostro fee before we reserve an index or send
-    // TakeSell — otherwise Mostro may already move the order off the book while
-    // we later abort in process_take_order_reply without showing the bond invoice.
-    ensure_fee_for_fixed_take_sell(&action, order, mostro_instance.and_then(|i| i.fee))?;
+    // Fixed-price take-sell without a buyer invoice needs Mostro fee before we
+    // reserve an index or send TakeSell (bond persist + later AddInvoice). When the
+    // buyer already supplied an invoice, Mostro will not ask for AddInvoice client-side.
+    let invoice_provided = invoice.as_ref().is_some_and(|s| !s.is_empty());
+    ensure_fee_for_fixed_take_sell(
+        &action,
+        order,
+        invoice_provided,
+        mostro_instance.and_then(|i| i.fee),
+    )?;
 
     let order_id = order
         .id
@@ -170,6 +176,8 @@ pub async fn take_order(
                     order,
                     amount,
                     mostro_instance.and_then(|i| i.fee),
+                    action.clone(),
+                    invoice_provided,
                     request_id,
                     next_idx,
                     pool,
@@ -187,14 +195,20 @@ pub async fn take_order(
     }
 }
 
-/// Fail closed before reservation/send when a fixed-price take-sell cannot compute
-/// the buyer-invoice net (needed for PayBondInvoice persist and later AddInvoice).
+/// Fail closed before reservation/send when a fixed-price take-sell (invoice absent)
+/// cannot compute the buyer-invoice net for PayBondInvoice persist / later AddInvoice.
+/// Takes that already include a buyer invoice do not need this preflight.
 fn ensure_fee_for_fixed_take_sell(
     action: &Action,
     order: &SmallOrder,
+    invoice_provided: bool,
     fee_rate: Option<f64>,
 ) -> Result<()> {
-    if matches!(action, Action::TakeSell) && order.amount > 0 && fee_rate.is_none() {
+    if matches!(action, Action::TakeSell)
+        && order.amount > 0
+        && !invoice_provided
+        && fee_rate.is_none()
+    {
         return Err(anyhow::anyhow!(
             "Cannot take fixed-price sell without Mostro fee from instance info"
         ));
@@ -218,6 +232,8 @@ async fn process_take_order_reply(
     requested: &SmallOrder,
     take_fiat_amount: Option<i64>,
     fee_rate: Option<f64>,
+    take_action: Action,
+    invoice_provided: bool,
     request_id: u64,
     next_idx: i64,
     pool: &sqlx::sqlite::SqlitePool,
@@ -264,23 +280,36 @@ async fn process_take_order_reply(
             amount,
         } => {
             // PayBondInvoice SmallOrder.amount is the bond floor (often 1000), not
-            // trade sats. Persist the trusted buyer-invoice net when fee is known
-            // (so the DM listener can ExactOrMatchLocal). Never fall back to gross
-            // book amount — that sticks the trade at ExactOrMatchLocal forever.
+            // trade sats. For TakeSell (buyer), persist fee-adjusted buyer-invoice net
+            // when fee is known so the DM listener can ExactOrMatchLocal. TakeBuy
+            // (seller) next step is PayInvoice hold — persist book amount, never net.
             // Bond stays in popup sat_amount only.
-            let trade_amount_to_persist = if matches!(action, Action::PayBondInvoice) {
-                if requested.amount > 0 {
-                    let Some(rate) = fee_rate else {
-                        return Err(anyhow::anyhow!(
-                            "Cannot process fixed-price take-sell bond without Mostro fee from instance info"
-                        ));
-                    };
-                    Some(expected_buyer_invoice_sats(requested.amount, rate))
-                } else {
-                    Some(0)
+            let trade_amount_to_persist = match (&take_action, &action) {
+                (Action::TakeSell, Action::PayBondInvoice) => {
+                    if requested.amount > 0 {
+                        if let Some(rate) = fee_rate {
+                            Some(expected_buyer_invoice_sats(requested.amount, rate))
+                        } else if invoice_provided {
+                            // Buyer already sent invoice; no client-side AddInvoice net needed.
+                            Some(requested.amount)
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "Cannot process fixed-price take-sell bond without Mostro fee from instance info"
+                            ));
+                        }
+                    } else {
+                        Some(0)
+                    }
                 }
-            } else {
-                None
+                (_, Action::PayBondInvoice) => {
+                    // TakeBuy (or other): keep book/range amount, not buyer-invoice net.
+                    Some(if requested.amount > 0 {
+                        requested.amount
+                    } else {
+                        0
+                    })
+                }
+                _ => None,
             };
             payment_request_operation_result(
                 action,
@@ -547,19 +576,22 @@ mod tests {
     #[test]
     fn ensure_fee_for_fixed_take_sell_runs_before_protocol_send() {
         let fixed = sample_small_order(uuid::Uuid::new_v4());
-        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, None)
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, false, None)
             .expect_err("fixed take-sell without fee must abort before reserve/send");
         assert!(err.to_string().contains("fee"));
 
-        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, Some(0.01))
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, false, Some(0.01))
             .expect("fee present allows take");
+
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, true, None)
+            .expect("invoice-provided take-sell does not require fee preflight");
 
         let mut range = fixed.clone();
         range.amount = 0;
-        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, None)
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, false, None)
             .expect("range/market take-sell does not require fee preflight");
 
-        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, None)
+        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, false, None)
             .expect("take-buy is not the fixed take-sell bond path");
     }
 
@@ -616,6 +648,8 @@ mod tests {
             &requested,
             None,
             Some(fee_rate),
+            Action::TakeSell,
+            false,
             7,
             3,
             &pool,
@@ -704,6 +738,8 @@ mod tests {
             &requested,
             None,
             None, // fee unavailable — must not persist gross book
+            Action::TakeSell,
+            false,
             7,
             3,
             &pool,
@@ -775,6 +811,8 @@ mod tests {
             &requested,
             Some(take_fiat),
             Some(0.01),
+            Action::TakeSell,
+            false,
             8,
             4,
             &pool,
@@ -849,6 +887,8 @@ mod tests {
             &requested,
             None,
             Some(0.01),
+            Action::TakeBuy,
+            false,
             9,
             5,
             &pool,
@@ -876,5 +916,93 @@ mod tests {
             .await
             .expect("order persisted");
         assert_eq!(stored.amount, hold_sats);
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_take_buy_pay_bond_persists_book_not_buyer_net() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let fee_rate = 0.01_f64;
+        let buyer_net = expected_buyer_invoice_sats(book_amount, fee_rate);
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Buy),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Buy),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(11),
+            Some(6),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1buybond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            Some(fee_rate),
+            Action::TakeBuy,
+            false,
+            11,
+            6,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("TakeBuy PayBondInvoice");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats));
+                assert_eq!(
+                    order.amount, book_amount,
+                    "TakeBuy must persist book amount, not buyer-invoice net"
+                );
+                assert_ne!(order.amount, buyer_net);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, book_amount);
+        assert_ne!(stored.amount, buyer_net);
+        assert_ne!(stored.amount, bond_sats);
     }
 }

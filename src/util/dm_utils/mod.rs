@@ -963,20 +963,21 @@ enum TakeSellAddInvoiceTrust {
 ///
 /// - Gate applicability uses **local/prior** kind+status only — never an untrusted
 ///   payload status (a forged `Active` must not yield `NotApplicable` and skip validation).
-/// - If a prior Messages row already carried a trusted `AddInvoice` amount, reuse it.
-/// - An amount-less prior `AddInvoice` (e.g. reputation-only peer DM) does **not** count —
-///   fall through and validate the current `Payload::Order`.
-/// - Otherwise validate the daemon payload against the local row (`ExactOrMatchLocal`:
-///   local `orders.amount` is the fee-adjusted net persisted at take/bond when fee was
-///   known). Do **not** downgrade fixed-price rows to market-style validation.
+/// - Always validate a current `Payload::Order` against the local row. Prior Messages
+///   `AddInvoice` sats are **not** used to bypass validation (a mismatched replay must
+///   `Rejected` so upsert/handler ignore the payload); framing may still fall back to
+///   prior sats only after a genuine rejection if the handler does not early-return.
+/// - An amount-less prior `AddInvoice` (e.g. reputation-only peer DM) does not short-circuit.
+/// - `ExactOrMatchLocal`: local `orders.amount` is the fee-adjusted net persisted at
+///   take/bond when fee was known. Do **not** downgrade fixed-price rows to market-style.
 #[allow(clippy::too_many_arguments)]
 fn resolve_take_sell_add_invoice_trusted_sats(
     action: &Action,
     payload: &Option<Payload>,
     db_order: Option<&Order>,
     is_mine: Option<bool>,
-    prior_action: Option<&Action>,
-    prior_sat_amount: Option<i64>,
+    _prior_action: Option<&Action>,
+    _prior_sat_amount: Option<i64>,
     prior_order_status: Option<Status>,
     prior_order_kind: Option<mostro_core::order::Kind>,
 ) -> TakeSellAddInvoiceTrust {
@@ -996,14 +997,8 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         return TakeSellAddInvoiceTrust::NotApplicable;
     }
 
-    if matches!(prior_action, Some(Action::AddInvoice)) {
-        if let Some(sats) = prior_sat_amount {
-            return TakeSellAddInvoiceTrust::Trusted(sats);
-        }
-        // Reputation-only / amount-less AddInvoice row: keep validating this payload.
-    }
-
     let Some(Payload::Order(returned)) = payload.as_ref() else {
+        // Reputation-only / non-Order AddInvoice: not a trade-quote candidate.
         return TakeSellAddInvoiceTrust::Rejected;
     };
     let Some(requested) = db_order.map(small_order_from_db_order) else {
@@ -1159,6 +1154,18 @@ async fn handle_trade_dm_for_order(
             trusted_add_invoice,
         )
         .await;
+    }
+
+    // Rejected take-sell AddInvoice Order: skip all payload-derived status, snapshot,
+    // Messages replacement, and notifications — keep trusted local/prior state only.
+    if matches!(trusted_add_invoice, TakeSellAddInvoiceTrust::Rejected)
+        && matches!(inner_kind.payload.as_ref(), Some(Payload::Order(_)))
+    {
+        log::info!(
+            "Ignoring rejected take-sell AddInvoice for order {}: no status/snapshot/Messages update",
+            order_id
+        );
+        return;
     }
 
     if matches!(
@@ -4088,6 +4095,174 @@ mod tests {
             ),
             TakeSellAddInvoiceTrust::Rejected,
             "mismatched payload status must not opt out of validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_add_invoice_handler_preserves_row_and_messages() {
+        // Full handler path: forged AddInvoice must not change SQLite or OrderMessage.
+        let pool = memory_orders_pool().await;
+        let order_id = Uuid::new_v4();
+        let trusted_net = 20_895_i64;
+        let trade_keys = Keys::generate();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, trade_keys, is_mine, trade_index) \
+             VALUES (?, 'sell', 'waiting-buyer-invoice', ?, 'USD', 100, 'SEPA', 0, ?, 0, 3)",
+        )
+        .bind(order_id.to_string())
+        .bind(trusted_net)
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .execute(&pool)
+        .await
+        .expect("seed");
+
+        let prior_snap = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let prior_msg = Message::new_order(
+            Some(order_id),
+            Some(1),
+            Some(3),
+            Action::AddInvoice,
+            Some(Payload::Order(prior_snap.clone())),
+        );
+        let messages = Arc::new(Mutex::new(vec![OrderMessage {
+            message: prior_msg,
+            timestamp: 10,
+            sender: Keys::generate().public_key(),
+            order_id: Some(order_id),
+            trade_index: 3,
+            sat_amount: Some(trusted_net),
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(false),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: Some(prior_snap),
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        }]));
+        let pending = Arc::new(Mutex::new(0));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let forged = Message::new_order(
+            Some(order_id),
+            Some(2),
+            Some(3),
+            Action::AddInvoice,
+            Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Buy),
+                status: Some(Status::Active),
+                amount: 1,
+                fiat_code: "EUR".to_string(),
+                fiat_amount: 999,
+                payment_method: "CASH".to_string(),
+                premium: 42,
+                ..Default::default()
+            })),
+        );
+
+        handle_dm(
+            &messages,
+            &pending,
+            &tx,
+            &pool,
+            order_id,
+            forged,
+            20,
+            &trade_keys,
+            true,
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("row");
+        assert_eq!(stored.amount, trusted_net);
+        assert_eq!(stored.fiat_code, "USD");
+        assert_eq!(stored.fiat_amount, 100);
+        assert_eq!(stored.kind.as_deref(), Some("sell"));
+        assert_eq!(stored.status.as_deref(), Some("waiting-buyer-invoice"));
+        assert_eq!(stored.payment_method, "SEPA");
+
+        let msgs = messages.lock().expect("lock");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].sat_amount, Some(trusted_net));
+        assert_eq!(msgs[0].order_status, Some(Status::WaitingBuyerInvoice));
+        let snap = msgs[0].order_snapshot.as_ref().expect("snapshot");
+        assert_eq!(snap.amount, trusted_net);
+        assert_eq!(snap.fiat_code, "USD");
+        assert_eq!(snap.fiat_amount, 100);
+        assert_eq!(snap.payment_method, "SEPA");
+        assert_eq!(*pending.lock().expect("pending"), 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification for rejected payload"
+        );
+    }
+
+    #[test]
+    fn resolve_mismatched_after_prior_add_invoice_is_rejected() {
+        let order_id = Uuid::new_v4();
+        let trusted_net = 20_895_i64;
+        let db_row = Order {
+            id: Some(order_id.to_string()),
+            kind: Some("sell".to_string()),
+            status: Some("waiting-buyer-invoice".to_string()),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: None,
+            request_id: None,
+            trade_index: Some(3),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        };
+        let forged = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: 1,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &forged,
+                Some(&db_row),
+                Some(false),
+                Some(&Action::AddInvoice),
+                Some(trusted_net),
+                None,
+                None,
+            ),
+            TakeSellAddInvoiceTrust::Rejected,
+            "prior AddInvoice sats must not bypass validation of a mismatched payload"
         );
     }
 
