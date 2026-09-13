@@ -963,6 +963,9 @@ enum TakeSellAddInvoiceTrust {
 ///
 /// - Gate applicability uses **local/prior** kind+status only — never an untrusted
 ///   payload status (a forged `Active` must not yield `NotApplicable` and skip validation).
+/// - Take-sell buyer `AddInvoice` validates on `WaitingBuyerInvoice`,
+///   `WaitingTakerBond`, post-retry `SettledHoldInvoice`/`Success`, or unknown
+///   local status. Other statuses are `Rejected` (not `NotApplicable`).
 /// - Always validate a current `Payload::Order` against the local row. Prior Messages
 ///   `AddInvoice` sats are **not** used to bypass validation (a mismatched replay must
 ///   `Rejected` so upsert/handler ignore the payload); framing may still fall back to
@@ -999,12 +1002,6 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         // Maker buy AddInvoice uses the normal listener path.
         return TakeSellAddInvoiceTrust::NotApplicable;
     }
-    if !matches!(
-        order_status,
-        Some(Status::WaitingBuyerInvoice) | Some(Status::WaitingTakerBond) | None
-    ) {
-        return TakeSellAddInvoiceTrust::NotApplicable;
-    }
 
     match trusted_kind {
         Some(mostro_core::order::Kind::Sell) => {}
@@ -1014,18 +1011,34 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         None => {
             // TrackOrder-before-save / unknown kind: fail closed on Order payloads so
             // forged kind cannot yield NotApplicable and still hydrate Messages.
-            if matches!(payload.as_ref(), Some(Payload::Order(_))) {
-                return TakeSellAddInvoiceTrust::Rejected;
-            }
             return TakeSellAddInvoiceTrust::Rejected;
         }
     }
 
+    // Take-sell buyer AddInvoice: validate on waiting + post-retry states; reject
+    // unsupported statuses so NotApplicable cannot copy untrusted payload fields.
+    let post_retry = matches!(
+        order_status,
+        Some(Status::SettledHoldInvoice) | Some(Status::Success)
+    );
+    if !matches!(
+        order_status,
+        Some(Status::WaitingBuyerInvoice)
+            | Some(Status::WaitingTakerBond)
+            | Some(Status::SettledHoldInvoice)
+            | Some(Status::Success)
+            | None
+    ) {
+        return TakeSellAddInvoiceTrust::Rejected;
+    }
+
     // Buyer already supplied a payout invoice at take — ignore later AddInvoice quotes
-    // (prevents gross-book ExactOrMatchLocal after invoice-provided takes).
-    if db_order
-        .and_then(|o| o.buyer_invoice.as_ref())
-        .is_some_and(|s| !s.is_empty())
+    // while still in the take/bond waiting phase (prevents gross-book ExactOrMatchLocal).
+    // Post-retry replacement invoices (SettledHoldInvoice / Success) must still validate.
+    if !post_retry
+        && db_order
+            .and_then(|o| o.buyer_invoice.as_ref())
+            .is_some_and(|s| !s.is_empty())
     {
         log::warn!("Rejecting take-sell AddInvoice for order with local buyer_invoice already set");
         return TakeSellAddInvoiceTrust::Rejected;
@@ -1595,6 +1608,7 @@ async fn handle_trade_dm_for_order(
 }
 
 /// How terminal order status is handled after each decoded protocol DM in a batch.
+#[derive(Clone, Copy)]
 enum TradeDmTerminalPolicy<'a> {
     /// Known `listen_for_order_messages` subscription: unsubscribe relay sub and stop batch.
     TrackedSubscription(&'a SubscriptionId),
@@ -1635,14 +1649,14 @@ async fn dispatch_trade_dm_batch(
     terminal_policy: TradeDmTerminalPolicy<'_>,
     notify: bool,
     dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
-) {
+) -> bool {
     if let Ok(guard) = dropped_user_history_order_ids.lock() {
         if guard.contains(&order_id) {
             log::info!(
                 "[dm_listener] Skipping trade DMs for order_id={} (removed from local history by user)",
                 order_id
             );
-            return;
+            return false;
         }
     }
     let log_each_message = matches!(
@@ -1650,6 +1664,7 @@ async fn dispatch_trade_dm_batch(
         TradeDmTerminalPolicy::TrackedSubscription(_)
     );
 
+    let mut any_applied = false;
     for (message, timestamp, sender) in parsed_messages {
         let has_terminal_status = trade_message_is_terminal(&message);
         let should_untrack_chat = trade_message_should_untrack_order_chat(&message);
@@ -1687,6 +1702,7 @@ async fn dispatch_trade_dm_batch(
         if matches!(disposition, TradeDmDisposition::Rejected) {
             continue;
         }
+        any_applied = true;
 
         if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await
         {
@@ -1720,7 +1736,7 @@ async fn dispatch_trade_dm_batch(
                                 crate::util::request_fatal_restart(format!(
                                     "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
                                 ));
-                                return;
+                                return any_applied;
                             }
                         }
                     }
@@ -1744,7 +1760,7 @@ async fn dispatch_trade_dm_batch(
                                 crate::util::request_fatal_restart(format!(
                                     "Mostrix encountered an internal error (poisoned active order indices lock: {e}). Please restart the app."
                                 ));
-                                return;
+                                return any_applied;
                             }
                         }
                     }
@@ -1755,6 +1771,7 @@ async fn dispatch_trade_dm_batch(
             }
         }
     }
+    any_applied
 }
 
 /// Look back window for startup protocol DM replay (in-memory Messages tab has no local DB).
@@ -1857,7 +1874,7 @@ struct DmListenerStartupReplay<'a> {
     dropped_user_history_order_ids: &'a Arc<Mutex<HashSet<Uuid>>>,
 }
 
-/// Fetch and hydrate the newest trade DM rumor for one active order.
+/// Fetch trade DMs for one active order and hydrate newest-first until one applies.
 #[allow(clippy::too_many_arguments)]
 async fn replay_single_trade_dm(
     client: &Client,
@@ -1922,7 +1939,7 @@ async fn replay_single_trade_dm(
     let event_list: Vec<Event> = events.into_iter().collect();
     let fetched_n = event_list.len();
 
-    let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
+    let mut candidates: Vec<(i64, EventId, (Message, i64, PublicKey))> = Vec::new();
     for event in &event_list {
         let unwrapped = match unwrap_incoming(event, &trade_keys).await {
             Ok(Some(u)) => u,
@@ -1941,20 +1958,12 @@ async fn replay_single_trade_dm(
             continue;
         }
         for triple in parsed_messages {
-            let (ref _msg, ts, ref _sender) = triple;
-            let take = match &best {
-                None => true,
-                Some((best_ts, best_eid, _)) => {
-                    ts > *best_ts || (ts == *best_ts && event.id.as_bytes() > best_eid.as_bytes())
-                }
-            };
-            if take {
-                best = Some((ts, event.id, triple));
-            }
+            let ts = triple.1;
+            candidates.push((ts, event.id, triple));
         }
     }
 
-    let Some((max_rumor_ts, _, freshest)) = best else {
+    if candidates.is_empty() {
         log::trace!(
             "Trade DM replay: order_id={} trade_index={} had {} event(s) but none decrypted/parsed",
             order_id,
@@ -1962,14 +1971,20 @@ async fn replay_single_trade_dm(
             fetched_n
         );
         return ReplayTradeDmOutcome::ParseFailed;
-    };
+    }
 
+    candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.as_bytes().cmp(a.1.as_bytes()))
+    });
+    let newest_ts = candidates[0].0;
     log::info!(
-        "Trade DM replay: order_id={} trade_index={} fetched {} protocol DM event(s); hydrating newest rumor ts={}",
+        "Trade DM replay: order_id={} trade_index={} fetched {} protocol DM event(s); trying {} candidate(s) newest-first (newest ts={})",
         order_id,
         trade_index,
         fetched_n,
-        max_rumor_ts
+        candidates.len(),
+        newest_ts
     );
 
     let dispatch_mode =
@@ -1991,8 +2006,11 @@ async fn replay_single_trade_dm(
         TradeDmReplayDispatchMode::UntrackedFallback => TradeDmTerminalPolicy::UntrackedFallback,
     };
 
-    dispatch_trade_dm_batch(
-        vec![freshest],
+    dispatch_replay_candidates_newest_first(
+        candidates
+            .into_iter()
+            .map(|(_, _, triple)| triple)
+            .collect(),
         order_id,
         trade_index,
         &trade_keys,
@@ -2006,12 +2024,60 @@ async fn replay_single_trade_dm(
         client,
         subscription_to_order,
         terminal_policy,
-        false,
         dropped_user_history_order_ids,
     )
     .await;
 
     ReplayTradeDmOutcome::Hydrated
+}
+
+/// Dispatch parsed replay candidates newest-first until one is applied.
+///
+/// A newer rejected `AddInvoice` must not hide an older valid actionable DM from
+/// the same fetch (startup replay keeps only the freshest rumor otherwise).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_replay_candidates_newest_first(
+    candidates: Vec<(Message, i64, PublicKey)>,
+    order_id: Uuid,
+    trade_index: i64,
+    trade_keys: &Keys,
+    messages: &Arc<Mutex<Vec<OrderMessage>>>,
+    pending_notifications: &Arc<Mutex<usize>>,
+    message_notification_tx: &UnboundedSender<MessageNotification>,
+    pool: &sqlx::SqlitePool,
+    user: &User,
+    active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
+    subscribed_pubkeys: &mut HashSet<PublicKey>,
+    client: &Client,
+    subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
+    terminal_policy: TradeDmTerminalPolicy<'_>,
+    dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
+) -> bool {
+    for candidate in candidates {
+        if dispatch_trade_dm_batch(
+            vec![candidate],
+            order_id,
+            trade_index,
+            trade_keys,
+            messages,
+            pending_notifications,
+            message_notification_tx,
+            pool,
+            user,
+            active_order_trade_indices,
+            subscribed_pubkeys,
+            client,
+            subscription_to_order,
+            terminal_policy,
+            false,
+            dropped_user_history_order_ids,
+        )
+        .await
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// One-shot relay fetch + replay for all active trade orders (awaitable).
@@ -2815,9 +2881,10 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_dm_expiration, dispatch_trade_dm_batch, effective_is_mine_for_trade_dm_message,
-        handle_trade_dm_for_order, is_own_signed_v2_outbound, is_pre_active_maker_listing,
-        is_pre_active_taker_take, is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
+        default_dm_expiration, dispatch_replay_candidates_newest_first, dispatch_trade_dm_batch,
+        effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
+        is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
+        is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
         new_order_would_regress_messages_row, resolve_take_sell_add_invoice_trusted_sats,
         satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
         trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
@@ -4403,6 +4470,126 @@ mod tests {
         );
     }
 
+    fn sample_take_sell_db_row(order_id: Uuid, status: &str, amount: i64) -> Order {
+        Order {
+            id: Some(order_id.to_string()),
+            kind: Some("sell".to_string()),
+            status: Some(status.to_string()),
+            amount,
+            fiat_code: "USD".to_string(),
+            min_amount: None,
+            max_amount: None,
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            premium: 0,
+            trade_keys: None,
+            counterparty_pubkey: None,
+            order_chat_shared_key_hex: None,
+            dispute_id: None,
+            solver_pubkey: None,
+            dispute_chat_shared_key_hex: None,
+            is_mine: false,
+            buyer_invoice: Some("lnbc1old".into()),
+            request_id: None,
+            trade_index: Some(3),
+            created_at: None,
+            expires_at: None,
+            last_seen_dm_ts: None,
+        }
+    }
+
+    #[test]
+    fn resolve_post_retry_success_validates_matching_add_invoice() {
+        let order_id = Uuid::new_v4();
+        let trusted_net = 20_895_i64;
+        let payload = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        for status in ["success", "settled-hold-invoice"] {
+            let db_row = sample_take_sell_db_row(order_id, status, trusted_net);
+            assert_eq!(
+                resolve_take_sell_add_invoice_trusted_sats(
+                    &Action::AddInvoice,
+                    &payload,
+                    Some(&db_row),
+                    Some(false),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                TakeSellAddInvoiceTrust::Trusted(trusted_net),
+                "post-retry {status} must still validate AddInvoice"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_post_retry_success_rejects_mismatched_add_invoice() {
+        let order_id = Uuid::new_v4();
+        let db_row = sample_take_sell_db_row(order_id, "success", 20_895);
+        let forged = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: 1,
+            fiat_code: "EUR".to_string(),
+            fiat_amount: 999,
+            payment_method: "CASH".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &forged,
+                Some(&db_row),
+                Some(false),
+                None,
+                None,
+                None,
+                None,
+            ),
+            TakeSellAddInvoiceTrust::Rejected
+        );
+    }
+
+    #[test]
+    fn resolve_unsupported_active_status_rejects_take_sell_add_invoice() {
+        let order_id = Uuid::new_v4();
+        let db_row = sample_take_sell_db_row(order_id, "active", 20_895);
+        let payload = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingBuyerInvoice),
+            amount: 20_895,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &payload,
+                Some(&db_row),
+                Some(false),
+                None,
+                None,
+                None,
+                None,
+            ),
+            TakeSellAddInvoiceTrust::Rejected,
+            "unsupported local status must not NotApplicable-hydrate payload fields"
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_rejected_add_invoice_skips_terminal_cleanup() {
         use crate::models::User;
@@ -4508,6 +4695,123 @@ mod tests {
             "rejected payload must not advance last_seen_dm_ts"
         );
         assert!(messages.lock().expect("msg").is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_newer_rejected_add_invoice_falls_back_to_older_valid() {
+        use crate::models::User;
+        use mostro_core::order::Kind;
+
+        let pool = memory_orders_pool().await;
+        sqlx::query(
+            r#"
+            CREATE TABLE users (
+                i0_pubkey TEXT PRIMARY KEY,
+                mnemonic TEXT NOT NULL,
+                last_trade_index INTEGER,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("users table");
+        let mnemonic =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let user = User::new(mnemonic.to_string(), &pool).await.expect("user");
+
+        let order_id = Uuid::new_v4();
+        let trade_index = 1_i64;
+        let trusted_net = 20_895_i64;
+        let trade_keys = user.derive_trade_keys(trade_index).expect("trade keys");
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, trade_keys, is_mine, trade_index) \
+             VALUES (?, 'sell', 'waiting-buyer-invoice', ?, 'USD', 100, 'SEPA', 0, ?, 0, ?)",
+        )
+        .bind(order_id.to_string())
+        .bind(trusted_net)
+        .bind(trade_keys.secret_key().to_secret_hex())
+        .bind(trade_index)
+        .execute(&pool)
+        .await
+        .expect("seed");
+
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let pending = Arc::new(Mutex::new(0));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let active = Arc::new(Mutex::new(HashMap::from([(order_id, trade_index)])));
+        let mut subscribed = HashSet::new();
+        subscribed.insert(trade_keys.public_key());
+        let mut subscription_to_order = HashMap::new();
+        let dropped = Arc::new(Mutex::new(HashSet::new()));
+        let client = Client::default();
+
+        let older_valid = Message::new_order(
+            Some(order_id),
+            Some(1),
+            Some(trade_index),
+            Action::AddInvoice,
+            Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                amount: trusted_net,
+                fiat_code: "USD".to_string(),
+                fiat_amount: 100,
+                payment_method: "SEPA".to_string(),
+                ..Default::default()
+            })),
+        );
+        let newer_rejected = Message::new_order(
+            Some(order_id),
+            Some(2),
+            Some(trade_index),
+            Action::AddInvoice,
+            Some(Payload::Order(SmallOrder {
+                id: Some(order_id),
+                kind: Some(Kind::Sell),
+                status: Some(Status::WaitingBuyerInvoice),
+                amount: 1,
+                fiat_code: "EUR".to_string(),
+                fiat_amount: 999,
+                payment_method: "CASH".to_string(),
+                ..Default::default()
+            })),
+        );
+        let sender = Keys::generate().public_key();
+        let applied = dispatch_replay_candidates_newest_first(
+            vec![(newer_rejected, 20, sender), (older_valid, 10, sender)],
+            order_id,
+            trade_index,
+            &trade_keys,
+            &messages,
+            &pending,
+            &tx,
+            &pool,
+            &user,
+            &active,
+            &mut subscribed,
+            &client,
+            &mut subscription_to_order,
+            TradeDmTerminalPolicy::UntrackedFallback,
+            &dropped,
+        )
+        .await;
+        assert!(
+            applied,
+            "older valid AddInvoice must be applied after newer reject"
+        );
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("row");
+        assert_eq!(stored.amount, trusted_net);
+        assert_eq!(stored.fiat_code, "USD");
+        let msgs = messages.lock().expect("lock");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].sat_amount, Some(trusted_net));
+        assert_eq!(msgs[0].order_status, Some(Status::WaitingBuyerInvoice));
     }
 
     #[tokio::test]

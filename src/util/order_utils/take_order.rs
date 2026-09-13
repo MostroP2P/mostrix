@@ -79,16 +79,10 @@ pub async fn take_order(
         }
     };
 
-    // Fixed-price take-sell without a buyer invoice needs Mostro fee before we
-    // reserve an index or send TakeSell (bond persist + later AddInvoice). When the
-    // buyer already supplied an invoice, Mostro will not ask for AddInvoice client-side.
-    let invoice_provided = invoice.as_ref().is_some_and(|s| !s.is_empty());
-    ensure_fee_for_fixed_take_sell(
-        &action,
-        order,
-        invoice_provided,
-        mostro_instance.and_then(|i| i.fee),
-    )?;
+    // Fixed-price take-sell needs Mostro fee before we reserve an index or send
+    // TakeSell — `process_take_order_reply` requires it for PayBondInvoice net persist
+    // even when the buyer already supplied a payout invoice.
+    ensure_fee_for_fixed_take_sell(&action, order, mostro_instance.and_then(|i| i.fee))?;
 
     let order_id = order
         .id
@@ -195,20 +189,15 @@ pub async fn take_order(
     }
 }
 
-/// Fail closed before reservation/send when a fixed-price take-sell (invoice absent)
-/// cannot compute the buyer-invoice net for PayBondInvoice persist / later AddInvoice.
-/// Takes that already include a buyer invoice do not need this preflight.
+/// Fail closed before reservation/send when a fixed-price take-sell cannot compute
+/// the buyer-invoice net for PayBondInvoice persist. Invoice-provided takes still
+/// hit `PayBondInvoice` when bonds are enabled, so fee is required there too.
 fn ensure_fee_for_fixed_take_sell(
     action: &Action,
     order: &SmallOrder,
-    invoice_provided: bool,
     fee_rate: Option<f64>,
 ) -> Result<()> {
-    if matches!(action, Action::TakeSell)
-        && order.amount > 0
-        && !invoice_provided
-        && fee_rate.is_none()
-    {
+    if matches!(action, Action::TakeSell) && order.amount > 0 && fee_rate.is_none() {
         return Err(anyhow::anyhow!(
             "Cannot take fixed-price sell without Mostro fee from instance info"
         ));
@@ -584,22 +573,19 @@ mod tests {
     #[test]
     fn ensure_fee_for_fixed_take_sell_runs_before_protocol_send() {
         let fixed = sample_small_order(uuid::Uuid::new_v4());
-        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, false, None)
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, None)
             .expect_err("fixed take-sell without fee must abort before reserve/send");
         assert!(err.to_string().contains("fee"));
 
-        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, false, Some(0.01))
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, Some(0.01))
             .expect("fee present allows take");
-
-        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, true, None)
-            .expect("invoice-provided take-sell does not require fee preflight");
 
         let mut range = fixed.clone();
         range.amount = 0;
-        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, false, None)
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, None)
             .expect("range/market take-sell does not require fee preflight");
 
-        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, false, None)
+        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, None)
             .expect("take-buy is not the fixed take-sell bond path");
     }
 
