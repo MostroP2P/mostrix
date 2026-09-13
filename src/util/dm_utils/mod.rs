@@ -44,7 +44,8 @@ use crate::util::filters::filter_protocol_dm_from_mostro;
 use crate::util::mostro_info::{nostr_pow_for_protocol_dm, MostroInstanceInfo};
 use crate::util::order_utils::{
     inferred_status_from_trade_action, map_action_to_status, should_apply_status_transition,
-    should_strictly_advance_status, validate_take_sell_add_invoice_reply_with_fee_check, FeeCheck,
+    should_strictly_advance_status, validate_take_sell_add_invoice_reply_with_fee_check,
+    AddInvoicePhase, FeeCheck,
 };
 use futures::StreamExt;
 use std::collections::BTreeSet;
@@ -966,6 +967,8 @@ enum TakeSellAddInvoiceTrust {
 /// - Take-sell buyer `AddInvoice` validates on `WaitingBuyerInvoice`,
 ///   `WaitingTakerBond`, post-retry `SettledHoldInvoice`/`Success`, or unknown
 ///   local status. Other statuses are `Rejected` (not `NotApplicable`).
+///   Post-retry payloads must carry `SettledHoldInvoice` (Mostro
+///   `check_failure_retries`); they are not rewound to `WaitingBuyerInvoice`.
 /// - Always validate a current `Payload::Order` against the local row. Prior Messages
 ///   `AddInvoice` sats are **not** used to bypass validation (a mismatched replay must
 ///   `Rejected` so upsert/handler ignore the payload); framing may still fall back to
@@ -1015,8 +1018,9 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         }
     }
 
-    // Take-sell buyer AddInvoice: validate on waiting + post-retry states; reject
-    // unsupported statuses so NotApplicable cannot copy untrusted payload fields.
+    // Take-sell buyer AddInvoice: validate on waiting + post-retry local states;
+    // reject unsupported statuses so NotApplicable cannot copy untrusted fields.
+    // Payload status is checked separately via AddInvoicePhase (take vs PostRetry).
     let post_retry = matches!(
         order_status,
         Some(Status::SettledHoldInvoice) | Some(Status::Success)
@@ -1052,6 +1056,11 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         return TakeSellAddInvoiceTrust::Rejected;
     };
     let take_fiat = (requested.fiat_amount > 0).then_some(requested.fiat_amount);
+    let phase = if post_retry {
+        AddInvoicePhase::PostRetry
+    } else {
+        AddInvoicePhase::Take
+    };
 
     match validate_take_sell_add_invoice_reply_with_fee_check(
         &requested,
@@ -1059,6 +1068,7 @@ fn resolve_take_sell_add_invoice_trusted_sats(
         take_fiat,
         None,
         FeeCheck::ExactOrMatchLocal,
+        phase,
     ) {
         Ok(sats) => TakeSellAddInvoiceTrust::Trusted(sats),
         Err(e) => {
@@ -4499,13 +4509,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_post_retry_success_validates_matching_add_invoice() {
+    fn resolve_post_retry_accepts_daemon_settled_hold_invoice_payload() {
         let order_id = Uuid::new_v4();
         let trusted_net = 20_895_i64;
+        // Mostro `check_failure_retries` copies live order status into AddInvoice
+        // (SettledHoldInvoice), not WaitingBuyerInvoice.
         let payload = Some(Payload::Order(SmallOrder {
             id: Some(order_id),
             kind: Some(mostro_core::order::Kind::Sell),
-            status: Some(Status::WaitingBuyerInvoice),
+            status: Some(Status::SettledHoldInvoice),
             amount: trusted_net,
             fiat_code: "USD".to_string(),
             fiat_amount: 100,
@@ -4526,19 +4538,50 @@ mod tests {
                     None,
                 ),
                 TakeSellAddInvoiceTrust::Trusted(trusted_net),
-                "post-retry {status} must still validate AddInvoice"
+                "post-retry {status} must accept SettledHoldInvoice payload"
             );
         }
     }
 
     #[test]
-    fn resolve_post_retry_success_rejects_mismatched_add_invoice() {
+    fn resolve_post_retry_rejects_waiting_buyer_invoice_payload() {
         let order_id = Uuid::new_v4();
-        let db_row = sample_take_sell_db_row(order_id, "success", 20_895);
-        let forged = Some(Payload::Order(SmallOrder {
+        let trusted_net = 20_895_i64;
+        let db_row = sample_take_sell_db_row(order_id, "settled-hold-invoice", trusted_net);
+        let payload = Some(Payload::Order(SmallOrder {
             id: Some(order_id),
             kind: Some(mostro_core::order::Kind::Sell),
             status: Some(Status::WaitingBuyerInvoice),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &payload,
+                Some(&db_row),
+                Some(false),
+                None,
+                None,
+                None,
+                None,
+            ),
+            TakeSellAddInvoiceTrust::Rejected,
+            "replacement invoice must not match the initial-take status"
+        );
+    }
+
+    #[test]
+    fn resolve_post_retry_success_rejects_mismatched_add_invoice() {
+        let order_id = Uuid::new_v4();
+        let db_row = sample_take_sell_db_row(order_id, "settled-hold-invoice", 20_895);
+        let forged = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::SettledHoldInvoice),
             amount: 1,
             fiat_code: "EUR".to_string(),
             fiat_amount: 999,
@@ -4557,6 +4600,37 @@ mod tests {
                 None,
             ),
             TakeSellAddInvoiceTrust::Rejected
+        );
+    }
+
+    #[test]
+    fn resolve_take_waiting_rejects_settled_hold_invoice_payload() {
+        let order_id = Uuid::new_v4();
+        let trusted_net = 20_895_i64;
+        let db_row = sample_take_sell_db_row(order_id, "waiting-buyer-invoice", trusted_net);
+        let payload = Some(Payload::Order(SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::SettledHoldInvoice),
+            amount: trusted_net,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            resolve_take_sell_add_invoice_trusted_sats(
+                &Action::AddInvoice,
+                &payload,
+                Some(&db_row),
+                Some(false),
+                None,
+                None,
+                None,
+                None,
+            ),
+            TakeSellAddInvoiceTrust::Rejected,
+            "initial take AddInvoice must stay WaitingBuyerInvoice"
         );
     }
 

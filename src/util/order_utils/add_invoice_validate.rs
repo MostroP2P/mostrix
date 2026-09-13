@@ -1,7 +1,33 @@
 //! MOSTRO-078 take-sell `AddInvoice` sats validation (sync take path + DM listener).
+//!
+//! Reply `status` is lifecycle-aware via [`AddInvoicePhase`]: take/bond uses
+//! `WaitingBuyerInvoice`; post-retry replacement invoices keep
+//! `SettledHoldInvoice` (Mostro `check_failure_retries` does not rewind).
 
 use anyhow::Result;
 use mostro_core::prelude::*;
+
+/// Which `AddInvoice` SmallOrder status the daemon is expected to send.
+///
+/// Initial take/bond replies stay `WaitingBuyerInvoice`. After payout retries
+/// fail, Mostro's `check_failure_retries` clones the live order (status
+/// `SettledHoldInvoice`) into `Payload::Order` — it does not rewind to waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddInvoicePhase {
+    /// First buyer invoice after take / bond.
+    Take,
+    /// Replacement invoice after failed Lightning payout retries.
+    PostRetry,
+}
+
+fn returned_status_ok_for_phase(status: Status, phase: AddInvoicePhase) -> bool {
+    match phase {
+        AddInvoicePhase::Take => status == Status::WaitingBuyerInvoice,
+        AddInvoicePhase::PostRetry => {
+            matches!(status, Status::SettledHoldInvoice | Status::Success)
+        }
+    }
+}
 
 /// How to verify fixed-price buyer-invoice sats when Mostro fee may be missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +57,11 @@ pub fn expected_buyer_invoice_sats(book_amount: i64, fee_rate: f64) -> i64 {
 
 /// Cross-check a take-sell `AddInvoice` SmallOrder against the book order the user took.
 ///
+/// This wrapper is the **take/bond** path ([`AddInvoicePhase::Take`]): daemon
+/// `status` must be `WaitingBuyerInvoice`. Post-retry replacement invoices use
+/// [`validate_take_sell_add_invoice_reply_with_fee_check`] with
+/// [`AddInvoicePhase::PostRetry`].
+///
 /// Returns the trusted sats amount to show on the AddInvoice popup and to persist.
 /// Fixed-price books (`requested.amount > 0`) must equal
 /// [`expected_buyer_invoice_sats`] when fee is available; market-price books
@@ -55,16 +86,23 @@ pub fn validate_take_sell_add_invoice_reply(
         take_fiat_amount,
         fee_rate,
         FeeCheck::ExactRequired,
+        AddInvoicePhase::Take,
     )
 }
 
-/// Same as [`validate_take_sell_add_invoice_reply`] with an explicit [`FeeCheck`] policy.
+/// Same as [`validate_take_sell_add_invoice_reply`] with explicit [`FeeCheck`]
+/// and [`AddInvoicePhase`] policies.
+///
+/// `phase` selects which daemon `status` is acceptable:
+/// [`AddInvoicePhase::Take`] requires `WaitingBuyerInvoice`;
+/// [`AddInvoicePhase::PostRetry`] requires `SettledHoldInvoice` or legacy `Success`.
 pub fn validate_take_sell_add_invoice_reply_with_fee_check(
     requested: &SmallOrder,
     returned: &SmallOrder,
     take_fiat_amount: Option<i64>,
     fee_rate: Option<f64>,
     fee_check: FeeCheck,
+    phase: AddInvoicePhase,
 ) -> Result<i64> {
     let req_id = requested
         .id
@@ -100,9 +138,10 @@ pub fn validate_take_sell_add_invoice_reply_with_fee_check(
     let status = returned
         .status
         .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order status"))?;
-    if status != Status::WaitingBuyerInvoice {
+    if !returned_status_ok_for_phase(status, phase) {
         return Err(anyhow::anyhow!(
-            "AddInvoice status mismatch: expected WaitingBuyerInvoice, got {:?}",
+            "AddInvoice status mismatch for {:?}: got {:?}",
+            phase,
             status
         ));
     }
@@ -248,6 +287,7 @@ mod tests {
             None,
             None,
             FeeCheck::ExactOrMatchLocal,
+            AddInvoicePhase::Take,
         )
         .unwrap();
         assert_eq!(sats, 20_895);
@@ -260,6 +300,7 @@ mod tests {
             None,
             None,
             FeeCheck::ExactOrMatchLocal,
+            AddInvoicePhase::Take,
         )
         .expect_err("bond-sized amount must fail");
         assert!(err.to_string().contains("mismatch without fee"));
@@ -336,10 +377,54 @@ mod tests {
             None,
             None,
             FeeCheck::ExactOrMatchLocal,
+            AddInvoicePhase::Take,
         )
         .unwrap_err()
         .to_string()
         .contains("missing order id"));
+    }
+
+    #[test]
+    fn validate_add_invoice_take_rejects_settled_hold_invoice_status() {
+        let id = uuid::Uuid::new_v4();
+        let requested = sample_small_order(id);
+        let mut returned = sample_small_order(id);
+        returned.amount = expected_buyer_invoice_sats(21_000, 0.01);
+        returned.status = Some(Status::SettledHoldInvoice);
+        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, Some(0.01))
+            .expect_err("initial take must not accept settled-hold-invoice");
+        assert!(err.to_string().contains("status mismatch"));
+    }
+
+    #[test]
+    fn validate_add_invoice_post_retry_accepts_settled_hold_invoice() {
+        let id = uuid::Uuid::new_v4();
+        let mut requested = sample_small_order(id);
+        requested.amount = 20_895;
+        requested.status = Some(Status::SettledHoldInvoice);
+        let mut returned = requested.clone();
+        let sats = validate_take_sell_add_invoice_reply_with_fee_check(
+            &requested,
+            &returned,
+            None,
+            None,
+            FeeCheck::ExactOrMatchLocal,
+            AddInvoicePhase::PostRetry,
+        )
+        .expect("daemon replacement invoice keeps SettledHoldInvoice");
+        assert_eq!(sats, 20_895);
+
+        returned.status = Some(Status::WaitingBuyerInvoice);
+        let err = validate_take_sell_add_invoice_reply_with_fee_check(
+            &requested,
+            &returned,
+            None,
+            None,
+            FeeCheck::ExactOrMatchLocal,
+            AddInvoicePhase::PostRetry,
+        )
+        .expect_err("post-retry must not accept waiting-buyer-invoice");
+        assert!(err.to_string().contains("status mismatch"));
     }
 
     #[test]

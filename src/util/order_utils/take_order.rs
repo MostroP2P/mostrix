@@ -212,6 +212,9 @@ fn ensure_fee_for_fixed_take_sell(
 ///
 /// For `AddInvoice`, validates the daemon SmallOrder against `requested` /
 /// `take_fiat_amount` / `fee_rate` before persist and popup framing (MOSTRO-078).
+/// This is the take/bond path: reply `status` must be `WaitingBuyerInvoice`.
+/// Replacement invoices after failed payout retries are validated on the DM
+/// listener with [`crate::util::order_utils::AddInvoicePhase::PostRetry`].
 #[allow(clippy::too_many_arguments)]
 async fn process_take_order_reply(
     inner_message: &mostro_core::message::MessageKind,
