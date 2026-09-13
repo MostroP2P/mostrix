@@ -1,4 +1,5 @@
 // Order utilities module
+mod add_invoice_validate;
 mod bond_resolution;
 mod execute_add_invoice;
 mod execute_admin_add_solver;
@@ -16,6 +17,10 @@ mod send_new_order;
 mod take_order;
 
 // Re-export public functions
+pub use add_invoice_validate::{
+    expected_buyer_invoice_sats, mostro_split_fee, validate_take_sell_add_invoice_reply,
+    validate_take_sell_add_invoice_reply_with_fee_check, AddInvoicePhase, FeeCheck,
+};
 pub use bond_resolution::BondSlashChoice;
 pub use execute_add_invoice::{execute_add_bond_invoice, execute_add_invoice};
 pub use execute_admin_add_solver::execute_admin_add_solver;

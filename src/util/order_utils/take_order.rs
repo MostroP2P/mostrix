@@ -10,6 +10,9 @@ use crate::util::dm_utils::{
     parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
+use crate::util::order_utils::add_invoice_validate::{
+    expected_buyer_invoice_sats, validate_take_sell_add_invoice_reply,
+};
 use crate::util::order_utils::helper::{handle_mostro_response, payment_request_operation_result};
 use crate::util::OrderDmSubscriptionCmd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -75,6 +78,11 @@ pub async fn take_order(
             return Err(anyhow::anyhow!("Order kind is not specified"));
         }
     };
+
+    // Fixed-price take-sell needs Mostro fee before we reserve an index or send
+    // TakeSell — `process_take_order_reply` requires it for PayBondInvoice net persist
+    // even when the buyer already supplied a payout invoice.
+    ensure_fee_for_fixed_take_sell(&action, order, mostro_instance.and_then(|i| i.fee))?;
 
     let order_id = order
         .id
@@ -162,6 +170,8 @@ pub async fn take_order(
                     order,
                     amount,
                     mostro_instance.and_then(|i| i.fee),
+                    action.clone(),
+                    invoice.clone().filter(|s| !s.is_empty()),
                     request_id,
                     next_idx,
                     pool,
@@ -179,6 +189,22 @@ pub async fn take_order(
     }
 }
 
+/// Fail closed before reservation/send when a fixed-price take-sell cannot compute
+/// the buyer-invoice net for PayBondInvoice persist. Invoice-provided takes still
+/// hit `PayBondInvoice` when bonds are enabled, so fee is required there too.
+fn ensure_fee_for_fixed_take_sell(
+    action: &Action,
+    order: &SmallOrder,
+    fee_rate: Option<f64>,
+) -> Result<()> {
+    if matches!(action, Action::TakeSell) && order.amount > 0 && fee_rate.is_none() {
+        return Err(anyhow::anyhow!(
+            "Cannot take fixed-price sell without Mostro fee from instance info"
+        ));
+    }
+    Ok(())
+}
+
 /// Dispatch a take-order Mostro reply by **action** (not payload alone).
 ///
 /// Take-sell without a buyer invoice is `AddInvoice` + `Payload::Order`; treating that as
@@ -186,6 +212,9 @@ pub async fn take_order(
 ///
 /// For `AddInvoice`, validates the daemon SmallOrder against `requested` /
 /// `take_fiat_amount` / `fee_rate` before persist and popup framing (MOSTRO-078).
+/// This is the take/bond path: reply `status` must be `WaitingBuyerInvoice`.
+/// Replacement invoices after failed payout retries are validated on the DM
+/// listener with [`crate::util::order_utils::AddInvoicePhase::PostRetry`].
 #[allow(clippy::too_many_arguments)]
 async fn process_take_order_reply(
     inner_message: &mostro_core::message::MessageKind,
@@ -195,6 +224,8 @@ async fn process_take_order_reply(
     requested: &SmallOrder,
     take_fiat_amount: Option<i64>,
     fee_rate: Option<f64>,
+    take_action: Action,
+    take_buyer_invoice: Option<String>,
     request_id: u64,
     next_idx: i64,
     pool: &sqlx::sqlite::SqlitePool,
@@ -240,6 +271,46 @@ async fn process_take_order_reply(
             invoice,
             amount,
         } => {
+            // PayBondInvoice SmallOrder.amount is the bond floor (often 1000), not
+            // trade sats. For TakeSell (buyer), persist fee-adjusted buyer-invoice net
+            // when fee is known so the DM listener can ExactOrMatchLocal. TakeBuy
+            // (seller) next step is PayInvoice hold — persist book amount, never net.
+            // Bond stays in popup sat_amount only.
+            let trade_amount_to_persist = match (&take_action, &action) {
+                (Action::TakeSell, Action::PayBondInvoice) => {
+                    if requested.amount > 0 {
+                        // Always persist fee-adjusted net for fixed take-sell bonds.
+                        // Never store gross book as a stand-in "trusted net" when fee is
+                        // missing (invoice-provided or not) — that would let a later
+                        // AddInvoice pass ExactOrMatchLocal at book size.
+                        let Some(rate) = fee_rate else {
+                            return Err(anyhow::anyhow!(
+                                "Cannot process fixed-price take-sell bond without Mostro fee from instance info"
+                            ));
+                        };
+                        Some(expected_buyer_invoice_sats(requested.amount, rate))
+                    } else {
+                        Some(0)
+                    }
+                }
+                (_, Action::PayBondInvoice) => {
+                    // TakeBuy (or other): keep book/range amount, not buyer-invoice net.
+                    Some(if requested.amount > 0 {
+                        requested.amount
+                    } else {
+                        0
+                    })
+                }
+                _ => None,
+            };
+            let mut order = order;
+            if let Some(take_inv) = take_buyer_invoice.filter(|s| !s.is_empty()) {
+                if let Some(ref mut small) = order {
+                    if small.buyer_invoice.as_ref().is_none_or(|s| s.is_empty()) {
+                        small.buyer_invoice = Some(take_inv);
+                    }
+                }
+            }
             payment_request_operation_result(
                 action,
                 order,
@@ -253,6 +324,7 @@ async fn process_take_order_reply(
                 false,
                 dm_subscription_tx,
                 "take_order",
+                trade_amount_to_persist,
             )
             .await
         }
@@ -307,135 +379,6 @@ fn normalize_taken_order(mut order: SmallOrder, fallback_order_id: uuid::Uuid) -
         order.id = Some(fallback_order_id);
     }
     order
-}
-
-/// Mostro split fee charged to each party (`fee_rate * amount / 2`, rounded).
-///
-/// Mirrors `mostro::util::get_fee` so the buyer-invoice amount can be checked
-/// against the book order the user took (MOSTRO-078).
-fn mostro_split_fee(amount: i64, fee_rate: f64) -> i64 {
-    ((fee_rate * amount as f64) / 2.0).round() as i64
-}
-
-/// Buyer payout invoice sats for a fixed-price take: `amount - split_fee`.
-fn expected_buyer_invoice_sats(book_amount: i64, fee_rate: f64) -> i64 {
-    book_amount.saturating_sub(mostro_split_fee(book_amount, fee_rate))
-}
-
-/// Cross-check a take-sell `AddInvoice` SmallOrder against the book order the user took.
-///
-/// Returns the trusted sats amount to show on the AddInvoice popup and to persist.
-/// Fixed-price books (`requested.amount > 0`) must equal
-/// [`expected_buyer_invoice_sats`]; market-price books (`amount == 0`) only require a
-/// positive daemon quote after id / kind / status / fiat checks.
-///
-/// All identity fields on the reply (`id`, `kind`, `status`, `fiat_code`, `fiat_amount`)
-/// are required — omitted or empty values are rejected (MOSTRO-078 fail-closed).
-///
-/// # Errors
-///
-/// Missing/mismatched id, kind, status, fiat, or sats; missing fee for fixed-price;
-/// non-positive market quote (MOSTRO-078).
-fn validate_take_sell_add_invoice_reply(
-    requested: &SmallOrder,
-    returned: &SmallOrder,
-    take_fiat_amount: Option<i64>,
-    fee_rate: Option<f64>,
-) -> Result<i64> {
-    let req_id = requested
-        .id
-        .ok_or_else(|| anyhow::anyhow!("Taken order is missing id"))?;
-    let ret_id = returned
-        .id
-        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order id"))?;
-    if req_id != ret_id {
-        return Err(anyhow::anyhow!(
-            "AddInvoice order id mismatch: took {}, daemon sent {}",
-            req_id,
-            ret_id
-        ));
-    }
-
-    let kind = returned
-        .kind
-        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order kind"))?;
-    if requested.kind.is_some_and(|k| k != kind) {
-        return Err(anyhow::anyhow!(
-            "AddInvoice order kind mismatch: expected {:?}, got {:?}",
-            requested.kind,
-            kind
-        ));
-    }
-    if kind != mostro_core::order::Kind::Sell {
-        return Err(anyhow::anyhow!(
-            "AddInvoice after take-sell must be a sell order, got {:?}",
-            kind
-        ));
-    }
-
-    let status = returned
-        .status
-        .ok_or_else(|| anyhow::anyhow!("AddInvoice reply missing order status"))?;
-    if status != Status::WaitingBuyerInvoice {
-        return Err(anyhow::anyhow!(
-            "AddInvoice status mismatch: expected WaitingBuyerInvoice, got {:?}",
-            status
-        ));
-    }
-
-    if returned.fiat_code.is_empty() {
-        return Err(anyhow::anyhow!("AddInvoice reply missing fiat code"));
-    }
-    if returned.fiat_code != requested.fiat_code {
-        return Err(anyhow::anyhow!(
-            "AddInvoice fiat code mismatch: expected {}, got {}",
-            requested.fiat_code,
-            returned.fiat_code
-        ));
-    }
-
-    let expected_fiat = take_fiat_amount.unwrap_or(requested.fiat_amount);
-    if expected_fiat <= 0 {
-        return Err(anyhow::anyhow!(
-            "AddInvoice expected fiat amount must be positive, got {}",
-            expected_fiat
-        ));
-    }
-    if returned.fiat_amount != expected_fiat {
-        return Err(anyhow::anyhow!(
-            "AddInvoice fiat amount mismatch: expected {}, got {}",
-            expected_fiat,
-            returned.fiat_amount
-        ));
-    }
-
-    // Fixed-price book orders: buyer invoice is amount − Mostro split fee.
-    if requested.amount > 0 {
-        let Some(rate) = fee_rate else {
-            return Err(anyhow::anyhow!(
-                "Cannot verify AddInvoice sats without Mostro fee from instance info"
-            ));
-        };
-        let expected = expected_buyer_invoice_sats(requested.amount, rate);
-        if returned.amount != expected {
-            return Err(anyhow::anyhow!(
-                "AddInvoice sats mismatch: expected {} (book {} minus fee), got {}",
-                expected,
-                requested.amount,
-                returned.amount
-            ));
-        }
-        return Ok(expected);
-    }
-
-    // Market-price book (amount == 0): sats are quoted by Mostro; require a positive
-    // amount and rely on id/fiat/status checks above.
-    if returned.amount <= 0 {
-        return Err(anyhow::anyhow!(
-            "AddInvoice market-price reply missing positive sats amount"
-        ));
-    }
-    Ok(returned.amount)
 }
 
 async fn persist_taken_order(
@@ -526,6 +469,7 @@ fn take_add_invoice_operation_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Order;
     use mostro_core::prelude::{Action, Payload, Status};
 
     fn sample_small_order(id: uuid::Uuid) -> SmallOrder {
@@ -539,6 +483,30 @@ mod tests {
             payment_method: "SEPA".to_string(),
             ..Default::default()
         }
+    }
+
+    async fn memory_orders_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+        pool
     }
 
     #[test]
@@ -606,163 +574,564 @@ mod tests {
     }
 
     #[test]
-    fn split_fee_matches_mostro_half_rate_rounding() {
-        // fee_rate 0.01 → 0.5% per party on 21_000 = 105
-        assert_eq!(mostro_split_fee(21_000, 0.01), 105);
-        assert_eq!(expected_buyer_invoice_sats(21_000, 0.01), 20_895);
+    fn ensure_fee_for_fixed_take_sell_runs_before_protocol_send() {
+        let fixed = sample_small_order(uuid::Uuid::new_v4());
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, None)
+            .expect_err("fixed take-sell without fee must abort before reserve/send");
+        assert!(err.to_string().contains("fee"));
+
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &fixed, Some(0.01))
+            .expect("fee present allows take");
+
+        let mut range = fixed.clone();
+        range.amount = 0;
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &range, None)
+            .expect("range/market take-sell does not require fee preflight");
+
+        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &fixed, None)
+            .expect("take-buy is not the fixed take-sell bond path");
     }
 
-    #[test]
-    fn validate_add_invoice_accepts_fixed_amount_minus_fee() {
-        let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
-        let mut returned = sample_small_order(id);
-        returned.amount = expected_buyer_invoice_sats(21_000, 0.01);
-        let sats =
-            validate_take_sell_add_invoice_reply(&requested, &returned, None, Some(0.01)).unwrap();
-        assert_eq!(sats, 20_895);
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_fixed_persists_net_keeps_bond_in_popup() {
+        // Regression: removing trade_amount_to_persist must fail this test.
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let fee_rate = 0.01_f64;
+        let expected_net = expected_buyer_invoice_sats(book_amount, fee_rate);
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(7),
+            Some(3),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+        let sender = Keys::generate().public_key();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            sender,
+            &requested,
+            None,
+            Some(fee_rate),
+            Action::TakeSell,
+            None,
+            7,
+            3,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("PayBondInvoice take reply");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                invoice,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats), "popup must show bond sats");
+                assert_eq!(
+                    order.amount, expected_net,
+                    "result order must carry trusted buyer-invoice net, not bond"
+                );
+                assert_eq!(invoice, "lnbc1bond");
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(
+            stored.amount, expected_net,
+            "SQLite amount must be fee-adjusted net, not bond floor"
+        );
+        assert_ne!(stored.amount, bond_sats);
+        assert_ne!(stored.amount, book_amount);
     }
 
-    #[test]
-    fn validate_add_invoice_rejects_fabricated_sats() {
-        let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
-        let mut returned = sample_small_order(id);
-        returned.amount = 1; // shave
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, Some(0.01))
-            .expect_err("fabricated sats must fail");
-        assert!(err.to_string().contains("sats mismatch"));
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_fixed_without_fee_aborts() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(7),
+            Some(3),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let err = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            None, // fee unavailable — must not persist gross book
+            Action::TakeSell,
+            None,
+            7,
+            3,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect_err("fixed PayBondInvoice without fee must abort");
+        assert!(
+            err.to_string().contains("fee"),
+            "error should mention missing fee, got: {err}"
+        );
+        assert!(
+            Order::get_by_id(&pool, &order_id.to_string())
+                .await
+                .is_err(),
+            "must not persist an order when fee is missing"
+        );
     }
 
-    #[test]
-    fn validate_add_invoice_rejects_id_mismatch() {
-        let requested = sample_small_order(uuid::Uuid::new_v4());
-        let returned = sample_small_order(uuid::Uuid::new_v4());
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, Some(0.01))
-            .expect_err("id mismatch must fail");
-        assert!(err.to_string().contains("order id mismatch"));
+    #[tokio::test]
+    async fn process_take_reply_pay_bond_range_persists_zero_keeps_bond_in_popup() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let bond_sats = 1_000_i64;
+        let take_fiat = 75_i64;
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: 0,
+            min_amount: Some(50),
+            max_amount: Some(200),
+            fiat_code: "USD".to_string(),
+            fiat_amount: 0,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: take_fiat,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(8),
+            Some(4),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1rangebond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            Some(take_fiat),
+            Some(0.01),
+            Action::TakeSell,
+            None,
+            8,
+            4,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("range PayBondInvoice");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats));
+                assert_eq!(
+                    order.amount, 0,
+                    "range/market book amount stays 0 until AddInvoice"
+                );
+                assert_eq!(order.fiat_amount, take_fiat);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, 0);
+        assert_eq!(stored.fiat_amount, take_fiat);
     }
 
-    #[test]
-    fn validate_add_invoice_rejects_wrong_status() {
-        let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
-        let mut returned = sample_small_order(id);
-        returned.amount = expected_buyer_invoice_sats(21_000, 0.01);
-        returned.status = Some(Status::Success);
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, Some(0.01))
-            .expect_err("wrong status must fail");
-        assert!(err.to_string().contains("status mismatch"));
+    #[tokio::test]
+    async fn process_take_reply_pay_invoice_preserves_payload_amount() {
+        // Non-bond path must not apply trade_amount_to_persist override.
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let hold_sats = 21_105_i64;
+
+        let requested = sample_small_order(order_id);
+        let hold_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingPayment),
+            amount: hold_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(9),
+            Some(5),
+            Action::PayInvoice,
+            Some(Payload::PaymentRequest(
+                Some(hold_small),
+                "lnbc1hold".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            Some(0.01),
+            Action::TakeBuy,
+            None,
+            9,
+            5,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("PayInvoice take reply");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayInvoice);
+                assert_eq!(sat_amount, Some(hold_sats));
+                assert_eq!(order.amount, hold_sats);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, hold_sats);
     }
 
-    #[test]
-    fn validate_add_invoice_requires_fee_for_fixed_amount() {
-        let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
-        let mut returned = sample_small_order(id);
-        returned.amount = 20_895;
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, None)
-            .expect_err("fixed amount without fee must fail");
+    #[tokio::test]
+    async fn process_take_reply_take_buy_pay_bond_persists_book_not_buyer_net() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let fee_rate = 0.01_f64;
+        let buyer_net = expected_buyer_invoice_sats(book_amount, fee_rate);
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Buy),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Buy),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(11),
+            Some(6),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1buybond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let result = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            Some(fee_rate),
+            Action::TakeBuy,
+            None,
+            11,
+            6,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect("TakeBuy PayBondInvoice");
+
+        match result {
+            OperationResult::PaymentRequestRequired {
+                order,
+                sat_amount,
+                action,
+                ..
+            } => {
+                assert_eq!(action, Action::PayBondInvoice);
+                assert_eq!(sat_amount, Some(bond_sats));
+                assert_eq!(
+                    order.amount, book_amount,
+                    "TakeBuy must persist book amount, not buyer-invoice net"
+                );
+                assert_ne!(order.amount, buyer_net);
+            }
+            other => panic!("expected PaymentRequestRequired, got {other:?}"),
+        }
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order persisted");
+        assert_eq!(stored.amount, book_amount);
+        assert_ne!(stored.amount, buyer_net);
+        assert_ne!(stored.amount, bond_sats);
+    }
+
+    #[tokio::test]
+    async fn process_take_reply_invoice_provided_without_fee_still_requires_fee_on_bond() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(12),
+            Some(7),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
+        );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
+
+        let err = process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
+            &requested,
+            None,
+            None,
+            Action::TakeSell,
+            Some("lnbc1buyeratake".into()),
+            12,
+            7,
+            &pool,
+            &trade_keys,
+            None,
+        )
+        .await
+        .expect_err("invoice-provided must not persist gross book without fee");
         assert!(err.to_string().contains("fee"));
     }
 
-    #[test]
-    fn validate_add_invoice_market_price_requires_positive_sats() {
-        let id = uuid::Uuid::new_v4();
-        let mut requested = sample_small_order(id);
-        requested.amount = 0;
-        let mut returned = sample_small_order(id);
-        returned.amount = 50_000;
-        let sats = validate_take_sell_add_invoice_reply(&requested, &returned, None, None).unwrap();
-        assert_eq!(sats, 50_000);
+    #[tokio::test]
+    async fn process_take_reply_invoice_provided_persists_buyer_invoice_and_net() {
+        let pool = memory_orders_pool().await;
+        let order_id = uuid::Uuid::new_v4();
+        let book_amount = 21_000_i64;
+        let bond_sats = 1_000_i64;
+        let fee_rate = 0.01_f64;
+        let expected_net = expected_buyer_invoice_sats(book_amount, fee_rate);
+        let take_inv = "lnbc1buyeratake".to_string();
 
-        returned.amount = 0;
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, None, None)
-            .expect_err("zero market sats must fail");
-        assert!(err.to_string().contains("positive sats"));
-    }
-
-    #[test]
-    fn validate_add_invoice_checks_range_fiat_amount() {
-        let id = uuid::Uuid::new_v4();
-        let mut requested = sample_small_order(id);
-        requested.amount = 0;
-        requested.min_amount = Some(50);
-        requested.max_amount = Some(200);
-        requested.fiat_amount = 0;
-        let mut returned = sample_small_order(id);
-        returned.amount = 40_000;
-        returned.fiat_amount = 75;
-        let sats =
-            validate_take_sell_add_invoice_reply(&requested, &returned, Some(75), None).unwrap();
-        assert_eq!(sats, 40_000);
-
-        returned.fiat_amount = 99;
-        let err = validate_take_sell_add_invoice_reply(&requested, &returned, Some(75), None)
-            .expect_err("fiat mismatch must fail");
-        assert!(err.to_string().contains("fiat amount mismatch"));
-    }
-
-    #[test]
-    fn validate_add_invoice_rejects_omitted_identity_fields() {
-        let id = uuid::Uuid::new_v4();
-        let requested = sample_small_order(id);
-        let net = expected_buyer_invoice_sats(21_000, 0.01);
-
-        let mut missing_id = sample_small_order(id);
-        missing_id.id = None;
-        missing_id.amount = net;
-        assert!(
-            validate_take_sell_add_invoice_reply(&requested, &missing_id, None, Some(0.01))
-                .unwrap_err()
-                .to_string()
-                .contains("missing order id")
+        let requested = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Pending),
+            amount: book_amount,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let bond_small = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::WaitingTakerBond),
+            amount: bond_sats,
+            fiat_code: "USD".to_string(),
+            fiat_amount: 100,
+            payment_method: "SEPA".to_string(),
+            ..Default::default()
+        };
+        let response = Message::new_order(
+            Some(order_id),
+            Some(13),
+            Some(8),
+            Action::PayBondInvoice,
+            Some(Payload::PaymentRequest(
+                Some(bond_small),
+                "lnbc1bond".to_string(),
+                None,
+            )),
         );
+        let inner = response.get_inner_message_kind();
+        let trade_keys = Keys::generate();
 
-        let mut missing_kind = sample_small_order(id);
-        missing_kind.kind = None;
-        missing_kind.amount = net;
-        assert!(
-            validate_take_sell_add_invoice_reply(&requested, &missing_kind, None, Some(0.01))
-                .unwrap_err()
-                .to_string()
-                .contains("missing order kind")
-        );
-
-        let mut missing_status = sample_small_order(id);
-        missing_status.status = None;
-        missing_status.amount = net;
-        assert!(validate_take_sell_add_invoice_reply(
+        process_take_order_reply(
+            inner,
+            &response,
+            1,
+            Keys::generate().public_key(),
             &requested,
-            &missing_status,
             None,
-            Some(0.01)
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("missing order status"));
-
-        let mut empty_fiat_code = sample_small_order(id);
-        empty_fiat_code.fiat_code.clear();
-        empty_fiat_code.amount = net;
-        assert!(validate_take_sell_add_invoice_reply(
-            &requested,
-            &empty_fiat_code,
+            Some(fee_rate),
+            Action::TakeSell,
+            Some(take_inv.clone()),
+            13,
+            8,
+            &pool,
+            &trade_keys,
             None,
-            Some(0.01)
         )
-        .unwrap_err()
-        .to_string()
-        .contains("missing fiat code"));
+        .await
+        .expect("invoice-provided bond with fee");
 
-        let mut zero_fiat = sample_small_order(id);
-        zero_fiat.fiat_amount = 0;
-        zero_fiat.amount = net;
-        assert!(
-            validate_take_sell_add_invoice_reply(&requested, &zero_fiat, None, Some(0.01))
-                .unwrap_err()
-                .to_string()
-                .contains("fiat amount mismatch")
-        );
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("persisted");
+        assert_eq!(stored.amount, expected_net);
+        assert_eq!(stored.buyer_invoice.as_deref(), Some(take_inv.as_str()));
     }
 }
