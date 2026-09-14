@@ -1,4 +1,8 @@
 //! Send encrypted order-chat attachments (encrypt → Blossom → kind-14 chat DM).
+//!
+//! ChaCha20-Poly1305 uses the order-chat `K_conv` secret
+//! ([`crate::util::chat_utils::order_chat_decryption_key_bytes`]) so an Observer
+//! holding only the disclosed Shared key can decrypt the same blobs.
 
 use std::path::{Path, PathBuf};
 
@@ -189,7 +193,7 @@ pub async fn send_prepared_order_chat_attachment(
     Ok((local_message_from_prepared(prepared), info))
 }
 
-/// Encrypts, uploads, sends attachment JSON over order chat.
+/// Encrypts with order-chat `K_conv`, uploads to Blossom, sends attachment JSON over chat.
 async fn send_order_chat_attachment_from_path(
     client: &Client,
     pool: &SqlitePool,

@@ -223,7 +223,10 @@ pub struct Order {
     pub premium: i64,
     pub trade_keys: Option<String>,
     pub counterparty_pubkey: Option<String>,
-    /// ECDH shared secret for P2P order chat (hex), derived once when both trade pubkeys are known.
+    /// ECDH shared secret (IKM) for P2P order chat (hex), derived once when both
+    /// trade pubkeys are known. Runtime chat wraps derive `K_conv` / `K_sign` from
+    /// this IKM; attachment ChaCha uses `K_conv` (see
+    /// [`crate::util::chat_utils::order_chat_decryption_key_bytes`]).
     pub order_chat_shared_key_hex: Option<String>,
     /// Dispute UUID assigned by Mostro for this order.
     pub dispute_id: Option<String>,

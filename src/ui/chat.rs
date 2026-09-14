@@ -65,16 +65,23 @@ pub enum ChatAttachmentType {
     File,
 }
 
-/// Attachment metadata for a dispute chat message (Blossom URL + decryption key).
-/// File bytes are fetched from Blossom when the admin saves (Ctrl+S).
+/// Attachment metadata for chat (Blossom URL + optional ChaCha keys).
+///
+/// File bytes are fetched from Blossom on Ctrl+S (My Trades, dispute chat, or
+/// Observer). Wire JSON may embed a `key`; otherwise save handlers fill
+/// [`Self::decryption_key`] with v2 `K_conv` (and optional ECDH fallbacks).
 #[derive(Clone, Debug)]
 pub struct ChatAttachment {
     pub blossom_url: String,
     pub filename: String,
     pub mime_type: Option<String>,
     pub file_type: ChatAttachmentType,
-    /// When provided by the sender, used to decrypt the blob when saving.
+    /// Primary 32-byte ChaCha key: wire-embedded `key`, or derived at save time
+    /// (`K_conv` / disclosed Shared key).
     pub decryption_key: Option<Vec<u8>>,
+    /// Extra ChaCha keys tried after [`Self::decryption_key`] (e.g. legacy ECDH
+    /// IKM after v2 `K_conv`). Never present on the wire.
+    pub decryption_key_fallbacks: Vec<Vec<u8>>,
 }
 
 /// A chat message in the dispute resolution interface

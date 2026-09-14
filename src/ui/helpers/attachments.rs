@@ -139,6 +139,7 @@ pub(crate) fn try_parse_attachment_message(content: &str) -> Option<(ChatAttachm
         mime_type,
         file_type,
         decryption_key,
+        decryption_key_fallbacks: Vec::new(),
     };
     let display = match file_type {
         ChatAttachmentType::Image => format!("{} Image: {}{}", icon, filename, key_hint),
@@ -265,6 +266,7 @@ mod tests {
             mime_type: Some("image/png".to_string()),
             file_type: ChatAttachmentType::Image,
             decryption_key: None,
+            decryption_key_fallbacks: Vec::new(),
         }
     }
 
