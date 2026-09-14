@@ -38,6 +38,24 @@ fn create_take_order_payload(
     }
 }
 
+/// Fixed-price take-sell requires the Mostro fee to validate the follow-up
+/// `AddInvoice` net; a missing fee is a daemon defect with no post-send recovery.
+fn ensure_fee_for_fixed_take_sell(
+    action: &Action,
+    order: &SmallOrder,
+    mostro_instance: Option<&MostroInstanceInfo>,
+) -> Result<()> {
+    if matches!(action, Action::TakeSell)
+        && order.amount > 0
+        && mostro_instance.and_then(|info| info.fee).is_none()
+    {
+        return Err(anyhow::anyhow!(
+            "Cannot take fixed-price sell order without Mostro instance fee"
+        ));
+    }
+    Ok(())
+}
+
 /// Take an order from the order book.
 ///
 /// On take-sell without a buyer invoice, Mostro replies with `AddInvoice` +
@@ -80,6 +98,9 @@ pub async fn take_order(
     let order_id = order
         .id
         .ok_or_else(|| anyhow::anyhow!("Order ID is missing"))?;
+
+    // Fail before any external side effect when a fixed-price take-sell lacks the fee.
+    ensure_fee_for_fixed_take_sell(&action, order, mostro_instance)?;
 
     // Reserve the next trade index atomically; propagate DB errors (e.g. SQLITE_BUSY).
     let (next_idx, trade_keys) = User::reserve_next_trade_index(pool, 1).await?;
@@ -416,6 +437,54 @@ mod tests {
             payment_method: "SEPA".to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn fixed_take_sell_without_fee_is_rejected() {
+        let order = sample_small_order(uuid::Uuid::new_v4());
+        let info = MostroInstanceInfo {
+            fee: None,
+            ..Default::default()
+        };
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &order, Some(&info))
+            .expect_err("fixed-price take-sell without fee must fail");
+        assert!(err.to_string().contains("fee"));
+    }
+
+    #[test]
+    fn fixed_take_sell_missing_instance_is_rejected() {
+        let order = sample_small_order(uuid::Uuid::new_v4());
+        let err = ensure_fee_for_fixed_take_sell(&Action::TakeSell, &order, None)
+            .expect_err("fixed-price take-sell without instance must fail");
+        assert!(err.to_string().contains("fee"));
+    }
+
+    #[test]
+    fn fixed_take_sell_with_fee_is_allowed() {
+        let order = sample_small_order(uuid::Uuid::new_v4());
+        let info = MostroInstanceInfo {
+            fee: Some(0.01),
+            ..Default::default()
+        };
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &order, Some(&info))
+            .expect("fixed-price take-sell with fee must pass");
+    }
+
+    #[test]
+    fn range_take_sell_without_fee_is_allowed() {
+        let mut order = sample_small_order(uuid::Uuid::new_v4());
+        // Range/market: net is deferred to AddInvoice, so no fee is needed pre-send.
+        order.amount = 0;
+        ensure_fee_for_fixed_take_sell(&Action::TakeSell, &order, None)
+            .expect("range take-sell needs no fee before send");
+    }
+
+    #[test]
+    fn take_buy_without_fee_is_allowed() {
+        let mut order = sample_small_order(uuid::Uuid::new_v4());
+        order.kind = Some(mostro_core::order::Kind::Buy);
+        ensure_fee_for_fixed_take_sell(&Action::TakeBuy, &order, None)
+            .expect("take-buy needs no take-sell fee preflight");
     }
 
     #[test]
