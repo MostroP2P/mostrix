@@ -184,14 +184,8 @@ pub async fn execute_orders_info(
             small_order.buyer_invoice = row.buyer_invoice.clone();
         }
 
-        match Order::upsert_from_small_order_dm(
-            pool,
-            requested_id,
-            small_order,
-            &trade_keys,
-            None,
-        )
-        .await
+        match Order::upsert_from_small_order_dm(pool, requested_id, small_order, &trade_keys, None)
+            .await
         {
             Ok(_) => summary.refreshed += 1,
             Err(e) => {
