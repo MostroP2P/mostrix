@@ -170,7 +170,7 @@ pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, O
     })
 }
 
-/// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release).
+/// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release / Dispute / Orders).
 pub fn build_order_action_view_state(
     order_id: Uuid,
     action: Action,

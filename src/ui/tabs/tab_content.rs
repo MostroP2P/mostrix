@@ -115,6 +115,8 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
             | Action::Cancel
             | Action::FiatSent
             | Action::Release
+            | Action::Dispute
+            | Action::Orders
     );
 
     let hold_invoice_trinary = matches!(view_state.action, Action::HoldInvoicePaymentAccepted)
@@ -436,4 +438,44 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
         .alignment(ratatui::layout::Alignment::Center),
         chunks[4],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_message_view;
+    use crate::ui::{MessageViewState, ViewingMessageButtonSelection};
+    use mostro_core::prelude::Action;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use uuid::Uuid;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn refresh_confirmation_shows_yes_no_buttons() {
+        let view_state = MessageViewState {
+            message_content: crate::ui::constants::HELP_MY_TRADES_REFRESH_MSG.to_string(),
+            order_id: Some(Uuid::nil()),
+            action: Action::Orders,
+            button_selection: ViewingMessageButtonSelection::Two { yes_selected: true },
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_message_view(frame, &view_state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer_contains(buffer, "YES"));
+        assert!(buffer_contains(buffer, "NO"));
+        assert!(buffer_contains(buffer, "Refresh this order"));
+    }
 }

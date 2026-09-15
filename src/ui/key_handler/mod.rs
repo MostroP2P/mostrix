@@ -14,7 +14,7 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
-    resolve_selected_mytrades_order_id, resolve_selected_mytrades_order_status,
+    resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
     helpers::{
@@ -152,6 +152,32 @@ fn dispute_shortcut_next_mode(
         crate::ui::constants::HELP_MY_TRADES_DISPUTE_MSG.to_string(),
     );
     Some(UiMode::ViewingMessage(view_state))
+}
+
+/// Resolve what Shift+U on My Trades should do, or `None` to ignore the key.
+///
+/// Same duplicate-submit guard as the other trade shortcuts: after YES the
+/// refresh task switches the UI into a waiting mode, so without
+/// `user_my_trades_interactive()` a second Shift+U could fire another request
+/// before the first reply lands. Terminal orders stay eligible — a refresh is
+/// still useful after cancel/expire.
+fn refresh_shortcut_next_mode(
+    mode: &UiMode,
+    selected: Option<(uuid::Uuid, Option<Status>)>,
+) -> Option<UiMode> {
+    if !mode.user_my_trades_interactive() {
+        return None;
+    }
+    let Some((order_id, _)) = selected else {
+        return Some(UiMode::operation_result(OperationResult::Info(
+            "Select an order to refresh its details from Mostro.".to_string(),
+        )));
+    };
+    Some(UiMode::ViewingMessage(build_order_action_view_state(
+        order_id,
+        Action::Orders,
+        crate::ui::constants::HELP_MY_TRADES_REFRESH_MSG.to_string(),
+    )))
 }
 
 /// Ask Mostro for the selected order's authoritative details and merge them
@@ -1430,22 +1456,9 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('u') | KeyCode::Char('U') => {
-                    if !app.mode.user_my_trades_interactive() {
-                        return Some(true);
-                    }
-                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
-                        spawn_orders_info(
-                            order_id,
-                            pool,
-                            client,
-                            current_mostro_pubkey,
-                            app.mostro_info.clone(),
-                            order_result_tx,
-                        );
-                    } else {
-                        app.mode = UiMode::operation_result(OperationResult::Info(
-                            "Select an order to refresh its details from Mostro.".to_string(),
-                        ));
+                    let selected = resolve_selected_mytrades_order_status(app);
+                    if let Some(next_mode) = refresh_shortcut_next_mode(&app.mode, selected) {
+                        app.mode = next_mode;
                     }
                     return Some(true);
                 }
@@ -1977,6 +1990,71 @@ mod key_handler_tests {
     #[test]
     fn dispute_shortcut_ignores_keys_without_a_selected_order() {
         assert!(dispute_shortcut_next_mode(&UiMode::UserMode(UserMode::Normal), None).is_none());
+    }
+
+    #[test]
+    fn refresh_shortcut_opens_the_confirmation_when_interactive() {
+        let order_id = uuid::Uuid::new_v4();
+        let next = refresh_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Active))),
+        );
+        match next {
+            Some(UiMode::ViewingMessage(view_state)) => {
+                assert_eq!(view_state.order_id, Some(order_id));
+                assert_eq!(view_state.action, Action::Orders);
+                assert_eq!(
+                    view_state.message_content,
+                    crate::ui::constants::HELP_MY_TRADES_REFRESH_MSG
+                );
+            }
+            other => panic!("expected refresh confirmation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_shortcut_is_ignored_while_a_request_is_pending() {
+        let selected = Some((uuid::Uuid::new_v4(), Some(Status::Active)));
+        assert!(refresh_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::WaitingAddInvoice),
+            selected,
+        )
+        .is_none());
+
+        let popup = UiMode::ViewingMessage(build_order_action_view_state(
+            uuid::Uuid::new_v4(),
+            Action::Orders,
+            String::new(),
+        ));
+        assert!(refresh_shortcut_next_mode(&popup, selected).is_none());
+    }
+
+    #[test]
+    fn refresh_shortcut_asks_to_select_an_order_when_none_is_highlighted() {
+        match refresh_shortcut_next_mode(&UiMode::UserMode(UserMode::Normal), None) {
+            Some(UiMode::OperationResult(result)) => match *result {
+                OperationResult::Info(msg) => {
+                    assert_eq!(msg, "Select an order to refresh its details from Mostro.")
+                }
+                other => panic!("expected Info, got {other:?}"),
+            },
+            other => panic!("expected select-order notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_shortcut_stays_available_for_terminal_orders() {
+        let order_id = uuid::Uuid::new_v4();
+        match refresh_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Success))),
+        ) {
+            Some(UiMode::ViewingMessage(view_state)) => {
+                assert_eq!(view_state.order_id, Some(order_id));
+                assert_eq!(view_state.action, Action::Orders);
+            }
+            other => panic!("expected refresh confirmation for terminal order, got {other:?}"),
+        }
     }
 
     #[test]
