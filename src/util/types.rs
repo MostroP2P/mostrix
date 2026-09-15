@@ -21,6 +21,8 @@ pub enum Event {
 /// Convert CantDoReason to user-friendly description
 pub fn get_cant_do_description(reason: &CantDoReason) -> String {
     match reason {
+        CantDoReason::MaintenanceMode => "Maintenance mode - please try again later".to_string(),
+        CantDoReason::Unknown => "Unknown error - please try again".to_string(),
         CantDoReason::InvalidSignature => "Invalid signature - authentication failed".to_string(),
         CantDoReason::InvalidTradeIndex => "Invalid trade index - please try again".to_string(),
         CantDoReason::InvalidAmount => "Invalid amount - check your order values".to_string(),
