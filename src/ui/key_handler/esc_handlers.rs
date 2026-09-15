@@ -292,7 +292,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         _ => {
-            // Esc on My Trades INSERT → COMMAND (keep draft). Never exits the app.
+            // Esc on My Trades INSERT → COMMAND (keep draft + owner for this
+            // order/channel). Never exits the app. Ownership is revalidated on
+            // the next edit/send or when the sidebar projection changes.
             if matches!(app.active_tab, Tab::User(UserTab::MyTrades))
                 && app.mode.user_my_trades_interactive()
                 && app.order_chat_input_enabled

@@ -255,7 +255,13 @@ pub struct AppState {
     pub orders_needing_replacement_invoice: HashSet<uuid::Uuid>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
+    /// My Trades composer text. Ownership is tracked in [`Self::order_chat_draft_owner`]
+    /// so async sidebar reorders cannot send this text to another counterparty.
     pub order_chat_input: String,
+    /// `(order_id, channel)` this composer draft belongs to. Cleared with the draft
+    /// when the live My Trades selection no longer matches (nav or async reorder).
+    pub order_chat_draft_owner: Option<(uuid::Uuid, crate::ui::UserChatChannel)>,
+    /// INSERT vs COMMAND layer for My Trades (`true` = INSERT typing).
     pub order_chat_input_enabled: bool,
     /// Per-order static header (id, kind, created_at, trade index, initiator) from take/create and DB.
     pub order_chat_static: HashMap<Uuid, OrderChatStaticHeader>,
@@ -378,6 +384,7 @@ impl AppState {
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),
+            order_chat_draft_owner: None,
             order_chat_input_enabled: false, // COMMAND layer until Ctrl+I / i
             order_chat_static: HashMap::new(),
             my_trades_maker_book: Vec::new(),

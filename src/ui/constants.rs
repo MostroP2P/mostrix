@@ -119,7 +119,8 @@ pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send message (when INSERT)";
 pub const HELP_MY_TRADES_TAB_CHAT: &str = "Tab: Switch Peer/Solver chat (after solver assignment)";
 pub const HELP_MY_TRADES_CTRL_I_INSERT: &str =
     "i / Ctrl+I / Insert: Enter INSERT (type message; capitals OK). Tab may also work when no solver chat.";
-pub const HELP_MY_TRADES_ESC_COMMAND: &str = "Esc: Leave INSERT → COMMAND (draft kept)";
+pub const HELP_MY_TRADES_ESC_COMMAND: &str =
+    "Esc: Leave INSERT → COMMAND (draft kept for this order/channel)";
 pub const HELP_MY_TRADES_CTRL_K_ACTIONS: &str =
     "Ctrl+K: Trade actions (Fiat sent / Release / Cancel / …)";
 pub const HELP_MY_TRADES_PASTE: &str =

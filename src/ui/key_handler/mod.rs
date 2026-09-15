@@ -1,6 +1,6 @@
 mod admin_handlers;
 mod async_tasks;
-mod chat_helpers;
+pub(crate) mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
 mod esc_handlers;
@@ -288,10 +288,15 @@ pub fn append_paste_to_admin_dispute_chat(app: &mut AppState, pasted_text: &str)
 
 /// Append pasted text to the My Trades order chatbox when INSERT is active.
 ///
+/// Binds/validates draft ownership via [`chat_helpers::prepare_order_chat_edit`]
+/// so a preserved draft cannot be extended after the live target changed.
 /// Used by bracketed paste, right-click, and Ctrl/Cmd+V / Shift+Insert fallbacks.
 /// Returns `true` when text was appended.
 pub fn append_paste_to_order_chat(app: &mut AppState, pasted_text: &str) -> bool {
     if !order_chat_input_active(app) {
+        return false;
+    }
+    if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
         return false;
     }
     let filtered = filter_pasted_chat_text(pasted_text);
@@ -374,11 +379,20 @@ fn handle_user_order_chat_input(
 
     match code {
         KeyCode::Char(c) => {
+            if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
+                return Some(true);
+            }
             app.order_chat_input.push(c);
             Some(true)
         }
         KeyCode::Backspace => {
+            if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
+                return Some(true);
+            }
             app.order_chat_input.pop();
+            if app.order_chat_input.is_empty() {
+                app.order_chat_draft_owner = None;
+            }
             Some(true)
         }
         _ => None,
@@ -2291,11 +2305,32 @@ mod key_handler_tests {
 
     #[test]
     fn append_paste_to_order_chat_requires_insert_layer() {
+        use crate::ui::helpers::OrderChatListItem;
+        use mostro_core::prelude::Status;
+
         let mut app = AppState::new(UserRole::User);
         app.active_tab = Tab::User(UserTab::MyTrades);
         app.mode = UiMode::UserMode(UserMode::Normal);
         app.order_chat_input_enabled = true;
+        let order_id = uuid::Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: order_id.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
         app.order_chat_input = "hi ".to_string();
+        app.order_chat_draft_owner = Some((order_id, UserChatChannel::Peer));
 
         assert!(append_paste_to_order_chat(&mut app, "pasted\nline\r\n"));
         assert_eq!(app.order_chat_input, "hi pasted\nline\n");
@@ -2307,10 +2342,29 @@ mod key_handler_tests {
 
     #[test]
     fn insert_layer_types_shift_letters_instead_of_skipping_them() {
+        use crate::ui::helpers::OrderChatListItem;
+        use mostro_core::prelude::Status;
+
         let mut app = AppState::new(UserRole::User);
         app.active_tab = Tab::User(UserTab::MyTrades);
         app.mode = UiMode::UserMode(UserMode::Normal);
         app.order_chat_input_enabled = true;
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: uuid::Uuid::new_v4().to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
 
         let shift_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
         assert_eq!(

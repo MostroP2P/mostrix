@@ -1074,11 +1074,32 @@ mod paste_routing_tests {
 
     #[test]
     fn bracketed_paste_fills_my_trades_insert_composer() {
+        use crate::ui::helpers::OrderChatListItem;
+        use mostro_core::prelude::Status;
+
         let mut app = AppState::new(UserRole::User);
         app.active_tab = crate::ui::Tab::User(crate::ui::UserTab::MyTrades);
         app.mode = UiMode::UserMode(crate::ui::UserMode::Normal);
         app.order_chat_input_enabled = true;
+        let order_id = uuid::Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: order_id.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
         app.order_chat_input = "hi ".to_string();
+        app.order_chat_draft_owner = Some((order_id, crate::ui::UserChatChannel::Peer));
 
         apply_pasted_text_to_active_input(&mut app, "peer\n");
 
