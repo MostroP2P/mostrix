@@ -543,6 +543,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Close help / settings reference (mode restored in key_handler/mod.rs)
             true
         }
+        UiMode::TradeActionsPopup { previous_mode, .. } => {
+            // Enter is handled in key_handler/mod.rs; restore if we somehow land here.
+            app.mode = *previous_mode;
+            true
+        }
         UiMode::SaveAttachmentPopup(_) => {
             // Up/Down/Enter/Esc handled in key_handler/mod.rs
             app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);

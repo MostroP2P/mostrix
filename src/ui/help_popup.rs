@@ -7,8 +7,8 @@ use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
-// 15 shortcuts, intro, close hint, borders, and one row of margin above and below.
-const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 21;
+// 18 shortcuts, intro, close hint, borders, and one row of margin above and below.
+const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 24;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
@@ -182,8 +182,10 @@ fn help_my_trades_intro() -> Line<'static> {
             "Sidebar: pick an order · ",
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled("Shift+I", Style::default().fg(PRIMARY_COLOR)),
-        Span::styled(" chat · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Ctrl+I", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" INSERT · ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(PRIMARY_COLOR)),
+        Span::styled(" COMMAND · ", Style::default().fg(Color::DarkGray)),
         Span::styled("Ctrl+H", Style::default().fg(PRIMARY_COLOR)),
         Span::styled(" / ", Style::default().fg(Color::DarkGray)),
         Span::styled("Shift+H", Style::default().fg(PRIMARY_COLOR)),
@@ -196,7 +198,8 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
         let (title_style, _) = settings_instruction_block_style();
         return [
             "↑↓  Enter",
-            "Tab  Shift+I",
+            "Tab  Ctrl+I",
+            "Esc  Ctrl+K",
             "Shift+C  Shift+F",
             "Shift+R  Shift+D",
             "Shift+U",
@@ -208,10 +211,11 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
 
     [
         "↑↓ / Enter: Select order / send message",
-        "Shift+I / Tab: Toggle input / Peer-Solver chat",
-        "Shift+C / Shift+F: Cancel order / mark fiat sent",
-        "Shift+R / Shift+D: Release sats / open dispute",
-        "Shift+U: Refresh order details from Mostro",
+        "Ctrl+I / Esc: INSERT typing / COMMAND shortcuts",
+        "Tab / Ctrl+K: Peer-Solver chat / trade actions",
+        "Shift+C / Shift+F: Cancel / fiat sent (COMMAND)",
+        "Shift+R / Shift+D: Release / dispute (COMMAND)",
+        "Shift+U: Refresh order details from Mostro (COMMAND)",
     ]
     .into_iter()
     .map(help_shortcut_line)
@@ -418,7 +422,10 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_NAV.to_string(),
                 HELP_MY_TRADES_ENTER_SEND.to_string(),
                 HELP_MY_TRADES_TAB_CHAT.to_string(),
-                HELP_MY_TRADES_SHIFT_I.to_string(),
+                HELP_MY_TRADES_CTRL_I_INSERT.to_string(),
+                HELP_MY_TRADES_ESC_COMMAND.to_string(),
+                HELP_MY_TRADES_CTRL_K_ACTIONS.to_string(),
+                HELP_MY_TRADES_PASTE.to_string(),
                 HELP_MY_TRADES_SHIFT_C_CANCEL.to_string(),
                 HELP_MY_TRADES_SHIFT_F_FIAT_SENT.to_string(),
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),
@@ -526,7 +533,9 @@ mod help_content_tests {
         let buf = terminal.backend().buffer();
         for expected in [
             "Enter",
-            "Shift+I",
+            "Ctrl+I",
+            "Esc",
+            "Ctrl+K",
             "Tab",
             "Shift+C",
             "Shift+F",
@@ -556,7 +565,9 @@ mod help_content_tests {
         for expected in [
             "Enter",
             "Tab",
-            "Shift+I",
+            "Ctrl+I",
+            "Esc",
+            "Ctrl+K",
             "Shift+C",
             "Shift+F",
             "Shift+R",

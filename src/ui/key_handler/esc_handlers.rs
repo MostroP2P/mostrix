@@ -292,8 +292,13 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         _ => {
-            // ESC in normal mode or other unhandled modes - do nothing, just continue
-            // ESC should never exit the application (use Exit tab instead)
+            // Esc on My Trades INSERT → COMMAND (keep draft). Never exits the app.
+            if matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+                && app.mode.user_my_trades_interactive()
+                && app.order_chat_input_enabled
+            {
+                app.order_chat_input_enabled = false;
+            }
             true
         }
     }
@@ -302,7 +307,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::handle_esc_key;
-    use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
+    use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserMode, UserRole, UserTab};
 
     #[test]
     fn esc_closes_recover_taken_disputes_picker() {
@@ -339,6 +344,20 @@ mod tests {
             app.mode,
             UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
         ));
+    }
+
+    #[test]
+    fn esc_leaves_my_trades_insert_without_exiting() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_input_enabled = true;
+        app.order_chat_input = "draft".to_string();
+
+        assert!(handle_esc_key(&mut app));
+        assert!(!app.order_chat_input_enabled);
+        assert_eq!(app.order_chat_input, "draft");
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
     }
 
     #[test]

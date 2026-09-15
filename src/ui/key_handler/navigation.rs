@@ -330,6 +330,7 @@ fn handle_up_key(
         | UiMode::ConfirmImportSeed(_, _)
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
+        | UiMode::TradeActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -483,6 +484,7 @@ fn handle_down_key(
         | UiMode::ConfirmImportSeed(_, _)
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
+        | UiMode::TradeActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }

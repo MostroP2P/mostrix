@@ -36,6 +36,11 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     /// Full descriptions for every Settings menu item (Shift+H on Settings); 2nd = mode to restore on close
     SettingsInstructionsPopup(UserRole, Box<UiMode>),
+    /// My Trades Ctrl+K trade-action list; Esc restores `previous_mode`.
+    TradeActionsPopup {
+        selected_index: usize,
+        previous_mode: Box<UiMode>,
+    },
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
     SaveAttachmentPopup(usize),
     /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
@@ -134,6 +139,13 @@ impl Clone for UiMode {
             UiMode::SettingsInstructionsPopup(role, previous_mode) => {
                 UiMode::SettingsInstructionsPopup(*role, Box::new((**previous_mode).clone()))
             }
+            UiMode::TradeActionsPopup {
+                selected_index,
+                previous_mode,
+            } => UiMode::TradeActionsPopup {
+                selected_index: *selected_index,
+                previous_mode: Box::new((**previous_mode).clone()),
+            },
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
             UiMode::UserSaveAttachmentPopup(order_id, idx) => {
@@ -362,7 +374,7 @@ impl AppState {
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),
-            order_chat_input_enabled: true,
+            order_chat_input_enabled: false, // COMMAND layer until Ctrl+I / i
             order_chat_static: HashMap::new(),
             my_trades_maker_book: Vec::new(),
             order_chats: HashMap::new(),

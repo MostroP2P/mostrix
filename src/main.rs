@@ -18,9 +18,9 @@ use crate::ui::helpers::{
     spawn_post_restore_hydrate, sync_user_order_history_messages_from_db, track_startup_chats,
 };
 use crate::ui::key_handler::{
-    append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
-    apply_pending_runtime_reloads, create_app_channels, handle_key_event,
-    handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
+    append_paste_to_admin_dispute_chat, append_paste_to_order_chat,
+    apply_paste_to_focused_key_input, apply_pending_runtime_reloads, create_app_channels,
+    handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{
@@ -48,7 +48,8 @@ use crossterm::{
     self,
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyEvent, MouseButton, MouseEventKind,
+        Event, KeyEvent, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
 };
 use fern::Dispatch;
@@ -280,6 +281,9 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
 
     // Disputes in Progress chatbox (admin) — keeps newlines for multi-line drafts
     let _ = append_paste_to_admin_dispute_chat(app, pasted_text);
+
+    // My Trades order chat (INSERT) — same filter / newline behavior
+    let _ = append_paste_to_order_chat(app, pasted_text);
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -314,6 +318,13 @@ async fn main() -> Result<(), anyhow::Error> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    // Best-effort: Kitty/WezTerm/Ghostty can disambiguate Ctrl+I from Tab.
+    // Unsupported terminals simply keep the classic Tab-as-Ctrl+I collision;
+    // COMMAND still has bare `i` / Insert to enter INSERT.
+    let _ = execute!(
+        out,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
@@ -995,6 +1006,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Restore terminal to its original state.
     disable_raw_mode()?;
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -1094,6 +1106,31 @@ mod paste_routing_tests {
             }
             other => panic!("unexpected mode: {other:?}"),
         }
+    }
+
+    #[test]
+    fn bracketed_paste_fills_my_trades_insert_composer() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = crate::ui::Tab::User(crate::ui::UserTab::MyTrades);
+        app.mode = UiMode::UserMode(crate::ui::UserMode::Normal);
+        app.order_chat_input_enabled = true;
+        app.order_chat_input = "hi ".to_string();
+
+        apply_pasted_text_to_active_input(&mut app, "peer\n");
+
+        assert_eq!(app.order_chat_input, "hi peer\n");
+    }
+
+    #[test]
+    fn bracketed_paste_ignored_on_my_trades_command_layer() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = crate::ui::Tab::User(crate::ui::UserTab::MyTrades);
+        app.mode = UiMode::UserMode(crate::ui::UserMode::Normal);
+        assert!(!app.order_chat_input_enabled);
+
+        apply_pasted_text_to_active_input(&mut app, "nope");
+
+        assert!(app.order_chat_input.is_empty());
     }
 }
 
