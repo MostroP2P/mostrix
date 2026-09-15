@@ -131,7 +131,7 @@ pub enum UiMode {
     RatingOrder(RatingOrderState), // 1–5 stars → RateUser DM (Messages tab, action `rate`)
     NewMessageNotification(MessageNotification, Action, InvoiceInputState),
     OperationResult(OperationResult), // Generic operation result popup (success/info/error)
-    HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close
+    HelpPopup(Tab, Box<UiMode>),      // Context-aware keyboard shortcuts (Ctrl+H); Box<UiMode> = mode to restore on close; body scrolls (↑↓ PgUp/PgDn Home/End, `AppState::popup_scroll`) when it overflows, close hint stays pinned
     SaveAttachmentPopup(usize),              // Dispute chat: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     ObserverSaveAttachmentPopup(usize),      // Observer tab: list index of selected attachment (Ctrl+S opens, ↑↓/Enter/Esc in popup)
     UserSaveAttachmentPopup(String, usize),  // My Trades: pinned order_id + list index (Ctrl+S; order_id pinned so sidebar changes do not retarget save)

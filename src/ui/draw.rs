@@ -264,12 +264,14 @@ pub fn ui_draw(
 
     // Help popup (Ctrl+H)
     if let UiMode::HelpPopup(tab, _) = &app.mode {
-        help_popup::render_help_popup(f, app, *tab);
+        let max_scroll = help_popup::render_help_popup(f, app, *tab, app.popup_scroll);
+        app.popup_scroll = app.popup_scroll.min(max_scroll);
     }
 
     // Settings: full option reference (Shift+H)
     if let UiMode::SettingsInstructionsPopup(role, _) = &app.mode {
-        help_popup::render_settings_instructions_popup(f, *role);
+        let max_scroll = help_popup::render_settings_instructions_popup(f, *role, app.popup_scroll);
+        app.popup_scroll = app.popup_scroll.min(max_scroll);
     }
 
     // Save attachment popup (Ctrl+S in dispute chat)

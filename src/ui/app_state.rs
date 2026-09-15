@@ -261,6 +261,9 @@ pub struct AppState {
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
     /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
     pub attachment_toast: Option<(String, Instant)>,
+    /// First visible wrapped row of the Ctrl+H help / Shift+H Settings popup.
+    /// Reset when either opens; clamped to the content height on draw.
+    pub popup_scroll: u16,
     /// Upload succeeded but chat DM failed; retry via `SendOrderAttachmentJob::RetryPrepared`.
     pub pending_order_attachment_sends:
         HashMap<String, crate::ui::helpers::PreparedOrderChatAttachment>,
@@ -378,6 +381,7 @@ impl AppState {
             admin_disputes_in_progress: Vec::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
+            popup_scroll: 0,
             pending_order_attachment_sends: HashMap::new(),
             user_send_attachment_explorer: None,
             sending_attachment_order_id: None,

@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Flex, Layout};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -12,7 +12,10 @@ const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 21;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
-pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
+///
+/// `scroll` is the first visible wrapped row; returns the largest useful
+/// scroll so the caller can clamp [`AppState::popup_scroll`].
+pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab, scroll: u16) -> u16 {
     let area = f.area();
     let (title, plain_lines) = help_content(app, tab);
     let narrow_my_trades =
@@ -26,42 +29,8 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         Tab::Admin(AdminTab::DisputesInProgress) | Tab::User(UserTab::MyTrades)
     );
 
-    let (popup_width, popup_height) = if compact_chrome {
-        (78u16.min(area.width), area.height.saturating_sub(2).max(6))
-    } else {
-        let line_count = plain_lines.len().max(1);
-        (
-            64u16,
-            (line_count as u16 + 4).min(area.height.saturating_sub(2)),
-        )
-    };
-
-    let popup = {
-        let [p] = Layout::horizontal([Constraint::Length(popup_width)])
-            .flex(Flex::Center)
-            .areas(area);
-        let [p] = Layout::vertical([Constraint::Length(popup_height)])
-            .flex(Flex::Center)
-            .areas(p);
-        p
-    };
-
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if compact_chrome {
-        let mut lines: Vec<Line<'static>> = Vec::new();
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
         } else if compact_my_trades {
@@ -74,30 +43,50 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
                 lines.push(help_shortcut_line(&s));
             }
         }
-        lines.push(Line::from(Span::styled(
-            HELP_CLOSE_HINT,
-            Style::default().fg(Color::DarkGray),
-        )));
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
-        f.render_widget(paragraph, inner);
     } else {
-        let content: Vec<Line> = plain_lines
-            .into_iter()
-            .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::White))))
-            .collect();
-        let mut all = content;
-        all.push(Line::from(""));
-        all.push(Line::from(Span::styled(
-            HELP_CLOSE_HINT,
-            Style::default().fg(Color::DarkGray),
-        )));
-        let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
-        f.render_widget(paragraph, inner);
+        lines.extend(
+            plain_lines
+                .into_iter()
+                .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::White)))),
+        );
+        lines.push(Line::from(""));
     }
+
+    let (popup_width, popup_height) = if compact_chrome {
+        (78u16.min(area.width), area.height.saturating_sub(2).max(6))
+    } else {
+        // Size from *wrapped* rows: long shortcuts wrap on narrow terminals, and a
+        // logical-line count would push the close hint below the border.
+        let width = 64u16.min(area.width);
+        let inner_width = width.saturating_sub(2);
+        let needed = crate::ui::helpers::wrapped_rows(&lines, inner_width)
+            .saturating_add(crate::ui::helpers::wrapped_rows(
+                &[close_hint_line(HELP_CLOSE_HINT)],
+                inner_width,
+            ))
+            .saturating_add(2);
+        (width, needed.min(area.height.saturating_sub(2)).max(6))
+    };
+
+    render_scrollable_popup(
+        f,
+        area,
+        (popup_width, popup_height),
+        title,
+        lines,
+        HELP_CLOSE_HINT,
+        scroll,
+    )
 }
 
 /// Full reference for every Settings menu row (Shift+H on Settings).
-pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: UserRole) {
+///
+/// Scrolls like [`render_help_popup`]; returns the largest useful scroll.
+pub fn render_settings_instructions_popup(
+    f: &mut ratatui::Frame,
+    user_role: UserRole,
+    scroll: u16,
+) -> u16 {
     let area = f.area();
     let (title, mut lines) = settings_instruction_lines(user_role);
 
@@ -113,22 +102,40 @@ pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: Use
     ]);
     lines.insert(0, intro);
 
-    lines.push(Line::from(Span::styled(
-        SETTINGS_INSTRUCTIONS_CLOSE_HINT,
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    // Use (nearly) the full viewport height so wrapped text has room on short terminals. A naive
-    // `line_count + borders` cap undersizes the block when there are few logical lines but long
-    // wrapped rows, which made content clip on e.g. 24-row terminals.
+    // Use (nearly) the full viewport height so wrapped text has room on short terminals.
     let popup_width = 78u16.min(area.width);
     let popup_height = area.height.saturating_sub(2).max(6);
 
+    render_scrollable_popup(
+        f,
+        area,
+        (popup_width, popup_height),
+        title,
+        lines,
+        SETTINGS_INSTRUCTIONS_CLOSE_HINT,
+        scroll,
+    )
+}
+
+/// Draw a titled popup whose body scrolls and whose close hint stays pinned to
+/// the bottom row(s), so the way out is visible however little room there is.
+///
+/// When the body overflows, the hint gains a `↑↓ scroll` prefix. Returns the
+/// largest scroll offset that still shows content (0 when everything fits).
+fn render_scrollable_popup(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    (popup_width, popup_height): (u16, u16),
+    title: String,
+    lines: Vec<Line<'static>>,
+    close_hint: &str,
+    scroll: u16,
+) -> u16 {
     let popup = {
-        let [p] = Layout::horizontal([Constraint::Length(popup_width)])
+        let [p] = Layout::horizontal([Constraint::Length(popup_width.min(area.width))])
             .flex(Flex::Center)
             .areas(area);
-        let [p] = Layout::vertical([Constraint::Length(popup_height)])
+        let [p] = Layout::vertical([Constraint::Length(popup_height.min(area.height))])
             .flex(Flex::Center)
             .areas(p);
         p
@@ -147,10 +154,53 @@ pub fn render_settings_instructions_popup(f: &mut ratatui::Frame, user_role: Use
         .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
+    if inner.height == 0 || inner.width == 0 {
+        return 0;
+    }
 
-    let text = Text::from(lines);
-    let paragraph = Paragraph::new(text).wrap(Wrap { trim: true });
-    f.render_widget(paragraph, inner);
+    let body_rows = crate::ui::helpers::wrapped_rows(&lines, inner.width);
+    let plain_hint = close_hint_line(close_hint);
+    let plain_hint_rows =
+        crate::ui::helpers::wrapped_rows(std::slice::from_ref(&plain_hint), inner.width);
+    let overflows = body_rows.saturating_add(plain_hint_rows) > inner.height;
+    let hint = if overflows {
+        close_hint_line(&format!("{HELP_SCROLL_HINT_PREFIX}{close_hint}"))
+    } else {
+        plain_hint
+    };
+    // Never let the hint eat the whole popup: keep at least one body row.
+    let hint_rows = crate::ui::helpers::wrapped_rows(std::slice::from_ref(&hint), inner.width)
+        .min(inner.height.saturating_sub(1))
+        .max(1);
+    let body_height = if overflows {
+        inner.height.saturating_sub(hint_rows)
+    } else {
+        body_rows
+    };
+    let max_scroll = body_rows.saturating_sub(body_height);
+    let scroll = scroll.min(max_scroll);
+
+    let [body_area, hint_area] = Layout::vertical([
+        Constraint::Length(body_height),
+        Constraint::Length(hint_rows),
+    ])
+    .areas(inner);
+
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: true })
+            .scroll((scroll, 0)),
+        body_area,
+    );
+    f.render_widget(Paragraph::new(hint).wrap(Wrap { trim: true }), hint_area);
+    max_scroll
+}
+
+fn close_hint_line(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(Color::DarkGray),
+    ))
 }
 
 fn settings_instruction_block_style() -> (Style, Style) {
@@ -520,7 +570,9 @@ mod help_content_tests {
         let app = AppState::new(UserRole::User);
 
         terminal
-            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .draw(|f| {
+                render_help_popup(f, &app, Tab::User(UserTab::MyTrades), 0);
+            })
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -549,7 +601,9 @@ mod help_content_tests {
         let app = AppState::new(UserRole::User);
 
         terminal
-            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .draw(|f| {
+                render_help_popup(f, &app, Tab::User(UserTab::MyTrades), 0);
+            })
             .unwrap();
 
         let buf = terminal.backend().buffer();
@@ -570,5 +624,128 @@ mod help_content_tests {
                 "missing {expected:?} from narrow compact My Trades help"
             );
         }
+    }
+
+    fn draw_to_buffer(
+        width: u16,
+        height: u16,
+        draw: impl FnOnce(&mut ratatui::Frame),
+    ) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(draw).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    const ISSUE_116_SIZES: [(u16, u16); 2] = [(40, 12), (40, 24)];
+
+    /// The close hint wraps at 40 columns ("… Ctrl+H to" / "close"), so check
+    /// its start and its last word rather than one contiguous string.
+    fn shows_close_hint(buf: &ratatui::buffer::Buffer) -> bool {
+        buffer_contains(buf, "Esc, Enter") && buffer_contains(buf, "close")
+    }
+
+    #[test]
+    fn every_help_popup_keeps_its_close_hint_on_small_terminals() {
+        let tabs = [
+            (UserRole::User, Tab::User(UserTab::Orders)),
+            (UserRole::User, Tab::User(UserTab::MyTrades)),
+            (UserRole::User, Tab::User(UserTab::Messages)),
+            (UserRole::User, Tab::User(UserTab::MostroInfo)),
+            (UserRole::User, Tab::User(UserTab::CreateNewOrder)),
+            (UserRole::User, Tab::User(UserTab::Settings)),
+            (UserRole::User, Tab::User(UserTab::Exit)),
+            (UserRole::Admin, Tab::Admin(AdminTab::DisputesPending)),
+            (UserRole::Admin, Tab::Admin(AdminTab::DisputesInProgress)),
+            (UserRole::Admin, Tab::Admin(AdminTab::Observer)),
+            (UserRole::Admin, Tab::Admin(AdminTab::Settings)),
+        ];
+        for (width, height) in ISSUE_116_SIZES {
+            for (role, tab) in tabs {
+                let app = AppState::new(role);
+                let buf = draw_to_buffer(width, height, |f| {
+                    render_help_popup(f, &app, tab, 0);
+                });
+                assert!(
+                    shows_close_hint(&buf),
+                    "{tab:?} at {width}x{height} lost its close hint"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overflowing_help_scrolls_to_its_last_shortcut() {
+        let app = AppState::new(UserRole::Admin);
+        let tab = Tab::Admin(AdminTab::DisputesInProgress);
+        let (_, lines) = help_content(&app, tab);
+        let last = lines.last().expect("shortcuts").clone();
+        let last_words: String = last
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let mut max_scroll = 0;
+        let top = draw_to_buffer(40, 12, |f| {
+            max_scroll = render_help_popup(f, &app, tab, 0);
+        });
+        assert!(
+            max_scroll > 0,
+            "Disputes in Progress help should overflow at 40x12"
+        );
+        assert!(
+            buffer_contains(&top, "scroll"),
+            "overflow must advertise scrolling"
+        );
+        assert!(!buffer_contains(&top, &last_words));
+
+        let bottom = draw_to_buffer(40, 12, |f| {
+            render_help_popup(f, &app, tab, u16::MAX);
+        });
+        assert!(
+            buffer_contains(&bottom, &last_words),
+            "scrolling to the end must reveal {last_words:?}"
+        );
+        assert!(shows_close_hint(&bottom));
+    }
+
+    #[test]
+    fn settings_instructions_scroll_to_the_last_option_with_close_hint_visible() {
+        for (role, last_option) in [
+            (UserRole::User, "Generate New Keys"),
+            (UserRole::Admin, "Change Admin Key"),
+        ] {
+            for (width, height) in ISSUE_116_SIZES {
+                let top = draw_to_buffer(width, height, |f| {
+                    render_settings_instructions_popup(f, role, 0);
+                });
+                assert!(
+                    shows_close_hint(&top),
+                    "{role:?} at {width}x{height}: close hint must be pinned"
+                );
+                assert!(buffer_contains(&top, "Switch Mode"));
+
+                let bottom = draw_to_buffer(width, height, |f| {
+                    render_settings_instructions_popup(f, role, u16::MAX);
+                });
+                assert!(
+                    buffer_contains(&bottom, last_option),
+                    "{role:?} at {width}x{height}: {last_option:?} unreachable"
+                );
+                assert!(shows_close_hint(&bottom));
+            }
+        }
+    }
+
+    #[test]
+    fn help_that_fits_reports_no_scroll_and_no_scroll_hint() {
+        let app = AppState::new(UserRole::User);
+        let mut max_scroll = u16::MAX;
+        let buf = draw_to_buffer(80, 24, |f| {
+            max_scroll = render_help_popup(f, &app, Tab::User(UserTab::Orders), 0);
+        });
+        assert_eq!(max_scroll, 0);
+        assert!(!buffer_contains(&buf, HELP_SCROLL_HINT_PREFIX));
+        assert!(buffer_contains(&buf, HELP_CLOSE_HINT));
     }
 }

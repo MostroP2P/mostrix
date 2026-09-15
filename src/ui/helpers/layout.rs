@@ -58,6 +58,18 @@ pub fn create_centered_popup(area: Rect, width: u16, height: u16) -> Rect {
     popup
 }
 
+/// Rows `lines` occupy once word-wrapped (with `trim`) to `width` columns, as
+/// a [`Paragraph`] with [`Wrap { trim: true }`](ratatui::widgets::Wrap) renders them.
+pub fn wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    let rows = Paragraph::new(ratatui::text::Text::from(lines.to_vec()))
+        .wrap(ratatui::widgets::Wrap { trim: true })
+        .line_count(width);
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
 /// Renders help text with a styled key binding.
 pub fn render_help_text(f: &mut ratatui::Frame, area: Rect, prefix: &str, key: &str, suffix: &str) {
     f.render_widget(
@@ -85,7 +97,19 @@ pub fn render_yes_no_buttons(
     yes_label: &str,
     no_label: &str,
 ) {
-    let button_width = 18;
+    render_yes_no_buttons_with_width(f, area, 18, selected_button, yes_label, no_label);
+}
+
+/// [`render_yes_no_buttons`] with an explicit per-button width, so popups can
+/// shrink the buttons on narrow terminals instead of clipping them.
+pub fn render_yes_no_buttons_with_width(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    button_width: u16,
+    selected_button: bool,
+    yes_label: &str,
+    no_label: &str,
+) {
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
 
