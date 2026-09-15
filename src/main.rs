@@ -24,7 +24,7 @@ use crate::ui::key_handler::{
     respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{
-    LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
+    terminal, LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
 };
 use crate::util::{
     blossom_servers_from_settings, execute_restore_session, handle_message_notification,
@@ -40,51 +40,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Local;
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::{
-    self,
-    event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyEvent, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    },
-};
+use crossterm::event::{Event, KeyEvent, MouseButton, MouseEventKind};
 use fern::Dispatch;
 use futures::StreamExt;
 use nostr_sdk::prelude::*;
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
-use std::io::{stdout, Write};
-
-/// Best-effort Kitty/WezTerm keyboard-enhancement push; always pops on drop.
-struct KeyboardEnhancementGuard {
-    active: bool,
-}
-
-impl KeyboardEnhancementGuard {
-    fn try_enable(out: &mut impl Write) -> Self {
-        let active = execute!(
-            out,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
-        .is_ok();
-        Self { active }
-    }
-}
-
-impl Drop for KeyboardEnhancementGuard {
-    fn drop(&mut self) {
-        if self.active {
-            // Use a fresh stdout handle — the CrosstermBackend may already own
-            // the original writer, or startup may have failed before Terminal::new.
-            let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
-            self.active = false;
-        }
-    }
-}
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
 
@@ -337,21 +296,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let settings = init.settings;
     // Initialize logger
     setup_logger(&settings.log_level).expect("Can't initialize logger");
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(
-        out,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-    // Best-effort: Kitty/WezTerm/Ghostty can disambiguate Ctrl+I from Tab.
-    // Unsupported terminals simply keep the classic Tab-as-Ctrl+I collision;
-    // COMMAND still has bare `i` / Insert to enter INSERT.
-    // Guard pops on every exit path (including early `?` after this point).
-    let _keyboard_enhancement = KeyboardEnhancementGuard::try_enable(&mut out);
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
+    let (mut terminal, _keyboard_enhancement) = terminal::enter()?;
 
     let AppChannels {
         order_result_tx,
@@ -1031,15 +976,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Restore terminal to its original state.
     // Keyboard enhancement is popped by `_keyboard_enhancement` Drop (even if
-    // `disable_raw_mode` fails).
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        DisableBracketedPaste
-    )?;
-    terminal.show_cursor()?;
+    // `disable_raw_mode` fails inside `leave`).
+    terminal::leave(&mut terminal)?;
 
     Ok(())
 }

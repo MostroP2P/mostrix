@@ -38,6 +38,7 @@ pub mod state;
 pub mod status;
 pub mod tabs;
 pub mod task_alarm_overlay;
+pub mod terminal;
 pub mod trade_actions_popup;
 pub mod trade_index_sync_popup;
 pub mod user_state;
