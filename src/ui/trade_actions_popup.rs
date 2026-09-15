@@ -36,13 +36,29 @@ pub fn trade_action_index_for_key(c: char) -> Option<usize> {
     }
 }
 
+/// Whether the viewport can fit header + all actions + close hint.
+fn use_compact_trade_actions(area: ratatui::layout::Rect) -> bool {
+    // Borders (2) + header (1) + actions + close hint (2) + margin.
+    let full_needed = (trade_action_count() as u16).saturating_add(6);
+    area.height < full_needed || area.width < 24
+}
+
 /// Renders the My Trades Ctrl+K action list.
 pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize) {
     let area = f.area();
-    let popup_width = 42.min(area.width.saturating_sub(2).max(24));
-    let popup_height = (trade_action_count() as u16)
-        .saturating_add(6)
-        .min(area.height.saturating_sub(1).max(8));
+    let compact = use_compact_trade_actions(area);
+    let popup_width = if compact {
+        area.width.clamp(1, 42)
+    } else {
+        42.min(area.width.saturating_sub(2).max(24))
+    };
+    let popup_height = if compact {
+        area.height.max(1)
+    } else {
+        (trade_action_count() as u16)
+            .saturating_add(6)
+            .min(area.height.saturating_sub(1).max(8))
+    };
 
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
@@ -54,24 +70,32 @@ pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize)
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(2),
-        ],
-    )
-    .split(inner);
+    let list_area = if compact {
+        // Drop secondary header + Esc hint so the action list keeps usable height.
+        inner
+    } else {
+        let chunks = Layout::new(
+            Direction::Vertical,
+            [
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(2),
+            ],
+        )
+        .split(inner);
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "↑↓ select · letter jump · Enter",
-            Style::default().fg(Color::DarkGray),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[0],
-    );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "↑↓ select · letter jump · Enter",
+                Style::default().fg(Color::DarkGray),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            chunks[0],
+        );
+
+        helpers::render_help_text(f, chunks[2], "Press ", "Esc", " to close");
+        chunks[1]
+    };
 
     let items: Vec<ListItem> = TRADE_ACTION_ROWS
         .iter()
@@ -87,11 +111,9 @@ pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize)
                 .fg(PRIMARY_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
-        chunks[1],
+        list_area,
         &mut state,
     );
-
-    helpers::render_help_text(f, chunks[2], "Press ", "Esc", " to close");
 }
 
 #[cfg(test)]
@@ -128,5 +150,23 @@ mod tests {
         assert!(buffer_contains(buf, "Mark fiat sent"));
         assert!(buffer_contains(buf, "Release sats"));
         assert!(buffer_contains(buf, "Esc"));
+    }
+
+    #[test]
+    fn compact_layout_on_tiny_terminal_keeps_actions_visible() {
+        let backend = TestBackend::new(20, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_trade_actions_popup(f, 0)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Trade actions"));
+        assert!(
+            buffer_contains(buf, "Mark fiat") || buffer_contains(buf, "fiat sent"),
+            "essential action row must remain visible on 20×8"
+        );
+        // Compact mode drops the Esc close hint to free list rows.
+        assert!(
+            !buffer_contains(buf, "to close"),
+            "compact mode should omit the Esc close hint"
+        );
     }
 }

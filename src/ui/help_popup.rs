@@ -7,8 +7,9 @@ use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
-// 18 shortcuts, intro, close hint, borders, and one row of margin above and below.
-const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 24;
+// 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
+// 80×24 terminals take the compact layout instead of clipping the full list.
+const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 
 /// Renders the context-aware keyboard shortcuts popup (Ctrl+H, and Shift+H on My Trades).
@@ -549,6 +550,40 @@ mod help_content_tests {
                 "missing {expected:?} from compact My Trades help"
             );
         }
+    }
+
+    #[test]
+    fn eighty_by_twenty_two_my_trades_help_stays_compact() {
+        let backend = TestBackend::new(80, 22);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "INSERT typing") && buffer_contains(buf, "Ctrl+K"),
+            "80×22 must still show compact essential shortcuts"
+        );
+        assert!(
+            !buffer_contains(buf, "capitals OK"),
+            "80×22 must use compact layout, not the full help lines"
+        );
+    }
+
+    #[test]
+    fn eighty_by_twenty_five_my_trades_help_uses_full_layout() {
+        let backend = TestBackend::new(80, 25);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = AppState::new(UserRole::User);
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "capitals OK"),
+            "80×25 boundary should select the full My Trades help layout"
+        );
     }
 
     #[test]

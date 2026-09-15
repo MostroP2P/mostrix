@@ -37,8 +37,10 @@ pub enum UiMode {
     /// Full descriptions for every Settings menu item (Shift+H on Settings); 2nd = mode to restore on close
     SettingsInstructionsPopup(UserRole, Box<UiMode>),
     /// My Trades Ctrl+K trade-action list; Esc restores `previous_mode`.
+    /// `order_id` is pinned at open so sidebar rebuilds cannot retarget money actions.
     TradeActionsPopup {
         selected_index: usize,
+        order_id: uuid::Uuid,
         previous_mode: Box<UiMode>,
     },
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
@@ -141,9 +143,11 @@ impl Clone for UiMode {
             }
             UiMode::TradeActionsPopup {
                 selected_index,
+                order_id,
                 previous_mode,
             } => UiMode::TradeActionsPopup {
                 selected_index: *selected_index,
+                order_id: *order_id,
                 previous_mode: Box::new((**previous_mode).clone()),
             },
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),

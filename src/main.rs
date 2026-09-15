@@ -57,7 +57,34 @@ use futures::StreamExt;
 use nostr_sdk::prelude::*;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::stdout;
+use std::io::{stdout, Write};
+
+/// Best-effort Kitty/WezTerm keyboard-enhancement push; always pops on drop.
+struct KeyboardEnhancementGuard {
+    active: bool,
+}
+
+impl KeyboardEnhancementGuard {
+    fn try_enable(out: &mut impl Write) -> Self {
+        let active = execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
+        Self { active }
+    }
+}
+
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        if self.active {
+            // Use a fresh stdout handle — the CrosstermBackend may already own
+            // the original writer, or startup may have failed before Terminal::new.
+            let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+            self.active = false;
+        }
+    }
+}
 use std::sync::OnceLock;
 use tokio::time::{interval, Duration};
 
@@ -321,10 +348,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // Best-effort: Kitty/WezTerm/Ghostty can disambiguate Ctrl+I from Tab.
     // Unsupported terminals simply keep the classic Tab-as-Ctrl+I collision;
     // COMMAND still has bare `i` / Insert to enter INSERT.
-    let _ = execute!(
-        out,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    );
+    // Guard pops on every exit path (including early `?` after this point).
+    let _keyboard_enhancement = KeyboardEnhancementGuard::try_enable(&mut out);
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
@@ -1005,8 +1030,9 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // Restore terminal to its original state.
+    // Keyboard enhancement is popped by `_keyboard_enhancement` Drop (even if
+    // `disable_raw_mode` fails).
     disable_raw_mode()?;
-    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,

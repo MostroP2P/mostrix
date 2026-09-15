@@ -14,6 +14,7 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
+    resolve_mytrades_order_status_by_id, resolve_selected_mytrades_order_id,
     resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
@@ -716,18 +717,12 @@ fn is_paste_shortcut(key_event: &KeyEvent) -> bool {
     }
 }
 
-/// Spawn Shared key (`K_conv`) disclosure for the selected My Trades order.
+/// Spawn Shared key (`K_conv`) disclosure for a My Trades order.
 fn spawn_shared_key_disclosure(
-    app: &mut AppState,
+    order_id: uuid::Uuid,
     pool: &SqlitePool,
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
-    let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
-        app.mode = UiMode::operation_result(OperationResult::Info(
-            "Select an order to reveal the Shared key.".to_string(),
-        ));
-        return;
-    };
     let pool = pool.clone();
     let tx = order_result_tx.clone();
     tokio::spawn(async move {
@@ -756,58 +751,60 @@ fn spawn_shared_key_disclosure(
 }
 
 /// Apply a Ctrl+K menu row (or letter jump) — same confirms as COMMAND Shift shortcuts.
+///
+/// `order_id` is the order pinned when the popup opened; never re-read the
+/// sidebar index (a refresh can reorder rows while the modal is open).
 fn apply_trade_action_selection(
     app: &mut AppState,
     selected_index: usize,
+    order_id: uuid::Uuid,
     pool: &SqlitePool,
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
-    // Temporarily treat as interactive so shortcut resolvers accept the action.
-    // Restore is unnecessary: we replace `app.mode` with the confirm / result.
-    let selected = resolve_selected_mytrades_order_status(app);
-    // Stash and force Normal so trade_action_shortcut_next_mode accepts us.
-    let was_popup = matches!(app.mode, UiMode::TradeActionsPopup { .. });
-    if was_popup {
-        app.mode = UiMode::UserMode(UserMode::Normal);
-    }
+    let Some(selected) = resolve_mytrades_order_status_by_id(app, order_id) else {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "That order is no longer in My Trades.".to_string(),
+        ));
+        return;
+    };
+    // Force Normal so trade_action_shortcut_next_mode accepts us; we replace
+    // `app.mode` with the confirm / result immediately after.
+    app.mode = UiMode::UserMode(UserMode::Normal);
     match selected_index {
         0 => {
             if let Some(next_mode) =
-                trade_action_shortcut_next_mode(&app.mode, selected, Action::FiatSent)
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::FiatSent)
             {
                 app.mode = next_mode;
             }
         }
         1 => {
             if let Some(next_mode) =
-                trade_action_shortcut_next_mode(&app.mode, selected, Action::Release)
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::Release)
             {
                 app.mode = next_mode;
             }
         }
         2 => {
             if let Some(next_mode) =
-                trade_action_shortcut_next_mode(&app.mode, selected, Action::Cancel)
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::Cancel)
             {
                 app.mode = next_mode;
             }
         }
         3 => {
-            if let Some(next_mode) = dispute_shortcut_next_mode(&app.mode, selected) {
+            if let Some(next_mode) = dispute_shortcut_next_mode(&app.mode, Some(selected)) {
                 app.mode = next_mode;
             }
         }
         4 => {
-            if let Some(state) = build_rating_state_for_mytrades(app, 5) {
-                app.mode = UiMode::RatingOrder(state);
-            } else {
-                app.mode = UiMode::operation_result(OperationResult::Info(
-                    "Select an order to rate the counterparty.".to_string(),
-                ));
-            }
+            app.mode = UiMode::RatingOrder(crate::ui::RatingOrderState {
+                order_id,
+                selected_rating: 5,
+            });
         }
         5 => {
-            spawn_shared_key_disclosure(app, pool, order_result_tx);
+            spawn_shared_key_disclosure(order_id, pool, order_result_tx);
         }
         _ => {}
     }
@@ -937,10 +934,12 @@ pub fn handle_key_event(
     // My Trades Ctrl+K trade-actions list
     if let UiMode::TradeActionsPopup {
         selected_index,
+        order_id,
         previous_mode,
     } = &app.mode
     {
         let selected_index = *selected_index;
+        let order_id = *order_id;
         let previous_mode = previous_mode.clone();
         let count = crate::ui::trade_actions_popup::trade_action_count();
         match code {
@@ -956,6 +955,7 @@ pub fn handle_key_event(
                 };
                 app.mode = UiMode::TradeActionsPopup {
                     selected_index: next,
+                    order_id,
                     previous_mode,
                 };
                 return Some(true);
@@ -968,12 +968,13 @@ pub fn handle_key_event(
                 };
                 app.mode = UiMode::TradeActionsPopup {
                     selected_index: next,
+                    order_id,
                     previous_mode,
                 };
                 return Some(true);
             }
             KeyCode::Enter => {
-                apply_trade_action_selection(app, selected_index, pool, order_result_tx);
+                apply_trade_action_selection(app, selected_index, order_id, pool, order_result_tx);
                 return Some(true);
             }
             KeyCode::Char(c)
@@ -982,7 +983,7 @@ pub fn handle_key_event(
                     && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
             {
                 if let Some(idx) = crate::ui::trade_actions_popup::trade_action_index_for_key(c) {
-                    apply_trade_action_selection(app, idx, pool, order_result_tx);
+                    apply_trade_action_selection(app, idx, order_id, pool, order_result_tx);
                     return Some(true);
                 }
                 return Some(true);
@@ -1637,9 +1638,16 @@ pub fn handle_key_event(
 
         // Ctrl+K: trade actions (INSERT and COMMAND)
         if has_ctrl && matches!(code, KeyCode::Char('k') | KeyCode::Char('K')) && interactive {
+            let Some(order_id) = resolve_selected_mytrades_order_id(app) else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Select an order to open trade actions.".to_string(),
+                ));
+                return Some(true);
+            };
             let previous = app.mode.clone();
             app.mode = UiMode::TradeActionsPopup {
                 selected_index: 0,
+                order_id,
                 previous_mode: Box::new(previous),
             };
             return Some(true);
@@ -1711,7 +1719,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Char('K') => {
-                    spawn_shared_key_disclosure(app, pool, order_result_tx);
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        spawn_shared_key_disclosure(order_id, pool, order_result_tx);
+                    } else {
+                        app.mode = UiMode::operation_result(OperationResult::Info(
+                            "Select an order to reveal the Shared key.".to_string(),
+                        ));
+                    }
                     return Some(true);
                 }
                 _ => {}
@@ -2415,6 +2429,60 @@ mod key_handler_tests {
                 assert_eq!(view.action, Action::FiatSent);
             }
             other => panic!("expected FiatSent confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_trade_action_uses_pinned_order_not_sidebar_index() {
+        use crate::ui::helpers::OrderChatListItem;
+
+        let pinned = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Sidebar selection points at `other`, but Ctrl+K pinned `pinned`.
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: other.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: pinned.to_string(),
+            status: Some(Status::Active),
+            amount: Some(2),
+            fiat: Some((2, "USD".to_string())),
+            trade_index: Some(2),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
+
+        let selected = resolve_mytrades_order_status_by_id(&app, pinned);
+        match trade_action_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            selected,
+            Action::FiatSent,
+        ) {
+            Some(UiMode::ViewingMessage(view)) => {
+                assert_eq!(view.order_id, Some(pinned));
+                assert_ne!(view.order_id, Some(other));
+            }
+            other_mode => panic!("expected FiatSent for pinned order, got {other_mode:?}"),
         }
     }
 

@@ -841,12 +841,20 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     );
 
     let input_active = app.mode.user_my_trades_interactive() && app.order_chat_input_enabled;
-    let input_block = Block::default()
-        .title(if app.order_chat_input_enabled {
-            "Message  INSERT  Esc commands · Ctrl+V paste"
+    let input_width = main_chunks[2].width;
+    let input_title = if app.order_chat_input_enabled {
+        if input_width < 36 {
+            "INSERT · Esc"
         } else {
-            "Message  COMMAND  i or Ctrl+I to type"
-        })
+            "Message  INSERT  Esc commands · Ctrl+V paste"
+        }
+    } else if input_width < 36 {
+        "COMMAND · i"
+    } else {
+        "Message  COMMAND  i or Ctrl+I to type"
+    };
+    let input_block = Block::default()
+        .title(input_title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR));
@@ -901,10 +909,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                         FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
                         FOOTER_MYTRADES_END_BOTTOM,
                     )),
-                    Line::from(format!(
-                        "{} | {}{}",
-                        FOOTER_MYTRADES_SHIFT_V_RATE, FOOTER_MYTRADES_SHIFT_K_KCONV, attach_hints,
-                    )),
+                    // INSERT: Shift+V / Shift+K type letters — do not advertise them here.
+                    Line::from(attach_hints.trim_start_matches(" | ").to_string()),
                 ])
             } else {
                 Text::from(vec![
@@ -1096,6 +1102,50 @@ mod tests {
             .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
             .unwrap();
         assert!(buffer_contains(terminal.backend().buffer(), "INSERT"));
+    }
+
+    #[test]
+    fn narrow_composer_uses_compact_titles() {
+        let order_id = Uuid::nil().to_string();
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id,
+            status: Some(Status::Active),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+
+        // Narrow enough that the message input pane is under 36 columns.
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        app.order_chat_input_enabled = false;
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        assert!(
+            buffer_contains(terminal.backend().buffer(), "COMMAND · i"),
+            "narrow COMMAND title must keep the i hint"
+        );
+
+        app.order_chat_input_enabled = true;
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        assert!(
+            buffer_contains(terminal.backend().buffer(), "INSERT · Esc"),
+            "narrow INSERT title must keep the Esc hint"
+        );
     }
 
     #[test]

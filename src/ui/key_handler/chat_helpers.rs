@@ -170,6 +170,36 @@ pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, O
     })
 }
 
+/// Look up My Trades status by pinned order id (Ctrl+K must not trust sidebar index).
+pub fn resolve_mytrades_order_status_by_id(
+    app: &AppState,
+    order_id: Uuid,
+) -> Option<(Uuid, Option<Status>)> {
+    let id_str = order_id.to_string();
+    active_order_chat_list_snapshot(app)
+        .into_iter()
+        .find(|row| row.order_id == id_str)
+        .map(|row| (order_id, row.status))
+}
+
+/// Clear the My Trades composer draft.
+///
+/// Esc keeps the draft while staying on the same order; Up/Down / Tab must not
+/// let that text be sent to a different counterparty.
+pub fn clear_order_chat_draft(app: &mut AppState) {
+    app.order_chat_input.clear();
+}
+
+/// Change the My Trades sidebar selection and drop any composer draft.
+pub fn select_my_trades_order(app: &mut AppState, new_idx: usize) {
+    if app.selected_order_chat_idx != new_idx {
+        app.selected_order_chat_idx = new_idx;
+        clear_order_chat_draft(app);
+        app.order_chat_selected_message_idx = None;
+        app.order_chat_scroll_tracker = None;
+    }
+}
+
 /// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release / Dispute / Orders).
 pub fn build_order_action_view_state(
     order_id: Uuid,
@@ -243,4 +273,86 @@ pub fn handle_enter_finalize_popup(
         });
     }
     true
+}
+
+#[cfg(test)]
+mod draft_and_pin_tests {
+    use super::*;
+    use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::{Tab, UserRole, UserTab};
+    use mostro_core::prelude::Status;
+
+    fn seed_two_orders(app: &mut AppState) -> (Uuid, Uuid) {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: a.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: b.to_string(),
+            status: Some(Status::Active),
+            amount: Some(2000),
+            fiat: Some((20, "USD".to_string())),
+            trade_index: Some(2),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        (a, b)
+    }
+
+    #[test]
+    fn changing_selected_order_clears_composer_draft() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let (_a, _b) = seed_two_orders(&mut app);
+        app.selected_order_chat_idx = 0;
+        app.order_chat_input = "secret for A".to_string();
+
+        select_my_trades_order(&mut app, 1);
+        assert_eq!(app.selected_order_chat_idx, 1);
+        assert!(app.order_chat_input.is_empty());
+    }
+
+    #[test]
+    fn same_index_keeps_draft() {
+        let mut app = AppState::new(UserRole::User);
+        let (_a, _b) = seed_two_orders(&mut app);
+        app.selected_order_chat_idx = 0;
+        app.order_chat_input = "keep me".to_string();
+        select_my_trades_order(&mut app, 0);
+        assert_eq!(app.order_chat_input, "keep me");
+    }
+
+    #[test]
+    fn resolve_by_id_ignores_sidebar_index() {
+        let mut app = AppState::new(UserRole::User);
+        let (a, b) = seed_two_orders(&mut app);
+        // Point the sidebar at A (whichever index that is).
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("order A in list");
+        assert_eq!(resolve_selected_mytrades_order_id(&app), Some(a));
+        let resolved = resolve_mytrades_order_status_by_id(&app, b).unwrap();
+        assert_eq!(resolved.0, b);
+    }
 }
