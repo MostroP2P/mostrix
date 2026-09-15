@@ -21,9 +21,8 @@ use crate::util::sync_trade_index::{
 };
 use crate::util::types::get_cant_do_description;
 
-use super::helper::{
-    fetch_small_order_by_id_from_relay, handle_mostro_response, is_terminal_trade_status,
-};
+use super::execute_orders_info::fetch_order_details_from_mostro;
+use super::helper::{fetch_small_order_by_id_from_relay, is_terminal_trade_status};
 
 /// Outcome of a session restore, for the result popup.
 #[derive(Debug, Default)]
@@ -387,89 +386,6 @@ pub async fn execute_restore_session(
     log::info!("Restore: {}", summary.to_user_message());
 
     Ok(summary)
-}
-
-/// Stage 2: `Action::Orders` with `Payload::Ids` — same batch detail fetch mobile uses
-/// after `restore-session` returns order ids + trade indices.
-async fn fetch_order_details_from_mostro(
-    client: &Client,
-    identity_keys: &Keys,
-    mostro_pubkey: PublicKey,
-    order_ids: &[Uuid],
-    mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<HashMap<Uuid, SmallOrder>> {
-    if order_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let request_id = Uuid::new_v4().as_u128() as u64;
-    let message = Message::new_order(
-        None,
-        Some(request_id),
-        None,
-        Action::Orders,
-        Some(Payload::Ids(order_ids.to_vec())),
-    );
-    let message_json = message
-        .as_json()
-        .map_err(|e| anyhow::anyhow!("Failed to serialize orders request: {e}"))?;
-
-    log::info!(
-        "Restore stage 2: requesting details for {} order(s) from {mostro_pubkey}",
-        order_ids.len()
-    );
-
-    // Ephemeral author: account resolved from the identity proof, reply
-    // addressed here. See `execute_restore_session` for the rationale.
-    let ephemeral_trade_keys = Keys::generate();
-
-    let sent_message = send_dm(
-        client,
-        Some(identity_keys),
-        &ephemeral_trade_keys,
-        &mostro_pubkey,
-        message_json,
-        None,
-        mostro_instance,
-    );
-
-    let recv_event = wait_for_dm(
-        &ephemeral_trade_keys,
-        FETCH_EVENTS_TIMEOUT,
-        Some(request_id),
-        sent_message,
-    )
-    .await?;
-    let messages = parse_dm_events(recv_event, &ephemeral_trade_keys, None).await;
-
-    let Some((response_message, _, sender)) = messages.first() else {
-        return Err(anyhow::anyhow!("No response received for Action::Orders"));
-    };
-    if sender != &mostro_pubkey {
-        return Err(anyhow::anyhow!(
-            "Orders response signed by {sender}, expected the configured Mostro instance"
-        ));
-    }
-
-    let inner = handle_mostro_response(response_message, request_id)?;
-    if inner.action != Action::Orders {
-        return Err(anyhow::anyhow!(
-            "Unexpected action in orders response: {:?}",
-            inner.action
-        ));
-    }
-
-    let Some(Payload::Orders(orders)) = &inner.payload else {
-        return Err(anyhow::anyhow!("Orders response missing Payload::Orders"));
-    };
-
-    let mut map = HashMap::with_capacity(orders.len());
-    for order in orders {
-        if let Some(id) = order.id {
-            map.insert(id, order.clone());
-        }
-    }
-    Ok(map)
 }
 
 enum RestoredAs {

@@ -123,6 +123,7 @@ pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (
 pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
 pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
 pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (Dispute message)";
+pub const HELP_MY_TRADES_SHIFT_U_REFRESH: &str = "Shift+U: Refresh order details from Mostro";
 pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
 pub const HELP_MY_TRADES_SHIFT_K_KCONV: &str =
     "Shift+K: Reveal Shared key (read-only grant for solvers; never your signing key)";
@@ -144,6 +145,8 @@ pub const HELP_MY_TRADES_DISPUTE_MSG: &str = concat!(
     "A solver will be assigned and can read the dispute chat.\n",
     "Only do this if the trade is stuck — try the order chat first.",
 );
+pub const HELP_MY_TRADES_REFRESH_MSG: &str =
+    "Refresh this order's details from Mostro? This asks the daemon for the current status and trade pubkeys.";
 /// Shown when Shift+D is pressed on an order whose status cannot be disputed.
 pub const HELP_MY_TRADES_DISPUTE_UNAVAILABLE: &str =
     "Dispute is only available once the trade is active (waiting for fiat or fiat sent).";
@@ -213,6 +216,7 @@ pub const FOOTER_MYTRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order";
 pub const FOOTER_MYTRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Dispute";
 pub const FOOTER_MYTRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat sent";
 pub const FOOTER_MYTRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats";
+pub const FOOTER_MYTRADES_SHIFT_U_REFRESH: &str = "Shift+U: Refresh";
 pub const FOOTER_MYTRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty";
 pub const FOOTER_MYTRADES_SHIFT_K_KCONV: &str = "Shift+K: Reveal Shared key";
 pub const FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";

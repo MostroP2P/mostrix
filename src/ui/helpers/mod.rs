@@ -69,8 +69,8 @@ pub use startup::{
     apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
     apply_user_order_chat_updates, clear_session_chat_projection,
     hydrate_app_admin_keys_from_privkey, load_admin_disputes_at_startup,
-    load_user_order_chats_at_startup, peer_order_chat_transcript_from_decoded,
-    prepare_post_restore_trade_dm_replay, recover_admin_chat_from_files,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
+    load_user_order_chats_at_startup, merge_refreshed_orders_into_history,
+    peer_order_chat_transcript_from_decoded, prepare_post_restore_trade_dm_replay,
+    recover_admin_chat_from_files, refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
     sync_user_order_history_messages_from_db, track_startup_chats, RestoreHydrateReport,
 };

@@ -13,9 +13,9 @@ use crate::ui::helpers::{
     active_peer_chat_order_ids_for_restore, admin_chat_keys_clone_for_role,
     apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,
     apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
-    load_admin_disputes_at_startup, prepare_post_restore_trade_dm_replay,
-    refresh_my_trades_maker_book_cache, spawn_post_restore_hydrate,
-    sync_user_order_history_messages_from_db, track_startup_chats,
+    load_admin_disputes_at_startup, merge_refreshed_orders_into_history,
+    prepare_post_restore_trade_dm_replay, refresh_my_trades_maker_book_cache,
+    spawn_post_restore_hydrate, sync_user_order_history_messages_from_db, track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, apply_paste_to_focused_key_input,
@@ -104,11 +104,18 @@ async fn apply_order_result(
     };
     let is_session_restored = matches!(&result, OperationResult::SessionRestored { .. });
     let resync_my_trades_from_db = requires_db_projection_resync(&result);
+    // A one-order refresh must not run the history-wide rebuild: that replaces
+    // every order's live message/action with a synthetic DB one.
+    let refreshed_order_ids = match &result {
+        OperationResult::OrdersRefreshed { order_ids, .. } => order_ids.clone(),
+        _ => Vec::new(),
+    };
     let refresh_maker_book_cache = matches!(
         &result,
         OperationResult::MyTradesMakerBookChanged
             | OperationResult::Success(_)
             | OperationResult::SessionRestored { .. }
+            | OperationResult::OrdersRefreshed { .. }
     );
 
     if is_session_restored && app.user_role == UserRole::User {
@@ -128,6 +135,9 @@ async fn apply_order_result(
     }
     if resync_my_trades_from_db && app.user_role == UserRole::User {
         sync_user_order_history_messages_from_db(pool, app).await;
+    }
+    if !refreshed_order_ids.is_empty() && app.user_role == UserRole::User {
+        merge_refreshed_orders_into_history(pool, app, &refreshed_order_ids).await;
     }
 
     if is_session_restored && app.user_role == UserRole::User {
@@ -1093,12 +1103,20 @@ mod apply_order_result_tests {
     use crate::ui::OperationResult;
 
     #[test]
-    fn session_restore_triggers_the_startup_db_resync() {
-        // Regression: a restore rewrites SQLite from a background task; without
+    fn db_rewriting_results_trigger_the_startup_resync() {
+        // Regression: restore rewrites SQLite from a background task; without
         // the resync the recovered orders stay invisible until app restart.
         assert!(requires_db_projection_resync(
             &OperationResult::SessionRestored {
                 message: String::new()
+            }
+        ));
+        // A single-order refresh merges only its own rows instead: the full
+        // resync would clobber other orders' live actions.
+        assert!(!requires_db_projection_resync(
+            &OperationResult::OrdersRefreshed {
+                message: String::new(),
+                order_ids: vec![uuid::Uuid::new_v4()],
             }
         ));
         assert!(requires_db_projection_resync(

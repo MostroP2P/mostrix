@@ -266,6 +266,29 @@ pub fn handle_enter_viewing_message(
         return;
     }
 
+    // Shift+U confirmation: fetch Action::Orders and merge into SQLite. Waiting
+    // mode is the same double-submit guard as spawn_dispute — a second Enter
+    // while the first request is in flight must not fire another fetch.
+    if matches!(view_state.action, Action::Orders) {
+        let Some(order_id) = view_state.order_id else {
+            let _ = ctx
+                .order_result_tx
+                .send(OperationResult::Error("No order ID in message".to_string()));
+            app.mode = default_mode;
+            return;
+        };
+        app.mode = role_waiting_mode(app.user_role);
+        super::spawn_orders_info(
+            order_id,
+            ctx.pool,
+            ctx.client,
+            ctx.current_mostro_pubkey,
+            ctx.mostro_info.clone(),
+            ctx.order_result_tx,
+        );
+        return;
+    }
+
     // Map the action from the message to the action we need to send
     let action_to_send = match &view_state.action {
         Action::HoldInvoicePaymentAccepted => match &view_state.button_selection {

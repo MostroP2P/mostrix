@@ -209,6 +209,15 @@ impl User {
     }
 }
 
+/// Outcome of [`Order::apply_mostro_snapshot_if_unchanged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotApply {
+    /// The snapshot was merged into the row.
+    Applied,
+    /// A newer local update landed first; the row was left untouched.
+    Superseded,
+}
+
 #[derive(Debug, Default, Clone, sqlx::FromRow)]
 pub struct Order {
     pub id: Option<String>,
@@ -656,6 +665,78 @@ impl Order {
                 }
             }
         }
+    }
+
+    /// Merge an `Action::Orders` snapshot onto an existing row, unless the row
+    /// moved since `baseline` was read (before the request was sent).
+    ///
+    /// A snapshot can reach us after a newer trade DM already advanced the row;
+    /// writing it then would roll that state back. Live DMs persist the order
+    /// first and bump `last_seen_dm_ts` afterwards, so the guarded `UPDATE`
+    /// compares both `status` and `last_seen_dm_ts` against the baseline and
+    /// leaves the row alone ([`SnapshotApply::Superseded`]) if either changed.
+    /// A missing row also reads as superseded (nothing was written).
+    pub async fn apply_mostro_snapshot_if_unchanged(
+        pool: &SqlitePool,
+        order_id: uuid::Uuid,
+        small_order: mostro_core::prelude::SmallOrder,
+        trade_keys: &nostr_sdk::prelude::Keys,
+        baseline: &Order,
+    ) -> Result<SnapshotApply> {
+        if small_order
+            .id
+            .is_some_and(|payload_id| payload_id != order_id)
+        {
+            anyhow::bail!("Rejected snapshot: payload id does not match order {order_id}");
+        }
+        // Peer pubkey + chat secret only when the snapshot lets us derive them;
+        // `COALESCE` keeps the stored pair otherwise.
+        let (counterparty_pubkey, order_chat_shared_key_hex) =
+            crate::util::chat_utils::order_chat_counterparty_and_shared_hex(
+                trade_keys,
+                &small_order,
+            )
+            .map_or((None, None), |(cp, sk)| (Some(cp), Some(sk)));
+
+        // Only the columns Mostro is authoritative for. Client-local columns
+        // (trade keys/index, role, dispute + solver chat, request id, created_at,
+        // last_seen_dm_ts) are never part of the SET, so a concurrent
+        // `update_dispute_id` / solver-chat write cannot be undone by this.
+        let written = sqlx::query(
+            r#"
+            UPDATE orders
+            SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
+                fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
+                buyer_invoice = ?, expires_at = ?,
+                counterparty_pubkey = COALESCE(?, counterparty_pubkey),
+                order_chat_shared_key_hex = COALESCE(?, order_chat_shared_key_hex)
+            WHERE id = ? AND status IS ? AND last_seen_dm_ts IS ?
+            "#,
+        )
+        .bind(small_order.kind.as_ref().map(|k| k.to_string()))
+        .bind(small_order.status.as_ref().map(|s| s.to_string()))
+        .bind(small_order.amount)
+        .bind(small_order.min_amount)
+        .bind(small_order.max_amount)
+        .bind(&small_order.fiat_code)
+        .bind(small_order.fiat_amount)
+        .bind(&small_order.payment_method)
+        .bind(small_order.premium)
+        .bind(&small_order.buyer_invoice)
+        .bind(small_order.expires_at)
+        .bind(counterparty_pubkey)
+        .bind(order_chat_shared_key_hex)
+        .bind(order_id.to_string())
+        .bind(baseline.status.as_deref())
+        .bind(baseline.last_seen_dm_ts)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(if written == 0 {
+            SnapshotApply::Superseded
+        } else {
+            SnapshotApply::Applied
+        })
     }
 
     /// Load an order when present; missing rows are `Ok(None)` (not an error).
@@ -1736,6 +1817,111 @@ mod upsert_from_small_order_dm_tests {
             Some(local_dispute_chat_key.as_str())
         );
         assert_eq!(stored.last_seen_dm_ts, Some(local_last_seen));
+    }
+
+    async fn seed_active_order(pool: &sqlx::SqlitePool, id: Uuid, keys: &Keys) {
+        sqlx::query(
+            r#"INSERT INTO orders (
+                id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium,
+                trade_keys, is_mine, trade_index, last_seen_dm_ts
+            ) VALUES (?, 'buy', 'active', 1000, 'USD', 100, 'bank', 0, ?, 1, 5, 1700000000)"#,
+        )
+        .bind(id.to_string())
+        .bind(keys.secret_key().to_secret_hex())
+        .execute(pool)
+        .await
+        .expect("seed order");
+    }
+
+    #[tokio::test]
+    async fn snapshot_applies_when_the_row_did_not_move() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await;
+        let baseline = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+
+        let mut snapshot = sample_small_order(id, 1000);
+        snapshot.status = Some(Status::FiatSent);
+        let outcome =
+            Order::apply_mostro_snapshot_if_unchanged(&pool, id, snapshot, &keys, &baseline)
+                .await
+                .expect("apply");
+
+        assert_eq!(outcome, super::SnapshotApply::Applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("fiat-sent"));
+        assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn snapshot_keeps_client_local_fields_written_mid_request() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await;
+        let baseline = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+
+        // A dispute lands while the request is in flight: neither guarded
+        // column changes, so the snapshot still applies.
+        Order::update_dispute_id(&pool, &id.to_string(), "dispute-mid-request")
+            .await
+            .expect("dispute id");
+
+        let mut snapshot = sample_small_order(id, 1000);
+        snapshot.status = Some(Status::Dispute);
+        let outcome =
+            Order::apply_mostro_snapshot_if_unchanged(&pool, id, snapshot, &keys, &baseline)
+                .await
+                .expect("apply");
+
+        assert_eq!(outcome, super::SnapshotApply::Applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("dispute"));
+        assert_eq!(stored.dispute_id.as_deref(), Some("dispute-mid-request"));
+        assert_eq!(stored.trade_index, Some(5));
+        assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn delayed_snapshot_does_not_roll_back_a_newer_live_dm() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await;
+        // Baseline read before the Action::Orders request goes out.
+        let baseline = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+
+        // A live trade DM advances the row while the request is in flight.
+        // The DM pipeline persists the order first and bumps last_seen after,
+        // so check the guard in the window between the two writes as well.
+        let mut live = sample_small_order(id, 1000);
+        live.status = Some(Status::FiatSent);
+        Order::upsert_from_small_order_dm(&pool, id, live, &keys, None)
+            .await
+            .expect("live DM upsert");
+
+        // The delayed snapshot (taken when the order was still active) arrives.
+        let stale = sample_small_order(id, 1000);
+        let outcome =
+            Order::apply_mostro_snapshot_if_unchanged(&pool, id, stale.clone(), &keys, &baseline)
+                .await
+                .expect("apply");
+        assert_eq!(outcome, super::SnapshotApply::Superseded);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("fiat-sent"));
+
+        // Same once last_seen_dm_ts is bumped, even with an unchanged status.
+        Order::update_status(&pool, &id.to_string(), Status::Active)
+            .await
+            .expect("reset status");
+        Order::update_last_seen_dm_ts(&pool, &id.to_string(), 1_700_000_100)
+            .await
+            .expect("bump last seen");
+        let outcome = Order::apply_mostro_snapshot_if_unchanged(&pool, id, stale, &keys, &baseline)
+            .await
+            .expect("apply");
+        assert_eq!(outcome, super::SnapshotApply::Superseded);
     }
 }
 

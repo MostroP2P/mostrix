@@ -585,6 +585,103 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
     }
 }
 
+/// Fold the DB rows of `order_ids` (just refreshed from Mostro) back into the
+/// Messages / My Trades projections, leaving every other order untouched.
+///
+/// Unlike [`sync_user_order_history_messages_from_db`], this never replaces a
+/// live message: see [`merge_history_message`] for what is kept.
+pub async fn merge_refreshed_orders_into_history(
+    pool: &SqlitePool,
+    app: &mut AppState,
+    order_ids: &[Uuid],
+) {
+    let sender = match User::get_identity_keys(pool).await {
+        Ok(k) => k.public_key(),
+        Err(e) => {
+            log::warn!("Failed to derive identity keys for refreshed order history: {e}");
+            return;
+        }
+    };
+    let mut fresh_messages = Vec::with_capacity(order_ids.len());
+    for order_id in order_ids {
+        let id_str = order_id.to_string();
+        let row = match Order::get_by_id(pool, &id_str).await {
+            Ok(row) => row,
+            Err(e) => {
+                log::warn!("Refreshed order {id_str} vanished before UI merge: {e}");
+                continue;
+            }
+        };
+        let (buyer_reputation, seller_reputation) = Order::load_trade_reputation(pool, &id_str)
+            .await
+            .unwrap_or((None, None));
+        if let Some(msg) =
+            db_order_to_history_message(&row, sender, buyer_reputation, seller_reputation)
+        {
+            fresh_messages.push(msg);
+        }
+        if let Some(h) = order_chat_static_from_db_order(&row) {
+            app.order_chat_static.insert(h.order_id, h);
+        }
+    }
+
+    match app.messages.lock() {
+        Ok(mut messages) => {
+            for fresh in fresh_messages {
+                merge_history_message(&mut messages, fresh);
+            }
+        }
+        Err(e) => {
+            crate::util::request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
+            ));
+        }
+    }
+}
+
+/// Merge a DB-derived history message into `messages`.
+///
+/// Rows that were themselves built from SQLite (by
+/// [`sync_user_order_history_messages_from_db`]) are replaced outright, so
+/// their action follows the new status (e.g. `PayBondInvoice` once the order
+/// waits for a bond). They are recognised by their sender: DB rows carry the
+/// identity pubkey, while live trade DMs carry Mostro's and success
+/// placeholders the trade pubkey.
+///
+/// Live messages only get the order facts Mostro is authoritative for
+/// (status, snapshot, kind, invoice, ratings); their action, timestamp and
+/// read/popup flags stay, so pending prompts survive the refresh. The fresh
+/// row is inserted when the order has no message yet.
+fn merge_history_message(messages: &mut Vec<OrderMessage>, fresh: OrderMessage) {
+    let mut merged = false;
+    for msg in messages
+        .iter_mut()
+        .filter(|m| m.order_id.is_some() && m.order_id == fresh.order_id)
+    {
+        merged = true;
+        if msg.sender == fresh.sender {
+            *msg = fresh.clone();
+            continue;
+        }
+        msg.order_status = fresh.order_status;
+        msg.order_snapshot = fresh.order_snapshot.clone();
+        msg.order_kind = fresh.order_kind.or(msg.order_kind);
+        if fresh.buyer_invoice.is_some() {
+            msg.buyer_invoice = fresh.buyer_invoice.clone();
+        }
+        if fresh.buyer_reputation.is_some() {
+            msg.buyer_reputation = fresh.buyer_reputation.clone();
+        }
+        if fresh.seller_reputation.is_some() {
+            msg.seller_reputation = fresh.seller_reputation.clone();
+        }
+    }
+    if !merged {
+        messages.push(fresh);
+    }
+    messages.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+}
+
 /// Clear in-memory peer/solver chat transcripts and relay cursors.
 ///
 /// After a session wipe or before post-restore hydrate, stale `order_chat_last_seen`
@@ -1739,5 +1836,107 @@ mod history_action_for_db_order_tests {
         .expect("history row");
         assert_eq!(msg.buyer_reputation.as_ref().map(|r| r.reviews), Some(5));
         assert!(msg.seller_reputation.is_none());
+    }
+
+    fn history_message(order: &Order, identity: &Keys) -> crate::ui::OrderMessage {
+        super::db_order_to_history_message(order, identity.public_key(), None, None)
+            .expect("history row")
+    }
+
+    #[test]
+    fn merging_a_refreshed_order_keeps_live_actions_of_every_order() {
+        use mostro_core::prelude::{Message, Status};
+
+        let identity = Keys::generate();
+        let mostro = Keys::generate().public_key();
+
+        // Order A: the one being refreshed, currently showing a live prompt.
+        let mut order_a = sample_order("active", false, "sell", None);
+        order_a.trade_index = Some(3);
+        let mut live_a = history_message(&order_a, &identity);
+        let a_id = live_a.order_id;
+        live_a.sender = mostro;
+        live_a.message = Message::new_order(
+            a_id,
+            None,
+            Some(3),
+            Action::HoldInvoicePaymentAccepted,
+            None,
+        );
+        live_a.read = false;
+        live_a.auto_popup_shown = false;
+        live_a.timestamp = 1_700_000_500;
+
+        // Order B: untouched by the refresh, with its own actionable prompt.
+        let order_b = sample_order("active", true, "buy", None);
+        let mut live_b = history_message(&order_b, &identity);
+        let b_id = live_b.order_id;
+        live_b.sender = mostro;
+        live_b.message = Message::new_order(
+            b_id,
+            None,
+            Some(2),
+            Action::CooperativeCancelInitiatedByPeer,
+            None,
+        );
+        live_b.read = false;
+
+        let mut messages = vec![live_a, live_b];
+
+        order_a.status = Some("fiat-sent".to_string());
+        super::merge_history_message(&mut messages, history_message(&order_a, &identity));
+
+        assert_eq!(messages.len(), 2, "merge must not add or drop rows");
+        let a = messages.iter().find(|m| m.order_id == a_id).expect("A");
+        assert_eq!(a.order_status, Some(Status::FiatSent), "status refreshed");
+        assert_eq!(
+            a.message.get_inner_message_kind().action,
+            Action::HoldInvoicePaymentAccepted,
+            "live action kept"
+        );
+        assert!(!a.read && !a.auto_popup_shown, "read/popup flags kept");
+        assert_eq!(a.timestamp, 1_700_000_500);
+
+        let b = messages.iter().find(|m| m.order_id == b_id).expect("B");
+        assert_eq!(
+            b.message.get_inner_message_kind().action,
+            Action::CooperativeCancelInitiatedByPeer,
+            "other orders are not touched"
+        );
+        assert!(!b.read);
+    }
+
+    #[test]
+    fn merging_replaces_a_db_built_row_so_its_action_follows_the_status() {
+        use mostro_core::prelude::Status;
+
+        let identity = Keys::generate();
+        // Startup built this row from SQLite while the maker listing was pending.
+        let mut order = sample_order("pending", true, "sell", None);
+        let mut messages = vec![history_message(&order, &identity)];
+        assert_eq!(
+            messages[0].message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
+
+        // Mostro says the order now waits for the maker bond.
+        order.status = Some("waiting-maker-bond".to_string());
+        super::merge_history_message(&mut messages, history_message(&order, &identity));
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].order_status, Some(Status::WaitingMakerBond));
+        assert_eq!(
+            messages[0].message.get_inner_message_kind().action,
+            Action::PayBondInvoice,
+            "a DB-built row must not keep its stale action"
+        );
+    }
+
+    #[test]
+    fn merging_an_order_without_messages_inserts_the_db_row() {
+        let order = sample_order("pending", true, "sell", None);
+        let mut messages = Vec::new();
+        super::merge_history_message(&mut messages, history_message(&order, &Keys::generate()));
+        assert_eq!(messages.len(), 1);
     }
 }
