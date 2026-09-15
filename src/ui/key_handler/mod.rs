@@ -217,6 +217,7 @@ fn spawn_orders_info(
             Ok(summary) => {
                 let _ = result_tx.send(OperationResult::OrdersRefreshed {
                     message: summary.to_user_message(),
+                    order_ids: summary.refreshed_ids,
                 });
             }
             Err(e) => {

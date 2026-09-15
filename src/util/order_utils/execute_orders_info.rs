@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::models::{Order, User};
+use crate::models::{Order, SnapshotApply, User};
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 
@@ -17,16 +17,27 @@ use super::helper::handle_mostro_response;
 pub struct OrdersInfoSummary {
     /// Orders Mostro returned and that were merged into the local database.
     pub refreshed: usize,
-    /// Orders Mostro returned that could not be persisted locally.
+    /// Ids of the `refreshed` orders, so the UI resyncs only those rows.
+    pub refreshed_ids: Vec<Uuid>,
+    /// Orders a newer trade DM advanced mid-request; the snapshot was dropped.
+    pub superseded: usize,
+    /// Orders that could not be refreshed (missing locally, not returned, or
+    /// not persisted).
     pub failed: usize,
 }
 
 impl OrdersInfoSummary {
     pub fn to_user_message(&self) -> String {
         let mut msg = format!("Refreshed {} order(s) from Mostro.", self.refreshed);
+        if self.superseded > 0 {
+            msg.push_str(&format!(
+                " {} already had a newer update and were kept as is.",
+                self.superseded
+            ));
+        }
         if self.failed > 0 {
             msg.push_str(&format!(
-                " {} could not be saved locally — see log.",
+                " {} could not be refreshed — see log.",
                 self.failed
             ));
         }
@@ -142,27 +153,13 @@ pub async fn execute_orders_info(
         return Err(anyhow::anyhow!("No order selected"));
     }
 
-    let identity_keys = User::get_identity_keys(pool).await?;
-    let details = fetch_order_details_from_mostro(
-        client,
-        &identity_keys,
-        mostro_pubkey,
-        order_ids,
-        mostro_instance,
-    )
-    .await?;
-
+    // Only refresh rows we already hold: the trade keys live there and must not
+    // be invented, and an id we never traded has nothing to merge onto. Read
+    // them *before* sending so each row doubles as the freshness baseline.
     let mut summary = OrdersInfoSummary::default();
-    for &requested_id in order_ids {
-        let Some(mut small_order) = details.get(&requested_id).cloned() else {
-            log::warn!("OrdersInfo: Mostro did not return requested order {requested_id}");
-            summary.failed += 1;
-            continue;
-        };
-        let id_str = requested_id.to_string();
-
-        // Only refresh rows we already hold: the trade keys live there and must
-        // not be invented, and an id we never traded has nothing to merge onto.
+    let mut baselines: Vec<(Uuid, Order, Keys)> = Vec::with_capacity(order_ids.len());
+    for &order_id in order_ids {
+        let id_str = order_id.to_string();
         let row = match Order::get_by_id(pool, &id_str).await {
             Ok(row) => row,
             Err(e) => {
@@ -180,22 +177,62 @@ pub async fn execute_orders_info(
             summary.failed += 1;
             continue;
         };
+        baselines.push((order_id, row, trade_keys));
+    }
+    if baselines.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Could not refresh the selected order — see log."
+        ));
+    }
+
+    let identity_keys = User::get_identity_keys(pool).await?;
+    let requested: Vec<Uuid> = baselines.iter().map(|(id, _, _)| *id).collect();
+    let details = fetch_order_details_from_mostro(
+        client,
+        &identity_keys,
+        mostro_pubkey,
+        &requested,
+        mostro_instance,
+    )
+    .await?;
+
+    for (order_id, baseline, trade_keys) in &baselines {
+        let Some(mut small_order) = details.get(order_id).cloned() else {
+            log::warn!("OrdersInfo: Mostro did not return requested order {order_id}");
+            summary.failed += 1;
+            continue;
+        };
         if small_order.buyer_invoice.is_none() {
-            small_order.buyer_invoice = row.buyer_invoice.clone();
+            small_order.buyer_invoice = baseline.buyer_invoice.clone();
         }
 
-        match Order::upsert_from_small_order_dm(pool, requested_id, small_order, &trade_keys, None)
-            .await
+        match Order::apply_mostro_snapshot_if_unchanged(
+            pool,
+            *order_id,
+            small_order,
+            trade_keys,
+            baseline,
+        )
+        .await
         {
-            Ok(_) => summary.refreshed += 1,
+            Ok(SnapshotApply::Applied) => {
+                summary.refreshed += 1;
+                summary.refreshed_ids.push(*order_id);
+            }
+            Ok(SnapshotApply::Superseded) => {
+                log::info!(
+                    "OrdersInfo: order {order_id} changed while refreshing; keeping the newer local state"
+                );
+                summary.superseded += 1;
+            }
             Err(e) => {
-                log::error!("OrdersInfo: failed to merge order {id_str}: {e}");
+                log::error!("OrdersInfo: failed to merge order {order_id}: {e}");
                 summary.failed += 1;
             }
         }
     }
 
-    if summary.refreshed == 0 {
+    if summary.refreshed == 0 && summary.superseded == 0 {
         return Err(anyhow::anyhow!(
             "Could not refresh the selected order — see log."
         ));
@@ -214,17 +251,20 @@ mod tests {
         assert_eq!(
             OrdersInfoSummary {
                 refreshed: 2,
-                failed: 0
+                ..Default::default()
             }
             .to_user_message(),
             "Refreshed 2 order(s) from Mostro."
         );
         let bumpy = OrdersInfoSummary {
             refreshed: 1,
+            superseded: 1,
             failed: 2,
+            ..Default::default()
         }
         .to_user_message();
         assert!(bumpy.contains("Refreshed 1 order(s)"));
-        assert!(bumpy.contains("2 could not be saved locally"));
+        assert!(bumpy.contains("1 already had a newer update"));
+        assert!(bumpy.contains("2 could not be refreshed"));
     }
 }

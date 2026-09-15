@@ -250,10 +250,12 @@ pub enum OperationResult {
     SessionRestored {
         message: String,
     },
-    /// Orders refreshed from Mostro (`Action::Orders`): resync the My Trades and
-    /// Messages projections from SQLite, then show `message`.
+    /// Orders refreshed from Mostro (`Action::Orders`): merge the refreshed rows
+    /// (`order_ids`) back into the My Trades and Messages projections, then show
+    /// `message`.
     OrdersRefreshed {
         message: String,
+        order_ids: Vec<uuid::Uuid>,
     },
     /// Open invoice / waiting popup from a synchronous execute reply (e.g. bond payout DM).
     OpenInvoicePopup {
