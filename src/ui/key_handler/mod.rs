@@ -441,9 +441,38 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
 fn handle_clipboard_copy(text: String) -> bool {
     #[cfg(target_os = "linux")]
     {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
-        rx.recv().unwrap_or(false)
+        let has_display = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty())
+            || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
+
+        if !has_display {
+            use std::io::Write;
+
+            let encoded = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
+            };
+
+            let sequence = format!("\x1b]52;c;{}\x07", encoded);
+
+            let result = std::io::stdout()
+                .write_all(sequence.as_bytes())
+                .and_then(|_| std::io::stdout().flush());
+
+            match result {
+                Ok(_) => {
+                    log::info!("Copied to terminal clipboard using OSC 52");
+                    true
+                }
+                Err(e) => {
+                    log::warn!("Failed to copy using OSC 52: {}", e);
+                    false
+                }
+            }
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
+            rx.recv().unwrap_or(false)
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
