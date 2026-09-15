@@ -502,58 +502,43 @@ impl Order {
     }
 
     async fn update_db(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        self.update_db_guarded(pool, None).await.map(|_| ())
-    }
-
-    /// `UPDATE` every column; with `guard = Some((status, last_seen_dm_ts))` the
-    /// row is only written while both still hold those values (`IS` so `NULL`
-    /// compares equal). Returns the number of rows written.
-    async fn update_db_guarded(
-        &self,
-        pool: &SqlitePool,
-        guard: Option<(Option<&str>, Option<i64>)>,
-    ) -> Result<u64, sqlx::Error> {
-        let mut sql = String::from(
+        sqlx::query(
             r#"
-            UPDATE orders
+            UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
                 is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
                 dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
-            WHERE id = ?"#,
-        );
-        if guard.is_some() {
-            sql.push_str(" AND status IS ? AND last_seen_dm_ts IS ?");
-        }
-        let mut query = sqlx::query(&sql)
-            .bind(&self.kind)
-            .bind(&self.status)
-            .bind(self.amount)
-            .bind(self.min_amount)
-            .bind(self.max_amount)
-            .bind(&self.fiat_code)
-            .bind(self.fiat_amount)
-            .bind(&self.payment_method)
-            .bind(self.premium)
-            .bind(self.is_mine)
-            .bind(&self.trade_keys)
-            .bind(&self.counterparty_pubkey)
-            .bind(&self.order_chat_shared_key_hex)
-            .bind(&self.dispute_id)
-            .bind(&self.solver_pubkey)
-            .bind(&self.dispute_chat_shared_key_hex)
-            .bind(&self.buyer_invoice)
-            .bind(self.request_id)
-            .bind(self.trade_index)
-            .bind(self.created_at)
-            .bind(self.expires_at)
-            .bind(self.last_seen_dm_ts)
-            .bind(&self.id);
-        if let Some((status, last_seen_dm_ts)) = guard {
-            query = query.bind(status).bind(last_seen_dm_ts);
-        }
-        Ok(query.execute(pool).await?.rows_affected())
+            WHERE id = ?
+            "#,
+        )
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(self.amount)
+        .bind(self.min_amount)
+        .bind(self.max_amount)
+        .bind(&self.fiat_code)
+        .bind(self.fiat_amount)
+        .bind(&self.payment_method)
+        .bind(self.premium)
+        .bind(self.is_mine)
+        .bind(&self.trade_keys)
+        .bind(&self.counterparty_pubkey)
+        .bind(&self.order_chat_shared_key_hex)
+        .bind(&self.dispute_id)
+        .bind(&self.solver_pubkey)
+        .bind(&self.dispute_chat_shared_key_hex)
+        .bind(&self.buyer_invoice)
+        .bind(self.request_id)
+        .bind(self.trade_index)
+        .bind(self.created_at)
+        .bind(self.expires_at)
+        .bind(self.last_seen_dm_ts)
+        .bind(&self.id)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     fn build_order_from_small_order(
@@ -690,10 +675,11 @@ impl Order {
     /// first and bump `last_seen_dm_ts` afterwards, so the guarded `UPDATE`
     /// compares both `status` and `last_seen_dm_ts` against the baseline and
     /// leaves the row alone ([`SnapshotApply::Superseded`]) if either changed.
+    /// A missing row also reads as superseded (nothing was written).
     pub async fn apply_mostro_snapshot_if_unchanged(
         pool: &SqlitePool,
         order_id: uuid::Uuid,
-        mut small_order: mostro_core::prelude::SmallOrder,
+        small_order: mostro_core::prelude::SmallOrder,
         trade_keys: &nostr_sdk::prelude::Keys,
         baseline: &Order,
     ) -> Result<SnapshotApply> {
@@ -703,22 +689,49 @@ impl Order {
         {
             anyhow::bail!("Rejected snapshot: payload id does not match order {order_id}");
         }
-        small_order.id = Some(order_id);
-        let id_str = order_id.to_string();
-        let existing = Self::get_by_id(pool, &id_str).await?;
-        let row = Self::build_order_from_small_order(
-            id_str,
-            &small_order,
-            trade_keys,
-            Some(&existing),
-            None,
-        );
-        let written = row
-            .update_db_guarded(
-                pool,
-                Some((baseline.status.as_deref(), baseline.last_seen_dm_ts)),
+        // Peer pubkey + chat secret only when the snapshot lets us derive them;
+        // `COALESCE` keeps the stored pair otherwise.
+        let (counterparty_pubkey, order_chat_shared_key_hex) =
+            crate::util::chat_utils::order_chat_counterparty_and_shared_hex(
+                trade_keys,
+                &small_order,
             )
-            .await?;
+            .map_or((None, None), |(cp, sk)| (Some(cp), Some(sk)));
+
+        // Only the columns Mostro is authoritative for. Client-local columns
+        // (trade keys/index, role, dispute + solver chat, request id, created_at,
+        // last_seen_dm_ts) are never part of the SET, so a concurrent
+        // `update_dispute_id` / solver-chat write cannot be undone by this.
+        let written = sqlx::query(
+            r#"
+            UPDATE orders
+            SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
+                fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
+                buyer_invoice = ?, expires_at = ?,
+                counterparty_pubkey = COALESCE(?, counterparty_pubkey),
+                order_chat_shared_key_hex = COALESCE(?, order_chat_shared_key_hex)
+            WHERE id = ? AND status IS ? AND last_seen_dm_ts IS ?
+            "#,
+        )
+        .bind(small_order.kind.as_ref().map(|k| k.to_string()))
+        .bind(small_order.status.as_ref().map(|s| s.to_string()))
+        .bind(small_order.amount)
+        .bind(small_order.min_amount)
+        .bind(small_order.max_amount)
+        .bind(&small_order.fiat_code)
+        .bind(small_order.fiat_amount)
+        .bind(&small_order.payment_method)
+        .bind(small_order.premium)
+        .bind(&small_order.buyer_invoice)
+        .bind(small_order.expires_at)
+        .bind(counterparty_pubkey)
+        .bind(order_chat_shared_key_hex)
+        .bind(order_id.to_string())
+        .bind(baseline.status.as_deref())
+        .bind(baseline.last_seen_dm_ts)
+        .execute(pool)
+        .await?
+        .rows_affected();
         Ok(if written == 0 {
             SnapshotApply::Superseded
         } else {
@@ -1838,6 +1851,35 @@ mod upsert_from_small_order_dm_tests {
         assert_eq!(outcome, super::SnapshotApply::Applied);
         let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
         assert_eq!(stored.status.as_deref(), Some("fiat-sent"));
+        assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn snapshot_keeps_client_local_fields_written_mid_request() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await;
+        let baseline = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+
+        // A dispute lands while the request is in flight: neither guarded
+        // column changes, so the snapshot still applies.
+        Order::update_dispute_id(&pool, &id.to_string(), "dispute-mid-request")
+            .await
+            .expect("dispute id");
+
+        let mut snapshot = sample_small_order(id, 1000);
+        snapshot.status = Some(Status::Dispute);
+        let outcome =
+            Order::apply_mostro_snapshot_if_unchanged(&pool, id, snapshot, &keys, &baseline)
+                .await
+                .expect("apply");
+
+        assert_eq!(outcome, super::SnapshotApply::Applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("dispute"));
+        assert_eq!(stored.dispute_id.as_deref(), Some("dispute-mid-request"));
+        assert_eq!(stored.trade_index, Some(5));
         assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
     }
 
