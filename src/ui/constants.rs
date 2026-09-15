@@ -115,18 +115,27 @@ pub const HELP_ORDERS_CANCEL_PENDING_MSG: &str =
 
 // Help popup lines (My Trades)
 pub const HELP_MY_TRADES_NAV: &str = "↑↓: Select order";
-pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
+pub const HELP_MY_TRADES_ENTER_SEND: &str = "Enter: Send message (when INSERT)";
 pub const HELP_MY_TRADES_TAB_CHAT: &str = "Tab: Switch Peer/Solver chat (after solver assignment)";
-pub const HELP_MY_TRADES_SHIFT_I: &str = "Shift+I: Enable/disable message input";
-pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order (cooperative cancel)";
-pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (FiatSent message)";
-pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (Release message)";
-pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (open rating popup)";
-pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (Dispute message)";
-pub const HELP_MY_TRADES_SHIFT_U_REFRESH: &str = "Shift+U: Refresh order details from Mostro";
-pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help";
+pub const HELP_MY_TRADES_CTRL_I_INSERT: &str =
+    "i / Ctrl+I / Insert: Enter INSERT (type message; capitals OK). Tab may also work when no solver chat.";
+pub const HELP_MY_TRADES_ESC_COMMAND: &str =
+    "Esc: Leave INSERT → COMMAND (draft kept for this order/channel)";
+pub const HELP_MY_TRADES_CTRL_K_ACTIONS: &str =
+    "Ctrl+K: Trade actions (Fiat sent / Release / Cancel / …)";
+pub const HELP_MY_TRADES_PASTE: &str =
+    "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
+pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str =
+    "Shift+C: Cancel order (cooperative cancel; COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat as sent (COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_R_RELEASE: &str = "Shift+R: Release sats (COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_V_RATE: &str = "Shift+V: Rate counterparty (COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Open a dispute (COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_U_REFRESH: &str =
+    "Shift+U: Refresh order details from Mostro (COMMAND)";
+pub const HELP_MY_TRADES_SHIFT_H_HELP: &str = "Shift+H: Show shortcuts help (COMMAND)";
 pub const HELP_MY_TRADES_SHIFT_K_KCONV: &str =
-    "Shift+K: Reveal Shared key (read-only grant for solvers; never your signing key)";
+    "Shift+K: Reveal Shared key (COMMAND; never your signing key)";
 pub const HELP_MY_TRADES_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const HELP_MY_TRADES_CTRL_O_SEND: &str = "Ctrl+O: Send attachment (file picker)";
 pub const HELP_MY_TRADES_CTRL_SHIFT_O_RETRY: &str =
@@ -210,8 +219,10 @@ pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
 pub const FOOTER_MYTRADES_SELECT_ORDER: &str = "↑↓: Select order";
 pub const FOOTER_MYTRADES_TAB_CHAT: &str = "Tab: Peer/Solver chat";
 pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";
-pub const FOOTER_MYTRADES_SHIFT_I_DISABLE: &str = "Shift+I: Disable input";
-pub const FOOTER_MYTRADES_SHIFT_I_ENABLE: &str = "Shift+I: Enable input";
+pub const FOOTER_MYTRADES_ESC_COMMAND: &str = "Esc: COMMAND";
+pub const FOOTER_MYTRADES_CTRL_I_INSERT: &str = "i/Ctrl+I: INSERT";
+pub const FOOTER_MYTRADES_CTRL_K_ACTIONS: &str = "Ctrl+K: Actions";
+pub const FOOTER_MYTRADES_PASTE: &str = "Ctrl+V: Paste";
 pub const FOOTER_MYTRADES_SHIFT_C_CANCEL: &str = "Shift+C: Cancel order";
 pub const FOOTER_MYTRADES_SHIFT_D_DISPUTE: &str = "Shift+D: Dispute";
 pub const FOOTER_MYTRADES_SHIFT_F_FIAT_SENT: &str = "Shift+F: Mark fiat sent";

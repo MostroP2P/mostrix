@@ -427,6 +427,8 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
 
 fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     let mode_after_send = app.mode.clone();
+    // Projection may have reordered under the same index since the draft was typed.
+    crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target(app);
     let content = app.order_chat_input.trim().to_string();
     let input_enabled = app.order_chat_input_enabled;
     run_enter_chat_send_flow(
@@ -450,7 +452,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
             spawn_user_order_chat_send_task(ctx, target.order_id, target.channel, content);
         },
         |app| {
-            app.order_chat_input.clear();
+            crate::ui::key_handler::chat_helpers::clear_order_chat_draft(app);
             app.order_chat_input_enabled = true;
         },
     );
@@ -541,6 +543,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::HelpPopup(..) | UiMode::SettingsInstructionsPopup(..) => {
             // Close help / settings reference (mode restored in key_handler/mod.rs)
+            true
+        }
+        UiMode::TradeActionsPopup { previous_mode, .. } => {
+            // Enter is handled in key_handler/mod.rs; restore if we somehow land here.
+            app.mode = *previous_mode;
             true
         }
         UiMode::SaveAttachmentPopup(_) => {

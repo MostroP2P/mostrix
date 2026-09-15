@@ -268,7 +268,10 @@ fn handle_up_key(
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
                 let n = active_order_chat_list_len(app);
                 if n > 0 && app.selected_order_chat_idx > 0 {
-                    app.selected_order_chat_idx -= 1;
+                    crate::ui::key_handler::chat_helpers::select_my_trades_order(
+                        app,
+                        app.selected_order_chat_idx - 1,
+                    );
                 }
             } else if matches!(
                 app.active_tab,
@@ -330,6 +333,7 @@ fn handle_up_key(
         | UiMode::ConfirmImportSeed(_, _)
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
+        | UiMode::TradeActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -408,7 +412,10 @@ fn handle_down_key(
             } else if let Tab::User(UserTab::MyTrades) = app.active_tab {
                 let n = active_order_chat_list_len(app);
                 if n > 0 && app.selected_order_chat_idx < n.saturating_sub(1) {
-                    app.selected_order_chat_idx += 1;
+                    crate::ui::key_handler::chat_helpers::select_my_trades_order(
+                        app,
+                        app.selected_order_chat_idx + 1,
+                    );
                 }
             } else if matches!(
                 app.active_tab,
@@ -483,6 +490,7 @@ fn handle_down_key(
         | UiMode::ConfirmImportSeed(_, _)
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
+        | UiMode::TradeActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -601,7 +609,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
                         UserChatChannel::Peer => UserChatChannel::Solver,
                         UserChatChannel::Solver => UserChatChannel::Peer,
                     };
-                    app.order_chat_input.clear();
+                    crate::ui::key_handler::chat_helpers::clear_order_chat_draft(app);
                     app.order_chat_selected_message_idx = None;
                     app.order_chat_scroll_tracker = None;
                 }

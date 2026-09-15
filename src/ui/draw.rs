@@ -272,6 +272,11 @@ pub fn ui_draw(
         help_popup::render_settings_instructions_popup(f, *role);
     }
 
+    // My Trades Ctrl+K trade-actions list
+    if let UiMode::TradeActionsPopup { selected_index, .. } = &app.mode {
+        trade_actions_popup::render_trade_actions_popup(f, *selected_index);
+    }
+
     // Save attachment popup (Ctrl+S in dispute chat)
     if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
         save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);

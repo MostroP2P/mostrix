@@ -322,6 +322,9 @@ pub async fn load_user_order_chats_at_startup(pool: &SqlitePool, app: &mut AppSt
 }
 
 /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (maker + `pending` only).
+///
+/// Also syncs the My Trades composer draft: a refresh can reorder/insert/remove
+/// sidebar rows under the same [`AppState::selected_order_chat_idx`].
 pub async fn refresh_my_trades_maker_book_cache(pool: &SqlitePool, app: &mut AppState) {
     let rows = match Order::get_user_history_orders(pool).await {
         Ok(rows) => rows,
@@ -337,6 +340,8 @@ pub async fn refresh_my_trades_maker_book_cache(pool: &SqlitePool, app: &mut App
         .iter()
         .filter_map(order_chat_list_item_from_db_order)
         .collect();
+    // Maker-book refresh can reorder/insert/remove sidebar rows under the same index.
+    crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target(app);
 }
 
 /// Buyer vs seller for mapping persisted status to a Messages-tab [`Action`].
@@ -687,6 +692,7 @@ fn merge_history_message(messages: &mut Vec<OrderMessage>, fresh: OrderMessage) 
 /// After a session wipe or before post-restore hydrate, stale `order_chat_last_seen`
 /// values from the prior identity would bound relay fetches incorrectly and echo-skip
 /// logic would drop the user's own messages when the on-disk transcript is empty.
+/// Also clears the My Trades composer draft and its ownership.
 pub fn clear_session_chat_projection(app: &mut AppState) {
     app.order_chats.clear();
     app.user_dispute_chats.clear();
@@ -701,6 +707,7 @@ pub fn clear_session_chat_projection(app: &mut AppState) {
     app.sending_attachment_order_id = None;
     app.selected_order_chat_idx = 0;
     app.order_chat_input.clear();
+    app.order_chat_draft_owner = None;
     app.order_chat_input_enabled = false;
     app.order_chat_selected_message_idx = None;
     app.order_chat_line_starts.clear();

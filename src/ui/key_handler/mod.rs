@@ -1,6 +1,6 @@
 mod admin_handlers;
 mod async_tasks;
-mod chat_helpers;
+pub(crate) mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
 mod esc_handlers;
@@ -14,6 +14,7 @@ mod validation;
 
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, build_rating_state_for_mytrades,
+    resolve_mytrades_order_status_by_id, resolve_selected_mytrades_order_id,
     resolve_selected_mytrades_order_status,
 };
 use crate::ui::{
@@ -253,6 +254,13 @@ fn admin_dispute_chat_input_active(app: &AppState) -> bool {
         && app.admin_chat_input_enabled
 }
 
+/// True when My Trades chat input should accept typing / paste (INSERT layer).
+fn order_chat_input_active(app: &AppState) -> bool {
+    matches!(app.active_tab, Tab::User(UserTab::MyTrades))
+        && app.mode.user_my_trades_interactive()
+        && app.order_chat_input_enabled
+}
+
 /// Normalize clipboard / bracketed paste for chat: keep newlines and tabs, drop other controls.
 fn filter_pasted_chat_text(pasted_text: &str) -> String {
     let normalized = pasted_text.replace("\r\n", "\n").replace('\r', "\n");
@@ -275,6 +283,27 @@ pub fn append_paste_to_admin_dispute_chat(app: &mut AppState, pasted_text: &str)
         return false;
     }
     app.admin_chat_input.push_str(&filtered);
+    true
+}
+
+/// Append pasted text to the My Trades order chatbox when INSERT is active.
+///
+/// Binds/validates draft ownership via [`chat_helpers::prepare_order_chat_edit`]
+/// so a preserved draft cannot be extended after the live target changed.
+/// Used by bracketed paste, right-click, and Ctrl/Cmd+V / Shift+Insert fallbacks.
+/// Returns `true` when text was appended.
+pub fn append_paste_to_order_chat(app: &mut AppState, pasted_text: &str) -> bool {
+    if !order_chat_input_active(app) {
+        return false;
+    }
+    if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
+        return false;
+    }
+    let filtered = filter_pasted_chat_text(pasted_text);
+    if filtered.is_empty() {
+        return false;
+    }
+    app.order_chat_input.push_str(&filtered);
     true
 }
 
@@ -335,47 +364,39 @@ fn handle_user_order_chat_input(
     code: KeyCode,
     key_event: &crossterm::event::KeyEvent,
 ) -> Option<bool> {
-    if let Tab::User(UserTab::MyTrades) = app.active_tab {
-        if app.mode.user_my_trades_interactive() && app.order_chat_input_enabled {
-            let has_shift = key_event
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::SHIFT);
-            if has_shift {
-                // Let Shift+I/C/F/R/V/U/H be handled by shortcut logic
-                if matches!(
-                    code,
-                    KeyCode::Char('i')
-                        | KeyCode::Char('I')
-                        | KeyCode::Char('c')
-                        | KeyCode::Char('C')
-                        | KeyCode::Char('f')
-                        | KeyCode::Char('F')
-                        | KeyCode::Char('r')
-                        | KeyCode::Char('R')
-                        | KeyCode::Char('v')
-                        | KeyCode::Char('V')
-                        | KeyCode::Char('u')
-                        | KeyCode::Char('U')
-                        | KeyCode::Char('h')
-                        | KeyCode::Char('H')
-                ) {
-                    return None;
-                }
-            }
-            match code {
-                KeyCode::Char(c) => {
-                    app.order_chat_input.push(c);
-                    return Some(true);
-                }
-                KeyCode::Backspace => {
-                    app.order_chat_input.pop();
-                    return Some(true);
-                }
-                _ => {}
-            }
-        }
+    if !order_chat_input_active(app) {
+        return None;
     }
-    None
+
+    let has_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
+    let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
+
+    // Never treat Ctrl/Alt/Cmd chords as typed characters (Ctrl+V paste, Ctrl+S, Ctrl+H, …).
+    if has_ctrl || has_alt || has_super {
+        return None;
+    }
+
+    match code {
+        KeyCode::Char(c) => {
+            if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
+                return Some(true);
+            }
+            app.order_chat_input.push(c);
+            Some(true)
+        }
+        KeyCode::Backspace => {
+            if !crate::ui::key_handler::chat_helpers::prepare_order_chat_edit(app) {
+                return Some(true);
+            }
+            app.order_chat_input.pop();
+            if app.order_chat_input.is_empty() {
+                app.order_chat_draft_owner = None;
+            }
+            Some(true)
+        }
+        _ => None,
+    }
 }
 
 /// Reset the Shift+K Shared key disclosure popup's "copied" indicator on any
@@ -710,6 +731,148 @@ fn is_paste_shortcut(key_event: &KeyEvent) -> bool {
     }
 }
 
+/// Spawn Shared key (`K_conv`) disclosure for a My Trades order.
+fn spawn_shared_key_disclosure(
+    order_id: uuid::Uuid,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    let pool = pool.clone();
+    let tx = order_result_tx.clone();
+    tokio::spawn(async move {
+        let result = match crate::models::Order::get_by_id(&pool, &order_id.to_string()).await {
+            Ok(order) => {
+                let trade_keys = order
+                    .trade_keys
+                    .as_deref()
+                    .and_then(|h| Keys::parse(h).ok());
+                match crate::util::chat_utils::conversation_disclosure_from_order(
+                    order.order_chat_shared_key_hex.as_deref(),
+                    trade_keys.as_ref(),
+                    order.counterparty_pubkey.as_deref(),
+                ) {
+                    Some((conv, _sign_pk)) => OperationResult::ConversationDisclosure {
+                        conv_hex: conv,
+                        copied_to_clipboard: false,
+                    },
+                    None => OperationResult::Error("No Shared key for this order yet.".to_string()),
+                }
+            }
+            Err(e) => OperationResult::Error(format!("Could not load order for Shared key: {e}")),
+        };
+        let _ = tx.send(result);
+    });
+}
+
+/// Apply a Ctrl+K menu row (or letter jump) — same confirms as COMMAND Shift shortcuts.
+///
+/// `order_id` is the order pinned when the popup opened; never re-read the
+/// sidebar index (a refresh can reorder rows while the modal is open).
+fn apply_trade_action_selection(
+    app: &mut AppState,
+    selected_index: usize,
+    order_id: uuid::Uuid,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    let Some(selected) = resolve_mytrades_order_status_by_id(app, order_id) else {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "That order is no longer in My Trades.".to_string(),
+        ));
+        return;
+    };
+    // Force Normal so trade_action_shortcut_next_mode accepts us; we replace
+    // `app.mode` with the confirm / result immediately after.
+    app.mode = UiMode::UserMode(UserMode::Normal);
+    match selected_index {
+        0 => {
+            if let Some(next_mode) =
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::FiatSent)
+            {
+                app.mode = next_mode;
+            }
+        }
+        1 => {
+            if let Some(next_mode) =
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::Release)
+            {
+                app.mode = next_mode;
+            }
+        }
+        2 => {
+            if let Some(next_mode) =
+                trade_action_shortcut_next_mode(&app.mode, Some(selected), Action::Cancel)
+            {
+                app.mode = next_mode;
+            }
+        }
+        3 => {
+            if let Some(next_mode) = dispute_shortcut_next_mode(&app.mode, Some(selected)) {
+                app.mode = next_mode;
+            }
+        }
+        4 => {
+            app.mode = UiMode::RatingOrder(crate::ui::RatingOrderState {
+                order_id,
+                selected_rating: 5,
+            });
+        }
+        5 => {
+            spawn_shared_key_disclosure(order_id, pool, order_result_tx);
+        }
+        _ => {}
+    }
+}
+
+fn enter_order_chat_insert(app: &mut AppState) {
+    app.order_chat_input_enabled = true;
+}
+
+/// Whether the selected My Trades order can switch Peer/Solver with Tab.
+fn my_trades_solver_channel_available(app: &AppState) -> bool {
+    let rows = active_order_chat_list_snapshot(app);
+    rows.get(app.selected_order_chat_idx)
+        .is_some_and(|row| row.solver_pubkey.is_some())
+        || rows.get(app.selected_order_chat_idx).is_some_and(|row| {
+            uuid::Uuid::parse_str(&row.order_id)
+                .ok()
+                .and_then(|id| app.order_chat_static.get(&id))
+                .and_then(|header| header.solver_pubkey.as_ref())
+                .is_some()
+        })
+}
+
+/// Keys that enter INSERT from COMMAND on My Trades.
+///
+/// Includes bare `i`/`I`, Insert, real Ctrl+I, and Tab when it is the classic
+/// Ctrl+I alias (ASCII 9) — i.e. Tab with Ctrl, or plain Tab when Peer/Solver
+/// switch is not available (otherwise Tab keeps switching channels).
+fn should_enter_order_chat_insert(app: &AppState, key_event: &KeyEvent) -> bool {
+    let code = key_event.code;
+    let has_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
+    let has_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+    let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
+    let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
+
+    let ctrl_i = has_ctrl
+        && !has_alt
+        && !has_super
+        && matches!(code, KeyCode::Char('i') | KeyCode::Char('I'));
+    let bare_i = !has_ctrl
+        && !has_alt
+        && !has_super
+        && matches!(code, KeyCode::Char('i') | KeyCode::Char('I'));
+    let insert_key = matches!(code, KeyCode::Insert) && !has_shift;
+    // Many terminals still emit Tab for Ctrl+I; only steal Tab when it would
+    // otherwise do nothing, or when Ctrl is present (enhanced / partial protocol).
+    let tab_as_ctrl_i = matches!(code, KeyCode::Tab)
+        && !has_alt
+        && !has_super
+        && (has_ctrl || !my_trades_solver_channel_available(app));
+
+    ctrl_i || bare_i || insert_key || tab_as_ctrl_i
+}
+
 fn update_invoice_notification_action_selection(
     code: KeyCode,
     invoice_state: &mut crate::ui::InvoiceInputState,
@@ -780,6 +943,67 @@ pub fn handle_key_event(
             return Some(true);
         }
         return Some(true);
+    }
+
+    // My Trades Ctrl+K trade-actions list
+    if let UiMode::TradeActionsPopup {
+        selected_index,
+        order_id,
+        previous_mode,
+    } = &app.mode
+    {
+        let selected_index = *selected_index;
+        let order_id = *order_id;
+        let previous_mode = previous_mode.clone();
+        let count = crate::ui::trade_actions_popup::trade_action_count();
+        match code {
+            KeyCode::Esc => {
+                app.mode = *previous_mode;
+                return Some(true);
+            }
+            KeyCode::Up => {
+                let next = if selected_index == 0 {
+                    count.saturating_sub(1)
+                } else {
+                    selected_index - 1
+                };
+                app.mode = UiMode::TradeActionsPopup {
+                    selected_index: next,
+                    order_id,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Down => {
+                let next = if selected_index + 1 >= count {
+                    0
+                } else {
+                    selected_index + 1
+                };
+                app.mode = UiMode::TradeActionsPopup {
+                    selected_index: next,
+                    order_id,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                apply_trade_action_selection(app, selected_index, order_id, pool, order_result_tx);
+                return Some(true);
+            }
+            KeyCode::Char(c)
+                if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key_event.modifiers.contains(KeyModifiers::ALT)
+                    && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                if let Some(idx) = crate::ui::trade_actions_popup::trade_action_index_for_key(c) {
+                    apply_trade_action_selection(app, idx, order_id, pool, order_result_tx);
+                    return Some(true);
+                }
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
     }
 
     // PayInvoice / PayBondInvoice popup: allow scrolling the (wrapped) invoice text.
@@ -858,6 +1082,16 @@ pub fn handle_key_event(
             }
         }
         // Consume the paste chord even when the clipboard is empty / unreadable.
+        return Some(true);
+    }
+
+    // My Trades chat paste fallback (Ctrl/Cmd+V, Shift+Insert) — INSERT only.
+    if order_chat_input_active(app) && is_paste_shortcut(&key_event) {
+        if let Some(text) = read_clipboard_text_best_effort() {
+            if append_paste_to_order_chat(app, &text) {
+                return Some(true);
+            }
+        }
         return Some(true);
     }
     // Rate counterparty: 1..=5 stars (Left/Right or +/-).
@@ -1395,6 +1629,9 @@ pub fn handle_key_event(
         let has_ctrl = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL);
+        let in_command = app.mode.user_my_trades_interactive() && !app.order_chat_input_enabled;
+        let interactive = app.mode.user_my_trades_interactive();
+
         if code == KeyCode::Delete {
             if has_ctrl {
                 // Default NO: avoid accidental Enter after Ctrl+Delete wiping all terminal history.
@@ -1412,22 +1649,41 @@ pub fn handle_key_event(
                 return Some(true);
             }
         }
-        if has_shift {
+
+        // Ctrl+K: trade actions (INSERT and COMMAND)
+        if has_ctrl && matches!(code, KeyCode::Char('k') | KeyCode::Char('K')) && interactive {
+            let Some(order_id) = resolve_selected_mytrades_order_id(app) else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Select an order to open trade actions.".to_string(),
+                ));
+                return Some(true);
+            };
+            let previous = app.mode.clone();
+            app.mode = UiMode::TradeActionsPopup {
+                selected_index: 0,
+                order_id,
+                previous_mode: Box::new(previous),
+            };
+            return Some(true);
+        }
+
+        // Enter INSERT: Ctrl+I / i / Insert; Tab only when it is a Ctrl+I alias
+        // (plain Tab still switches Peer/Solver when a solver is assigned).
+        if interactive
+            && !app.order_chat_input_enabled
+            && should_enter_order_chat_insert(app, &key_event)
+        {
+            enter_order_chat_insert(app);
+            return Some(true);
+        }
+
+        // COMMAND-layer Shift shortcuts (disabled while INSERT so capitals type normally)
+        if has_shift && in_command {
             match code {
-                KeyCode::Char('i') | KeyCode::Char('I') => {
-                    app.order_chat_input_enabled = !app.order_chat_input_enabled;
-                    return Some(true);
-                }
                 KeyCode::Char('h') | KeyCode::Char('H') => {
-                    let can_open = matches!(
-                        app.mode,
-                        UiMode::Normal | UiMode::UserMode(UserMode::Normal)
-                    );
-                    if can_open {
-                        let previous = app.mode.clone();
-                        app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
-                        return Some(true);
-                    }
+                    let previous = app.mode.clone();
+                    app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
+                    return Some(true);
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     let selected = resolve_selected_mytrades_order_status(app);
@@ -1477,51 +1733,13 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Char('K') => {
-                    if !app.mode.user_my_trades_interactive() {
-                        return Some(true);
-                    }
-                    let Some((order_id, _)) = resolve_selected_mytrades_order_status(app) else {
+                    if let Some(order_id) = resolve_selected_mytrades_order_id(app) {
+                        spawn_shared_key_disclosure(order_id, pool, order_result_tx);
+                    } else {
                         app.mode = UiMode::operation_result(OperationResult::Info(
                             "Select an order to reveal the Shared key.".to_string(),
                         ));
-                        return Some(true);
-                    };
-                    let pool = pool.clone();
-                    let tx = order_result_tx.clone();
-                    tokio::spawn(async move {
-                        let result = match crate::models::Order::get_by_id(
-                            &pool,
-                            &order_id.to_string(),
-                        )
-                        .await
-                        {
-                            Ok(order) => {
-                                let trade_keys = order
-                                    .trade_keys
-                                    .as_deref()
-                                    .and_then(|h| Keys::parse(h).ok());
-                                match crate::util::chat_utils::conversation_disclosure_from_order(
-                                    order.order_chat_shared_key_hex.as_deref(),
-                                    trade_keys.as_ref(),
-                                    order.counterparty_pubkey.as_deref(),
-                                ) {
-                                    Some((conv, _sign_pk)) => {
-                                        OperationResult::ConversationDisclosure {
-                                            conv_hex: conv,
-                                            copied_to_clipboard: false,
-                                        }
-                                    }
-                                    None => OperationResult::Error(
-                                        "No Shared key for this order yet.".to_string(),
-                                    ),
-                                }
-                            }
-                            Err(e) => OperationResult::Error(format!(
-                                "Could not load order for Shared key: {e}"
-                            )),
-                        };
-                        let _ = tx.send(result);
-                    });
+                    }
                     return Some(true);
                 }
                 _ => {}
@@ -2086,22 +2304,240 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn append_paste_to_admin_dispute_chat_requires_active_input() {
-        let mut app = AppState::new(UserRole::Admin);
-        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
-        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-        app.admin_chat_input_enabled = true;
-        app.admin_chat_input = "hi ".to_string();
+    fn append_paste_to_order_chat_requires_insert_layer() {
+        use crate::ui::helpers::OrderChatListItem;
+        use mostro_core::prelude::Status;
 
-        assert!(append_paste_to_admin_dispute_chat(
-            &mut app,
-            "pasted\nline\r\n"
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_input_enabled = true;
+        let order_id = uuid::Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: order_id.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
+        app.order_chat_input = "hi ".to_string();
+        app.order_chat_draft_owner = Some((order_id, UserChatChannel::Peer));
+
+        assert!(append_paste_to_order_chat(&mut app, "pasted\nline\r\n"));
+        assert_eq!(app.order_chat_input, "hi pasted\nline\n");
+
+        app.order_chat_input_enabled = false;
+        assert!(!append_paste_to_order_chat(&mut app, "nope"));
+        assert_eq!(app.order_chat_input, "hi pasted\nline\n");
+    }
+
+    #[test]
+    fn insert_layer_types_shift_letters_instead_of_skipping_them() {
+        use crate::ui::helpers::OrderChatListItem;
+        use mostro_core::prelude::Status;
+
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_input_enabled = true;
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: uuid::Uuid::new_v4().to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
+
+        let shift_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
+        assert_eq!(
+            handle_user_order_chat_input(&mut app, shift_f.code, &shift_f),
+            Some(true)
+        );
+        assert_eq!(app.order_chat_input, "F");
+
+        let shift_i = KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT);
+        assert_eq!(
+            handle_user_order_chat_input(&mut app, shift_i.code, &shift_i),
+            Some(true)
+        );
+        assert_eq!(app.order_chat_input, "FI");
+    }
+
+    #[test]
+    fn insert_layer_ignores_ctrl_paste_chord_as_literal_char() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.order_chat_input_enabled = true;
+
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(handle_user_order_chat_input(&mut app, ctrl_v.code, &ctrl_v).is_none());
+        assert!(app.order_chat_input.is_empty());
+    }
+
+    #[test]
+    fn command_layer_does_not_type_into_order_chat() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        assert!(!app.order_chat_input_enabled);
+
+        let plain_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(handle_user_order_chat_input(&mut app, plain_a.code, &plain_a).is_none());
+        assert!(app.order_chat_input.is_empty());
+    }
+
+    #[test]
+    fn enter_insert_helper_enables_typing() {
+        let mut app = AppState::new(UserRole::User);
+        assert!(!app.order_chat_input_enabled);
+        enter_order_chat_insert(&mut app);
+        assert!(app.order_chat_input_enabled);
+    }
+
+    #[test]
+    fn tab_enters_insert_when_it_is_the_ctrl_i_alias() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        // No solver → plain Tab is the classic Ctrl+I collision and must enter INSERT.
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(should_enter_order_chat_insert(&app, &tab));
+        assert!(should_enter_order_chat_insert(
+            &app,
+            &KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)
         ));
-        assert_eq!(app.admin_chat_input, "hi pasted\nline\n");
+        assert!(should_enter_order_chat_insert(
+            &app,
+            &KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)
+        ));
+    }
 
-        app.admin_chat_input_enabled = false;
-        assert!(!append_paste_to_admin_dispute_chat(&mut app, "nope"));
-        assert_eq!(app.admin_chat_input, "hi pasted\nline\n");
+    #[test]
+    fn plain_tab_keeps_channel_switch_when_solver_is_assigned() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.my_trades_maker_book
+            .push(crate::ui::helpers::OrderChatListItem {
+                order_id: uuid::Uuid::nil().to_string(),
+                status: Some(Status::Dispute),
+                amount: Some(1000),
+                fiat: Some((10, "USD".to_string())),
+                trade_index: Some(1),
+                payment_method: Some("cash".to_string()),
+                premium: Some(0),
+                buyer_trade_pubkey: None,
+                seller_trade_pubkey: None,
+                buyer_reputation: None,
+                seller_reputation: None,
+                solver_pubkey: Some("solver".to_string()),
+                dispute_id: Some("d".to_string()),
+            });
+        app.selected_order_chat_idx = 0;
+
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(
+            !should_enter_order_chat_insert(&app, &tab),
+            "plain Tab must still switch Peer/Solver when a solver exists"
+        );
+        // Ctrl+Tab (or enhanced Ctrl+I reported as Tab+Ctrl) still enters INSERT.
+        assert!(should_enter_order_chat_insert(
+            &app,
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL)
+        ));
+    }
+
+    #[test]
+    fn trade_action_menu_fiat_row_resolves_like_shift_f() {
+        let order_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            crate::ui::trade_actions_popup::trade_action_index_for_key('F'),
+            Some(0)
+        );
+        match trade_action_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Active))),
+            Action::FiatSent,
+        ) {
+            Some(UiMode::ViewingMessage(view)) => {
+                assert_eq!(view.order_id, Some(order_id));
+                assert_eq!(view.action, Action::FiatSent);
+            }
+            other => panic!("expected FiatSent confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_trade_action_uses_pinned_order_not_sidebar_index() {
+        use crate::ui::helpers::OrderChatListItem;
+
+        let pinned = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        // Sidebar selection points at `other`, but Ctrl+K pinned `pinned`.
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: other.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1),
+            fiat: Some((1, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: pinned.to_string(),
+            status: Some(Status::Active),
+            amount: Some(2),
+            fiat: Some((2, "USD".to_string())),
+            trade_index: Some(2),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.selected_order_chat_idx = 0;
+
+        let selected = resolve_mytrades_order_status_by_id(&app, pinned);
+        match trade_action_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            selected,
+            Action::FiatSent,
+        ) {
+            Some(UiMode::ViewingMessage(view)) => {
+                assert_eq!(view.order_id, Some(pinned));
+                assert_ne!(view.order_id, Some(other));
+            }
+            other_mode => panic!("expected FiatSent for pinned order, got {other_mode:?}"),
+        }
     }
 
     #[test]

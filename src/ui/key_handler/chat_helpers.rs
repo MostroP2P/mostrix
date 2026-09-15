@@ -170,6 +170,75 @@ pub fn resolve_selected_mytrades_order_status(app: &AppState) -> Option<(Uuid, O
     })
 }
 
+/// Look up My Trades status by pinned order id (Ctrl+K must not trust sidebar index).
+pub fn resolve_mytrades_order_status_by_id(
+    app: &AppState,
+    order_id: Uuid,
+) -> Option<(Uuid, Option<Status>)> {
+    let id_str = order_id.to_string();
+    active_order_chat_list_snapshot(app)
+        .into_iter()
+        .find(|row| row.order_id == id_str)
+        .map(|row| (order_id, row.status))
+}
+
+/// Live `(order_id, channel)` for the current My Trades sidebar index.
+#[must_use]
+pub fn live_order_chat_draft_target(app: &AppState) -> Option<(Uuid, UserChatChannel)> {
+    resolve_selected_mytrades_order_id(app).map(|id| (id, app.active_user_chat_channel))
+}
+
+/// Clear the My Trades composer draft and its ownership.
+///
+/// Esc keeps draft + owner while staying on the same order/channel; Up/Down,
+/// Tab, async projection sync, and send-time validation must not let that text
+/// be sent to a different counterparty.
+pub fn clear_order_chat_draft(app: &mut AppState) {
+    app.order_chat_input.clear();
+    app.order_chat_draft_owner = None;
+}
+
+/// Drop the composer draft when it is not owned by the live selection.
+///
+/// Call after projection mutations (reorder/insert/remove) and immediately
+/// before send. Unowned non-empty drafts are treated as unsafe and cleared.
+pub fn sync_order_chat_draft_to_live_target(app: &mut AppState) {
+    if app.order_chat_input.is_empty() {
+        app.order_chat_draft_owner = None;
+        return;
+    }
+    let Some(live) = live_order_chat_draft_target(app) else {
+        clear_order_chat_draft(app);
+        return;
+    };
+    if app.order_chat_draft_owner != Some(live) {
+        clear_order_chat_draft(app);
+    }
+}
+
+/// Prepare the composer for typing/paste: sync ownership, then bind an empty
+/// draft to the live target. Returns `false` when there is no live order.
+pub fn prepare_order_chat_edit(app: &mut AppState) -> bool {
+    sync_order_chat_draft_to_live_target(app);
+    let Some(live) = live_order_chat_draft_target(app) else {
+        return false;
+    };
+    if app.order_chat_input.is_empty() {
+        app.order_chat_draft_owner = Some(live);
+    }
+    true
+}
+
+/// Change the My Trades sidebar selection and drop any composer draft.
+pub fn select_my_trades_order(app: &mut AppState, new_idx: usize) {
+    if app.selected_order_chat_idx != new_idx {
+        app.selected_order_chat_idx = new_idx;
+        clear_order_chat_draft(app);
+        app.order_chat_selected_message_idx = None;
+        app.order_chat_scroll_tracker = None;
+    }
+}
+
 /// Build a confirmation `ViewingMessage` state for order actions (Cancel / FiatSent / Release / Dispute / Orders).
 pub fn build_order_action_view_state(
     order_id: Uuid,
@@ -243,4 +312,246 @@ pub fn handle_enter_finalize_popup(
         });
     }
     true
+}
+
+#[cfg(test)]
+mod draft_and_pin_tests {
+    use super::*;
+    use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::{Tab, UserChatChannel, UserRole, UserTab};
+    use mostro_core::prelude::Status;
+
+    fn seed_two_orders(app: &mut AppState) -> (Uuid, Uuid) {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: a.to_string(),
+            status: Some(Status::Active),
+            amount: Some(1000),
+            fiat: Some((10, "USD".to_string())),
+            trade_index: Some(1),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: b.to_string(),
+            status: Some(Status::Active),
+            amount: Some(2000),
+            fiat: Some((20, "USD".to_string())),
+            trade_index: Some(2),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        (a, b)
+    }
+
+    fn set_draft_for_live(app: &mut AppState, text: &str) {
+        let live = live_order_chat_draft_target(app).expect("live target");
+        app.order_chat_input = text.to_string();
+        app.order_chat_draft_owner = Some(live);
+    }
+
+    #[test]
+    fn changing_selected_order_clears_composer_draft() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let (a, _b) = seed_two_orders(&mut app);
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("order A");
+        set_draft_for_live(&mut app, "secret for A");
+
+        let other_idx = if app.selected_order_chat_idx == 0 {
+            1
+        } else {
+            0
+        };
+        select_my_trades_order(&mut app, other_idx);
+        assert_eq!(app.selected_order_chat_idx, other_idx);
+        assert!(app.order_chat_input.is_empty());
+        assert!(app.order_chat_draft_owner.is_none());
+    }
+
+    #[test]
+    fn same_index_keeps_draft() {
+        let mut app = AppState::new(UserRole::User);
+        let (a, _b) = seed_two_orders(&mut app);
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("order A");
+        set_draft_for_live(&mut app, "keep me");
+        let idx = app.selected_order_chat_idx;
+        select_my_trades_order(&mut app, idx);
+        assert_eq!(app.order_chat_input, "keep me");
+        assert_eq!(app.order_chat_draft_owner, Some((a, UserChatChannel::Peer)));
+    }
+
+    #[test]
+    fn resolve_by_id_ignores_sidebar_index() {
+        let mut app = AppState::new(UserRole::User);
+        let (a, b) = seed_two_orders(&mut app);
+        // Point the sidebar at A (whichever index that is).
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("order A in list");
+        assert_eq!(resolve_selected_mytrades_order_id(&app), Some(a));
+        let resolved = resolve_mytrades_order_status_by_id(&app, b).unwrap();
+        assert_eq!(resolved.0, b);
+    }
+
+    #[test]
+    fn async_reorder_under_same_index_clears_mismatched_draft() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let (a, b) = seed_two_orders(&mut app);
+        // Sidebar sorts by trade_index descending — give A the higher index so it is row 0.
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(10);
+            } else {
+                row.trade_index = Some(1);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        assert_eq!(rows[0].order_id, a.to_string());
+        app.selected_order_chat_idx = 0;
+        set_draft_for_live(&mut app, "secret for A");
+        assert_eq!(app.order_chat_draft_owner, Some((a, UserChatChannel::Peer)));
+
+        // Async projection: raise B above A so B occupies index 0; selection index stays 0.
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(1);
+            } else if row.order_id == b.to_string() {
+                row.trade_index = Some(20);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        assert_eq!(rows[0].order_id, b.to_string());
+        assert_eq!(app.selected_order_chat_idx, 0);
+        assert_eq!(resolve_selected_mytrades_order_id(&app), Some(b));
+
+        sync_order_chat_draft_to_live_target(&mut app);
+        assert!(
+            app.order_chat_input.is_empty(),
+            "draft for A must not survive when index 0 now resolves B"
+        );
+        assert!(app.order_chat_draft_owner.is_none());
+    }
+
+    #[test]
+    fn async_insertion_ahead_of_selection_clears_mismatched_draft() {
+        let mut app = AppState::new(UserRole::User);
+        let (a, _b) = seed_two_orders(&mut app);
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(5);
+            } else {
+                row.trade_index = Some(1);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("A");
+        assert_eq!(app.selected_order_chat_idx, 0);
+        set_draft_for_live(&mut app, "secret for A");
+
+        // New order with a higher trade_index inserts ahead of A; same numeric index now
+        // points elsewhere.
+        let inserted = Uuid::new_v4();
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: inserted.to_string(),
+            status: Some(Status::Pending),
+            amount: Some(500),
+            fiat: Some((5, "USD".to_string())),
+            trade_index: Some(50),
+            payment_method: Some("cash".to_string()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: None,
+            dispute_id: None,
+        });
+        assert_eq!(
+            active_order_chat_list_snapshot(&app)[app.selected_order_chat_idx].order_id,
+            inserted.to_string()
+        );
+
+        sync_order_chat_draft_to_live_target(&mut app);
+        assert!(app.order_chat_input.is_empty());
+        assert!(app.order_chat_draft_owner.is_none());
+    }
+
+    #[test]
+    fn selected_order_removal_clamp_clears_draft_for_gone_owner() {
+        let mut app = AppState::new(UserRole::User);
+        let (a, b) = seed_two_orders(&mut app);
+        // A higher than B so A is index 0, B is index 1.
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(10);
+            } else {
+                row.trade_index = Some(1);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        // Select B at the last index.
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == b.to_string())
+            .expect("B");
+        set_draft_for_live(&mut app, "secret for B");
+        assert_eq!(app.order_chat_draft_owner, Some((b, UserChatChannel::Peer)));
+
+        // Remove B; clamp selection like order_ch_mng does.
+        app.my_trades_maker_book
+            .retain(|r| r.order_id != b.to_string());
+        let n = active_order_chat_list_snapshot(&app).len();
+        if n == 0 {
+            app.selected_order_chat_idx = 0;
+        } else if app.selected_order_chat_idx >= n {
+            app.selected_order_chat_idx = n - 1;
+        }
+        sync_order_chat_draft_to_live_target(&mut app);
+
+        assert_eq!(resolve_selected_mytrades_order_id(&app), Some(a));
+        assert!(
+            app.order_chat_input.is_empty(),
+            "draft owned by removed B must not send to clamped A"
+        );
+        assert!(app.order_chat_draft_owner.is_none());
+    }
+
+    #[test]
+    fn unowned_non_empty_draft_is_cleared_on_sync() {
+        let mut app = AppState::new(UserRole::User);
+        let (_a, _b) = seed_two_orders(&mut app);
+        app.selected_order_chat_idx = 0;
+        app.order_chat_input = "orphan".to_string();
+        app.order_chat_draft_owner = None;
+        sync_order_chat_draft_to_live_target(&mut app);
+        assert!(app.order_chat_input.is_empty());
+    }
 }
