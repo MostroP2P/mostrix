@@ -180,6 +180,23 @@ fn refresh_shortcut_next_mode(
     )))
 }
 
+/// Scroll the Ctrl+H help / Shift+H Settings popup. The draw pass clamps
+/// [`AppState::popup_scroll`] to the wrapped content height, so overshooting
+/// here is harmless.
+fn scroll_popup(app: &mut AppState, code: KeyCode) {
+    app.popup_scroll = match code {
+        KeyCode::Up => app.popup_scroll.saturating_sub(1),
+        KeyCode::Down => app.popup_scroll.saturating_add(1),
+        KeyCode::PageUp => app.popup_scroll.saturating_sub(POPUP_SCROLL_PAGE),
+        KeyCode::PageDown => app.popup_scroll.saturating_add(POPUP_SCROLL_PAGE),
+        KeyCode::Home => 0,
+        KeyCode::End => u16::MAX,
+        _ => return,
+    };
+}
+
+const POPUP_SCROLL_PAGE: u16 = 5;
+
 /// Ask Mostro for the selected order's authoritative details and merge them
 /// into SQLite, then let the main loop resync the projections.
 ///
@@ -764,6 +781,7 @@ pub fn handle_key_event(
             app.mode = (**previous_mode).clone();
             return Some(true);
         }
+        scroll_popup(app, code);
         return Some(true); // consume all other keys while help is open
     }
 
@@ -779,6 +797,7 @@ pub fn handle_key_event(
             app.mode = (**previous_mode).clone();
             return Some(true);
         }
+        scroll_popup(app, code);
         return Some(true);
     }
 
@@ -1122,6 +1141,7 @@ pub fn handle_key_event(
         );
         if can_open {
             let previous = app.mode.clone();
+            app.popup_scroll = 0;
             app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
             return Some(true);
         }
@@ -1143,6 +1163,7 @@ pub fn handle_key_event(
         );
         if can_open {
             let previous = app.mode.clone();
+            app.popup_scroll = 0;
             app.mode = UiMode::SettingsInstructionsPopup(app.user_role, Box::new(previous));
             return Some(true);
         }
@@ -1425,6 +1446,7 @@ pub fn handle_key_event(
                     );
                     if can_open {
                         let previous = app.mode.clone();
+                        app.popup_scroll = 0;
                         app.mode = UiMode::HelpPopup(app.active_tab, Box::new(previous));
                         return Some(true);
                     }
@@ -1874,6 +1896,24 @@ mod key_handler_tests {
     use super::*;
     use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, UserRole};
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn popup_scroll_keys_move_saturate_and_jump() {
+        let mut app = AppState::new(UserRole::User);
+        scroll_popup(&mut app, KeyCode::Up);
+        assert_eq!(app.popup_scroll, 0, "Up at the top saturates");
+        scroll_popup(&mut app, KeyCode::Down);
+        scroll_popup(&mut app, KeyCode::PageDown);
+        assert_eq!(app.popup_scroll, 1 + POPUP_SCROLL_PAGE);
+        scroll_popup(&mut app, KeyCode::PageUp);
+        assert_eq!(app.popup_scroll, 1);
+        scroll_popup(&mut app, KeyCode::End);
+        assert_eq!(app.popup_scroll, u16::MAX, "End overshoots; draw clamps it");
+        scroll_popup(&mut app, KeyCode::Home);
+        assert_eq!(app.popup_scroll, 0);
+        scroll_popup(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.popup_scroll, 0, "other keys leave the scroll alone");
+    }
 
     #[test]
     fn dispute_is_allowed_only_while_the_trade_is_under_way() {

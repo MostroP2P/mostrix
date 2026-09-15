@@ -1,6 +1,6 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -23,191 +23,40 @@ pub fn render_admin_key_confirm_with_message(
     selected_button: bool,
     custom_message: Option<&str>,
 ) {
-    let area = f.area();
-    let popup_width = 80;
-    let popup_height = 12;
-
-    let popup = helpers::create_centered_popup(area, popup_width, popup_height);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
-    f.render_widget(block, popup);
-
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
-            Constraint::Length(1), // spacer
-            Constraint::Length(2), // message (wrapped)
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // key display (truncated)
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // buttons
-            Constraint::Length(1), // help text
-        ],
-    )
-    .split(popup);
-
-    // Confirmation message
-    // This popup has a fixed 2-row message area. Rendering the message
-    // with wrapping can create extra visual lines and bleed outside the frame.
     let message = custom_message.unwrap_or("Do you want to save this key in settings file?");
-    let message_lines: Vec<Line> = message
+    let mut body: Vec<Line<'static>> = message
         .lines()
-        .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(Color::White),
+            ))
+        })
         .collect();
-    f.render_widget(
-        Paragraph::new(message_lines).alignment(ratatui::layout::Alignment::Center),
-        chunks[1],
-    );
+    let mut compact_body = body.clone();
 
-    // Display truncated key (show first 30 chars + ...)
-    // Only show key if no custom message (for settings saves) or if custom message is provided but we still want to show it
-    // For AddSolver, we hide the key display
+    // The key is only shown for plain settings saves (no custom message).
     if custom_message.is_none() {
         let display_key = if key_string.len() > 30 {
             format!("{}...", &key_string[..30])
         } else {
             key_string.to_string()
         };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Key: ", Style::default()),
-                Span::styled(
-                    display_key,
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[3],
-        );
+        let key_line = Line::from(vec![
+            Span::styled("Key: ", Style::default()),
+            Span::styled(
+                display_key,
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        body.push(Line::from(""));
+        body.push(key_line.clone());
+        compact_body.push(key_line);
     }
 
-    // Yes/No buttons
-    let button_area = chunks[5];
-    let button_width = 15;
-    let separator_width = 1;
-    let total_button_width = (button_width * 2) + separator_width;
-
-    let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
-    let centered_button_area = Rect {
-        x: button_x,
-        y: button_area.y,
-        width: total_button_width.min(button_area.width),
-        height: button_area.height,
-    };
-
-    let button_chunks = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Length(button_width),
-            Constraint::Length(separator_width),
-            Constraint::Length(button_width),
-        ],
-    )
-    .split(centered_button_area);
-
-    // YES button
-    let yes_style = if selected_button {
-        Style::default()
-            .bg(Color::Green)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    };
-
-    let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
-    f.render_widget(yes_block, button_chunks[0]);
-
-    let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[0]);
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✓ YES",
-            Style::default()
-                .fg(if selected_button {
-                    Color::Black
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        yes_inner[0],
-    );
-
-    // NO button
-    let no_style = if !selected_button {
-        Style::default()
-            .bg(Color::Red)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    };
-
-    let no_block = Block::default().borders(Borders::ALL).style(no_style);
-    f.render_widget(no_block, button_chunks[2]);
-
-    let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[2]);
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✗ NO",
-            Style::default()
-                .fg(if !selected_button {
-                    Color::Black
-                } else {
-                    Color::Red
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        no_inner[0],
-    );
-
-    // Help text - combine all messages into a single Paragraph
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Use ", Style::default()),
-            Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to select, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to cancel", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[6],
-    );
+    render_yes_no_confirm(f, title, (80, 12), body, compact_body, selected_button);
 }
 
 /// Confirm Shift+R recovery of the selected orphan dispute IDs.
@@ -217,47 +66,6 @@ pub fn render_recover_taken_disputes_confirm(
     selected_button: bool,
 ) {
     let count = recover_ids.len();
-    let area = f.area();
-    let popup_width = 72.min(area.width);
-    let popup_height = 16.min(area.height);
-    let popup = helpers::create_centered_popup(area, popup_width, popup_height);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title("🔄 Recover Taken Disputes")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-
-    let compact = inner.width < 40 || inner.height < 10;
-    let ultra_compact = inner.height < 6;
-    let constraints: &[Constraint] = if ultra_compact {
-        &[Constraint::Min(1), Constraint::Length(3)]
-    } else if compact {
-        &[
-            Constraint::Min(2),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ]
-    } else {
-        &[
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ]
-    };
-    let chunks = Layout::new(Direction::Vertical, constraints).split(inner);
-    let (body_area, button_area, help_area) = if ultra_compact {
-        (chunks[0], chunks[1], None)
-    } else if compact {
-        (chunks[0], chunks[1], Some(chunks[2]))
-    } else {
-        (chunks[1], chunks[3], Some(chunks[4]))
-    };
-
     let noun = if count == 1 { "dispute" } else { "disputes" };
     let preview: String = recover_ids
         .iter()
@@ -277,152 +85,39 @@ pub fn render_recover_taken_disputes_confirm(
     } else {
         String::new()
     };
-    let body = if compact {
-        vec![Line::from(Span::styled(
-            format!("📡 Re-request AdminTookDispute for {count} selected {noun}?"),
+    let body = vec![
+        Line::from(Span::styled(
+            format!("📡 Recover {count} selected {noun}"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-        ))]
-    } else {
-        vec![
-            Line::from(Span::styled(
-                format!("📡 Recover {count} selected {noun}"),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("🆔 {preview}{more}"),
-                Style::default().fg(Color::Gray),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "✨ Mostro will accept only if this admin owns them",
-                Style::default().fg(PRIMARY_COLOR),
-            )),
-        ]
-    };
-    f.render_widget(
-        Paragraph::new(body)
-            .alignment(ratatui::layout::Alignment::Center)
-            .wrap(Wrap { trim: true }),
-        body_area,
-    );
-
-    let button_width = if compact { 8u16 } else { 15 };
-    let separator_width = 1;
-    let total_button_width = (button_width * 2) + separator_width;
-    let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
-    let centered_button_area = Rect {
-        x: button_x,
-        y: button_area.y,
-        width: total_button_width.min(button_area.width),
-        height: button_area.height,
-    };
-    let button_chunks = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Length(button_width),
-            Constraint::Length(separator_width),
-            Constraint::Length(button_width),
-        ],
-    )
-    .split(centered_button_area);
-
-    let yes_style = if selected_button {
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("🆔 {preview}{more}"),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "✨ Mostro will accept only if this admin owns them",
+            Style::default().fg(PRIMARY_COLOR),
+        )),
+    ];
+    let compact_body = vec![Line::from(Span::styled(
+        format!("📡 Re-request AdminTookDispute for {count} selected {noun}?"),
         Style::default()
-            .bg(Color::Green)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    };
-    f.render_widget(
-        Block::default().borders(Borders::ALL).style(yes_style),
-        button_chunks[0],
-    );
-    let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✓ YES",
-            Style::default()
-                .fg(if selected_button {
-                    Color::Black
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        yes_inner[0],
-    );
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ))];
 
-    let no_style = if !selected_button {
-        Style::default()
-            .bg(Color::Red)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    };
-    f.render_widget(
-        Block::default().borders(Borders::ALL).style(no_style),
-        button_chunks[2],
+    render_yes_no_confirm(
+        f,
+        "🔄 Recover Taken Disputes",
+        (72, 16),
+        body,
+        compact_body,
+        selected_button,
     );
-    let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[2]);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✗ NO",
-            Style::default()
-                .fg(if !selected_button {
-                    Color::Black
-                } else {
-                    Color::Red
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        no_inner[0],
-    );
-
-    if let Some(help_area) = help_area {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Use ", Style::default()),
-                Span::styled(
-                    "Left/Right",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to select, ", Style::default()),
-                Span::styled(
-                    "Enter",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to confirm, ", Style::default()),
-                Span::styled(
-                    "Esc",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to cancel", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            help_area,
-        );
-    }
 }
 
 /// Confirmation before AddInvoice when Settings contain a buyer Lightning address (taller body + wrap).
@@ -431,155 +126,163 @@ pub fn render_saved_ln_address_invoice_confirm(
     selected_button: bool,
     body: &str,
 ) {
+    let lines: Vec<Line<'static>> = body
+        .lines()
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(Color::White),
+            ))
+        })
+        .collect();
+    // Compact: drop the blank separators so the address and question keep the rows.
+    let compact: Vec<Line<'static>> = lines.iter().filter(|l| l.width() > 0).cloned().collect();
+    render_yes_no_confirm(
+        f,
+        "⚡ Use saved Lightning address?",
+        (82, 17),
+        lines,
+        compact,
+        selected_button,
+    );
+}
+
+const CONFIRM_BUTTON_WIDTH: u16 = 15;
+const CONFIRM_COMPACT_BUTTON_WIDTH: u16 = 8;
+/// Below this inner width the two 15-column buttons (plus margin) do not fit.
+const CONFIRM_COMPACT_MIN_WIDTH: u16 = 34;
+
+/// Shared YES/NO confirmation layout that degrades on small terminals.
+///
+/// * **Full** — spacer, `body`, spacer, buttons, full help (wrapped). The popup
+///   grows past `base_height` when the wrapped body needs it.
+/// * **Compact** (inner width < 34 or not tall enough for full) — `compact_body`,
+///   narrow buttons, short key hint (wrapped onto a second row only if needed).
+/// * **Ultra compact** (inner height < 5) — `compact_body` and buttons only, so
+///   the selectable controls are never the part that gets clipped.
+///
+/// Everything is laid out inside the border (`block.inner`), so long text wraps
+/// instead of overwriting the frame.
+fn render_yes_no_confirm(
+    f: &mut ratatui::Frame,
+    title: &str,
+    (max_width, base_height): (u16, u16),
+    body: Vec<Line<'static>>,
+    compact_body: Vec<Line<'static>>,
+    selected_button: bool,
+) {
     let area = f.area();
-    let popup_width = 82;
-    let popup_height = 17;
+    let popup_width = max_width.min(area.width);
+    let inner_width = popup_width.saturating_sub(2);
+    let full_help = confirm_help_line(false);
+    let body_rows = helpers::wrapped_rows(&body, inner_width);
+    let full_help_rows = helpers::wrapped_rows(std::slice::from_ref(&full_help), inner_width);
+    // spacer + body + spacer + buttons + help
+    let full_inner_needed = 1 + body_rows + 1 + 3 + full_help_rows;
+    let popup_height = base_height
+        .max(full_inner_needed.saturating_add(2))
+        .min(area.height);
+
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
-
     let block = Block::default()
-        .title("⚡ Use saved Lightning address?")
+        .title(title.to_string())
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
+    let compact = inner.width < CONFIRM_COMPACT_MIN_WIDTH || inner.height < full_inner_needed;
+    let ultra_compact = inner.height < 5;
+
+    let (body_area, button_area, help) = if ultra_compact {
+        let [b, btn] = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(inner);
+        (b, btn, None)
+    } else if compact {
+        let short_help = confirm_help_line(true);
+        // A second hint row only when it does not steal a row from the body.
+        let compact_body_rows = helpers::wrapped_rows(&compact_body, inner.width).max(1);
+        let help_rows = if inner.height >= compact_body_rows + 3 + 2 {
+            helpers::wrapped_rows(std::slice::from_ref(&short_help), inner.width).clamp(1, 2)
+        } else {
+            1
+        };
+        let [b, btn, h] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(3),
+            Constraint::Length(help_rows),
+        ])
+        .areas(inner);
+        (b, btn, Some((h, short_help)))
+    } else {
+        let [_, b, _, btn, h] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(9),
+            Constraint::Min(body_rows),
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(1),
-        ],
-    )
-    .split(popup);
+            Constraint::Length(full_help_rows),
+        ])
+        .areas(inner);
+        (b, btn, Some((h, full_help)))
+    };
 
+    let shown_body = if compact { compact_body } else { body };
     f.render_widget(
-        Paragraph::new(body)
-            .style(Style::default().fg(Color::White))
+        Paragraph::new(Text::from(shown_body))
             .alignment(ratatui::layout::Alignment::Center)
             .wrap(Wrap { trim: true }),
-        chunks[1],
+        body_area,
     );
 
-    let button_area = chunks[3];
-    let button_width = 15;
-    let separator_width = 1;
-    let total_button_width = (button_width * 2) + separator_width;
-
-    let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
-    let centered_button_area = Rect {
-        x: button_x,
-        y: button_area.y,
-        width: total_button_width.min(button_area.width),
-        height: button_area.height,
-    };
-
-    let button_chunks = Layout::new(
-        Direction::Horizontal,
-        [
-            Constraint::Length(button_width),
-            Constraint::Length(separator_width),
-            Constraint::Length(button_width),
-        ],
-    )
-    .split(centered_button_area);
-
-    let yes_style = if selected_button {
-        Style::default()
-            .bg(Color::Green)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
+    let button_width = if compact {
+        CONFIRM_COMPACT_BUTTON_WIDTH
     } else {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
+        CONFIRM_BUTTON_WIDTH
     };
-
-    let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
-    f.render_widget(yes_block, button_chunks[0]);
-
-    let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[0]);
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✓ YES",
-            Style::default()
-                .fg(if selected_button {
-                    Color::Black
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        yes_inner[0],
+    helpers::render_yes_no_buttons_with_width(
+        f,
+        button_area,
+        button_width,
+        selected_button,
+        "✓ YES",
+        "✗ NO",
     );
 
-    let no_style = if !selected_button {
-        Style::default()
-            .bg(Color::Red)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
+    if let Some((help_area, help_line)) = help {
+        f.render_widget(
+            Paragraph::new(help_line)
+                .alignment(ratatui::layout::Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            help_area,
+        );
+    }
+}
+
+/// Key hint under the buttons; `compact` fits in 38 columns.
+fn confirm_help_line(compact: bool) -> Line<'static> {
+    let key = Style::default()
+        .fg(PRIMARY_COLOR)
+        .add_modifier(Modifier::BOLD);
+    if compact {
+        Line::from(vec![
+            Span::styled("←/→", key),
+            Span::styled(" select · ", Style::default()),
+            Span::styled("Enter", key),
+            Span::styled(" ok · ", Style::default()),
+            Span::styled("Esc", key),
+            Span::styled(" cancel", Style::default()),
+        ])
     } else {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    };
-
-    let no_block = Block::default().borders(Borders::ALL).style(no_style);
-    f.render_widget(no_block, button_chunks[2]);
-
-    let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
-        .margin(1)
-        .split(button_chunks[2]);
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "✗ NO",
-            Style::default()
-                .fg(if !selected_button {
-                    Color::Black
-                } else {
-                    Color::Red
-                })
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .alignment(ratatui::layout::Alignment::Center),
-        no_inner[0],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
+        Line::from(vec![
             Span::styled("Use ", Style::default()),
-            Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("Left/Right", key),
             Span::styled(" to select, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("Enter", key),
             Span::styled(" to confirm, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("Esc", key),
             Span::styled(" to cancel", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[4],
-    );
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -627,5 +330,114 @@ mod tests {
             buffer_contains(buf, "YES"),
             "selected YES action must stay visible on 30x8"
         );
+    }
+
+    fn draw(
+        width: u16,
+        height: u16,
+        render: impl FnOnce(&mut ratatui::Frame),
+    ) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(render).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// Popup text must stay inside the frame: every row between the top and
+    /// bottom corners starts and ends with a border glyph.
+    fn assert_frame_intact(buf: &ratatui::buffer::Buffer, label: &str) {
+        let width = buf.area.width;
+        let rows: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| (0..width).any(|x| buf[(x, y)].symbol() != " "))
+            .collect();
+        let (top, bottom) = (rows[0], *rows.last().unwrap());
+        let left = (0..width)
+            .find(|&x| buf[(x, top)].symbol() == "┌")
+            .expect("top-left corner");
+        let right = (0..width)
+            .rev()
+            .find(|&x| buf[(x, top)].symbol() == "┐")
+            .expect("top-right corner");
+        for y in top + 1..bottom {
+            assert_eq!(
+                buf[(left, y)].symbol(),
+                "│",
+                "{label}: left border overwritten on row {y}"
+            );
+            assert_eq!(
+                buf[(right, y)].symbol(),
+                "│",
+                "{label}: right border overwritten on row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_session_confirm_fits_small_terminals() {
+        let question =
+            "Ask Mostro to restore this identity's orders and disputes into the local database?";
+        for (width, height) in [(40u16, 12u16), (40, 24)] {
+            let buf = draw(width, height, |f| {
+                super::render_admin_key_confirm_with_message(
+                    f,
+                    "Restore Session",
+                    "",
+                    true,
+                    Some(question),
+                )
+            });
+            let label = format!("restore confirm {width}x{height}");
+            assert_frame_intact(&buf, &label);
+            // The wrapped question is shown in full, not truncated.
+            assert!(buffer_contains(&buf, "Ask Mostro"), "{label}");
+            assert!(buffer_contains(&buf, "database?"), "{label}");
+            assert!(
+                buffer_contains(&buf, "YES") && buffer_contains(&buf, "NO"),
+                "{label}"
+            );
+            assert!(buffer_contains(&buf, "Esc"), "{label}: key hint missing");
+        }
+    }
+
+    #[test]
+    fn key_confirm_keeps_key_buttons_and_hint_on_small_terminals() {
+        for (width, height) in [(40u16, 12u16), (40, 24)] {
+            let buf = draw(width, height, |f| {
+                super::render_admin_key_confirm(
+                    f,
+                    "Confirm Relay",
+                    "wss://relay.mostro.network",
+                    true,
+                )
+            });
+            let label = format!("key confirm {width}x{height}");
+            assert_frame_intact(&buf, &label);
+            assert!(
+                buffer_contains(&buf, "wss://relay.mostro.network"),
+                "{label}"
+            );
+            assert!(
+                buffer_contains(&buf, "YES") && buffer_contains(&buf, "NO"),
+                "{label}"
+            );
+            assert!(buffer_contains(&buf, "Esc"), "{label}");
+        }
+    }
+
+    #[test]
+    fn saved_ln_address_confirm_keeps_address_and_actions_on_small_terminals() {
+        let body = "Saved Lightning address:\nyou@wallet.example.com\n\n\
+Confirm using this address from Settings as your invoice?";
+        for (width, height) in [(40u16, 12u16), (40, 24)] {
+            let buf = draw(width, height, |f| {
+                super::render_saved_ln_address_invoice_confirm(f, false, body)
+            });
+            let label = format!("saved ln confirm {width}x{height}");
+            assert_frame_intact(&buf, &label);
+            assert!(buffer_contains(&buf, "you@wallet.example.com"), "{label}");
+            assert!(
+                buffer_contains(&buf, "YES") && buffer_contains(&buf, "NO"),
+                "{label}"
+            );
+        }
     }
 }

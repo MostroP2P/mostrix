@@ -53,7 +53,7 @@ pub use formatting::{
 };
 pub use layout::{
     create_centered_popup, render_help_text, render_table_list_scrollbar, render_yes_no_buttons,
-    render_yes_no_cancel_buttons,
+    render_yes_no_buttons_with_width, render_yes_no_cancel_buttons, wrapped_rows,
 };
 pub(crate) use order_chat_projection::assign_peer_reputation;
 pub use order_chat_projection::{

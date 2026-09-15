@@ -93,7 +93,7 @@ The interface is divided into three main sections:
 - **End**: Jump to bottom of chat (latest messages)
 - **Shift+I**: Toggle chat input enabled/disabled
 - **Backspace**: Delete characters (when input enabled)
-- **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
+- **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close; ↑↓/PgUp/PgDn scroll it on short terminals)
 
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 

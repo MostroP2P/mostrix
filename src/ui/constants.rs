@@ -4,6 +4,8 @@
 // --- Help popup (Ctrl+H) ---
 
 pub const HELP_CLOSE_HINT: &str = "Esc, Enter or Ctrl+H to close";
+/// Prepended to a popup close hint when its content overflows and scrolls.
+pub const HELP_SCROLL_HINT_PREFIX: &str = "↑↓ scroll · ";
 
 /// Footer hint shown in help and disputes footer
 pub const HELP_KEY: &str = "Ctrl+H: Help";
