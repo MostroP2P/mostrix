@@ -6,8 +6,8 @@ use crate::ui::orders::{
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
-    AppState, ChatParty, InvoiceInputState, InvoiceNotificationActionSelection,
-    MessageNotification, OperationResult, OrderChatStaticHeader, UiMode, UserMode,
+    AppState, ChatParty, InvoiceInputState, MessageNotification, OperationResult,
+    OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
 use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
@@ -395,14 +395,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             dispute_id: None,
         };
 
-        let invoice_state = InvoiceInputState {
-            invoice_input: String::new(),
-            focused: false,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        };
+        let invoice_state = InvoiceInputState::display_only();
         app.mode = UiMode::NewMessageNotification(notification, action.clone(), invoice_state);
         return;
     }

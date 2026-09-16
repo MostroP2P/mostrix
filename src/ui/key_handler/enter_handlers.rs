@@ -19,9 +19,9 @@ use crate::ui::orders::{
 };
 use crate::ui::{
     order_message_to_notification, AdminMode, AdminTab, AppState, ChatParty, InvoiceInputState,
-    InvoiceNotificationActionSelection, MessageViewState, OperationResult, RatingOrderState, Tab,
-    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserChatSender, UserMode,
-    UserOrderChatMessage, UserRole, UserTab, ViewingMessageButtonSelection,
+    MessageViewState, OperationResult, RatingOrderState, Tab, TakeOrderState, ThreeState, UiMode,
+    UserChatChannel, UserChatSender, UserMode, UserOrderChatMessage, UserRole, UserTab,
+    ViewingMessageButtonSelection,
 };
 // User handlers moved to user_handlers.rs
 use crate::ui::key_handler::async_tasks::{
@@ -1304,14 +1304,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
 
             if let Some(invoice_popup_action) = invoice_popup_action_for_message_action(&action) {
                 if invoice_popup_allowed_for_order_status(&invoice_popup_action, msg.order_status) {
-                    let invoice_state = InvoiceInputState {
-                        invoice_input: String::new(),
-                        focused: false,
-                        just_pasted: false,
-                        copied_to_clipboard: false,
-                        scroll_y: 0,
-                        action_selection: InvoiceNotificationActionSelection::Primary,
-                    };
+                    let invoice_state = InvoiceInputState::display_only();
                     // Acting party: invoice/payment input. Waiting party: read-only trade-status popup.
                     if local_user_must_act_on_invoice_popup(msg, &invoice_popup_action) {
                         let notification = order_message_to_notification(msg);

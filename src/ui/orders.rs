@@ -657,7 +657,10 @@ pub enum InvoiceNotificationActionSelection {
     Cancel,
 }
 
-/// State for handling invoice input in AddInvoice notifications
+/// Invoice popup state: typed input for AddInvoice, or PayInvoice / PayBondInvoice display.
+///
+/// Pay popups prefer a half-block QR (`show_qr`); SPACE toggles the wrapped bolt11, and
+/// render falls back to text when the terminal cannot fit the code.
 #[derive(Clone, Debug)]
 pub struct InvoiceInputState {
     pub invoice_input: String,
@@ -668,6 +671,39 @@ pub struct InvoiceInputState {
     pub scroll_y: u16,
     /// Selected action in AddInvoice/PayInvoice popup.
     pub action_selection: InvoiceNotificationActionSelection,
+    /// Prefer the QR view in PayInvoice / PayBondInvoice popups (SPACE toggles).
+    /// Render still falls back to text when the terminal cannot fit the code.
+    pub show_qr: bool,
+}
+
+impl InvoiceInputState {
+    /// Display-only state for PayInvoice / PayBondInvoice (QR on by default).
+    pub fn display_only() -> Self {
+        Self {
+            invoice_input: String::new(),
+            focused: false,
+            just_pasted: false,
+            copied_to_clipboard: false,
+            scroll_y: 0,
+            action_selection: InvoiceNotificationActionSelection::Primary,
+            show_qr: true,
+        }
+    }
+
+    /// Text-input state for AddInvoice / AddBondInvoice popups.
+    pub fn for_input(invoice_input: String, focused: bool) -> Self {
+        Self {
+            invoice_input,
+            focused,
+            ..Self::display_only()
+        }
+    }
+}
+
+impl Default for InvoiceInputState {
+    fn default() -> Self {
+        Self::display_only()
+    }
 }
 
 /// State for handling key input (pubkey or privkey) in admin settings
