@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
@@ -173,6 +173,56 @@ pub fn render_yes_no_buttons(
         )]))
         .alignment(ratatui::layout::Alignment::Center),
         no_inner[0],
+    );
+}
+
+/// One-row Ack/Cancel strip for tight QR popups (no bordered widgets).
+/// `selected_primary = true` highlights the left label in green; otherwise the
+/// right label is highlighted in red.
+pub fn render_compact_action_strip(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    selected_primary: bool,
+    primary_label: &str,
+    cancel_label: &str,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let primary = if selected_primary {
+        Span::styled(
+            format!(" {primary_label} "),
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            format!(" {primary_label} "),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let cancel = if selected_primary {
+        Span::styled(
+            format!(" {cancel_label} "),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            format!(" {cancel_label} "),
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![primary, Span::raw("  "), cancel]))
+            .alignment(Alignment::Center),
+        area,
     );
 }
 
@@ -359,6 +409,46 @@ mod tests {
         assert!(
             !cell_with_bg(buf, Color::Red),
             "NO should not be highlighted when YES is selected"
+        );
+    }
+
+    #[test]
+    fn render_compact_action_strip_highlights_primary() {
+        let backend = TestBackend::new(50, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_compact_action_strip(f, f.area(), true, "Acknowledge", "Cancel Order"))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Acknowledge"));
+        assert!(buffer_contains(buf, "Cancel Order"));
+        assert!(
+            cell_with_bg(buf, Color::Green),
+            "Acknowledge should paint green background"
+        );
+        assert!(
+            !cell_with_bg(buf, Color::Red),
+            "Cancel should not be highlighted when Acknowledge is selected"
+        );
+    }
+
+    #[test]
+    fn render_compact_action_strip_highlights_cancel() {
+        let backend = TestBackend::new(50, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_compact_action_strip(f, f.area(), false, "Acknowledge", "Cancel Order")
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            cell_with_bg(buf, Color::Red),
+            "Cancel should paint red background"
+        );
+        assert!(
+            !cell_with_bg(buf, Color::Green),
+            "Acknowledge should not be highlighted when Cancel is selected"
         );
     }
 

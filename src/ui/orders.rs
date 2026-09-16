@@ -659,8 +659,8 @@ pub enum InvoiceNotificationActionSelection {
 
 /// Invoice popup state: typed input for AddInvoice, or PayInvoice / PayBondInvoice display.
 ///
-/// Pay popups prefer a half-block QR (`show_qr`); SPACE toggles the wrapped bolt11, and
-/// render falls back to text when the terminal cannot fit the code.
+/// Pay popups prefer a QR (`show_qr`); SPACE toggles the wrapped bolt11, and
+/// render falls back to text when the terminal cannot fit even a compact code.
 #[derive(Clone, Debug)]
 pub struct InvoiceInputState {
     pub invoice_input: String,

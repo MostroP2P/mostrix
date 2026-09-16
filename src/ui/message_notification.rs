@@ -62,11 +62,17 @@ struct PayInvoiceLayout {
     popup_height: u16,
     invoice_rows: u16,
     visual: InvoiceVisual,
+    /// QR always; text when the full 3-row-button card does not fit.
+    compact: bool,
 }
 
 impl PayInvoiceLayout {
     fn showing_qr(&self) -> bool {
         matches!(self.visual, InvoiceVisual::Qr(_))
+    }
+
+    fn use_compact(&self) -> bool {
+        self.showing_qr() || self.compact
     }
 
     fn qr_fallback(&self) -> bool {
@@ -112,16 +118,16 @@ fn pay_invoice_popup_layout(
     const TEXT_INVOICE_ROWS: u16 = 6;
     const TEXT_HEIGHT_PAY: u16 = 19;
     const TEXT_HEIGHT_BOND: u16 = 20;
-    // Compact QR chrome: top spacer, order id, [bond note], amount, one help line.
+    // Compact chrome: spacer, [bond note], amount, Ack/Cancel strip, help.
+    // Order id lives in the Block title so the strip can replace that row.
     const QR_CHROME_PAY: u16 = 4;
     const QR_CHROME_BOND: u16 = 5;
-    const QR_BOTTOM_PAD: u16 = 1;
+    const TEXT_FIXED_PAY: u16 = 11;
+    const TEXT_FIXED_BOND: u16 = 12;
 
     let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
     let max_qr_w = area.width.saturating_sub(4);
-    let max_qr_h = area
-        .height
-        .saturating_sub(chrome.saturating_add(QR_BOTTOM_PAD));
+    let max_qr_h = area.height.saturating_sub(chrome);
     let visual = invoice_visual(invoice, show_qr, max_qr_w, max_qr_h);
 
     match visual {
@@ -131,16 +137,13 @@ fn pay_invoice_popup_layout(
             let popup_width = QR_MIN_WIDTH
                 .max(view.width.saturating_add(4))
                 .min(area.width);
-            let popup_height = chrome
-                .saturating_add(view.height)
-                .saturating_add(QR_BOTTOM_PAD)
-                .min(area.height)
-                .max(6);
+            let popup_height = chrome.saturating_add(view.height).min(area.height).max(6);
             PayInvoiceLayout {
                 popup_width,
                 popup_height,
                 invoice_rows: view.height,
                 visual: InvoiceVisual::Qr(view),
+                compact: true,
             }
         }
         visual @ InvoiceVisual::Text { .. } => {
@@ -149,11 +152,25 @@ fn pay_invoice_popup_layout(
             } else {
                 TEXT_HEIGHT_PAY
             };
+            let full_fixed = if bond {
+                TEXT_FIXED_BOND
+            } else {
+                TEXT_FIXED_PAY
+            };
+            let popup_height = preferred_h.min(area.height).max(6);
+            let compact = popup_height < full_fixed.saturating_add(TEXT_INVOICE_ROWS);
+            let invoice_rows = if compact {
+                let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
+                popup_height.saturating_sub(chrome).max(1)
+            } else {
+                TEXT_INVOICE_ROWS
+            };
             PayInvoiceLayout {
                 popup_width: PREFERRED_WIDTH.min(area.width),
-                popup_height: preferred_h.min(area.height).max(6),
-                invoice_rows: TEXT_INVOICE_ROWS,
+                popup_height,
+                invoice_rows,
                 visual,
+                compact,
             }
         }
     }
@@ -390,7 +407,7 @@ fn render_centered_label(f: &mut ratatui::Frame, area: Rect, text: &str, color: 
     );
 }
 
-/// Compact QR layout: drop preview/buttons so a real bolt11 can fill the terminal.
+/// Compact QR (or short-terminal text) layout: order id is in the title.
 fn render_pay_qr_compact(
     f: &mut ratatui::Frame,
     popup: Rect,
@@ -401,23 +418,17 @@ fn render_pay_qr_compact(
 ) {
     let mut constraints = vec![
         Constraint::Length(1), // spacer / top border
-        Constraint::Length(1), // order id
     ];
     if bond {
         constraints.push(Constraint::Length(1)); // locked note
     }
     constraints.push(Constraint::Length(1)); // amount
     constraints.push(Constraint::Length(layout.invoice_rows));
+    constraints.push(Constraint::Length(1)); // ack/cancel strip
     constraints.push(Constraint::Length(1)); // help
 
     let chunks = Layout::new(Direction::Vertical, constraints).split(popup);
     let mut idx = 1;
-    render_order_id_header(
-        f,
-        chunks[idx],
-        &helpers::format_order_id(notification.order_id),
-    );
-    idx += 1;
     if bond {
         render_centered_label(
             f,
@@ -442,10 +453,33 @@ fn render_pay_qr_compact(
         &layout.visual,
     );
     idx += 1;
-    render_pay_qr_help(f, chunks[idx], invoice_state);
+    helpers::render_compact_action_strip(
+        f,
+        chunks[idx],
+        matches!(
+            invoice_state.action_selection,
+            InvoiceNotificationActionSelection::Primary
+        ),
+        "Acknowledge",
+        "Cancel Order",
+    );
+    idx += 1;
+    render_pay_qr_help(
+        f,
+        chunks[idx],
+        invoice_state,
+        layout.showing_qr(),
+        layout.qr_fallback(),
+    );
 }
 
-fn render_pay_qr_help(f: &mut ratatui::Frame, area: Rect, invoice_state: &InvoiceInputState) {
+fn render_pay_qr_help(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    invoice_state: &InvoiceInputState,
+    showing_qr: bool,
+    qr_fallback: bool,
+) {
     if invoice_state.copied_to_clipboard {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
@@ -459,45 +493,62 @@ fn render_pay_qr_help(f: &mut ratatui::Frame, area: Rect, invoice_state: &Invoic
         );
         return;
     }
+    let mut spans = Vec::new();
+    if qr_fallback {
+        spans.push(Span::styled(
+            "QR needs a taller terminal. ",
+            Style::default(),
+        ));
+    }
+    spans.extend([
+        Span::styled(
+            "C",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" copy  ", Style::default()),
+        Span::styled(
+            "SPACE",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if showing_qr { " text  " } else { " QR  " },
+            Style::default(),
+        ),
+        Span::styled(
+            "X",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" cancel  ", Style::default()),
+        Span::styled(
+            "←/→",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "Enter",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ack  ", Style::default()),
+        Span::styled(
+            "Esc",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" dismiss", Style::default()),
+    ]);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "C",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" copy  ", Style::default()),
-            Span::styled(
-                "SPACE",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" text  ", Style::default()),
-            Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" action  ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" / ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" dismiss", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center),
         area,
     );
 }
@@ -768,7 +819,7 @@ fn render_pay_invoice(
     invoice_state: &InvoiceInputState,
     layout: &PayInvoiceLayout,
 ) {
-    if layout.showing_qr() {
+    if layout.use_compact() {
         render_pay_qr_compact(f, popup, notification, invoice_state, layout, false);
         return;
     }
@@ -854,7 +905,7 @@ fn render_pay_bond_invoice(
     invoice_state: &InvoiceInputState,
     layout: &PayInvoiceLayout,
 ) {
-    if layout.showing_qr() {
+    if layout.use_compact() {
         render_pay_qr_compact(f, popup, notification, invoice_state, layout, true);
         return;
     }
@@ -1270,14 +1321,24 @@ fn render_payment_failed(
     );
 }
 
+fn compact_pay_title(bond: bool, order_id: Option<uuid::Uuid>) -> String {
+    let base = if bond {
+        "🛡️ Anti-abuse Bond Invoice"
+    } else {
+        "💳 Payment Request"
+    };
+    format!("{base} · {}", helpers::short_order_id(order_id))
+}
+
 /// Render a message-notification popup.
 ///
 /// Post-retry [`mostro_core::prelude::Action::AddInvoice`] (body present) and
 /// [`mostro_core::prelude::Action::PaymentFailed`] choose popup size from terminal
 /// width/height so wrapped body text degrades gracefully on narrow or short screens.
 /// [`mostro_core::prelude::Action::PayInvoice`] / [`mostro_core::prelude::Action::PayBondInvoice`]
-/// size to a half-block QR when it fits, otherwise keep the text card; other
-/// actions keep fixed preferred dimensions.
+/// size to a half-block QR when it fits, a compact sextant QR on a standard
+/// terminal, otherwise keep the text card; other actions keep fixed preferred
+/// dimensions.
 pub fn render_message_notification(
     f: &mut ratatui::Frame,
     notification: &MessageNotification,
@@ -1332,21 +1393,32 @@ pub fn render_message_notification(
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
+    let compact_pay = pay_layout
+        .as_ref()
+        .is_some_and(|layout| layout.use_compact());
     let title = match action {
         mostro_core::prelude::Action::AddInvoice => {
             if notification.body.is_some() {
-                "⚠️ New Invoice After Payment Failed"
+                "⚠️ New Invoice After Payment Failed".to_string()
             } else {
-                "📝 Invoice Request"
+                "📝 Invoice Request".to_string()
             }
         }
-        mostro_core::prelude::Action::AddBondInvoice => "⚔️ Bond Payout Invoice",
-        mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
-        mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
+        mostro_core::prelude::Action::AddBondInvoice => "⚔️ Bond Payout Invoice".to_string(),
+        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::PayBondInvoice
+            if compact_pay =>
+        {
+            compact_pay_title(
+                matches!(action, mostro_core::prelude::Action::PayBondInvoice),
+                notification.order_id,
+            )
+        }
+        mostro_core::prelude::Action::PayInvoice => "💳 Payment Request".to_string(),
+        mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice".to_string(),
         mostro_core::prelude::Action::WaitingSellerToPay
-        | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status",
-        mostro_core::prelude::Action::PaymentFailed => "⚠️ Payment Failed",
-        _ => "📨 New Message",
+        | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status".to_string(),
+        mostro_core::prelude::Action::PaymentFailed => "⚠️ Payment Failed".to_string(),
+        _ => "📨 New Message".to_string(),
     };
 
     let block = Block::default()
@@ -1705,8 +1777,14 @@ mod tests {
         buffer_text(buf).contains('▀')
     }
 
+    fn buffer_has_sextant(buf: &ratatui::buffer::Buffer) -> bool {
+        buffer_text(buf)
+            .chars()
+            .any(|c| ('\u{1FB00}'..='\u{1FB3B}').contains(&c) || matches!(c, '▌' | '▐'))
+    }
+
     fn buffer_has_qr_glyph(buf: &ratatui::buffer::Buffer) -> bool {
-        buffer_has_half_block(buf)
+        buffer_has_half_block(buf) || buffer_has_sextant(buf)
     }
 
     fn buffer_has_qr_colors(buf: &ratatui::buffer::Buffer) -> bool {
@@ -1728,6 +1806,17 @@ mod tests {
         saw_dark && saw_light
     }
 
+    fn buffer_has_bg(buf: &ratatui::buffer::Buffer, bg: ratatui::style::Color) -> bool {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().bg == Some(bg) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn pay_invoice_qr_renders_on_tall_terminal() {
         let notification = pay_notification(Action::PayInvoice, "lnbc1test");
@@ -1737,6 +1826,19 @@ mod tests {
         assert!(buffer_has_half_block(&buf), "QR glyphs missing: {text}");
         assert!(buffer_has_qr_colors(&buf), "QR black/white missing: {text}");
         assert!(text.contains("SPACE"), "toggle hint missing: {text}");
+        assert!(
+            text.contains("Acknowledge"),
+            "QR mode must show the primary action: {text}"
+        );
+        assert!(
+            text.contains("Cancel Order"),
+            "QR mode must show Cancel Order: {text}"
+        );
+        let short_id = crate::ui::helpers::short_order_id(notification.order_id);
+        assert!(
+            text.contains(&short_id),
+            "order id should be in the QR title: {text}"
+        );
         assert!(
             !text.contains("lnbc1test"),
             "raw invoice should be hidden in QR view: {text}"
@@ -1775,26 +1877,26 @@ mod tests {
             !text.contains("taller terminal"),
             "must not fall back to text when the QR fits: {text}"
         );
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "compact QR must keep Ack/Cancel visible: {text}"
+        );
     }
 
     #[test]
-    fn pay_invoice_falls_back_to_text_when_qr_does_not_fit() {
+    fn pay_invoice_qr_renders_typical_bolt11_on_standard_terminal() {
         let invoice = format!("lnbc1{}", "a".repeat(340));
         let notification = pay_notification(Action::PayInvoice, &invoice);
         let state = InvoiceInputState::display_only();
         let buf = draw_pay(80, 24, &notification, &state);
         let text = buffer_text(&buf);
         assert!(
-            !buffer_has_qr_glyph(&buf),
-            "too-small terminals must show the invoice text, not a squeezed QR: {text}"
+            buffer_has_qr_glyph(&buf),
+            "a typical bolt11 must show a compact QR on 80x24: {text}"
         );
         assert!(
-            text.contains("taller terminal"),
-            "fallback hint missing: {text}"
-        );
-        assert!(
-            text.contains("lnbc1"),
-            "fallback must show the invoice: {text}"
+            !text.contains("taller terminal"),
+            "must not fall back to text on 80x24: {text}"
         );
     }
 
@@ -1812,6 +1914,34 @@ mod tests {
         assert!(
             text.contains("taller terminal"),
             "fallback hint missing: {text}"
+        );
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "short-terminal text fallback must keep Ack/Cancel visible: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_qr_selection_is_visibly_distinct() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let primary = InvoiceInputState::display_only();
+        let mut cancel = InvoiceInputState::display_only();
+        cancel.action_selection = crate::ui::InvoiceNotificationActionSelection::Cancel;
+        let buf_primary = draw_pay(80, 24, &notification, &primary);
+        let buf_cancel = draw_pay(80, 24, &notification, &cancel);
+        assert!(
+            buffer_has_qr_glyph(&buf_primary),
+            "test needs a QR on 80x24"
+        );
+        assert!(
+            buffer_has_bg(&buf_primary, ratatui::style::Color::Green)
+                && !buffer_has_bg(&buf_primary, ratatui::style::Color::Red),
+            "Acknowledge should be the only highlighted action when Primary is selected"
+        );
+        assert!(
+            buffer_has_bg(&buf_cancel, ratatui::style::Color::Red)
+                && !buffer_has_bg(&buf_cancel, ratatui::style::Color::Green),
+            "Cancel Order should be the only highlighted action when Cancel is selected"
         );
     }
 
@@ -1839,23 +1969,27 @@ mod tests {
             "a fitting bond QR must still render on 80x24: {text}"
         );
         assert!(text.contains("Locked"), "bond note missing: {text}");
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "bond QR must keep Ack/Cancel visible: {text}"
+        );
     }
 
     #[test]
-    fn pay_bond_invoice_falls_back_to_text_when_qr_does_not_fit() {
+    fn pay_bond_invoice_qr_renders_typical_bolt11_on_standard_terminal() {
         let invoice = format!("lnbcrt1{}", "a".repeat(340));
         let notification = pay_notification(Action::PayBondInvoice, &invoice);
         let state = InvoiceInputState::display_only();
-        let buf = draw_pay(80, 24, &notification, &state);
+        let buf = draw_pay(80, 26, &notification, &state);
         let text = buffer_text(&buf);
         assert!(
-            !buffer_has_qr_glyph(&buf),
-            "too-small terminals must show the invoice text, not a squeezed QR: {text}"
-        );
-        assert!(
-            text.contains("taller terminal"),
-            "fallback hint missing: {text}"
+            buffer_has_qr_glyph(&buf),
+            "a typical bond invoice must show a compact QR when the extra bond line fits: {text}"
         );
         assert!(text.contains("Locked"), "bond note missing: {text}");
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "bond QR must keep Ack/Cancel visible: {text}"
+        );
     }
 }

@@ -134,7 +134,7 @@ pub fn submit_add_bond_invoice(
     });
 }
 
-fn spawn_cancel_from_notification(
+pub(crate) fn spawn_cancel_from_notification(
     app: &mut AppState,
     ctx: &EnterKeyContext<'_>,
     order_id: Option<Uuid>,

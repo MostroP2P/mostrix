@@ -53,8 +53,8 @@ pub use formatting::{
     short_order_id,
 };
 pub use layout::{
-    create_centered_popup, render_help_text, render_table_list_scrollbar, render_yes_no_buttons,
-    render_yes_no_cancel_buttons,
+    create_centered_popup, render_compact_action_strip, render_help_text,
+    render_table_list_scrollbar, render_yes_no_buttons, render_yes_no_cancel_buttons,
 };
 pub(crate) use order_chat_projection::assign_peer_reputation;
 pub use order_chat_projection::{

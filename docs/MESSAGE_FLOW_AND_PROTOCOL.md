@@ -482,7 +482,7 @@ Otherwise:
   - Selecting **Cancel Order** sends `Action::Cancel` through `execute_send_msg`, reusing the existing async order-result channel flow. Valid during `WaitingTakerBond` (taker) and `WaitingMakerBond` (maker abandoning an unpublished listing).
 - Paste/copy details:
   - AddInvoice supports bracketed paste plus key/mouse fallbacks where terminals do not emit `Event::Paste`.
-  - PayInvoice and PayBondInvoice show a half-block QR when it fits; **SPACE** toggles QR/text, **C** copies the raw bolt11, and arrows scroll the text view. If the terminal cannot fit the QR, the popup falls back to the wrapped invoice immediately. Cancel selection is still available.
+  - PayInvoice and PayBondInvoice show a half-block QR when it fits; **SPACE** toggles QR/text, **C** copies the raw bolt11, **X** sends Cancel Order, and arrows scroll the text view. QR mode folds the order id into the title and draws a 1-row Acknowledge/Cancel strip. If the terminal cannot fit the QR, the popup falls back to the wrapped invoice immediately.
 - **Lightning address as invoice**: If the input is a Lightning address (`user@domain.com`), Mostrix still sends `AddInvoice` with a `PaymentRequest` payload, but first verifies the LNURL metadata endpoint returns `tag: payRequest` (`util::ln_address::ln_address_pay_request_reachable`) so unreachable addresses fail before hitting Mostro.
 
 ### Rating the counterparty (`RateUser`)
