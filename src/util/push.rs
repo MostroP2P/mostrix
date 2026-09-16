@@ -25,9 +25,7 @@ pub fn notify_allowed(last: Option<Instant>, now: Instant) -> bool {
 /// Spawn a wake for `recipient_trade_pubkey` (64 hex). Never awaited by the send.
 pub fn wake_recipient(server_url: &str, recipient_trade_pubkey: &str) {
     let pubkey = recipient_trade_pubkey.to_ascii_lowercase();
-    if server_url.is_empty()
-        || pubkey.len() != 64
-        || !pubkey.bytes().all(|b| b.is_ascii_hexdigit())
+    if server_url.is_empty() || pubkey.len() != 64 || !pubkey.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return;
     }
