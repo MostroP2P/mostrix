@@ -118,6 +118,9 @@ mod tests {
     #[test]
     fn wake_target_some_when_accepted_and_recipient_present() {
         let pubkey = "cd".repeat(32);
-        assert_eq!(wake_target(true, Some(pubkey.as_str())), Some(pubkey.as_str()));
+        assert_eq!(
+            wake_target(true, Some(pubkey.as_str())),
+            Some(pubkey.as_str())
+        );
     }
 }
