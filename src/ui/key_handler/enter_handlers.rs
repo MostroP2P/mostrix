@@ -277,7 +277,7 @@ fn spawn_user_order_chat_send_task(
         let Some(shared_keys) = shared_keys else {
             return;
         };
-        if let Err(e) = send_user_order_chat_message_via_shared_key(
+        match send_user_order_chat_message_via_shared_key(
             &client,
             &trade_keys,
             &shared_keys,
@@ -286,7 +286,16 @@ fn spawn_user_order_chat_send_task(
         )
         .await
         {
-            log::warn!("Failed to send user {channel} chat: {e}");
+            // Wake the counterparty only on the peer channel and only once a relay
+            // accepted; the solver is not a push client, so the Solver channel is skipped.
+            Ok(accepted) => {
+                if accepted && matches!(channel, UserChatChannel::Peer) {
+                    if let Some(pubkey) = order.counterparty_pubkey.as_deref() {
+                        crate::util::wake_recipient_via_settings(pubkey);
+                    }
+                }
+            }
+            Err(e) => log::warn!("Failed to send user {channel} chat: {e}"),
         }
     });
 }
