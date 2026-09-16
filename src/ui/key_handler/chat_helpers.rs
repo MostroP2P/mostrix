@@ -216,6 +216,36 @@ pub fn sync_order_chat_draft_to_live_target(app: &mut AppState) {
     }
 }
 
+/// Resolve the Enter-to-send target and validate draft ownership from one
+/// `app.messages` snapshot, clearing an unowned/stale draft.
+///
+/// Resolving the target and validating the owner from two separate snapshots
+/// (as `sync_order_chat_draft_to_live_target` + a later re-resolve would) left
+/// a TOCTOU window: the background DM listener can reorder `app.messages`
+/// between the two locks, so a draft validated for order A could still be
+/// sent to order B. Using a single snapshot for both closes that window.
+pub fn resolve_order_chat_send_target(app: &mut AppState) -> Option<(Uuid, UserChatChannel)> {
+    if app.order_chat_input.is_empty() {
+        app.order_chat_draft_owner = None;
+        return None;
+    }
+    let rows = active_order_chat_list_snapshot(app);
+    let live = rows.get(app.selected_order_chat_idx).and_then(|row| {
+        Uuid::parse_str(&row.order_id)
+            .ok()
+            .map(|id| (id, app.active_user_chat_channel))
+    });
+    let Some(live) = live else {
+        clear_order_chat_draft(app);
+        return None;
+    };
+    if app.order_chat_draft_owner != Some(live) {
+        clear_order_chat_draft(app);
+        return None;
+    }
+    Some(live)
+}
+
 /// Prepare the composer for typing/paste: sync ownership, then bind an empty
 /// draft to the live target. Returns `false` when there is no live order.
 pub fn prepare_order_chat_edit(app: &mut AppState) -> bool {
@@ -553,5 +583,62 @@ mod draft_and_pin_tests {
         app.order_chat_draft_owner = None;
         sync_order_chat_draft_to_live_target(&mut app);
         assert!(app.order_chat_input.is_empty());
+    }
+
+    #[test]
+    fn send_target_matches_owner_when_selection_is_stable() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let (a, _b) = seed_two_orders(&mut app);
+        let rows = active_order_chat_list_snapshot(&app);
+        app.selected_order_chat_idx = rows
+            .iter()
+            .position(|r| r.order_id == a.to_string())
+            .expect("order A");
+        set_draft_for_live(&mut app, "secret for A");
+
+        let target = resolve_order_chat_send_target(&mut app);
+        assert_eq!(target, Some((a, UserChatChannel::Peer)));
+        // Validation must not consume the still-valid draft.
+        assert_eq!(app.order_chat_input, "secret for A");
+    }
+
+    /// Regression: resolving the target and validating draft ownership from two
+    /// separate `app.messages` snapshots let a projection reorder in between land
+    /// order A's draft on order B (the TOCTOU the review flagged). Resolving both
+    /// from one snapshot must refuse to send instead of returning B's identity.
+    #[test]
+    fn send_target_is_none_when_index_now_resolves_a_different_order() {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        let (a, b) = seed_two_orders(&mut app);
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(10);
+            } else {
+                row.trade_index = Some(1);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        assert_eq!(rows[0].order_id, a.to_string());
+        app.selected_order_chat_idx = 0;
+        set_draft_for_live(&mut app, "secret for A");
+
+        // Simulate the background DM listener reordering the projection so index 0
+        // now resolves B, while the selection index itself never changed.
+        for row in &mut app.my_trades_maker_book {
+            if row.order_id == a.to_string() {
+                row.trade_index = Some(1);
+            } else if row.order_id == b.to_string() {
+                row.trade_index = Some(20);
+            }
+        }
+        let rows = active_order_chat_list_snapshot(&app);
+        assert_eq!(rows[0].order_id, b.to_string());
+
+        let target = resolve_order_chat_send_target(&mut app);
+        assert_eq!(target, None, "must not resolve/send A's draft to B");
+        assert!(app.order_chat_input.is_empty());
+        assert!(app.order_chat_draft_owner.is_none());
     }
 }
