@@ -17,3 +17,8 @@ user_mode = "user"
 ln_address = ""
 # Blossom media servers for encrypted chat attachments (tried in order on upload).
 # blossom_servers = ["https://blossom.primal.net", "https://blossom.band"]
+# mostro-push-server used to wake chat recipients' phones after a chat message.
+# Defaults to the production instance the mobile apps register with. Set to an
+# empty string to disable it (e.g. to avoid revealing to the server which trade
+# pubkeys you chat with; routing through Tor/a proxy also covers this).
+push_server_url = "https://mostro-push-server.fly.dev"
