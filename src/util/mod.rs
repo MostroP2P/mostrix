@@ -11,6 +11,7 @@ pub mod ln_address;
 pub mod mostro_info;
 pub mod network;
 pub mod order_utils;
+pub mod push;
 pub mod send_attachment;
 pub mod session_wipe;
 pub mod supervised_listener;
@@ -63,6 +64,7 @@ pub use order_utils::{
     execute_restore_session, fetch_events_list, get_disputes, get_orders,
     restore_completion_result, send_new_order, take_order,
 };
+pub use push::{notify_allowed, wake_recipient};
 pub use send_attachment::{
     blossom_servers_from_settings, send_prepared_order_chat_attachment,
     spawn_send_order_chat_attachment, SendOrderAttachmentJob,
