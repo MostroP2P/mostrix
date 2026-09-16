@@ -114,6 +114,8 @@ pub struct Settings {
     pub ln_address: String, // Lightning address for buyer receive; empty = unset
     #[serde(default)]
     pub blossom_servers: Vec<String>, // Blossom upload hosts; empty = built-in defaults
+    #[serde(default = "default_push_server_url")]
+    pub push_server_url: String, // mostro-push-server wake URL; empty disables it
 }
 ```
 
@@ -129,6 +131,7 @@ pub struct Settings {
 - **`user_mode`**: Either "user" or "admin". Controls the UI and available actions.
 - **`ln_address`**: Optional **Lightning address** (`user@domain.com`) used when the local user acts as **buyer** (receive via LNURL-pay). The embedded template includes `ln_address = ""`. Older `settings.toml` files without this key still load (`#[serde(default)]` yields an empty string). **Saving from the Settings tab** runs an async check that the LNURL metadata URL returns JSON with `tag: "payRequest"` before writing disk (`spawn_verify_and_save_ln_address_task` in `src/ui/key_handler/async_tasks.rs`, helper in `src/util/ln_address.rs`). The spawned task reports on **`ln_address_result_tx`** (`LnAddressVerifyResult`), not on `order_result_tx`, so settings verification does not share the order/dispute result queue. **Clear** removes the value without a network call.
 - **`blossom_servers`**: Optional list of HTTPS Blossom bases for **My Trades attachment upload** (**Ctrl+O** send). When empty, Mostrix uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs` (same defaults as Mostro Mobile). Example in repo `settings.toml`: commented `# blossom_servers = ["https://blossom.primal.net", …]`. Resolved at send time via `blossom_servers_from_settings` in `src/util/send_attachment.rs` (main loop reloads settings from disk when draining the send queue).
+- **`push_server_url`**: Optional `mostro-push-server` base URL used to **wake chat recipients' phones** after Mostrix sends a kind-14 chat message (the envelope hides the recipient from the server's relay listener, so the sender triggers the wake). Defaults to the production instance `DEFAULT_PUSH_SERVER_URL` (`https://mostro-push-server.fly.dev`) that the mobile apps register with; older `settings.toml` files without this key still load (`#[serde(default = "default_push_server_url")]`). Set to an **empty string to disable** the wake — e.g. to avoid revealing to the server which trade pubkeys you chat with (routing through Tor/a proxy also covers this).
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 

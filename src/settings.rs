@@ -28,10 +28,20 @@ pub struct Settings {
     /// Blossom servers for encrypted chat attachment uploads (tried in order). Empty = built-in defaults.
     #[serde(default)]
     pub blossom_servers: Vec<String>,
+    /// mostro-push-server base URL used to wake chat recipients' phones. Empty string disables the wake.
+    #[serde(default = "default_push_server_url")]
+    pub push_server_url: String,
 }
 
 fn default_user_mode() -> String {
     "user".to_string()
+}
+
+/// Production mostro-push-server instance the mobile apps register with.
+pub const DEFAULT_PUSH_SERVER_URL: &str = "https://mostro-push-server.fly.dev";
+
+fn default_push_server_url() -> String {
+    DEFAULT_PUSH_SERVER_URL.to_string()
 }
 
 pub struct InitSettingsResult {
@@ -53,6 +63,7 @@ impl Default for Settings {
             user_mode: "user".to_string(),
             ln_address: String::new(),
             blossom_servers: Vec::new(),
+            push_server_url: default_push_server_url(),
         }
     }
 }
