@@ -137,6 +137,7 @@ async fn send_prepared_with_retries(
     client: &Client,
     keys: &OrderChatKeys,
     json_body: &str,
+    recipient_pubkey: Option<&str>,
     mostro_info: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
     let mut last_err = anyhow!("chat send not attempted");
@@ -150,7 +151,15 @@ async fn send_prepared_with_retries(
         )
         .await
         {
-            Ok(_) => return Ok(()),
+            Ok(accepted) => {
+                // Attachments only go over the peer channel; wake the counterparty on delivery.
+                if accepted {
+                    if let Some(pubkey) = recipient_pubkey {
+                        crate::util::wake_recipient_via_settings(pubkey);
+                    }
+                }
+                return Ok(());
+            }
             Err(e) => {
                 last_err = e;
                 if attempt + 1 < CHAT_SEND_RETRY_ATTEMPTS {
@@ -183,8 +192,15 @@ pub async fn send_prepared_order_chat_attachment(
     prepared: &PreparedOrderChatAttachment,
     mostro_info: Option<&MostroInstanceInfo>,
 ) -> Result<(UserOrderChatMessage, String)> {
-    let (_, keys) = load_order_chat_keys(pool, &prepared.order_id).await?;
-    send_prepared_with_retries(client, &keys, &prepared.outbound.json_body, mostro_info).await?;
+    let (order, keys) = load_order_chat_keys(pool, &prepared.order_id).await?;
+    send_prepared_with_retries(
+        client,
+        &keys,
+        &prepared.outbound.json_body,
+        order.counterparty_pubkey.as_deref(),
+        mostro_info,
+    )
+    .await?;
     let info = format!("Attachment sent: {}", prepared.filename);
     Ok((local_message_from_prepared(prepared), info))
 }
@@ -228,7 +244,14 @@ async fn send_order_chat_attachment_from_path(
         outbound,
     };
 
-    match send_prepared_with_retries(client, &keys, &prepared.outbound.json_body, mostro_info).await
+    match send_prepared_with_retries(
+        client,
+        &keys,
+        &prepared.outbound.json_body,
+        order.counterparty_pubkey.as_deref(),
+        mostro_info,
+    )
+    .await
     {
         Ok(()) => {
             let info = format!("Attachment sent: {}", validated.filename);
