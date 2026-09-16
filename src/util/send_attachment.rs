@@ -150,7 +150,7 @@ async fn send_prepared_with_retries(
         )
         .await
         {
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(e) => {
                 last_err = e;
                 if attempt + 1 < CHAT_SEND_RETRY_ATTEMPTS {

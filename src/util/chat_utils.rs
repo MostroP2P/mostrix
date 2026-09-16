@@ -270,13 +270,18 @@ pub fn order_chat_counterparty_and_shared_hex(
 ///
 /// Wraps with the gift-wrap-free envelope: kind 14 signed by `K_sign`, encrypted
 /// under `K_conv`. `shared_keys` is the ECDH `Keys` from stored hex.
+/// Wrap `content` as a kind-14 chat envelope and publish it.
+///
+/// Returns `true` when at least one relay accepted the event. nostr-sdk 0.45
+/// `send_event` resolves `Ok` even when every relay rejected it, so callers
+/// that gate side effects (e.g. a push wake) on delivery must check the bool.
 pub async fn send_admin_chat_message_via_shared_key(
     client: &Client,
     admin_keys: &Keys,
     shared_keys: &Keys,
     content: &str,
     _mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<()> {
+) -> Result<bool> {
     let content = content.trim();
     if content.is_empty() {
         return Err(anyhow::anyhow!("Cannot send empty admin chat message"));
@@ -286,11 +291,11 @@ pub async fn send_admin_chat_message_via_shared_key(
     let event = wrap_chat_message(admin_keys, &conv, &sign, content)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to wrap admin chat message: {e}"))?;
-    client
+    let output = client
         .send_event(&event)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send admin chat event: {e}"))?;
-    Ok(())
+    Ok(!output.success.is_empty())
 }
 
 /// Unwrap a kind-14 chat envelope addressed via the channel ECDH secret.
@@ -593,13 +598,16 @@ pub async fn fetch_observer_chat(
 }
 
 /// Send one user order chat message using shared-key wrapping.
+///
+/// Returns `true` when at least one relay accepted the event (see
+/// [`send_admin_chat_message_via_shared_key`]).
 pub async fn send_user_order_chat_message_via_shared_key(
     client: &Client,
     trade_keys: &Keys,
     shared_keys: &Keys,
     content: &str,
     mostro_instance: Option<&MostroInstanceInfo>,
-) -> Result<()> {
+) -> Result<bool> {
     send_admin_chat_message_via_shared_key(
         client,
         trade_keys,
