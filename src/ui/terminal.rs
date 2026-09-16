@@ -57,16 +57,38 @@ impl Drop for KeyboardEnhancementGuard {
 pub fn enter() -> io::Result<(MostrixTerminal, KeyboardEnhancementGuard)> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(
+    if let Err(e) = execute!(
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste
-    )?;
+    ) {
+        // Best-effort undo of whichever of the three above actually applied.
+        let _ = execute!(
+            out,
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
+        let _ = disable_raw_mode();
+        return Err(e);
+    }
     let keyboard_enhancement = KeyboardEnhancementGuard::try_enable(&mut out);
     let backend = CrosstermBackend::new(out);
-    let terminal = Terminal::new(backend)?;
-    Ok((terminal, keyboard_enhancement))
+    match Terminal::new(backend) {
+        Ok(terminal) => Ok((terminal, keyboard_enhancement)),
+        Err(e) => {
+            drop(keyboard_enhancement);
+            let _ = execute!(
+                stdout(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                DisableBracketedPaste
+            );
+            let _ = disable_raw_mode();
+            Err(e)
+        }
+    }
 }
 
 /// Restore the terminal to its pre-[`enter`] state.
