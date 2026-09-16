@@ -1,4 +1,4 @@
-use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
+use crate::models::{AdminDispute, Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{
@@ -133,6 +133,15 @@ fn derive_identity_nsec_from_mnemonic(mnemonic: &str) -> std::result::Result<Str
 struct DisputeChatTarget {
     dispute_id_key: String,
     shared_key_hex: Option<String>,
+    recipient_pubkey: Option<String>,
+}
+
+/// Trade pubkey the push server should wake for a dispute chat message to `party`.
+fn dispute_wake_recipient(dispute: &AdminDispute, party: ChatParty) -> Option<String> {
+    match party {
+        ChatParty::Buyer => dispute.buyer_pubkey.clone(),
+        ChatParty::Seller => dispute.seller_pubkey.clone(),
+    }
 }
 
 #[derive(Clone)]
@@ -378,9 +387,12 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
                     ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
                     ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
                 };
+                let recipient_pubkey =
+                    dispute_wake_recipient(&selected_dispute, app.active_chat_party);
                 DisputeChatTarget {
                     dispute_id_key: selected_dispute.dispute_id.clone(),
                     shared_key_hex,
+                    recipient_pubkey,
                 }
             })
         },
@@ -393,6 +405,7 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             send_admin_chat_message_via_shared_key(
                 &target.dispute_id_key,
                 target.shared_key_hex.as_deref(),
+                target.recipient_pubkey.clone(),
                 &content,
                 ctx.client,
                 ctx.admin_chat_keys,
@@ -1519,13 +1532,14 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_local_user_chat_message, run_enter_chat_send_flow,
+        dispute_wake_recipient, persist_local_user_chat_message, run_enter_chat_send_flow,
         should_reopen_replacement_invoice, EnterChatSendConfig, OrderChatTarget,
     };
+    use crate::models::AdminDispute;
     use crate::ui::orders::OrderMessage;
     use crate::ui::{
-        AppState, OperationResult, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage,
-        UserRole,
+        AppState, ChatParty, OperationResult, UiMode, UserChatChannel, UserChatSender,
+        UserOrderChatMessage, UserRole,
     };
     use mostro_core::prelude::{Action, Kind, Message, Status};
     use nostr_sdk::prelude::Keys;
@@ -1533,6 +1547,33 @@ mod tests {
     use uuid::Uuid;
 
     use super::normalize_and_parse_mnemonic;
+
+    #[test]
+    fn dispute_wake_recipient_picks_party_trade_pubkey() {
+        let dispute = AdminDispute {
+            buyer_pubkey: Some("11".repeat(32)),
+            seller_pubkey: Some("22".repeat(32)),
+            ..Default::default()
+        };
+        assert_eq!(
+            dispute_wake_recipient(&dispute, ChatParty::Buyer).as_deref(),
+            Some("11".repeat(32).as_str()),
+        );
+        assert_eq!(
+            dispute_wake_recipient(&dispute, ChatParty::Seller).as_deref(),
+            Some("22".repeat(32).as_str()),
+        );
+    }
+
+    #[test]
+    fn dispute_wake_recipient_none_when_party_pubkey_missing() {
+        let dispute = AdminDispute {
+            buyer_pubkey: None,
+            seller_pubkey: Some("22".repeat(32)),
+            ..Default::default()
+        };
+        assert_eq!(dispute_wake_recipient(&dispute, ChatParty::Buyer), None);
+    }
 
     fn sample_order_message(
         action: Action,

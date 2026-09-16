@@ -110,10 +110,12 @@ pub fn prepare_admin_chat_message(
 ///
 /// Looks up the stored `shared_key_hex` for the given party, rebuilds the
 /// ECDH `Keys`, and spawns an async task that wraps the message as kind 14
-/// (`K_sign` / `K_conv` via `send_admin_chat_message_via_shared_key`).
+/// (`K_sign` / `K_conv` via `send_admin_chat_message_via_shared_key`). When a
+/// relay accepts the envelope, wakes `recipient_pubkey` through the push server.
 pub fn send_admin_chat_message_via_shared_key(
     dispute_id_key: &str,
     shared_key_hex: Option<&str>,
+    recipient_pubkey: Option<String>,
     message_content: &str,
     client: &Client,
     admin_chat_keys: Option<&Keys>,
@@ -155,7 +157,15 @@ pub fn send_admin_chat_message_via_shared_key(
         )
         .await
         {
-            Ok(_) => log::info!("Admin chat message sent for dispute {}", dispute_id_key),
+            Ok(accepted) => {
+                log::info!("Admin chat message sent for dispute {}", dispute_id_key);
+                // Wake the recipient only once a relay accepted the envelope.
+                if accepted {
+                    if let Some(pubkey) = recipient_pubkey {
+                        crate::util::wake_recipient_via_settings(&pubkey);
+                    }
+                }
+            }
             Err(e) => log::error!(
                 "Failed to send admin chat message for dispute {}: {}",
                 dispute_id_key,

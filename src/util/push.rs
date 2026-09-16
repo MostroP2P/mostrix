@@ -22,6 +22,19 @@ pub fn notify_allowed(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.duration_since(t) >= NOTIFY_DEBOUNCE)
 }
 
+/// Configured push-server base URL from global settings; empty string disables the wake.
+pub fn configured_server_url() -> String {
+    crate::SETTINGS
+        .get()
+        .map(|s| s.push_server_url.clone())
+        .unwrap_or_default()
+}
+
+/// Wake `recipient_trade_pubkey` through the configured push server, if any.
+pub fn wake_recipient_via_settings(recipient_trade_pubkey: &str) {
+    wake_recipient(&configured_server_url(), recipient_trade_pubkey);
+}
+
 /// Spawn a wake for `recipient_trade_pubkey` (64 hex). Never awaited by the send.
 pub fn wake_recipient(server_url: &str, recipient_trade_pubkey: &str) {
     let pubkey = recipient_trade_pubkey.to_ascii_lowercase();
