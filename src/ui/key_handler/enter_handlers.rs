@@ -2,8 +2,8 @@ use crate::models::{Order, ORDER_HISTORY_BULK_DELETE_STATUSES};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::admin_state::AddSolverState;
 use crate::ui::helpers::{
-    build_active_order_chat_list, save_order_chat_message, save_user_dispute_chat_message,
-    selected_filtered_book_order, selected_filtered_dispute, selected_pending_dispute,
+    save_order_chat_message, save_user_dispute_chat_message, selected_filtered_book_order,
+    selected_filtered_dispute, selected_pending_dispute,
 };
 use crate::ui::key_handler::chat_helpers::{
     build_order_action_view_state, handle_enter_finalize_popup, message_counter,
@@ -182,25 +182,6 @@ fn run_enter_chat_send_flow<T, ResolveTarget, ApplyLocal, SpawnRemote, ResetInpu
     reset_input(app);
     app.mode = mode_after_send;
     spawn_remote(target, content);
-}
-
-fn resolve_selected_order_chat_target(app: &AppState) -> Option<OrderChatTarget> {
-    let messages_snapshot = match app.messages.lock() {
-        Ok(g) => g.clone(),
-        Err(e) => {
-            crate::util::request_fatal_restart(format!(
-                "Mostrix encountered an internal error (poisoned messages lock: {e}). Please restart the app."
-            ));
-            return None;
-        }
-    };
-
-    build_active_order_chat_list(&messages_snapshot, &app.my_trades_maker_book)
-        .get(app.selected_order_chat_idx)
-        .map(|row| OrderChatTarget {
-            order_id: row.order_id.clone(),
-            channel: app.active_user_chat_channel,
-        })
 }
 
 fn persist_local_user_chat_message(
@@ -427,6 +408,15 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
 
 fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     let mode_after_send = app.mode.clone();
+    // Resolve + validate the draft owner from one snapshot: two separate
+    // snapshots let the background DM listener reorder rows in between and
+    // send order A's draft to order B.
+    let target = crate::ui::key_handler::chat_helpers::resolve_order_chat_send_target(app).map(
+        |(order_id, channel)| OrderChatTarget {
+            order_id: order_id.to_string(),
+            channel,
+        },
+    );
     let content = app.order_chat_input.trim().to_string();
     let input_enabled = app.order_chat_input_enabled;
     run_enter_chat_send_flow(
@@ -436,7 +426,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
             input_enabled,
             content,
         },
-        |app| resolve_selected_order_chat_target(app),
+        move |_app| target,
         |app, target, content| {
             let local_msg = UserOrderChatMessage {
                 sender: UserChatSender::You,
@@ -450,7 +440,7 @@ fn handle_enter_user_order_chat(app: &mut AppState, ctx: &super::EnterKeyContext
             spawn_user_order_chat_send_task(ctx, target.order_id, target.channel, content);
         },
         |app| {
-            app.order_chat_input.clear();
+            crate::ui::key_handler::chat_helpers::clear_order_chat_draft(app);
             app.order_chat_input_enabled = true;
         },
     );
@@ -541,6 +531,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::HelpPopup(..) | UiMode::SettingsInstructionsPopup(..) => {
             // Close help / settings reference (mode restored in key_handler/mod.rs)
+            true
+        }
+        UiMode::TradeActionsPopup { previous_mode, .. } => {
+            // Enter is handled in key_handler/mod.rs; restore if we somehow land here.
+            app.mode = *previous_mode;
             true
         }
         UiMode::SaveAttachmentPopup(_) => {

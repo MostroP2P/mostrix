@@ -64,6 +64,7 @@ fn remove_many_orders_from_messages_tab(app: &mut AppState, order_ids: &[Uuid]) 
             ));
         }
     }
+    crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target(app);
     match app.active_order_trade_indices.lock() {
         Ok(mut indices) => {
             for order_id in order_ids {

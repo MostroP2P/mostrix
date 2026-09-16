@@ -36,6 +36,13 @@ pub enum UiMode {
     HelpPopup(Tab, Box<UiMode>), // Context-aware shortcuts (Ctrl+H); 2nd = mode to restore on close
     /// Full descriptions for every Settings menu item (Shift+H on Settings); 2nd = mode to restore on close
     SettingsInstructionsPopup(UserRole, Box<UiMode>),
+    /// My Trades Ctrl+K trade-action list; Esc restores `previous_mode`.
+    /// `order_id` is pinned at open so sidebar rebuilds cannot retarget money actions.
+    TradeActionsPopup {
+        selected_index: usize,
+        order_id: uuid::Uuid,
+        previous_mode: Box<UiMode>,
+    },
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
     SaveAttachmentPopup(usize),
     /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
@@ -134,6 +141,15 @@ impl Clone for UiMode {
             UiMode::SettingsInstructionsPopup(role, previous_mode) => {
                 UiMode::SettingsInstructionsPopup(*role, Box::new((**previous_mode).clone()))
             }
+            UiMode::TradeActionsPopup {
+                selected_index,
+                order_id,
+                previous_mode,
+            } => UiMode::TradeActionsPopup {
+                selected_index: *selected_index,
+                order_id: *order_id,
+                previous_mode: Box::new((**previous_mode).clone()),
+            },
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
             UiMode::UserSaveAttachmentPopup(order_id, idx) => {
@@ -239,7 +255,13 @@ pub struct AppState {
     pub orders_needing_replacement_invoice: HashSet<uuid::Uuid>,
     pub selected_message_idx: usize, // Selected message in Messages tab
     pub selected_order_chat_idx: usize, // Selected order in Order Chat sidebar
+    /// My Trades composer text. Ownership is tracked in [`Self::order_chat_draft_owner`]
+    /// so async sidebar reorders cannot send this text to another counterparty.
     pub order_chat_input: String,
+    /// `(order_id, channel)` this composer draft belongs to. Cleared with the draft
+    /// when the live My Trades selection no longer matches (nav or async reorder).
+    pub order_chat_draft_owner: Option<(uuid::Uuid, crate::ui::UserChatChannel)>,
+    /// INSERT vs COMMAND layer for My Trades (`true` = INSERT typing).
     pub order_chat_input_enabled: bool,
     /// Per-order static header (id, kind, created_at, trade index, initiator) from take/create and DB.
     pub order_chat_static: HashMap<Uuid, OrderChatStaticHeader>,
@@ -362,7 +384,8 @@ impl AppState {
             selected_message_idx: 0,
             selected_order_chat_idx: 0,
             order_chat_input: String::new(),
-            order_chat_input_enabled: true,
+            order_chat_draft_owner: None,
+            order_chat_input_enabled: false, // COMMAND layer until Ctrl+I / i
             order_chat_static: HashMap::new(),
             my_trades_maker_book: Vec::new(),
             order_chats: HashMap::new(),
