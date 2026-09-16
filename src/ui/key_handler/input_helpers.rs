@@ -155,7 +155,7 @@ pub fn send_admin_chat_message_via_shared_key(
         )
         .await
         {
-            Ok(()) => log::info!("Admin chat message sent for dispute {}", dispute_id_key),
+            Ok(_) => log::info!("Admin chat message sent for dispute {}", dispute_id_key),
             Err(e) => log::error!(
                 "Failed to send admin chat message for dispute {}: {}",
                 dispute_id_key,
