@@ -698,6 +698,13 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
     - Outer event is signed by `K_sign` and encrypted under `K_conv`.
   - The event is then published to the relays.
 
+- **Waking the disputant (push notification)**:
+  - The kind-14 envelope is `p`-tagged to `pub(K_conv)`, which the push server's relay listener cannot match — so, after a relay accepts the envelope, Mostrix asks `mostro-push-server` to wake the addressed party's device with `POST {push_server_url}/api/notify` (`{"trade_pubkey": "<party trade pubkey>"}`, lowercase hex). `ChatParty::Buyer` → `buyer_pubkey`, `ChatParty::Seller` → `seller_pubkey`.
+  - Content-free and fire-and-forget: never awaited by the send, never retried, never surfaced in the UI, and never a reason for a send to fail. A push server that is down, slow, or returns `429`/`400` changes nothing for the admin.
+  - Gated on delivery (`wake_target`): no wake when every relay rejected the event, when the party pubkey is missing, or when `push_server_url` is empty.
+  - Debounced per recipient (10 s): a burst of messages to one party costs a single wake; buyer and seller are debounced independently.
+  - Configured by `push_server_url` in `settings.toml` (defaults to the production instance the mobile apps register with; set to an empty string to disable). See `src/util/push.rs`.
+
 - **Receiving messages**:
   - The shared-key chat subscription router (`listen_for_chat_messages`) hydrates history once per key on track, then receives newer events live.
   - Rebuilds `Keys` from the stored `buyer_shared_key_hex` / `seller_shared_key_hex`.
@@ -786,6 +793,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - `src/ui/helpers/attachments.rs` - Attachment parsing, placeholder text, and attachment toast helpers
 - `src/ui/helpers/chat_render.rs` / `src/ui/helpers/chat_visibility.rs` - Chat list/scrollview rendering and party visibility filtering
 - `src/util/chat_utils.rs` - Kind-14 chat wrap/unwrap, HashMap-based message routing
+- `src/util/push.rs` - Sender-triggered wake through `mostro-push-server` (`wake_target`, `wake_recipient`, `notify_allowed`)
 - `src/util/blossom.rs` - Blossom URL resolution, blob fetch, ChaCha20-Poly1305 decryption, save to `~/.mostrix/downloads/`
 - `src/models.rs` - Unified `update_chat_last_seen_by_dispute_id` for DB persistence
 
@@ -812,6 +820,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 - **Encrypted messages**: Protocol DMs use NIP-44 (signed kind 14); P2P and dispute chat use kind 14 (`K_sign` / `K_conv`).
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
+- **Push wake privacy**: The wake (`POST /api/notify`) tells `mostro-push-server` only that some IP asked it to wake a given trade pubkey at a given time — no content, sender, dispute, or order id. For a solver this links their IP to the trade pubkeys of the disputes they handle; an operator who considers that sensitive can set `push_server_url = ""` to disable it, or route Mostrix through Tor/a proxy.
 
 ## New Features: Currency Filters & Relay Management
 
