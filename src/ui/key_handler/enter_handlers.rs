@@ -289,10 +289,11 @@ fn spawn_user_order_chat_send_task(
             // Wake the counterparty only on the peer channel and only once a relay
             // accepted; the solver is not a push client, so the Solver channel is skipped.
             Ok(accepted) => {
-                if accepted && matches!(channel, UserChatChannel::Peer) {
-                    if let Some(pubkey) = order.counterparty_pubkey.as_deref() {
-                        crate::util::wake_recipient_via_settings(pubkey);
-                    }
+                let recipient = matches!(channel, UserChatChannel::Peer)
+                    .then(|| order.counterparty_pubkey.as_deref())
+                    .flatten();
+                if let Some(pubkey) = crate::util::wake_target(accepted, recipient) {
+                    crate::util::wake_recipient_via_settings(pubkey);
                 }
             }
             Err(e) => log::warn!("Failed to send user {channel} chat: {e}"),

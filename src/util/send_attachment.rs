@@ -153,10 +153,8 @@ async fn send_prepared_with_retries(
         {
             Ok(accepted) => {
                 // Attachments only go over the peer channel; wake the counterparty on delivery.
-                if accepted {
-                    if let Some(pubkey) = recipient_pubkey {
-                        crate::util::wake_recipient_via_settings(pubkey);
-                    }
+                if let Some(pubkey) = crate::util::wake_target(accepted, recipient_pubkey) {
+                    crate::util::wake_recipient_via_settings(pubkey);
                 }
                 return Ok(());
             }

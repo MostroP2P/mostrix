@@ -65,7 +65,7 @@ pub use order_utils::{
     restore_completion_result, send_new_order, take_order,
 };
 pub use push::{
-    configured_server_url, notify_allowed, wake_recipient, wake_recipient_via_settings,
+    configured_server_url, notify_allowed, wake_recipient, wake_recipient_via_settings, wake_target,
 };
 pub use send_attachment::{
     blossom_servers_from_settings, send_prepared_order_chat_attachment,

@@ -22,6 +22,14 @@ pub fn notify_allowed(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.duration_since(t) >= NOTIFY_DEBOUNCE)
 }
 
+/// The recipient to wake for a chat send, or `None` to skip.
+///
+/// Skips when no relay accepted the envelope (an event every relay rejected
+/// reached no one) or when the recipient trade pubkey is unknown.
+pub fn wake_target(relay_accepted: bool, recipient_pubkey: Option<&str>) -> Option<&str> {
+    relay_accepted.then_some(recipient_pubkey).flatten()
+}
+
 /// Configured push-server base URL from global settings; empty string disables the wake.
 pub fn configured_server_url() -> String {
     crate::SETTINGS
@@ -93,5 +101,26 @@ mod tests {
         let now = Instant::now();
         let last = now - NOTIFY_DEBOUNCE;
         assert!(notify_allowed(Some(last), now));
+    }
+
+    #[test]
+    fn wake_target_none_when_relay_rejected_all() {
+        // Empty success set from send_event => relay_accepted == false => no wake.
+        let pubkey = "ab".repeat(32);
+        assert_eq!(wake_target(false, Some(pubkey.as_str())), None);
+    }
+
+    #[test]
+    fn wake_target_none_when_recipient_missing() {
+        assert_eq!(wake_target(true, None), None);
+    }
+
+    #[test]
+    fn wake_target_some_when_accepted_and_recipient_present() {
+        let pubkey = "cd".repeat(32);
+        assert_eq!(
+            wake_target(true, Some(pubkey.as_str())),
+            Some(pubkey.as_str())
+        );
     }
 }
