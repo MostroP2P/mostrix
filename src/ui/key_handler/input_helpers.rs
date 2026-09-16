@@ -160,10 +160,10 @@ pub fn send_admin_chat_message_via_shared_key(
             Ok(accepted) => {
                 log::info!("Admin chat message sent for dispute {}", dispute_id_key);
                 // Wake the recipient only once a relay accepted the envelope.
-                if accepted {
-                    if let Some(pubkey) = recipient_pubkey {
-                        crate::util::wake_recipient_via_settings(&pubkey);
-                    }
+                if let Some(pubkey) =
+                    crate::util::wake_target(accepted, recipient_pubkey.as_deref())
+                {
+                    crate::util::wake_recipient_via_settings(pubkey);
                 }
             }
             Err(e) => log::error!(
