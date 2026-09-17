@@ -8,6 +8,7 @@ mod formatting;
 mod layout;
 mod order_chat_projection;
 mod order_selection;
+mod qr;
 mod startup;
 
 pub use ascii_art::{render_centered_lines, MAILBOX_EMPTY_ART};
@@ -52,8 +53,8 @@ pub use formatting::{
     short_order_id,
 };
 pub use layout::{
-    create_centered_popup, render_help_text, render_table_list_scrollbar, render_yes_no_buttons,
-    render_yes_no_cancel_buttons,
+    create_centered_popup, render_compact_action_strip, render_help_text,
+    render_table_list_scrollbar, render_yes_no_buttons, render_yes_no_cancel_buttons,
 };
 pub(crate) use order_chat_projection::assign_peer_reputation;
 pub use order_chat_projection::{
@@ -64,6 +65,7 @@ pub use order_selection::{
     get_filtered_book_orders, move_book_order_selection, order_passes_currency_filter,
     selected_book_display_idx, selected_filtered_book_order,
 };
+pub use qr::{encode_qr, encode_qr_fitting, qr_payload, QrView};
 pub use startup::{
     active_peer_chat_order_ids_for_restore, admin_chat_keys_clone_for_role,
     apply_admin_chat_updates, apply_restored_peer_order_chats_from_disk,

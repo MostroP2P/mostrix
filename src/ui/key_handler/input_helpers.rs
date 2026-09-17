@@ -178,18 +178,11 @@ pub fn send_admin_chat_message_via_shared_key(
 #[cfg(test)]
 mod tests {
     use super::handle_invoice_input;
-    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection};
+    use crate::ui::InvoiceInputState;
     use crossterm::event::KeyCode;
 
     fn focused_invoice(input: &str) -> InvoiceInputState {
-        InvoiceInputState {
-            invoice_input: input.to_string(),
-            focused: true,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        }
+        InvoiceInputState::for_input(input.to_string(), true)
     }
 
     #[test]

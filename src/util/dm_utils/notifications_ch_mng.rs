@@ -5,9 +5,7 @@ use crate::ui::orders::{
     invoice_popup_allowed_for_order_status, local_user_must_act_on_invoice_popup,
     order_message_to_notification, order_message_to_waiting_notification, OrderMessage,
 };
-use crate::ui::{
-    AppState, InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification, UiMode,
-};
+use crate::ui::{AppState, InvoiceInputState, MessageNotification, UiMode};
 use mostro_core::prelude::Action;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -143,14 +141,7 @@ fn check_if_payment_failed_popup_should_be_shown(
 }
 
 fn invoice_state_for_add_invoice(invoice_input: String, focused: bool) -> InvoiceInputState {
-    InvoiceInputState {
-        invoice_input,
-        focused,
-        just_pasted: false,
-        copied_to_clipboard: false,
-        scroll_y: 0,
-        action_selection: InvoiceNotificationActionSelection::Primary,
-    }
+    InvoiceInputState::for_input(invoice_input, focused)
 }
 
 /// Opens AddInvoice UI: optional confirmation when settings contain a buyer Lightning address.
@@ -248,14 +239,7 @@ fn invoice_popup_mode(
         }
         Action::PayInvoice | Action::PayBondInvoice => {
             let action = notification.action.clone();
-            let invoice_state = InvoiceInputState {
-                invoice_input: String::new(),
-                focused: false,
-                just_pasted: false,
-                copied_to_clipboard: false,
-                scroll_y: 0,
-                action_selection: InvoiceNotificationActionSelection::Primary,
-            };
+            let invoice_state = InvoiceInputState::display_only();
             UiMode::NewMessageNotification(notification, action, invoice_state)
         }
         Action::WaitingBuyerInvoice | Action::WaitingSellerToPay => {
@@ -411,14 +395,7 @@ pub fn handle_message_notification(notification: MessageNotification, app: &mut 
                 // PayInvoice (trade hold) or PayBondInvoice (anti-abuse bond): both use the
                 // same display-only InvoiceInputState. The popup variant is selected by the
                 // action stored on the notification.
-                let invoice_state = InvoiceInputState {
-                    invoice_input: String::new(),
-                    focused: false,
-                    just_pasted: false,
-                    copied_to_clipboard: false,
-                    scroll_y: 0,
-                    action_selection: InvoiceNotificationActionSelection::Primary,
-                };
+                let invoice_state = InvoiceInputState::display_only();
                 let action = notification.action.clone();
                 app.mode = UiMode::NewMessageNotification(notification, action, invoice_state);
             }

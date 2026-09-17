@@ -51,6 +51,132 @@ fn create_input_area(chunk: Rect) -> Rect {
     }
 }
 
+/// QR or scrollable bolt11 text for the PayInvoice / PayBondInvoice region.
+enum InvoiceVisual {
+    Qr(helpers::QrView),
+    Text { fallback_hint: bool },
+}
+
+struct PayInvoiceLayout {
+    popup_width: u16,
+    popup_height: u16,
+    invoice_rows: u16,
+    visual: InvoiceVisual,
+    /// QR always; text when the full 3-row-button card does not fit.
+    compact: bool,
+}
+
+impl PayInvoiceLayout {
+    fn showing_qr(&self) -> bool {
+        matches!(self.visual, InvoiceVisual::Qr(_))
+    }
+
+    fn use_compact(&self) -> bool {
+        self.showing_qr() || self.compact
+    }
+
+    fn qr_fallback(&self) -> bool {
+        matches!(
+            self.visual,
+            InvoiceVisual::Text {
+                fallback_hint: true
+            }
+        )
+    }
+}
+
+fn invoice_visual(
+    invoice: Option<&str>,
+    show_qr: bool,
+    max_width: u16,
+    max_height: u16,
+) -> InvoiceVisual {
+    if show_qr {
+        if let Some(raw) = invoice.filter(|s| !s.is_empty()) {
+            let payload = helpers::qr_payload(raw);
+            if let Some(view) = helpers::encode_qr_fitting(&payload, max_width, max_height) {
+                return InvoiceVisual::Qr(view);
+            }
+            return InvoiceVisual::Text {
+                fallback_hint: true,
+            };
+        }
+    }
+    InvoiceVisual::Text {
+        fallback_hint: false,
+    }
+}
+
+/// Size the pay popup from the QR matrix when it fits; otherwise keep the text card.
+fn pay_invoice_popup_layout(
+    area: Rect,
+    invoice: Option<&str>,
+    show_qr: bool,
+    bond: bool,
+) -> PayInvoiceLayout {
+    const PREFERRED_WIDTH: u16 = 90;
+    const TEXT_INVOICE_ROWS: u16 = 6;
+    const TEXT_HEIGHT_PAY: u16 = 19;
+    const TEXT_HEIGHT_BOND: u16 = 17;
+    // Compact chrome: spacer, amount, help, plus the regular invoice's Ack/Cancel
+    // strip or the bond's locked note. The bond has no cancel action (Esc closes it).
+    // Order id lives in the Block title so the strip can replace that row.
+    const QR_CHROME_PAY: u16 = 4;
+    const QR_CHROME_BOND: u16 = 4;
+    const TEXT_FIXED_PAY: u16 = 11;
+    const TEXT_FIXED_BOND: u16 = 9;
+
+    let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
+    let max_qr_w = area.width.saturating_sub(4);
+    let max_qr_h = area.height.saturating_sub(chrome);
+    let visual = invoice_visual(invoice, show_qr, max_qr_w, max_qr_h);
+
+    match visual {
+        InvoiceVisual::Qr(view) => {
+            // Size the card to the code + help line, not a 90-col slab.
+            const QR_MIN_WIDTH: u16 = 64;
+            let popup_width = QR_MIN_WIDTH
+                .max(view.width.saturating_add(4))
+                .min(area.width);
+            let popup_height = chrome.saturating_add(view.height).min(area.height).max(6);
+            PayInvoiceLayout {
+                popup_width,
+                popup_height,
+                invoice_rows: view.height,
+                visual: InvoiceVisual::Qr(view),
+                compact: true,
+            }
+        }
+        visual @ InvoiceVisual::Text { .. } => {
+            let preferred_h = if bond {
+                TEXT_HEIGHT_BOND
+            } else {
+                TEXT_HEIGHT_PAY
+            };
+            let full_fixed = if bond {
+                TEXT_FIXED_BOND
+            } else {
+                TEXT_FIXED_PAY
+            };
+            let popup_height = preferred_h.min(area.height).max(6);
+            let compact = popup_height < full_fixed.saturating_add(TEXT_INVOICE_ROWS);
+            let invoice_rows = if compact {
+                let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
+                popup_height.saturating_sub(chrome).max(1)
+            } else {
+                TEXT_INVOICE_ROWS
+            };
+            PayInvoiceLayout {
+                popup_width: PREFERRED_WIDTH.min(area.width),
+                popup_height,
+                invoice_rows,
+                visual,
+                compact,
+            }
+        }
+    }
+}
+
 /// Renders the invoice input field for AddInvoice
 fn render_invoice_input(f: &mut ratatui::Frame, area: Rect, invoice_state: &InvoiceInputState) {
     let input_display = if invoice_state.invoice_input.is_empty() {
@@ -85,32 +211,338 @@ fn render_invoice_input(f: &mut ratatui::Frame, area: Rect, invoice_state: &Invo
     );
 }
 
-/// Renders the invoice display field for PayInvoice
+/// Draws a half-block QR, or the wrapped bolt11 when QR is off or does not fit.
 fn render_invoice_display(
     f: &mut ratatui::Frame,
     area: Rect,
     invoice: Option<&String>,
     scroll_y: u16,
+    visual: &InvoiceVisual,
 ) {
-    let (invoice_text, text_color) = match invoice {
-        Some(inv) if !inv.is_empty() => (inv.clone(), Color::White),
-        Some(_) => (
-            "⚠️  Invoice not available (empty)".to_string(),
-            Color::Yellow,
-        ),
-        None => ("⚠️  Invoice not available".to_string(), Color::Yellow),
-    };
+    match visual {
+        InvoiceVisual::Qr(view) => {
+            let qr_area = Rect {
+                x: area.x + area.width.saturating_sub(view.width) / 2,
+                y: area.y + area.height.saturating_sub(view.height) / 2,
+                width: view.width.min(area.width),
+                height: view.height.min(area.height),
+            };
+            f.render_widget(Paragraph::new(view.lines.clone()), qr_area);
+        }
+        InvoiceVisual::Text { fallback_hint } => {
+            let (invoice_text, text_color) = match invoice {
+                Some(inv) if !inv.is_empty() => (inv.clone(), Color::White),
+                Some(_) => (
+                    "⚠️  Invoice not available (empty)".to_string(),
+                    Color::Yellow,
+                ),
+                None => ("⚠️  Invoice not available".to_string(), Color::Yellow),
+            };
 
+            let mut block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(PRIMARY_COLOR));
+            if *fallback_hint {
+                block = block.title("QR needs a taller terminal");
+            }
+
+            f.render_widget(
+                Paragraph::new(invoice_text)
+                    .style(Style::default().fg(text_color).add_modifier(Modifier::BOLD))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .scroll((scroll_y, 0))
+                    .block(block),
+                area,
+            );
+        }
+    }
+}
+
+fn help_key(text: &'static str) -> Span<'static> {
+    Span::styled(
+        text,
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn help_plain(text: &'static str) -> Span<'static> {
+    Span::styled(text, Style::default())
+}
+
+/// Full help when it fits `width`, else the terser variant, so narrow popups
+/// keep every control key visible instead of centre-clipping them.
+fn fit_help(full: Vec<Span<'static>>, short: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let full_width: usize = full.iter().map(Span::width).sum();
+    if full_width <= width as usize {
+        full
+    } else {
+        short
+    }
+}
+
+fn render_pay_help(
+    f: &mut ratatui::Frame,
+    help1: Rect,
+    help2: Rect,
+    invoice_state: &InvoiceInputState,
+    showing_qr: bool,
+    qr_fallback: bool,
+    has_cancel: bool,
+) {
+    if invoice_state.copied_to_clipboard {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ Invoice copied to clipboard!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            help1,
+        );
+    } else if qr_fallback {
+        let full = vec![
+            help_plain("QR needs a taller terminal. Press "),
+            help_key("C"),
+            help_plain(" to copy, "),
+            help_key("↑/↓"),
+            help_plain(" scroll"),
+        ];
+        let short = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("↑/↓"),
+            help_plain(" scroll"),
+        ];
+        f.render_widget(
+            Paragraph::new(Line::from(fit_help(full, short, help1.width)))
+                .alignment(ratatui::layout::Alignment::Center),
+            help1,
+        );
+    } else {
+        let mut full = vec![
+            help_plain("Press "),
+            help_key("C"),
+            help_plain(" to copy. "),
+            help_key("SPACE"),
+            help_plain(if showing_qr {
+                " for text. "
+            } else {
+                " for QR. "
+            }),
+        ];
+        if !showing_qr {
+            full.push(help_key("↑/↓"));
+            full.push(help_plain(if has_cancel { " scroll, " } else { " scroll" }));
+        }
+        if has_cancel {
+            full.push(help_key("Left/Right"));
+            full.push(help_plain(" select action"));
+        }
+        let mut short = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("SPACE"),
+            help_plain(if showing_qr { " text " } else { " QR " }),
+        ];
+        if !showing_qr {
+            short.push(help_key("↑/↓"));
+            short.push(help_plain(" "));
+        }
+        if has_cancel {
+            short.push(help_key("←/→"));
+            short.push(help_plain(" sel"));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(fit_help(full, short, help1.width)))
+                .alignment(ratatui::layout::Alignment::Center),
+            help1,
+        );
+    }
+
+    let mut help2_full = vec![help_plain("Press ")];
+    if has_cancel {
+        help2_full.push(help_key("Enter"));
+        help2_full.push(help_plain(" to confirm, "));
+    }
+    help2_full.push(help_key("Esc"));
+    help2_full.push(help_plain(" to dismiss"));
+    let mut help2_short = Vec::new();
+    if has_cancel {
+        help2_short.push(help_key("Enter"));
+        help2_short.push(help_plain(" "));
+    }
+    help2_short.push(help_key("Esc"));
     f.render_widget(
-        Paragraph::new(invoice_text)
-            .style(Style::default().fg(text_color).add_modifier(Modifier::BOLD))
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .scroll((scroll_y, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .style(Style::default().fg(PRIMARY_COLOR)),
+        Paragraph::new(Line::from(fit_help(help2_full, help2_short, help2.width)))
+            .alignment(ratatui::layout::Alignment::Center),
+        help2,
+    );
+}
+
+fn pay_amount_label(notification: &MessageNotification, bond: bool) -> String {
+    if bond {
+        if notification.maker_bond_publish {
+            if let Some(amount) = notification.sat_amount {
+                format!("Pay bond to publish your order ({} sats):", amount)
+            } else {
+                "Pay bond to publish your order:".to_string()
+            }
+        } else if let Some(amount) = notification.sat_amount {
+            format!("Bond invoice to pay ({} sats):", amount)
+        } else {
+            "Bond invoice to pay:".to_string()
+        }
+    } else if let Some(amount) = notification.sat_amount {
+        format!("Lightning invoice to pay ({} sats):", amount)
+    } else {
+        "Lightning invoice to pay:".to_string()
+    }
+}
+
+fn render_centered_label(f: &mut ratatui::Frame, area: Rect, text: &str, color: Color) {
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]))
+        .alignment(ratatui::layout::Alignment::Center),
+        area,
+    );
+}
+
+/// Compact QR (or short-terminal text) layout: order id is in the title.
+fn render_pay_qr_compact(
+    f: &mut ratatui::Frame,
+    popup: Rect,
+    notification: &MessageNotification,
+    invoice_state: &InvoiceInputState,
+    layout: &PayInvoiceLayout,
+    bond: bool,
+) {
+    let mut constraints = vec![
+        Constraint::Length(1), // spacer / top border
+    ];
+    if bond {
+        constraints.push(Constraint::Length(1)); // locked note
+    }
+    constraints.push(Constraint::Length(1)); // amount
+    constraints.push(Constraint::Length(layout.invoice_rows));
+    if !bond {
+        constraints.push(Constraint::Length(1)); // ack/cancel strip
+    }
+    constraints.push(Constraint::Length(1)); // help
+
+    let chunks = Layout::new(Direction::Vertical, constraints).split(popup);
+    let mut idx = 1;
+    if bond {
+        render_centered_label(
+            f,
+            chunks[idx],
+            "Locked, not spent — refunded on normal completion",
+            Color::Yellow,
+        );
+        idx += 1;
+    }
+    render_centered_label(
+        f,
+        chunks[idx],
+        &pay_amount_label(notification, bond),
+        PRIMARY_COLOR,
+    );
+    idx += 1;
+    render_invoice_display(
+        f,
+        create_input_area(chunks[idx]),
+        notification.invoice.as_ref(),
+        invoice_state.scroll_y,
+        &layout.visual,
+    );
+    idx += 1;
+    if !bond {
+        helpers::render_compact_action_strip(
+            f,
+            chunks[idx],
+            matches!(
+                invoice_state.action_selection,
+                InvoiceNotificationActionSelection::Primary
             ),
+            "Acknowledge",
+            "Cancel Order",
+        );
+        idx += 1;
+    }
+    render_pay_qr_help(
+        f,
+        chunks[idx],
+        invoice_state,
+        layout.showing_qr(),
+        layout.qr_fallback(),
+        !bond,
+    );
+}
+
+fn render_pay_qr_help(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    invoice_state: &InvoiceInputState,
+    showing_qr: bool,
+    qr_fallback: bool,
+    has_cancel: bool,
+) {
+    if invoice_state.copied_to_clipboard {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                "✓ Invoice copied to clipboard!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .alignment(ratatui::layout::Alignment::Center),
+            area,
+        );
+        return;
+    }
+    let controls_full = {
+        let mut spans = Vec::new();
+        if qr_fallback {
+            spans.push(help_plain("QR needs a taller terminal. "));
+        }
+        spans.push(help_key("C"));
+        spans.push(help_plain(" copy  "));
+        spans.push(help_key("SPACE"));
+        spans.push(help_plain(if showing_qr { " text  " } else { " QR  " }));
+        if has_cancel {
+            spans.push(help_key("←/→"));
+            spans.push(help_plain("  "));
+            spans.push(help_key("Enter"));
+            spans.push(help_plain(" confirm  "));
+        }
+        spans.push(help_key("Esc"));
+        spans.push(help_plain(" dismiss"));
+        spans
+    };
+    let controls_short = {
+        let mut spans = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("SPACE"),
+            help_plain(if showing_qr { " text " } else { " QR " }),
+        ];
+        if has_cancel {
+            spans.push(help_key("←/→"));
+            spans.push(help_plain(" "));
+            spans.push(help_key("Enter"));
+            spans.push(help_plain(" "));
+        }
+        spans.push(help_key("Esc"));
+        spans
+    };
+    let spans = fit_help(controls_full, controls_short, area.width);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center),
         area,
     );
 }
@@ -373,13 +805,18 @@ fn render_add_invoice(
     );
 }
 
-/// Renders PayInvoice notification popup
+/// Renders the PayInvoice popup: half-block QR when it fits, otherwise the text card.
 fn render_pay_invoice(
     f: &mut ratatui::Frame,
     popup: Rect,
     notification: &MessageNotification,
     invoice_state: &InvoiceInputState,
+    layout: &PayInvoiceLayout,
 ) {
+    if layout.use_compact() {
+        render_pay_qr_compact(f, popup, notification, invoice_state, layout, false);
+        return;
+    }
     let chunks = Layout::new(
         Direction::Vertical,
         [
@@ -388,7 +825,7 @@ fn render_pay_invoice(
             Constraint::Length(1), // message preview
             Constraint::Length(1), // spacer
             Constraint::Length(1), // label
-            Constraint::Length(6), // invoice display field
+            Constraint::Length(layout.invoice_rows),
             Constraint::Length(1), // spacer
             Constraint::Length(3), // action buttons
             Constraint::Length(1), // help text line 1
@@ -424,6 +861,7 @@ fn render_pay_invoice(
         invoice_area,
         notification.invoice.as_ref(),
         invoice_state.scroll_y,
+        &layout.visual,
     );
 
     helpers::render_yes_no_buttons(
@@ -437,85 +875,35 @@ fn render_pay_invoice(
         "Cancel Order",
     );
 
-    // Help text - first line
-    if invoice_state.copied_to_clipboard {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                "✓ Invoice copied to clipboard!",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[8],
-        );
-    } else {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Press ", Style::default()),
-                Span::styled(
-                    "C",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to copy invoice to clipboard. ", Style::default()),
-                Span::styled(
-                    "↑/↓",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" scroll, ", Style::default()),
-                Span::styled(
-                    "Left/Right",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" select action", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[8],
-        );
-    }
-
-    // Help text - second line
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to dismiss", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
+    render_pay_help(
+        f,
+        chunks[8],
         chunks[9],
+        invoice_state,
+        layout.showing_qr(),
+        layout.qr_fallback(),
+        true,
     );
 }
 
 /// Renders PayBondInvoice notification popup.
 ///
-/// Mirrors `render_pay_invoice` but adds a yellow one-line explanation that the
-/// bond sats are locked, not spent, and refunded on normal completion. Used for
-/// the anti-abuse bond hold invoice that takers must pay before the trade flow
-/// starts (Mostro daemon Phase 1.5+).
+/// Mirrors `render_pay_invoice` (half-block QR, or text when the code does not
+/// fit) and adds a yellow one-line explanation that the bond sats are locked,
+/// not spent, and refunded on normal completion. Used for the anti-abuse bond
+/// hold invoice that takers must pay before the trade flow starts (Mostro
+/// daemon Phase 1.5+).
 fn render_pay_bond_invoice(
     f: &mut ratatui::Frame,
     popup: Rect,
     notification: &MessageNotification,
     invoice_state: &InvoiceInputState,
+    layout: &PayInvoiceLayout,
 ) {
+    if layout.use_compact() {
+        render_pay_qr_compact(f, popup, notification, invoice_state, layout, true);
+        return;
+    }
     let chunks = Layout::new(
         Direction::Vertical,
         [
@@ -525,9 +913,8 @@ fn render_pay_bond_invoice(
             Constraint::Length(1), // bond explanatory note
             Constraint::Length(1), // spacer
             Constraint::Length(1), // label
-            Constraint::Length(6), // invoice display field
+            Constraint::Length(layout.invoice_rows),
             Constraint::Length(1), // spacer
-            Constraint::Length(3), // action buttons
             Constraint::Length(1), // help text line 1
             Constraint::Length(1), // help text line 2
         ],
@@ -578,81 +965,17 @@ fn render_pay_bond_invoice(
         invoice_area,
         notification.invoice.as_ref(),
         invoice_state.scroll_y,
+        &layout.visual,
     );
 
-    helpers::render_yes_no_buttons(
+    render_pay_help(
         f,
         chunks[8],
-        matches!(
-            invoice_state.action_selection,
-            InvoiceNotificationActionSelection::Primary
-        ),
-        "Acknowledge",
-        "Cancel Order",
-    );
-
-    if invoice_state.copied_to_clipboard {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                "✓ Invoice copied to clipboard!",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[9],
-        );
-    } else {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Press ", Style::default()),
-                Span::styled(
-                    "C",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to copy invoice to clipboard. ", Style::default()),
-                Span::styled(
-                    "↑/↓",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" scroll, ", Style::default()),
-                Span::styled(
-                    "Left/Right",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" select action", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[9],
-        );
-    }
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to dismiss", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[10],
+        chunks[9],
+        invoice_state,
+        layout.showing_qr(),
+        layout.qr_fallback(),
+        false,
     );
 }
 
@@ -982,12 +1305,24 @@ fn render_payment_failed(
     );
 }
 
+fn compact_pay_title(bond: bool, order_id: Option<uuid::Uuid>) -> String {
+    let base = if bond {
+        "🛡️ Anti-abuse Bond Invoice"
+    } else {
+        "💳 Payment Request"
+    };
+    format!("{base} · {}", helpers::short_order_id(order_id))
+}
+
 /// Render a message-notification popup.
 ///
 /// Post-retry [`mostro_core::prelude::Action::AddInvoice`] (body present) and
 /// [`mostro_core::prelude::Action::PaymentFailed`] choose popup size from terminal
-/// width/height so wrapped body text degrades gracefully on narrow or short screens;
-/// other actions keep fixed preferred dimensions.
+/// width/height so wrapped body text degrades gracefully on narrow or short screens.
+/// [`mostro_core::prelude::Action::PayInvoice`] / [`mostro_core::prelude::Action::PayBondInvoice`]
+/// size to a half-block QR when it fits, a quadrant QR on narrow terminals and
+/// a compact sextant QR on short ones, otherwise keep the text card; other
+/// actions keep fixed preferred dimensions.
 pub fn render_message_notification(
     f: &mut ratatui::Frame,
     notification: &MessageNotification,
@@ -995,6 +1330,21 @@ pub fn render_message_notification(
     invoice_state: &InvoiceInputState,
 ) {
     let area = f.area();
+    let pay_layout = match action {
+        mostro_core::prelude::Action::PayInvoice => Some(pay_invoice_popup_layout(
+            area,
+            notification.invoice.as_deref(),
+            invoice_state.show_qr,
+            false,
+        )),
+        mostro_core::prelude::Action::PayBondInvoice => Some(pay_invoice_popup_layout(
+            area,
+            notification.invoice.as_deref(),
+            invoice_state.show_qr,
+            true,
+        )),
+        _ => None,
+    };
     let (popup_width, popup_height, add_invoice_body_rows, add_invoice_input_rows, pf_body_rows) =
         match action {
             mostro_core::prelude::Action::AddInvoice => {
@@ -1003,9 +1353,14 @@ pub fn render_message_notification(
                 (w, h, body_rows, input_rows, 0)
             }
             mostro_core::prelude::Action::AddBondInvoice => (90, 21, 0, 6, 0),
-            mostro_core::prelude::Action::PayInvoice => (90, 19, 0, 6, 0),
-            // Bond popup is one row taller for the "Locked, not spent" explanation line.
-            mostro_core::prelude::Action::PayBondInvoice => (90, 20, 0, 6, 0),
+            mostro_core::prelude::Action::PayInvoice => {
+                let layout = pay_layout.as_ref().expect("PayInvoice layout");
+                (layout.popup_width, layout.popup_height, 0, 6, 0)
+            }
+            mostro_core::prelude::Action::PayBondInvoice => {
+                let layout = pay_layout.as_ref().expect("PayBondInvoice layout");
+                (layout.popup_width, layout.popup_height, 0, 6, 0)
+            }
             mostro_core::prelude::Action::WaitingSellerToPay
             | mostro_core::prelude::Action::WaitingBuyerInvoice => (90, 16, 0, 6, 0),
             mostro_core::prelude::Action::PaymentFailed => {
@@ -1022,21 +1377,32 @@ pub fn render_message_notification(
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
+    let compact_pay = pay_layout
+        .as_ref()
+        .is_some_and(|layout| layout.use_compact());
     let title = match action {
         mostro_core::prelude::Action::AddInvoice => {
             if notification.body.is_some() {
-                "⚠️ New Invoice After Payment Failed"
+                "⚠️ New Invoice After Payment Failed".to_string()
             } else {
-                "📝 Invoice Request"
+                "📝 Invoice Request".to_string()
             }
         }
-        mostro_core::prelude::Action::AddBondInvoice => "⚔️ Bond Payout Invoice",
-        mostro_core::prelude::Action::PayInvoice => "💳 Payment Request",
-        mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice",
+        mostro_core::prelude::Action::AddBondInvoice => "⚔️ Bond Payout Invoice".to_string(),
+        mostro_core::prelude::Action::PayInvoice | mostro_core::prelude::Action::PayBondInvoice
+            if compact_pay =>
+        {
+            compact_pay_title(
+                matches!(action, mostro_core::prelude::Action::PayBondInvoice),
+                notification.order_id,
+            )
+        }
+        mostro_core::prelude::Action::PayInvoice => "💳 Payment Request".to_string(),
+        mostro_core::prelude::Action::PayBondInvoice => "🛡️ Anti-abuse Bond Invoice".to_string(),
         mostro_core::prelude::Action::WaitingSellerToPay
-        | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status",
-        mostro_core::prelude::Action::PaymentFailed => "⚠️ Payment Failed",
-        _ => "📨 New Message",
+        | mostro_core::prelude::Action::WaitingBuyerInvoice => "📋 Trade Status".to_string(),
+        mostro_core::prelude::Action::PaymentFailed => "⚠️ Payment Failed".to_string(),
+        _ => "📨 New Message".to_string(),
     };
 
     let block = Block::default()
@@ -1060,10 +1426,22 @@ pub fn render_message_notification(
             render_add_bond_invoice(f, popup, notification, invoice_state);
         }
         mostro_core::prelude::Action::PayInvoice => {
-            render_pay_invoice(f, popup, notification, invoice_state);
+            render_pay_invoice(
+                f,
+                popup,
+                notification,
+                invoice_state,
+                pay_layout.as_ref().expect("PayInvoice layout"),
+            );
         }
         mostro_core::prelude::Action::PayBondInvoice => {
-            render_pay_bond_invoice(f, popup, notification, invoice_state);
+            render_pay_bond_invoice(
+                f,
+                popup,
+                notification,
+                invoice_state,
+                pay_layout.as_ref().expect("PayBondInvoice layout"),
+            );
         }
         mostro_core::prelude::Action::WaitingSellerToPay
         | mostro_core::prelude::Action::WaitingBuyerInvoice => {
@@ -1081,7 +1459,7 @@ pub fn render_message_notification(
 #[cfg(test)]
 mod tests {
     use super::render_message_notification;
-    use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, MessageNotification};
+    use crate::ui::{InvoiceInputState, MessageNotification};
     use mostro_core::prelude::Action;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1106,14 +1484,7 @@ mod tests {
     }
 
     fn display_only_state() -> InvoiceInputState {
-        InvoiceInputState {
-            invoice_input: String::new(),
-            focused: false,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        }
+        InvoiceInputState::display_only()
     }
 
     #[test]
@@ -1168,14 +1539,7 @@ mod tests {
             solver_pubkey: None,
             dispute_id: None,
         };
-        let state = InvoiceInputState {
-            invoice_input: String::new(),
-            focused: true,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        };
+        let state = InvoiceInputState::for_input(String::new(), true);
 
         let backend = TestBackend::new(100, 28);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1291,14 +1655,7 @@ mod tests {
             solver_pubkey: None,
             dispute_id: None,
         };
-        let state = InvoiceInputState {
-            invoice_input: String::new(),
-            focused: true,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        };
+        let state = InvoiceInputState::for_input(String::new(), true);
 
         let backend = TestBackend::new(48, 28);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1338,14 +1695,7 @@ mod tests {
             solver_pubkey: None,
             dispute_id: None,
         };
-        let state = InvoiceInputState {
-            invoice_input: String::new(),
-            focused: true,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        };
+        let state = InvoiceInputState::for_input(String::new(), true);
 
         let backend = TestBackend::new(90, 16);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1375,5 +1725,279 @@ mod tests {
             20,
         );
         assert!(wrapped >= 3, "expected multi-line wrap, got {wrapped}");
+    }
+
+    fn pay_notification(action: Action, invoice: &str) -> MessageNotification {
+        MessageNotification {
+            order_id: Some(Uuid::new_v4()),
+            message_preview: "Pay the invoice".to_string(),
+            timestamp: 1,
+            action,
+            sat_amount: Some(1000),
+            invoice: Some(invoice.to_string()),
+            body: None,
+            maker_bond_publish: false,
+            solver_pubkey: None,
+            dispute_id: None,
+        }
+    }
+
+    fn draw_pay(
+        width: u16,
+        height: u16,
+        notification: &MessageNotification,
+        state: &InvoiceInputState,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let action = notification.action.clone();
+        terminal
+            .draw(|f| render_message_notification(f, notification, action, state))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_has_half_block(buf: &ratatui::buffer::Buffer) -> bool {
+        buffer_text(buf).contains('▀')
+    }
+
+    fn buffer_has_sextant(buf: &ratatui::buffer::Buffer) -> bool {
+        buffer_text(buf)
+            .chars()
+            .any(|c| ('\u{1FB00}'..='\u{1FB3B}').contains(&c) || matches!(c, '▌' | '▐'))
+    }
+
+    fn buffer_has_qr_glyph(buf: &ratatui::buffer::Buffer) -> bool {
+        buffer_has_half_block(buf) || buffer_has_sextant(buf)
+    }
+
+    fn buffer_has_qr_colors(buf: &ratatui::buffer::Buffer) -> bool {
+        let dark = ratatui::style::Color::Rgb(0, 0, 0);
+        let light = ratatui::style::Color::Rgb(255, 255, 255);
+        let mut saw_dark = false;
+        let mut saw_light = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let style = buf[(x, y)].style();
+                if style.fg == Some(dark) || style.bg == Some(dark) {
+                    saw_dark = true;
+                }
+                if style.fg == Some(light) || style.bg == Some(light) {
+                    saw_light = true;
+                }
+            }
+        }
+        saw_dark && saw_light
+    }
+
+    fn buffer_has_bg(buf: &ratatui::buffer::Buffer, bg: ratatui::style::Color) -> bool {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].style().bg == Some(bg) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn pay_invoice_qr_renders_on_tall_terminal() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(90, 40, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(buffer_has_half_block(&buf), "QR glyphs missing: {text}");
+        assert!(buffer_has_qr_colors(&buf), "QR black/white missing: {text}");
+        assert!(text.contains("SPACE"), "toggle hint missing: {text}");
+        assert!(
+            text.contains("Acknowledge"),
+            "QR mode must show the primary action: {text}"
+        );
+        assert!(
+            text.contains("Cancel Order"),
+            "QR mode must show Cancel Order: {text}"
+        );
+        let short_id = crate::ui::helpers::short_order_id(notification.order_id);
+        assert!(
+            text.contains(&short_id),
+            "order id should be in the QR title: {text}"
+        );
+        assert!(
+            !text.contains("lnbc1test"),
+            "raw invoice should be hidden in QR view: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_space_pref_shows_text() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1testinvoice");
+        let mut state = InvoiceInputState::display_only();
+        state.show_qr = false;
+        let buf = draw_pay(90, 24, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("lnbc1testinvoice"),
+            "text view should show invoice: {text}"
+        );
+        assert!(
+            !buffer_has_qr_glyph(&buf),
+            "text view should not draw QR: {text}"
+        );
+        assert!(text.contains("SPACE"), "toggle hint missing: {text}");
+    }
+
+    #[test]
+    fn pay_invoice_qr_renders_on_standard_terminal_when_it_fits() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(80, 24, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            buffer_has_qr_glyph(&buf),
+            "a fitting QR must still render on 80x24: {text}"
+        );
+        assert!(
+            !text.contains("taller terminal"),
+            "must not fall back to text when the QR fits: {text}"
+        );
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "compact QR must keep Ack/Cancel visible: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_qr_renders_typical_bolt11_on_standard_terminal() {
+        let invoice = format!("lnbc1{}", "a".repeat(340));
+        let notification = pay_notification(Action::PayInvoice, &invoice);
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(80, 24, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            buffer_has_qr_glyph(&buf),
+            "a typical bolt11 must show a compact QR on 80x24: {text}"
+        );
+        assert!(
+            !text.contains("taller terminal"),
+            "must not fall back to text on 80x24: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_falls_back_to_text_on_tiny_terminal() {
+        let invoice = format!("lnbc1{}", "a".repeat(400));
+        let notification = pay_notification(Action::PayInvoice, &invoice);
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(80, 10, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            !buffer_has_qr_glyph(&buf),
+            "QR must not render when it cannot fit: {text}"
+        );
+        assert!(
+            text.contains("taller terminal"),
+            "fallback hint missing: {text}"
+        );
+        assert!(
+            text.contains("Acknowledge") && text.contains("Cancel Order"),
+            "short-terminal text fallback must keep Ack/Cancel visible: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_qr_selection_is_visibly_distinct() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let primary = InvoiceInputState::display_only();
+        let mut cancel = InvoiceInputState::display_only();
+        cancel.action_selection = crate::ui::InvoiceNotificationActionSelection::Cancel;
+        let buf_primary = draw_pay(80, 24, &notification, &primary);
+        let buf_cancel = draw_pay(80, 24, &notification, &cancel);
+        assert!(
+            buffer_has_qr_glyph(&buf_primary),
+            "test needs a QR on 80x24"
+        );
+        assert!(
+            buffer_has_bg(&buf_primary, ratatui::style::Color::Green)
+                && !buffer_has_bg(&buf_primary, ratatui::style::Color::Red),
+            "Acknowledge should be the only highlighted action when Primary is selected"
+        );
+        assert!(
+            buffer_has_bg(&buf_cancel, ratatui::style::Color::Red)
+                && !buffer_has_bg(&buf_cancel, ratatui::style::Color::Green),
+            "Cancel Order should be the only highlighted action when Cancel is selected"
+        );
+    }
+
+    #[test]
+    fn pay_bond_invoice_qr_renders_on_tall_terminal() {
+        let notification = pay_notification(Action::PayBondInvoice, "lnbc1bond");
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(90, 40, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            buffer_has_half_block(&buf),
+            "bond QR glyphs missing: {text}"
+        );
+        assert!(text.contains("Locked"), "bond note missing: {text}");
+    }
+
+    #[test]
+    fn pay_bond_invoice_qr_renders_on_standard_terminal_when_it_fits() {
+        let notification = pay_notification(Action::PayBondInvoice, "lnbc1bond");
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(80, 24, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            buffer_has_qr_glyph(&buf),
+            "a fitting bond QR must still render on 80x24: {text}"
+        );
+        assert!(text.contains("Locked"), "bond note missing: {text}");
+        assert!(
+            !text.contains("Acknowledge") && !text.contains("Cancel Order"),
+            "bond QR must not offer a cancel action; Esc closes it: {text}"
+        );
+        assert!(
+            text.contains("Esc"),
+            "bond QR must show Esc dismiss: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_bond_invoice_qr_renders_typical_bolt11_on_standard_terminal() {
+        let invoice = format!("lnbcrt1{}", "a".repeat(340));
+        let notification = pay_notification(Action::PayBondInvoice, &invoice);
+        let state = InvoiceInputState::display_only();
+        let buf = draw_pay(80, 26, &notification, &state);
+        let text = buffer_text(&buf);
+        assert!(
+            buffer_has_qr_glyph(&buf),
+            "a typical bond invoice must show a compact QR when the extra bond line fits: {text}"
+        );
+        assert!(text.contains("Locked"), "bond note missing: {text}");
+        assert!(
+            !text.contains("Acknowledge") && !text.contains("Cancel Order"),
+            "bond QR must not offer a cancel action; Esc closes it: {text}"
+        );
+        assert!(
+            text.contains("Esc"),
+            "bond QR must show Esc dismiss: {text}"
+        );
+    }
+
+    #[test]
+    fn pay_invoice_help_keeps_control_keys_visible_on_narrow_terminal() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let state = InvoiceInputState::display_only();
+        // Narrow enough that the verbose help would clip, but the QR still fits.
+        let buf = draw_pay(50, 24, &notification, &state);
+        let text = buffer_text_collapsed(&buf);
+        assert!(buffer_has_qr_glyph(&buf), "test needs a compact QR: {text}");
+        for key in ["C", "SPACE", "←/→", "Enter", "Esc"] {
+            assert!(
+                text.contains(key),
+                "narrow help must keep {key} visible: {text}"
+            );
+        }
     }
 }

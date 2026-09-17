@@ -26,7 +26,7 @@ use crate::ui::{
         close_user_send_attachment_picker, explorer_selection_is_sendable_file,
         open_user_send_attachment_picker,
     },
-    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter,
+    AdminMode, AdminTab, AppState, ChatAttachment, ChatSender, DisputeFilter, InvoiceInputState,
     InvoiceNotificationActionSelection, LnAddressVerifyResult, MostroInfoFetchResult,
     OperationResult, Tab, TakeOrderState, UiMode, UserChatChannel, UserMode, UserTab,
     ViewingMessageButtonSelection,
@@ -873,9 +873,36 @@ fn should_enter_order_chat_insert(app: &AppState, key_event: &KeyEvent) -> bool 
     ctrl_i || bare_i || insert_key || tab_as_ctrl_i
 }
 
+/// SPACE toggles QR/text; arrows / page keys scroll the text invoice.
+fn handle_pay_invoice_display_keys(code: KeyCode, invoice_state: &mut InvoiceInputState) -> bool {
+    match code {
+        KeyCode::Char(' ') => {
+            invoice_state.show_qr = !invoice_state.show_qr;
+            true
+        }
+        KeyCode::Up => {
+            invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(1);
+            true
+        }
+        KeyCode::Down => {
+            invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(1);
+            true
+        }
+        KeyCode::PageUp => {
+            invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(10);
+            true
+        }
+        KeyCode::PageDown => {
+            invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(10);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn update_invoice_notification_action_selection(
     code: KeyCode,
-    invoice_state: &mut crate::ui::InvoiceInputState,
+    invoice_state: &mut InvoiceInputState,
 ) -> bool {
     match code {
         KeyCode::Left => {
@@ -1006,31 +1033,15 @@ pub fn handle_key_event(
         }
     }
 
-    // PayInvoice / PayBondInvoice popup: allow scrolling the (wrapped) invoice text.
+    // PayInvoice / PayBondInvoice popup: SPACE toggles QR/text; arrows scroll the text invoice.
     if let UiMode::NewMessageNotification(
         _,
         Action::PayInvoice | Action::PayBondInvoice,
         ref mut invoice_state,
     ) = app.mode
     {
-        match code {
-            KeyCode::Up => {
-                invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(1);
-                return Some(true);
-            }
-            KeyCode::Down => {
-                invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(1);
-                return Some(true);
-            }
-            KeyCode::PageUp => {
-                invoice_state.scroll_y = invoice_state.scroll_y.saturating_sub(10);
-                return Some(true);
-            }
-            KeyCode::PageDown => {
-                invoice_state.scroll_y = invoice_state.scroll_y.saturating_add(10);
-                return Some(true);
-            }
-            _ => {}
+        if handle_pay_invoice_display_keys(code, invoice_state) {
+            return Some(true);
         }
     }
 
@@ -1846,7 +1857,6 @@ pub fn handle_key_event(
                     Action::AddInvoice
                     | Action::AddBondInvoice
                     | Action::PayInvoice
-                    | Action::PayBondInvoice
                     | Action::WaitingSellerToPay
                     | Action::WaitingBuyerInvoice,
                     ref mut invoice_state,
@@ -1856,6 +1866,8 @@ pub fn handle_key_event(
                         invoice_state,
                     ))
                 }
+                // Bond pay popup has no cancel action; swallow Left/Right.
+                UiMode::NewMessageNotification(_, Action::PayBondInvoice, _) => return Some(true),
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
                     ref mut selected_button_index,
@@ -2609,14 +2621,7 @@ mod key_handler_tests {
 
     #[test]
     fn invoice_notification_selection_toggles_with_arrows() {
-        let mut state = InvoiceInputState {
-            invoice_input: String::new(),
-            focused: true,
-            just_pasted: false,
-            copied_to_clipboard: false,
-            scroll_y: 0,
-            action_selection: InvoiceNotificationActionSelection::Primary,
-        };
+        let mut state = InvoiceInputState::for_input(String::new(), true);
 
         assert!(update_invoice_notification_action_selection(
             KeyCode::Right,
@@ -2634,6 +2639,31 @@ mod key_handler_tests {
             state.action_selection,
             InvoiceNotificationActionSelection::Primary
         );
+    }
+
+    #[test]
+    fn space_toggles_pay_invoice_qr_preference() {
+        let mut state = InvoiceInputState::display_only();
+        assert!(state.show_qr);
+        assert!(handle_pay_invoice_display_keys(
+            KeyCode::Char(' '),
+            &mut state
+        ));
+        assert!(!state.show_qr);
+        assert!(handle_pay_invoice_display_keys(
+            KeyCode::Char(' '),
+            &mut state
+        ));
+        assert!(state.show_qr);
+    }
+
+    #[test]
+    fn pay_invoice_scroll_keys_still_move_offset() {
+        let mut state = InvoiceInputState::display_only();
+        assert!(handle_pay_invoice_display_keys(KeyCode::Down, &mut state));
+        assert_eq!(state.scroll_y, 1);
+        assert!(handle_pay_invoice_display_keys(KeyCode::Up, &mut state));
+        assert_eq!(state.scroll_y, 0);
     }
 
     fn disclosure_mode(copied_to_clipboard: bool) -> UiMode {
