@@ -94,6 +94,12 @@ const CONNECTED_FETCH_GRACE: Duration = Duration::from_secs(2);
 /// This races an independent single-relay `fetch_events` per connected relay and returns
 /// the union of everything that completed by (first relay with data + [`CONNECTED_FETCH_GRACE`]),
 /// bounded by `timeout`. Falls back to a pool-wide fetch only when **no** relay is connected.
+///
+/// This trades completeness for latency: a healthy relay slower than the grace is dropped from
+/// the snapshot. Use it only for **latency-sensitive, periodically-refreshed** reads (e.g. the
+/// order book), never for one-shot hydration whose follow-up subscription is live-only and could
+/// never backfill a dropped relay's history (chat / trade-DM replay use a complete pool-wide
+/// fetch instead).
 pub async fn fetch_events_connected_only(
     client: &Client,
     filter: Filter,

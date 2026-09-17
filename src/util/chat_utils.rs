@@ -361,10 +361,14 @@ pub async fn fetch_chat_messages_for_shared_key(
         .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
 
     let kind14_filter = chat_filter(sign.public_key()).since(since_ts).limit(100);
-    let events =
-        crate::util::fetch_events_connected_only(client, kind14_filter, FETCH_EVENTS_TIMEOUT)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch chat events: {e}"))?;
+    // One-shot hydration: use the complete pool-wide fetch (waits for all relays / timeout), not
+    // the fast connected-only snapshot. The live chat subscription is live-only, so a slow relay's
+    // unique history dropped here would never backfill.
+    let events = client
+        .fetch_events(kind14_filter)
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch chat events: {e}"))?;
 
     let mut messages = Vec::new();
     for wrapped in events.iter() {
