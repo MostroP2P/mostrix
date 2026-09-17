@@ -92,16 +92,19 @@ const CONNECTED_FETCH_GRACE: Duration = Duration::from_secs(2);
 /// hold the call until `timeout` even after a healthy relay already returned data+EOSE.
 ///
 /// This races an independent single-relay `fetch_events` per connected relay and returns
-/// the union of everything that completed by (first relay done + [`CONNECTED_FETCH_GRACE`]),
-/// bounded by `timeout`. Falls back to a pool-wide fetch when 0–1 relays are connected.
+/// the union of everything that completed by (first relay with data + [`CONNECTED_FETCH_GRACE`]),
+/// bounded by `timeout`. Falls back to a pool-wide fetch only when **no** relay is connected.
 pub async fn fetch_events_connected_only(
     client: &Client,
     filter: Filter,
     timeout: Duration,
 ) -> anyhow::Result<BTreeSet<Event>> {
     let connected = connected_relay_urls(client).await;
-    // 0 connected: pool-wide fallback (mid-reconnect). 1 connected: nothing to race.
-    if connected.len() < 2 {
+    // Pool-wide (auto-target) fetch only when nothing is connected: its automatic target is
+    // every readable relay, which would re-include a disconnected/reconnecting peer and
+    // reintroduce the hard-timeout stall. With 1+ connected we stay on the scoped single-relay
+    // path (the collector handles a single relay fine).
+    if connected.is_empty() {
         return Ok(client.fetch_events(filter).timeout(timeout).await?);
     }
     let fetches = connected.into_iter().map(|url| {
@@ -119,10 +122,13 @@ pub async fn fetch_events_connected_only(
 }
 
 /// Drive per-relay fetches concurrently; return the union of results that arrive within
-/// `grace` of the first successful completion, or by `hard_timeout`, whichever comes first.
+/// `grace` of the first result **that carries data**, or by `hard_timeout`, whichever comes
+/// first.
 ///
-/// A future that never resolves (silent relay) is simply dropped when the grace/timeout
-/// fires, so it cannot extend latency past the first healthy relay + `grace`.
+/// The grace is armed only by a non-empty `Ok`: nostr-sdk suppresses per-relay stream errors
+/// and returns `Ok(empty)` for a fast CLOSED/auth-failing/empty relay, so an empty result must
+/// not cut off a slower relay that holds the only data. A future that never resolves (silent
+/// relay) is dropped when the grace/timeout fires, so it cannot extend latency.
 async fn collect_first_ready_then_grace<F>(
     fetches: impl IntoIterator<Item = F>,
     grace: Duration,
@@ -139,14 +145,17 @@ where
 
     loop {
         tokio::select! {
-            // Hard cap first, then drain ready results, then the post-first grace window.
+            // Hard cap first, then drain ready results, then the post-first-data grace window.
             biased;
             _ = &mut overall => break,
             next = pending.next() => match next {
                 None => break,
                 Some(Ok(events)) => {
+                    let carried_data = !events.is_empty();
                     union.extend(events);
-                    if grace_deadline.is_none() {
+                    // Empty Ok (possibly a suppressed CLOSED/auth-fail) must not arm the grace,
+                    // or a fast empty relay could drop a slower relay holding the only data.
+                    if carried_data && grace_deadline.is_none() {
                         grace_deadline = Some(Instant::now() + grace);
                     }
                 }
@@ -322,5 +331,38 @@ mod tests {
         assert_eq!(union.len(), 2);
         assert!(union.iter().any(|e| e.id == id_a));
         assert!(union.iter().any(|e| e.id == id_b));
+    }
+
+    // Blocker-2 regression: a fast Ok(empty) (e.g. CLOSED/auth-fail suppressed to empty) must
+    // not arm the grace and drop a slower relay that carries the only data.
+    #[tokio::test]
+    async fn empty_first_result_does_not_drop_late_data_relay() {
+        use futures::future::{BoxFuture, FutureExt};
+
+        let data_event = sample_event("late-data");
+        let expected = data_event.id;
+        let empty_fast: BoxFuture<'static, anyhow::Result<BTreeSet<Event>>> =
+            async { Ok(BTreeSet::new()) }.boxed();
+        let data_slow: BoxFuture<'static, anyhow::Result<BTreeSet<Event>>> = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(BTreeSet::from([data_event]))
+        }
+        .boxed();
+
+        // Grace (20ms) is shorter than the data delay (50ms): if the empty result armed the
+        // grace, the data relay would be dropped and the union would be empty.
+        let union = timeout(
+            Duration::from_secs(5),
+            collect_first_ready_then_grace(
+                vec![empty_fast, data_slow],
+                Duration::from_millis(20),
+                Duration::from_secs(30),
+            ),
+        )
+        .await
+        .expect("must not hang");
+
+        assert_eq!(union.len(), 1);
+        assert!(union.iter().any(|e| e.id == expected));
     }
 }
