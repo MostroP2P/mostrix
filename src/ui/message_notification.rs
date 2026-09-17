@@ -1336,9 +1336,9 @@ fn compact_pay_title(bond: bool, order_id: Option<uuid::Uuid>) -> String {
 /// [`mostro_core::prelude::Action::PaymentFailed`] choose popup size from terminal
 /// width/height so wrapped body text degrades gracefully on narrow or short screens.
 /// [`mostro_core::prelude::Action::PayInvoice`] / [`mostro_core::prelude::Action::PayBondInvoice`]
-/// size to a half-block QR when it fits, a compact sextant QR on a standard
-/// terminal, otherwise keep the text card; other actions keep fixed preferred
-/// dimensions.
+/// size to a half-block QR when it fits, a quadrant QR on narrow terminals and
+/// a compact sextant QR on short ones, otherwise keep the text card; other
+/// actions keep fixed preferred dimensions.
 pub fn render_message_notification(
     f: &mut ratatui::Frame,
     notification: &MessageNotification,

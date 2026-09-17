@@ -3,15 +3,24 @@
 //! Encodes with ECC Level L (screens are clean) and paints explicit
 //! `Rgb(0,0,0)` / `Rgb(255,255,255)` so the code stays scannable on any
 //! terminal theme. Tall terminals get upper-half blocks (`▀`) — the
-//! packing phone cameras read most reliably. Typical bolt11 symbols are
-//! ~30 rows that way, so a normal TUI uses filled Unicode sextants
-//! (2×3 modules per cell) instead. If even that does not fit, the
-//! caller shows the invoice as text.
+//! packing phone cameras read most reliably. When that is too wide, the
+//! quadrant packing (2×2 modules per cell, classic Block Elements glyphs
+//! that every terminal font ships) halves the width while staying
+//! camera-readable. Only when the terminal is also too short do we fall
+//! back to filled Unicode sextants (2×3 modules per cell, denser but
+//! reliant on newer "Legacy Computing" glyphs). If even that does not
+//! fit, the caller shows the invoice as text.
 
 use qrcode::{Color as QrModule, EcLevel, QrCode};
 use ratatui::style::{Color, Style};
 use ratatui::symbols::pixel::SEXTANTS;
 use ratatui::text::{Line, Span};
+
+/// 2×2 Block Elements (U+2580..U+259F) indexed by a `TL|TR<<1|BL<<2|BR<<3` mask.
+/// Unlike sextants, these glyphs exist in essentially every terminal font.
+const QUADRANTS: [&str; 16] = [
+    " ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█",
+];
 
 /// Painted black/white — named `Color::Black`/`White` can be remapped by the terminal.
 const DARK: Color = Color::Rgb(0, 0, 0);
@@ -54,8 +63,12 @@ pub fn qr_payload(raw: &str) -> String {
 enum QrCells {
     /// One module wide, two modules tall (`▀`). Best for phone cameras.
     HalfBlock,
-    /// Two modules wide, three modules tall (filled sextants). Compact
-    /// enough for a standard TUI while staying camera-readable.
+    /// Two modules wide, two modules tall (Block Elements quadrants).
+    /// Half the width of half-blocks with the same universal font support —
+    /// used on narrow-but-tall terminals before risking sextant glyphs.
+    Quadrant,
+    /// Two modules wide, three modules tall (filled sextants). Densest
+    /// packing; the only one that shrinks height for short terminals.
     Sextant,
 }
 
@@ -68,6 +81,7 @@ pub fn encode_qr(payload: &str, quiet_zone: u16) -> Option<QrView> {
 /// neither encoding fits — the popup should show the invoice text.
 pub fn encode_qr_fitting(payload: &str, max_width: u16, max_height: u16) -> Option<QrView> {
     try_fit(payload, QrCells::HalfBlock, max_width, max_height)
+        .or_else(|| try_fit(payload, QrCells::Quadrant, max_width, max_height))
         .or_else(|| try_fit(payload, QrCells::Sextant, max_width, max_height))
 }
 
@@ -88,6 +102,7 @@ fn encode_qr_cells(payload: &str, quiet_zone: u16, cells: QrCells) -> Option<QrV
     let (width, height) = cell_size(code.width(), quiet_zone, cells);
     let lines = match cells {
         QrCells::HalfBlock => render_half_block_lines(&code, quiet_zone),
+        QrCells::Quadrant => render_quadrant_lines(&code, quiet_zone),
         QrCells::Sextant => render_sextant_lines(&code, quiet_zone),
     };
     Some(QrView {
@@ -105,6 +120,7 @@ fn cell_size(modules: usize, quiet_zone: u16, cells: QrCells) -> (u16, u16) {
     let total = modules.saturating_add((quiet_zone as usize).saturating_mul(2));
     let (w, h) = match cells {
         QrCells::HalfBlock => (total, total.div_ceil(2)),
+        QrCells::Quadrant => (total.div_ceil(2), total.div_ceil(2)),
         QrCells::Sextant => (total.div_ceil(2), total.div_ceil(3)),
     };
     (
@@ -146,6 +162,41 @@ fn render_half_block_lines(code: &QrCode, quiet_zone: u16) -> Vec<Line<'static>>
                     .fg(module_color(module_dark(code, x, top_y)))
                     .bg(module_color(module_dark(code, x, bot_y))),
             ));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// Block Elements quadrants: 2×2 modules per cell. Dark modules are the
+/// character foreground on a light cell (same contrast as half-blocks).
+/// Half the width of half-blocks with the same universal font coverage.
+fn render_quadrant_lines(code: &QrCode, quiet_zone: u16) -> Vec<Line<'static>> {
+    // Row-major 2×2 matching the `QUADRANTS` bit order (TL, TR, BL, BR).
+    const DOTS: [(isize, isize, u8); 4] = [
+        (0, 0, 1 << 0),
+        (1, 0, 1 << 1),
+        (0, 1, 1 << 2),
+        (1, 1, 1 << 3),
+    ];
+    let quiet = quiet_zone as isize;
+    let total = (code.width() as isize + quiet * 2).max(0) as usize;
+    let cols = total.div_ceil(2);
+    let rows = total.div_ceil(2);
+    let style = Style::default().fg(DARK).bg(LIGHT);
+    let mut lines = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let mut spans = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let mut bits = 0u8;
+            for (dx, dy, bit) in DOTS {
+                let x = col as isize * 2 + dx - quiet;
+                let y = row as isize * 2 + dy - quiet;
+                if module_dark(code, x, y) {
+                    bits |= bit;
+                }
+            }
+            spans.push(Span::styled(QUADRANTS[usize::from(bits)], style));
         }
         lines.push(Line::from(spans));
     }
@@ -204,6 +255,17 @@ mod tests {
         })
     }
 
+    fn view_has_legacy_sextant(view: &QrView) -> bool {
+        view.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ('\u{1FB00}'..='\u{1FB3B}').contains(&ch))
+            })
+        })
+    }
+
     #[test]
     fn qr_payload_prefixes_and_uppercases() {
         assert_eq!(qr_payload("  lnbc1abc  "), "lightning:LNBC1ABC");
@@ -253,6 +315,26 @@ mod tests {
     fn encode_qr_fitting_keeps_half_blocks_when_they_fit() {
         let view = encode_qr_fitting("lightning:LNBC1TEST", 80, 40).expect("fit");
         assert_eq!(view.lines[0].spans[0].content.as_ref(), HALF_BLOCK);
+    }
+
+    #[test]
+    fn encode_qr_fitting_uses_quadrants_when_half_block_is_too_wide() {
+        let payload = "lightning:LNBC1TEST";
+        let half = encode_qr(payload, QUIET_ZONE_MIN).expect("half-block");
+        // Narrow but tall: half-block overflows width, quadrant halves it.
+        let view = encode_qr_fitting(payload, half.width.saturating_sub(1), half.height)
+            .expect("quadrant should fit");
+        assert!(view.width < half.width);
+        assert_eq!(view.height, half.height, "quadrants keep half-block height");
+        assert!(
+            !view_has_legacy_sextant(&view),
+            "quadrant path must avoid font-risky sextant glyphs"
+        );
+        assert_ne!(
+            view.lines[0].spans[0].content.as_ref(),
+            HALF_BLOCK,
+            "quadrant quiet zone is a space, not a half-block"
+        );
     }
 
     #[test]
