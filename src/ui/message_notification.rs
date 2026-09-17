@@ -258,6 +258,30 @@ fn render_invoice_display(
     }
 }
 
+fn help_key(text: &'static str) -> Span<'static> {
+    Span::styled(
+        text,
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn help_plain(text: &'static str) -> Span<'static> {
+    Span::styled(text, Style::default())
+}
+
+/// Full help when it fits `width`, else the terser variant, so narrow popups
+/// keep every control key visible instead of centre-clipping them.
+fn fit_help(full: Vec<Span<'static>>, short: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
+    let full_width: usize = full.iter().map(Span::width).sum();
+    if full_width <= width as usize {
+        full
+    } else {
+        short
+    }
+}
+
 fn render_pay_help(
     f: &mut ratatui::Frame,
     help1: Rect,
@@ -279,98 +303,81 @@ fn render_pay_help(
             help1,
         );
     } else if qr_fallback {
+        let full = vec![
+            help_plain("QR needs a taller terminal. Press "),
+            help_key("C"),
+            help_plain(" to copy, "),
+            help_key("↑/↓"),
+            help_plain(" scroll"),
+        ];
+        let short = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("↑/↓"),
+            help_plain(" scroll"),
+        ];
         f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("QR needs a taller terminal. Press ", Style::default()),
-                Span::styled(
-                    "C",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to copy, ", Style::default()),
-                Span::styled(
-                    "↑/↓",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" scroll", Style::default()),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center),
+            Paragraph::new(Line::from(fit_help(full, short, help1.width)))
+                .alignment(ratatui::layout::Alignment::Center),
             help1,
         );
     } else {
-        let mut spans = vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "C",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to copy. ", Style::default()),
-            Span::styled(
-                "SPACE",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                if showing_qr {
-                    " for text. "
-                } else {
-                    " for QR. "
-                },
-                Style::default(),
-            ),
+        let mut full = vec![
+            help_plain("Press "),
+            help_key("C"),
+            help_plain(" to copy. "),
+            help_key("SPACE"),
+            help_plain(if showing_qr {
+                " for text. "
+            } else {
+                " for QR. "
+            }),
         ];
         if !showing_qr {
-            spans.push(Span::styled(
-                "↑/↓",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(
-                if has_cancel { " scroll, " } else { " scroll" },
-                Style::default(),
-            ));
+            full.push(help_key("↑/↓"));
+            full.push(help_plain(if has_cancel { " scroll, " } else { " scroll" }));
         }
         if has_cancel {
-            spans.push(Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(" select action", Style::default()));
+            full.push(help_key("Left/Right"));
+            full.push(help_plain(" select action"));
+        }
+        let mut short = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("SPACE"),
+            help_plain(if showing_qr { " text " } else { " QR " }),
+        ];
+        if !showing_qr {
+            short.push(help_key("↑/↓"));
+            short.push(help_plain(" "));
+        }
+        if has_cancel {
+            short.push(help_key("←/→"));
+            short.push(help_plain(" sel"));
         }
         f.render_widget(
-            Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center),
+            Paragraph::new(Line::from(fit_help(full, short, help1.width)))
+                .alignment(ratatui::layout::Alignment::Center),
             help1,
         );
     }
 
-    let mut help2_spans = vec![Span::styled("Press ", Style::default())];
+    let mut help2_full = vec![help_plain("Press ")];
     if has_cancel {
-        help2_spans.push(Span::styled(
-            "Enter",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ));
-        help2_spans.push(Span::styled(" to confirm, ", Style::default()));
+        help2_full.push(help_key("Enter"));
+        help2_full.push(help_plain(" to confirm, "));
     }
-    help2_spans.push(Span::styled(
-        "Esc",
-        Style::default()
-            .fg(PRIMARY_COLOR)
-            .add_modifier(Modifier::BOLD),
-    ));
-    help2_spans.push(Span::styled(" to dismiss", Style::default()));
+    help2_full.push(help_key("Esc"));
+    help2_full.push(help_plain(" to dismiss"));
+    let mut help2_short = Vec::new();
+    if has_cancel {
+        help2_short.push(help_key("Enter"));
+        help2_short.push(help_plain(" "));
+    }
+    help2_short.push(help_key("Esc"));
     f.render_widget(
-        Paragraph::new(Line::from(help2_spans)).alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(fit_help(help2_full, help2_short, help2.width)))
+            .alignment(ratatui::layout::Alignment::Center),
         help2,
     );
 }
@@ -498,59 +505,42 @@ fn render_pay_qr_help(
         );
         return;
     }
-    let mut spans = Vec::new();
-    if qr_fallback {
-        spans.push(Span::styled(
-            "QR needs a taller terminal. ",
-            Style::default(),
-        ));
-    }
-    spans.extend([
-        Span::styled(
-            "C",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" copy  ", Style::default()),
-        Span::styled(
-            "SPACE",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if showing_qr { " text  " } else { " QR  " },
-            Style::default(),
-        ),
-    ]);
-    if has_cancel {
-        spans.extend([
-            Span::styled(
-                "←/→",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" confirm  ", Style::default()),
-        ]);
-    }
-    spans.extend([
-        Span::styled(
-            "Esc",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" dismiss", Style::default()),
-    ]);
+    let controls_full = {
+        let mut spans = Vec::new();
+        if qr_fallback {
+            spans.push(help_plain("QR needs a taller terminal. "));
+        }
+        spans.push(help_key("C"));
+        spans.push(help_plain(" copy  "));
+        spans.push(help_key("SPACE"));
+        spans.push(help_plain(if showing_qr { " text  " } else { " QR  " }));
+        if has_cancel {
+            spans.push(help_key("←/→"));
+            spans.push(help_plain("  "));
+            spans.push(help_key("Enter"));
+            spans.push(help_plain(" confirm  "));
+        }
+        spans.push(help_key("Esc"));
+        spans.push(help_plain(" dismiss"));
+        spans
+    };
+    let controls_short = {
+        let mut spans = vec![
+            help_key("C"),
+            help_plain(" copy "),
+            help_key("SPACE"),
+            help_plain(if showing_qr { " text " } else { " QR " }),
+        ];
+        if has_cancel {
+            spans.push(help_key("←/→"));
+            spans.push(help_plain(" "));
+            spans.push(help_key("Enter"));
+            spans.push(help_plain(" "));
+        }
+        spans.push(help_key("Esc"));
+        spans
+    };
+    let spans = fit_help(controls_full, controls_short, area.width);
     f.render_widget(
         Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Center),
         area,
@@ -1993,5 +1983,21 @@ mod tests {
             text.contains("Esc"),
             "bond QR must show Esc dismiss: {text}"
         );
+    }
+
+    #[test]
+    fn pay_invoice_help_keeps_control_keys_visible_on_narrow_terminal() {
+        let notification = pay_notification(Action::PayInvoice, "lnbc1test");
+        let state = InvoiceInputState::display_only();
+        // Narrow enough that the verbose help would clip, but the QR still fits.
+        let buf = draw_pay(50, 24, &notification, &state);
+        let text = buffer_text_collapsed(&buf);
+        assert!(buffer_has_qr_glyph(&buf), "test needs a compact QR: {text}");
+        for key in ["C", "SPACE", "←/→", "Enter", "Esc"] {
+            assert!(
+                text.contains(key),
+                "narrow help must keep {key} visible: {text}"
+            );
+        }
     }
 }
