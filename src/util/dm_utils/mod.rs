@@ -1801,6 +1801,9 @@ async fn replay_single_trade_dm(
         lookback_start,
     );
 
+    // One-shot hydration: complete pool-wide fetch (waits for all relays / timeout). A fast
+    // connected-only snapshot could drop a slow relay's unique DM, and the cursor advance +
+    // freshest-only replay would prevent the live subscription from ever backfilling it.
     let events = match client
         .fetch_events(filter)
         .timeout(FETCH_EVENTS_TIMEOUT)
