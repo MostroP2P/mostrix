@@ -447,10 +447,8 @@ pub async fn fetch_mostro_order_events(
     mostro_pubkey: PublicKey,
 ) -> Result<NostrEvents> {
     let filters = create_filter(ListKind::Orders, mostro_pubkey, None)?;
-    let events = client
-        .fetch_events(filters)
-        .timeout(FETCH_EVENTS_TIMEOUT)
-        .await?;
+    let events =
+        crate::util::fetch_events_connected_only(client, filters, FETCH_EVENTS_TIMEOUT).await?;
     Ok(events
         .into_iter()
         .filter(|e| e.pubkey == mostro_pubkey)

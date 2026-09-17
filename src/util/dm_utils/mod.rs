@@ -1801,21 +1801,18 @@ async fn replay_single_trade_dm(
         lookback_start,
     );
 
-    let events = match client
-        .fetch_events(filter)
-        .timeout(FETCH_EVENTS_TIMEOUT)
-        .await
-    {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!(
-                "Trade DM replay: fetch_events failed for order_id={}: {}",
-                order_id,
-                e
-            );
-            return ReplayTradeDmOutcome::FetchFailed;
-        }
-    };
+    let events =
+        match crate::util::fetch_events_connected_only(client, filter, FETCH_EVENTS_TIMEOUT).await {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!(
+                    "Trade DM replay: fetch_events failed for order_id={}: {}",
+                    order_id,
+                    e
+                );
+                return ReplayTradeDmOutcome::FetchFailed;
+            }
+        };
 
     if events.is_empty() {
         return ReplayTradeDmOutcome::EmptyFetch;

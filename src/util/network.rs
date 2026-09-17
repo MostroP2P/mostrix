@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures::FutureExt;
-use nostr_sdk::prelude::Client;
+use nostr_sdk::prelude::{Client, Event, Filter, RelayUrl};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -63,6 +64,41 @@ pub async fn any_nostr_relay_connected(client: &Client) -> bool {
         .await
         .values()
         .any(|relay| relay.status().is_connected())
+}
+
+/// Relay URLs currently in the `Connected` state.
+///
+/// A dead/unreachable relay is simply absent here; nostr-sdk's background task flips
+/// it back to `Connected` on its own once it recovers, so no manual re-probe is needed.
+pub async fn connected_relay_urls(client: &Client) -> Vec<RelayUrl> {
+    client
+        .relays()
+        .await
+        .into_iter()
+        .filter_map(|(url, relay)| relay.status().is_connected().then_some(url))
+        .collect()
+}
+
+/// `fetch_events` scoped to currently-connected relays.
+///
+/// Default EOSE aggregation waits for **every** targeted relay (or the timeout), so one
+/// unresponsive relay otherwise holds the whole call open until `timeout`. Restricting the
+/// target set to connected relays lets the call finish as soon as the healthy relays EOSE.
+/// Falls back to the full pool when no relay is connected yet (e.g. mid-reconnect).
+pub async fn fetch_events_connected_only(
+    client: &Client,
+    filter: Filter,
+    timeout: Duration,
+) -> anyhow::Result<BTreeSet<Event>> {
+    let connected = connected_relay_urls(client).await;
+    if connected.is_empty() {
+        return Ok(client.fetch_events(filter).timeout(timeout).await?);
+    }
+    let targets = connected.into_iter().map(|url| (url, vec![filter.clone()]));
+    Ok(client
+        .fetch_events(nostr_sdk::client::ReqTarget::manual(targets))
+        .timeout(timeout)
+        .await?)
 }
 
 /// Connect the `nostr-sdk` client, but never let a panic crash the app.
@@ -137,5 +173,22 @@ mod tests {
             "unexpected handshake error: {err}"
         );
         assert!(!any_nostr_relay_connected(&client).await);
+    }
+
+    #[tokio::test]
+    async fn connected_relay_urls_empty_without_connection() {
+        let client = Client::default();
+        assert!(connected_relay_urls(&client).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connected_relay_urls_excludes_unconnected_relay() {
+        let client = Client::default();
+        client
+            .add_relay("ws://127.0.0.1:1")
+            .await
+            .expect("add closed-port relay");
+        // Added but never reaches Connected: must be excluded from the healthy set.
+        assert!(connected_relay_urls(&client).await.is_empty());
     }
 }

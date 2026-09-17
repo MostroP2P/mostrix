@@ -361,11 +361,10 @@ pub async fn fetch_chat_messages_for_shared_key(
         .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
 
     let kind14_filter = chat_filter(sign.public_key()).since(since_ts).limit(100);
-    let events = client
-        .fetch_events(kind14_filter)
-        .timeout(FETCH_EVENTS_TIMEOUT)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to fetch chat events: {e}"))?;
+    let events =
+        crate::util::fetch_events_connected_only(client, kind14_filter, FETCH_EVENTS_TIMEOUT)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch chat events: {e}"))?;
 
     let mut messages = Vec::new();
     for wrapped in events.iter() {
