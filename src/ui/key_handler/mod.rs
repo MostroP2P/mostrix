@@ -900,14 +900,6 @@ fn handle_pay_invoice_display_keys(code: KeyCode, invoice_state: &mut InvoiceInp
     }
 }
 
-/// Unmodified `X` / `x` — used as a direct Cancel Order shortcut on pay popups.
-fn is_unmodified_x(key_event: &KeyEvent) -> bool {
-    matches!(key_event.code, KeyCode::Char('x') | KeyCode::Char('X'))
-        && !key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && !key_event.modifiers.contains(KeyModifiers::ALT)
-        && !key_event.modifiers.contains(KeyModifiers::SUPER)
-}
-
 fn update_invoice_notification_action_selection(
     code: KeyCode,
     invoice_state: &mut InvoiceInputState,
@@ -1051,36 +1043,6 @@ pub fn handle_key_event(
         if handle_pay_invoice_display_keys(code, invoice_state) {
             return Some(true);
         }
-    }
-
-    // PayInvoice / PayBondInvoice: unmodified X cancels immediately (same as Cancel Order).
-    let pay_invoice_cancel_id = match &app.mode {
-        UiMode::NewMessageNotification(
-            notification,
-            Action::PayInvoice | Action::PayBondInvoice,
-            _,
-        ) if is_unmodified_x(&key_event) => Some(notification.order_id),
-        _ => None,
-    };
-    if let Some(order_id) = pay_invoice_cancel_id {
-        let ctx = EnterKeyContext {
-            orders,
-            disputes,
-            pool,
-            client,
-            mostro_pubkey,
-            current_mostro_pubkey,
-            order_result_tx,
-            ln_address_result_tx,
-            key_rotation_tx,
-            seed_words_tx,
-            mostro_info_tx,
-            mostro_info: app.mostro_info.clone(),
-            admin_chat_keys,
-            dm_subscription_tx,
-        };
-        message_handlers::spawn_cancel_from_notification(app, &ctx, order_id);
-        return Some(true);
     }
 
     // AddInvoice popup paste fallback for terminals without bracketed paste support.
@@ -1895,7 +1857,6 @@ pub fn handle_key_event(
                     Action::AddInvoice
                     | Action::AddBondInvoice
                     | Action::PayInvoice
-                    | Action::PayBondInvoice
                     | Action::WaitingSellerToPay
                     | Action::WaitingBuyerInvoice,
                     ref mut invoice_state,
@@ -1905,6 +1866,8 @@ pub fn handle_key_event(
                         invoice_state,
                     ))
                 }
+                // Bond pay popup has no cancel action; swallow Left/Right.
+                UiMode::NewMessageNotification(_, Action::PayBondInvoice, _) => return Some(true),
                 UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                     dispute_id,
                     ref mut selected_button_index,
@@ -2692,20 +2655,6 @@ mod key_handler_tests {
             &mut state
         ));
         assert!(state.show_qr);
-    }
-
-    #[test]
-    fn unmodified_x_is_pay_invoice_cancel_shortcut() {
-        let plain = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
-        let shift = KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT);
-        let ctrl = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-        assert!(is_unmodified_x(&plain));
-        assert!(is_unmodified_x(&shift));
-        assert!(!is_unmodified_x(&ctrl));
-        assert!(!is_unmodified_x(&KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::NONE
-        )));
     }
 
     #[test]

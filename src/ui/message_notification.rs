@@ -117,13 +117,14 @@ fn pay_invoice_popup_layout(
     const PREFERRED_WIDTH: u16 = 90;
     const TEXT_INVOICE_ROWS: u16 = 6;
     const TEXT_HEIGHT_PAY: u16 = 19;
-    const TEXT_HEIGHT_BOND: u16 = 20;
-    // Compact chrome: spacer, [bond note], amount, Ack/Cancel strip, help.
+    const TEXT_HEIGHT_BOND: u16 = 17;
+    // Compact chrome: spacer, amount, help, plus the regular invoice's Ack/Cancel
+    // strip or the bond's locked note. The bond has no cancel action (Esc closes it).
     // Order id lives in the Block title so the strip can replace that row.
     const QR_CHROME_PAY: u16 = 4;
-    const QR_CHROME_BOND: u16 = 5;
+    const QR_CHROME_BOND: u16 = 4;
     const TEXT_FIXED_PAY: u16 = 11;
-    const TEXT_FIXED_BOND: u16 = 12;
+    const TEXT_FIXED_BOND: u16 = 9;
 
     let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
     let max_qr_w = area.width.saturating_sub(4);
@@ -264,6 +265,7 @@ fn render_pay_help(
     invoice_state: &InvoiceInputState,
     showing_qr: bool,
     qr_fallback: bool,
+    has_cancel: bool,
 ) {
     if invoice_state.copied_to_clipboard {
         f.render_widget(
@@ -323,22 +325,19 @@ fn render_pay_help(
                 Style::default(),
             ),
         ];
-        if showing_qr {
-            spans.push(Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(" select action", Style::default()));
-        } else {
+        if !showing_qr {
             spans.push(Span::styled(
                 "↑/↓",
                 Style::default()
                     .fg(PRIMARY_COLOR)
                     .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(" scroll, ", Style::default()));
+            spans.push(Span::styled(
+                if has_cancel { " scroll, " } else { " scroll" },
+                Style::default(),
+            ));
+        }
+        if has_cancel {
             spans.push(Span::styled(
                 "Left/Right",
                 Style::default()
@@ -353,25 +352,25 @@ fn render_pay_help(
         );
     }
 
+    let mut help2_spans = vec![Span::styled("Press ", Style::default())];
+    if has_cancel {
+        help2_spans.push(Span::styled(
+            "Enter",
+            Style::default()
+                .fg(PRIMARY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+        help2_spans.push(Span::styled(" to confirm, ", Style::default()));
+    }
+    help2_spans.push(Span::styled(
+        "Esc",
+        Style::default()
+            .fg(PRIMARY_COLOR)
+            .add_modifier(Modifier::BOLD),
+    ));
+    help2_spans.push(Span::styled(" to dismiss", Style::default()));
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to dismiss", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(help2_spans)).alignment(ratatui::layout::Alignment::Center),
         help2,
     );
 }
@@ -424,7 +423,9 @@ fn render_pay_qr_compact(
     }
     constraints.push(Constraint::Length(1)); // amount
     constraints.push(Constraint::Length(layout.invoice_rows));
-    constraints.push(Constraint::Length(1)); // ack/cancel strip
+    if !bond {
+        constraints.push(Constraint::Length(1)); // ack/cancel strip
+    }
     constraints.push(Constraint::Length(1)); // help
 
     let chunks = Layout::new(Direction::Vertical, constraints).split(popup);
@@ -453,23 +454,26 @@ fn render_pay_qr_compact(
         &layout.visual,
     );
     idx += 1;
-    helpers::render_compact_action_strip(
-        f,
-        chunks[idx],
-        matches!(
-            invoice_state.action_selection,
-            InvoiceNotificationActionSelection::Primary
-        ),
-        "Acknowledge",
-        "Cancel Order",
-    );
-    idx += 1;
+    if !bond {
+        helpers::render_compact_action_strip(
+            f,
+            chunks[idx],
+            matches!(
+                invoice_state.action_selection,
+                InvoiceNotificationActionSelection::Primary
+            ),
+            "Acknowledge",
+            "Cancel Order",
+        );
+        idx += 1;
+    }
     render_pay_qr_help(
         f,
         chunks[idx],
         invoice_state,
         layout.showing_qr(),
         layout.qr_fallback(),
+        !bond,
     );
 }
 
@@ -479,6 +483,7 @@ fn render_pay_qr_help(
     invoice_state: &InvoiceInputState,
     showing_qr: bool,
     qr_fallback: bool,
+    has_cancel: bool,
 ) {
     if invoice_state.copied_to_clipboard {
         f.render_widget(
@@ -518,27 +523,26 @@ fn render_pay_qr_help(
             if showing_qr { " text  " } else { " QR  " },
             Style::default(),
         ),
-        Span::styled(
-            "X",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" cancel  ", Style::default()),
-        Span::styled(
-            "←/→",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ", Style::default()),
-        Span::styled(
-            "Enter",
-            Style::default()
-                .fg(PRIMARY_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ack  ", Style::default()),
+    ]);
+    if has_cancel {
+        spans.extend([
+            Span::styled(
+                "←/→",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" confirm  ", Style::default()),
+        ]);
+    }
+    spans.extend([
         Span::styled(
             "Esc",
             Style::default()
@@ -888,6 +892,7 @@ fn render_pay_invoice(
         invoice_state,
         layout.showing_qr(),
         layout.qr_fallback(),
+        true,
     );
 }
 
@@ -920,7 +925,6 @@ fn render_pay_bond_invoice(
             Constraint::Length(1), // label
             Constraint::Length(layout.invoice_rows),
             Constraint::Length(1), // spacer
-            Constraint::Length(3), // action buttons
             Constraint::Length(1), // help text line 1
             Constraint::Length(1), // help text line 2
         ],
@@ -974,24 +978,14 @@ fn render_pay_bond_invoice(
         &layout.visual,
     );
 
-    helpers::render_yes_no_buttons(
-        f,
-        chunks[8],
-        matches!(
-            invoice_state.action_selection,
-            InvoiceNotificationActionSelection::Primary
-        ),
-        "Acknowledge",
-        "Cancel Order",
-    );
-
     render_pay_help(
         f,
+        chunks[8],
         chunks[9],
-        chunks[10],
         invoice_state,
         layout.showing_qr(),
         layout.qr_fallback(),
+        false,
     );
 }
 
@@ -1970,8 +1964,12 @@ mod tests {
         );
         assert!(text.contains("Locked"), "bond note missing: {text}");
         assert!(
-            text.contains("Acknowledge") && text.contains("Cancel Order"),
-            "bond QR must keep Ack/Cancel visible: {text}"
+            !text.contains("Acknowledge") && !text.contains("Cancel Order"),
+            "bond QR must not offer a cancel action; Esc closes it: {text}"
+        );
+        assert!(
+            text.contains("Esc"),
+            "bond QR must show Esc dismiss: {text}"
         );
     }
 
@@ -1988,8 +1986,12 @@ mod tests {
         );
         assert!(text.contains("Locked"), "bond note missing: {text}");
         assert!(
-            text.contains("Acknowledge") && text.contains("Cancel Order"),
-            "bond QR must keep Ack/Cancel visible: {text}"
+            !text.contains("Acknowledge") && !text.contains("Cancel Order"),
+            "bond QR must not offer a cancel action; Esc closes it: {text}"
+        );
+        assert!(
+            text.contains("Esc"),
+            "bond QR must show Esc dismiss: {text}"
         );
     }
 }
