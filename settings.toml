@@ -5,10 +5,10 @@ mostro_pubkey = "mostro_pubkey_hex_format"
 # Admin private key - leave empty for user mode
 admin_privkey = ""
 # Relays to connect to
-relays = ["wss://relay.mostro.network"]
+relays = ["wss://relay.mostro.network","wss://relay.shadowbip.com","wss://mostro-p2p.tech"]
 log_level = "info"
-# Visually filter currencies to show in the UI
-currencies_filter = ["VES", "ARS", "USD"]
+# Visually filter currencies to show in the UI - leave empty to show all currencies
+currencies_filter = []
 # Nostr private key in nsec format
 nsec_privkey = 'nsec1_privkey_format'
 # User mode: "user" or "admin"

@@ -9,6 +9,11 @@ use std::{
 /// Embedded default `settings.toml` used to bootstrap configuration on first run.
 /// This is generated at compile time from the repository root `settings.toml`.
 const DEFAULT_SETTINGS_TOML: &str = include_str!("../settings.toml");
+const DEFAULT_RELAYS: &[&str] = &[
+    "wss://relay.mostro.network",
+    "wss://relay.shadowbip.com",
+    "wss://mostro-p2p.tech",
+];
 pub const MOSTRO_STAGING_PUBKEY: &str =
     "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390";
 
@@ -239,7 +244,7 @@ with your real keys before running Mostrix again.",
 
     // Apply sensible defaults from the issue.
     settings.nsec_privkey = nsec;
-    settings.relays = vec!["wss://relay.mostro.network".to_string()];
+    settings.relays = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
     settings.user_mode = "user".to_string();
     settings.currencies_filter = Vec::new();
     settings.mostro_pubkey = MOSTRO_STAGING_PUBKEY.to_string();
