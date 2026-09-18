@@ -61,6 +61,7 @@ pub fn format_instance_info_age(ts: &Timestamp) -> String {
 pub struct MostroInstanceInfo {
     /// When the instance info event was created (set at fetch parse time, not from tags).
     /// Used by [`crate::ui::AppState::set_mostro_info`] to reject older revisions.
+    pub name: Option<String>,
     pub last_updated: Option<Timestamp>,
     pub mostro_version: Option<String>,
     pub mostro_commit_hash: Option<String>,
@@ -270,6 +271,11 @@ pub fn mostro_info_from_tags(tags: Tags) -> Result<MostroInstanceInfo> {
             "mostro_version" => {
                 info.mostro_version = Some(value.to_string());
             }
+            "y" => {
+                // `y` tag is ["y", "<platform>", "<instance name>"]; the display
+                // name is the third element, not the platform id in `value`.
+                info.name = values.get(2).map(|s| s.to_string());
+            }
             "mostro_commit_hash" => {
                 info.mostro_commit_hash = Some(value.to_string());
             }
@@ -473,6 +479,22 @@ mod tests {
         assert_eq!(result.mostro_version.as_deref(), Some("0.1.0"));
         assert_eq!(result.max_order_amount, Some(1_000_000));
         assert_eq!(result.fiat_currencies_accepted, vec!["USD", "EUR"]);
+    }
+
+    #[test]
+    fn parse_y_tag_uses_instance_name_not_platform_id() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["y", "mostro", "MostroEuropa"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert_eq!(result.name.as_deref(), Some("MostroEuropa"));
+    }
+
+    #[test]
+    fn parse_y_tag_without_name_leaves_name_none() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(["y", "mostro"]).unwrap());
+        let result = mostro_info_from_tags(tags).unwrap();
+        assert!(result.name.is_none());
     }
 
     #[test]
