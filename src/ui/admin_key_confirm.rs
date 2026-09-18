@@ -15,7 +15,12 @@ pub fn render_admin_key_confirm(
     render_admin_key_confirm_with_message(f, title, key_string, selected_button, None);
 }
 
-/// Renders a generic key confirmation popup with optional custom message
+/// Renders a generic key confirmation popup with optional custom message.
+///
+/// Degrades on narrow/short terminals: drops spacers and the help line first,
+/// then the separate key row, while keeping the confirmation body and YES/NO
+/// controls visible. The message area uses wrapping so long relay URLs are not
+/// clipped horizontally.
 pub fn render_admin_key_confirm_with_message(
     f: &mut ratatui::Frame,
     title: &str,
@@ -24,9 +29,11 @@ pub fn render_admin_key_confirm_with_message(
     custom_message: Option<&str>,
 ) {
     let area = f.area();
-    let popup_width = 80;
-    let popup_height = 12;
-
+    let popup_width = 80u16.min(area.width).max(1);
+    // Prefer a roomy dialog when the terminal allows it, but never exceed the
+    // available height (short terminals used to reserve 12 fixed rows and
+    // starve the message / buttons).
+    let popup_height = 12u16.min(area.height).max(3.min(area.height));
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
@@ -34,39 +41,76 @@ pub fn render_admin_key_confirm_with_message(
         .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
+    let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let chunks = Layout::new(
-        Direction::Vertical,
-        [
+    let show_key = custom_message.is_none() && !key_string.is_empty();
+    let compact = inner.width < 40 || inner.height < 10;
+    let ultra_compact = inner.height < 6;
+
+    // Layout priority: body + YES/NO always; help and spacers are decoration.
+    let constraints: &[Constraint] = if ultra_compact {
+        &[Constraint::Min(1), Constraint::Length(3)]
+    } else if compact {
+        if show_key {
+            &[
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ]
+        } else {
+            &[Constraint::Min(1), Constraint::Length(3)]
+        }
+    } else if show_key {
+        &[
             Constraint::Length(1), // spacer
-            Constraint::Length(2), // message (wrapped)
+            Constraint::Min(2),    // message
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // key display (truncated)
+            Constraint::Length(1), // key
             Constraint::Length(1), // spacer
             Constraint::Length(3), // buttons
-            Constraint::Length(1), // help text
-        ],
-    )
-    .split(popup);
+            Constraint::Length(1), // help
+        ]
+    } else {
+        // Custom-message path (remove/restore relays, etc.): give the message
+        // the room it needs to wrap the identity line.
+        &[
+            Constraint::Length(1), // spacer
+            Constraint::Min(2),    // message
+            Constraint::Length(1), // spacer
+            Constraint::Length(3), // buttons
+            Constraint::Length(1), // help
+        ]
+    };
+    let chunks = Layout::new(Direction::Vertical, constraints).split(inner);
 
-    // Confirmation message
-    // This popup has a fixed 2-row message area. Rendering the message
-    // with wrapping can create extra visual lines and bleed outside the frame.
+    let (message_area, key_area, button_area, help_area) = if ultra_compact {
+        (chunks[0], None, chunks[1], None)
+    } else if compact {
+        if show_key {
+            (chunks[0], Some(chunks[1]), chunks[2], None)
+        } else {
+            (chunks[0], None, chunks[1], None)
+        }
+    } else if show_key {
+        (chunks[1], Some(chunks[3]), chunks[5], Some(chunks[6]))
+    } else {
+        (chunks[1], None, chunks[3], Some(chunks[4]))
+    };
+
     let message = custom_message.unwrap_or("Do you want to save this key in settings file?");
     let message_lines: Vec<Line> = message
         .lines()
         .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
         .collect();
     f.render_widget(
-        Paragraph::new(message_lines).alignment(ratatui::layout::Alignment::Center),
-        chunks[1],
+        Paragraph::new(message_lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        message_area,
     );
 
-    // Display truncated key (show first 30 chars + ...)
-    // Only show key if no custom message (for settings saves) or if custom message is provided but we still want to show it
-    // For AddSolver, we hide the key display
-    if custom_message.is_none() {
+    if let Some(key_area) = key_area {
         let display_key = if key_string.len() > 30 {
             format!("{}...", &key_string[..30])
         } else {
@@ -83,16 +127,13 @@ pub fn render_admin_key_confirm_with_message(
                 ),
             ]))
             .alignment(ratatui::layout::Alignment::Center),
-            chunks[3],
+            key_area,
         );
     }
 
-    // Yes/No buttons
-    let button_area = chunks[5];
-    let button_width = 15;
+    let button_width = if compact { 8u16 } else { 15 };
     let separator_width = 1;
     let total_button_width = (button_width * 2) + separator_width;
-
     let button_x = button_area.x + (button_area.width.saturating_sub(total_button_width)) / 2;
     let centered_button_area = Rect {
         x: button_x,
@@ -111,7 +152,6 @@ pub fn render_admin_key_confirm_with_message(
     )
     .split(centered_button_area);
 
-    // YES button
     let yes_style = if selected_button {
         Style::default()
             .bg(Color::Green)
@@ -122,14 +162,13 @@ pub fn render_admin_key_confirm_with_message(
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
     };
-
-    let yes_block = Block::default().borders(Borders::ALL).style(yes_style);
-    f.render_widget(yes_block, button_chunks[0]);
-
+    f.render_widget(
+        Block::default().borders(Borders::ALL).style(yes_style),
+        button_chunks[0],
+    );
     let yes_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
         .margin(1)
         .split(button_chunks[0]);
-
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             "✓ YES",
@@ -145,7 +184,6 @@ pub fn render_admin_key_confirm_with_message(
         yes_inner[0],
     );
 
-    // NO button
     let no_style = if !selected_button {
         Style::default()
             .bg(Color::Red)
@@ -154,14 +192,13 @@ pub fn render_admin_key_confirm_with_message(
     } else {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     };
-
-    let no_block = Block::default().borders(Borders::ALL).style(no_style);
-    f.render_widget(no_block, button_chunks[2]);
-
+    f.render_widget(
+        Block::default().borders(Borders::ALL).style(no_style),
+        button_chunks[2],
+    );
     let no_inner = Layout::new(Direction::Vertical, [Constraint::Min(0)])
         .margin(1)
         .split(button_chunks[2]);
-
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             "✗ NO",
@@ -177,37 +214,38 @@ pub fn render_admin_key_confirm_with_message(
         no_inner[0],
     );
 
-    // Help text - combine all messages into a single Paragraph
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Use ", Style::default()),
-            Span::styled(
-                "Left/Right",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to select, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to confirm, ", Style::default()),
-            Span::styled("Press ", Style::default()),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to cancel", Style::default()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        chunks[6],
-    );
+    if let Some(help_area) = help_area {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Use ", Style::default()),
+                Span::styled(
+                    "Left/Right",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to select, ", Style::default()),
+                Span::styled("Press ", Style::default()),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to confirm, ", Style::default()),
+                Span::styled("Press ", Style::default()),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to cancel", Style::default()),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center),
+            help_area,
+        );
+    }
 }
 
 /// Confirm Shift+R recovery of the selected orphan dispute IDs.
@@ -632,13 +670,13 @@ mod tests {
 
     #[test]
     fn confirm_with_message_renders_both_message_lines() {
-        // The remove-relay confirmation embeds the relay URL on the second
-        // message line; both lines must be painted (the key line is hidden
-        // whenever a custom message is set).
+        // The remove-relay confirmation embeds the relay URL in the message;
+        // both the identity and the prompt must be painted (the key line is
+        // hidden whenever a custom message is set).
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let relay = "wss://relay.mostro.network";
-        let message = format!("Remove this relay from settings?\n{relay}");
+        let message = format!("{relay}\nRemove this relay from settings?");
         terminal
             .draw(|f| {
                 render_admin_key_confirm_with_message(
@@ -658,5 +696,66 @@ mod tests {
         );
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
+    }
+
+    #[test]
+    fn confirm_with_message_keeps_identity_and_actions_on_short_terminal() {
+        // Regression: fixed 80x12 layout used to starve the body/buttons on
+        // short terminals. Identity (first message line) + YES/NO must remain.
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let relay = "wss://relay.mostro.network";
+        let message = format!("{relay}\nRemove this relay from settings?");
+        terminal
+            .draw(|f| {
+                render_admin_key_confirm_with_message(
+                    f,
+                    "📡 Remove Relay",
+                    relay,
+                    true,
+                    Some(&message),
+                )
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "relay.mostro.network"),
+            "relay identity must stay visible on a 40x8 terminal"
+        );
+        assert!(
+            buffer_contains(buf, "YES"),
+            "YES must stay visible on a 40x8 terminal"
+        );
+        assert!(
+            buffer_contains(buf, "NO"),
+            "NO must stay visible on a 40x8 terminal"
+        );
+    }
+
+    #[test]
+    fn confirm_with_message_wraps_long_relay_on_narrow_terminal() {
+        // A long URL must wrap rather than disappear off the right edge.
+        let backend = TestBackend::new(28, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let relay = "wss://very-long-subdomain.relay.example.network";
+        let message = format!("{relay}\nRemove this relay from settings?");
+        terminal
+            .draw(|f| {
+                render_admin_key_confirm_with_message(
+                    f,
+                    "📡 Remove Relay",
+                    relay,
+                    true,
+                    Some(&message),
+                )
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        // Host fragments appear across wrapped rows; assert a distinctive piece.
+        assert!(
+            buffer_contains(buf, "very-long") || buffer_contains(buf, "example.network"),
+            "wrapped relay host fragments must remain visible on a narrow terminal"
+        );
+        assert!(buffer_contains(buf, "YES"));
     }
 }

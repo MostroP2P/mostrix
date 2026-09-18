@@ -338,9 +338,9 @@ pub fn ui_draw(
         remove_relay_popup::render_remove_relay_popup(f, relays, *selected);
     }
     if let UiMode::ConfirmRemoveRelay(relay_string, _, selected_button) = &app.mode {
-        // The key line is hidden when a custom message is set, so embed the
-        // URL in the message — the user must see which relay they are removing.
-        let message = format!("Remove this relay from settings?\n{relay_string}");
+        // Identity first so a short terminal that only fits one body row still
+        // shows which relay is being removed (key line is hidden with custom messages).
+        let message = format!("{relay_string}\nRemove this relay from settings?");
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "📡 Remove Relay",
@@ -355,7 +355,8 @@ pub fn ui_draw(
             .map(|r| r.trim_start_matches("wss://").trim_start_matches("ws://"))
             .collect::<Vec<_>>()
             .join(", ");
-        let message = format!("Replace your relay list with the built-in defaults?\n{hosts}");
+        // Hosts first so short terminals keep the identity visible.
+        let message = format!("{hosts}\nReplace your relay list with the built-in defaults?");
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "📡 Restore Default Relays",
