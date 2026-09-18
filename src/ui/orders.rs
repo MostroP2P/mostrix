@@ -1223,13 +1223,25 @@ fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static 
             Some(match action {
                 Action::AddInvoice => "Add your Lightning invoice to continue.",
                 Action::PayInvoice => "Pay the hold invoice to continue.",
-                Action::PayBondInvoice
-                    if msg.order_status == Some(Status::WaitingMakerBond)
-                        || (msg.order_status.is_none() && msg.is_mine == Some(true)) =>
-                {
-                    "Pay the anti-abuse bond to publish your order to the book."
+                Action::PayBondInvoice => {
+                    // Only advertise the Enter-to-reopen shortcut when the row still
+                    // carries the bond invoice (lost after restart until persisted).
+                    let can_reopen = msg.buyer_invoice.as_ref().is_some_and(|s| !s.is_empty());
+                    let maker_publish = msg.order_status == Some(Status::WaitingMakerBond)
+                        || (msg.order_status.is_none() && msg.is_mine == Some(true));
+                    match (maker_publish, can_reopen) {
+                        (true, true) => {
+                            "Press Enter to reopen the bond QR and publish your order to the book."
+                        }
+                        (true, false) => {
+                            "Pay the anti-abuse bond to publish your order to the book."
+                        }
+                        (false, true) => {
+                            "Press Enter to reopen the bond QR and pay the anti-abuse bond."
+                        }
+                        (false, false) => "Pay the anti-abuse bond to continue.",
+                    }
                 }
-                Action::PayBondInvoice => "Pay the anti-abuse bond to continue.",
                 Action::AddBondInvoice => "Add a bond payout invoice to claim your share.",
                 _ => "Complete the required payment step.",
             })
@@ -2072,6 +2084,40 @@ mod message_emoji_and_badge_tests {
         let p = message_status_presentation(&m, false);
         assert_eq!(p.title, "Invoice required");
         assert_eq!(p.next, Some("Add your Lightning invoice to continue."));
+    }
+
+    #[test]
+    fn status_presentation_taker_bond_with_invoice_prompts_enter_to_reopen() {
+        // Taker on a buy listing at waiting-taker-bond, invoice still on the row:
+        // the banner advertises the Enter-to-reopen shortcut for the bond QR.
+        let mut m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(Status::WaitingTakerBond),
+        );
+        m.buyer_invoice = Some("lnbc1bond".to_string());
+        let p = message_status_presentation(&m, false);
+        assert_eq!(p.title, "Bond payment required");
+        assert_eq!(
+            p.next,
+            Some("Press Enter to reopen the bond QR and pay the anti-abuse bond.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_taker_bond_without_invoice_omits_reopen_hint() {
+        // No invoice on the row (e.g. after restart before persistence): fall back to
+        // the generic copy instead of promising a reopen that cannot show a QR.
+        let m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(Status::WaitingTakerBond),
+        );
+        let p = message_status_presentation(&m, false);
+        assert_eq!(p.title, "Bond payment required");
+        assert_eq!(p.next, Some("Pay the anti-abuse bond to continue."));
     }
 
     #[test]

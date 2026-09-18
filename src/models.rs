@@ -830,6 +830,30 @@ impl Order {
         ))
     }
 
+    /// Persist the anti-abuse bond BOLT11 so the bond QR can be reopened after a restart.
+    pub async fn update_bond_invoice(
+        pool: &SqlitePool,
+        order_id: &str,
+        invoice: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE orders SET bond_invoice = ? WHERE id = ?")
+            .bind(invoice)
+            .bind(order_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Load the persisted bond BOLT11 (missing column/row → `None`).
+    pub async fn load_bond_invoice(pool: &SqlitePool, order_id: &str) -> Result<Option<String>> {
+        let row =
+            sqlx::query_as::<_, (Option<String>,)>("SELECT bond_invoice FROM orders WHERE id = ?")
+                .bind(order_id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.and_then(|(invoice,)| invoice).filter(|s| !s.is_empty()))
+    }
+
     pub async fn update_last_seen_dm_ts(pool: &SqlitePool, order_id: &str, ts: i64) -> Result<()> {
         sqlx::query(
             r#"

@@ -72,7 +72,8 @@ pub async fn init_db() -> Result<SqlitePool> {
                 expires_at INTEGER,
                 last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT,
-                seller_reputation TEXT
+                seller_reputation TEXT,
+                bond_invoice TEXT
             );
             CREATE TABLE IF NOT EXISTS users (
                 i0_pubkey char(64) PRIMARY KEY,
@@ -193,6 +194,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         check_column_exists(pool, "orders", "dispute_chat_shared_key_hex").await?;
     let has_buyer_reputation = check_column_exists(pool, "orders", "buyer_reputation").await?;
     let has_seller_reputation = check_column_exists(pool, "orders", "seller_reputation").await?;
+    let has_bond_invoice = check_column_exists(pool, "orders", "bond_invoice").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -212,6 +214,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_dispute_chat_shared_key_hex
         || !has_buyer_reputation
         || !has_seller_reputation
+        || !has_bond_invoice
     {
         log::info!("Running migration: adding missing database columns");
 
@@ -378,6 +381,12 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
                 .await?;
         }
 
+        if !has_bond_invoice {
+            sqlx::query("ALTER TABLE orders ADD COLUMN bond_invoice TEXT")
+                .execute(&mut *tx)
+                .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
     }
@@ -449,7 +458,8 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             expires_at INTEGER,
             last_seen_dm_ts INTEGER,
             buyer_reputation TEXT,
-            seller_reputation TEXT
+            seller_reputation TEXT,
+            bond_invoice TEXT
         );
         "#,
     )
@@ -462,14 +472,14 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
             request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
-            buyer_reputation, seller_reputation
+            buyer_reputation, seller_reputation, bond_invoice
         )
         SELECT
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
             request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
-            buyer_reputation, seller_reputation
+            buyer_reputation, seller_reputation, bond_invoice
         FROM orders;
         "#,
     )

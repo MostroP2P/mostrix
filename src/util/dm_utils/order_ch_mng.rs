@@ -174,7 +174,19 @@ fn maybe_insert_payment_request_placeholder(
                 if existing.order_status.is_none() {
                     existing.order_status = order.status;
                 }
-                if existing_row_is_reputation_placeholder(existing) && !invoice.is_empty() {
+                // Attach the invoice to the row so Messages-tab Enter can reopen the
+                // Pay/PayBond popup after Esc. Besides reputation placeholders, cover a
+                // pre-existing take-order row that has no invoice yet (bond recovery).
+                let existing_has_invoice = existing
+                    .buyer_invoice
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty());
+                let is_payment_request =
+                    matches!(action, Action::PayBondInvoice | Action::PayInvoice);
+                let should_attach_invoice = !invoice.is_empty()
+                    && (existing_row_is_reputation_placeholder(existing)
+                        || (is_payment_request && !existing_has_invoice));
+                if should_attach_invoice {
                     let request_id = existing.message.get_inner_message_kind().request_id;
                     existing.message = Message::new_order(
                         Some(order_id),
@@ -190,6 +202,10 @@ fn maybe_insert_payment_request_placeholder(
                     existing.buyer_invoice = Some(invoice.to_string());
                     if sat_amount.is_some() {
                         existing.sat_amount = sat_amount;
+                    }
+                    // Align status with the fresh request so the reopen gate passes.
+                    if order.status.is_some() {
+                        existing.order_status = order.status;
                     }
                 }
                 return;
@@ -715,6 +731,76 @@ mod tests {
         assert_eq!(stored.rating, buyer_info.rating);
         assert_eq!(stored.reviews, buyer_info.reviews);
         assert!(row.seller_reputation.is_none());
+    }
+
+    #[test]
+    fn payment_request_attaches_bond_invoice_to_existing_take_order_row() {
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        // Pre-existing take-buy row (not a reputation placeholder, no invoice yet).
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(Some(order_id), None, Some(3), Action::TakeBuy, None),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 3,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Buy),
+            is_mine: Some(false),
+            order_status: None,
+            order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Buy),
+                    status: Some(Status::WaitingTakerBond),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1bond".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 3,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Buy),
+                    created_at: None,
+                    trade_index: 3,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: false,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayBondInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        let inner = row.message.get_inner_message_kind();
+        assert_eq!(inner.action, Action::PayBondInvoice);
+        match &inner.payload {
+            Some(Payload::PaymentRequest(_, invoice, amount)) => {
+                assert_eq!(invoice, "lnbc1bond");
+                assert_eq!(*amount, Some(1000));
+            }
+            other => panic!("expected PaymentRequest payload, got {other:?}"),
+        }
+        // Row now carries the bond invoice + bond status so Enter can reopen the popup.
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1bond"));
+        assert_eq!(row.order_status, Some(Status::WaitingTakerBond));
     }
 
     #[test]

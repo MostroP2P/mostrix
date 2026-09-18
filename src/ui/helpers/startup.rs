@@ -445,6 +445,7 @@ fn db_order_to_history_message(
     sender: PublicKey,
     buyer_reputation: Option<UserInfo>,
     seller_reputation: Option<UserInfo>,
+    bond_invoice: Option<String>,
 ) -> Option<OrderMessage> {
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
@@ -478,6 +479,16 @@ fn db_order_to_history_message(
     };
 
     let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
+    // On bond statuses, surface the persisted bond BOLT11 so Messages-tab Enter can
+    // reopen the QR after a restart (the bond invoice is stored in its own column).
+    let recovery_invoice = if matches!(
+        status,
+        Some(Status::WaitingTakerBond | Status::WaitingMakerBond)
+    ) {
+        bond_invoice.or_else(|| order.buyer_invoice.clone())
+    } else {
+        order.buyer_invoice.clone()
+    };
     let message = Message::new_order(
         Some(order_id),
         request_id,
@@ -496,7 +507,7 @@ fn db_order_to_history_message(
         order_id: Some(order_id),
         trade_index,
         sat_amount: None,
-        buyer_invoice: order.buyer_invoice.clone(),
+        buyer_invoice: recovery_invoice,
         order_kind: kind,
         is_mine: Some(order.is_mine),
         order_status: status,
@@ -561,9 +572,17 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
                 .unwrap_or((None, None)),
             None => (None, None),
         };
-        if let Some(msg) =
-            db_order_to_history_message(row, sender, buyer_reputation, seller_reputation)
-        {
+        let bond_invoice = match row.id.as_deref() {
+            Some(id) => Order::load_bond_invoice(pool, id).await.unwrap_or(None),
+            None => None,
+        };
+        if let Some(msg) = db_order_to_history_message(
+            row,
+            sender,
+            buyer_reputation,
+            seller_reputation,
+            bond_invoice,
+        ) {
             history_messages.push(msg);
         }
     }
@@ -620,9 +639,16 @@ pub async fn merge_refreshed_orders_into_history(
         let (buyer_reputation, seller_reputation) = Order::load_trade_reputation(pool, &id_str)
             .await
             .unwrap_or((None, None));
-        if let Some(msg) =
-            db_order_to_history_message(&row, sender, buyer_reputation, seller_reputation)
-        {
+        let bond_invoice = Order::load_bond_invoice(pool, &id_str)
+            .await
+            .unwrap_or(None);
+        if let Some(msg) = db_order_to_history_message(
+            &row,
+            sender,
+            buyer_reputation,
+            seller_reputation,
+            bond_invoice,
+        ) {
             fresh_messages.push(msg);
         }
         if let Some(h) = order_chat_static_from_db_order(&row) {
@@ -1839,14 +1865,31 @@ mod history_action_for_db_order_tests {
             Keys::generate().public_key(),
             Some(buyer),
             None,
+            None,
         )
         .expect("history row");
         assert_eq!(msg.buyer_reputation.as_ref().map(|r| r.reviews), Some(5));
         assert!(msg.seller_reputation.is_none());
     }
 
+    #[test]
+    fn history_message_uses_persisted_bond_invoice_for_bond_status() {
+        // After a restart a waiting-taker-bond row carries the persisted bond BOLT11
+        // so Messages-tab Enter can reopen the QR.
+        let order = sample_order("waiting-taker-bond", false, "buy", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(msg.buyer_invoice.as_deref(), Some("lnbc1bond"));
+    }
+
     fn history_message(order: &Order, identity: &Keys) -> crate::ui::OrderMessage {
-        super::db_order_to_history_message(order, identity.public_key(), None, None)
+        super::db_order_to_history_message(order, identity.public_key(), None, None, None)
             .expect("history row")
     }
 

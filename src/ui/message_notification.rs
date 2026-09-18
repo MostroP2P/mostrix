@@ -438,12 +438,8 @@ fn render_pay_qr_compact(
     let chunks = Layout::new(Direction::Vertical, constraints).split(popup);
     let mut idx = 1;
     if bond {
-        render_centered_label(
-            f,
-            chunks[idx],
-            "Locked, not spent — refunded on normal completion",
-            Color::Yellow,
-        );
+        let (bond_note, bond_note_color) = bond_note_line(notification.invoice.as_deref());
+        render_centered_label(f, chunks[idx], bond_note, bond_note_color);
         idx += 1;
     }
     render_centered_label(
@@ -886,6 +882,33 @@ fn render_pay_invoice(
     );
 }
 
+/// True when the bond BOLT11 has passed its own expiry (still shown so the user
+/// can copy it, but flagged as unpayable).
+fn bond_invoice_is_expired(invoice: Option<&str>) -> bool {
+    invoice
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<lightning_invoice::Bolt11Invoice>().ok())
+        .map(|inv| inv.is_expired())
+        .unwrap_or(false)
+}
+
+/// Bond note row: red expiry warning once the invoice lapses, else the yellow
+/// locked-funds reassurance.
+fn bond_note_line(invoice: Option<&str>) -> (&'static str, Color) {
+    if bond_invoice_is_expired(invoice) {
+        (
+            "\u{26a0}\u{fe0f} Bond invoice expired \u{2014} cancel the order to retake",
+            Color::Red,
+        )
+    } else {
+        (
+            "Locked, not spent \u{2014} refunded on normal completion",
+            Color::Yellow,
+        )
+    }
+}
+
 /// Renders PayBondInvoice notification popup.
 ///
 /// Mirrors `render_pay_invoice` (half-block QR, or text when the code does not
@@ -925,11 +948,12 @@ fn render_pay_bond_invoice(
     render_order_id_header(f, chunks[1], &order_id_str);
     render_message_preview(f, chunks[2], &notification.message_preview, true);
 
+    let (bond_note, bond_note_color) = bond_note_line(notification.invoice.as_deref());
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "Locked, not spent — refunded on normal completion",
+            bond_note,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(bond_note_color)
                 .add_modifier(Modifier::BOLD),
         )]))
         .alignment(ratatui::layout::Alignment::Center),
@@ -1998,6 +2022,16 @@ mod tests {
                 text.contains(key),
                 "narrow help must keep {key} visible: {text}"
             );
+        }
+    }
+
+    #[test]
+    fn bond_note_defaults_to_locked_when_invoice_unparseable_or_missing() {
+        for inv in [None, Some(""), Some("lnbc1bond")] {
+            assert!(!super::bond_invoice_is_expired(inv));
+            let (note, color) = super::bond_note_line(inv);
+            assert!(note.contains("Locked"), "expected locked note for {inv:?}");
+            assert_eq!(color, ratatui::style::Color::Yellow);
         }
     }
 }

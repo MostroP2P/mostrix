@@ -727,6 +727,19 @@ pub(super) async fn payment_request_operation_result(
         log::error!("Failed to save order to database: {e}");
     }
 
+    // Persist the bond BOLT11 so the bond QR stays reopenable after a restart.
+    if matches!(popup_action, Action::PayBondInvoice) && !invoice_string.is_empty() {
+        if let Err(e) = crate::models::Order::update_bond_invoice(
+            pool,
+            &effective_order_id.to_string(),
+            &invoice_string,
+        )
+        .await
+        {
+            log::error!("Failed to persist bond invoice for order {effective_order_id}: {e}");
+        }
+    }
+
     if dm_subscription_tx.is_some() {
         log::info!(
             "[{log_prefix}] Sending DM subscription command for order_id={effective_order_id}, trade_index={next_idx}"
