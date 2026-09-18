@@ -14,8 +14,10 @@ use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], selected: usize) {
     let area = f.area();
     let content_rows = relays.len().clamp(1, 8) as u16;
-    let width = 60u16.min(area.width.saturating_sub(2)).max(24);
-    let height = (content_rows + 3).min(area.height.saturating_sub(2));
+    let width = 60u16.min(area.width).max(1);
+    // Size to available height (borders + rows); never subtract a margin that
+    // could starve the single relay row on short terminals (e.g. 20x4).
+    let height = (content_rows + 3).min(area.height).max(3.min(area.height));
     let popup = create_centered_popup(area, width, height);
 
     f.render_widget(Clear, popup);
@@ -29,11 +31,18 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let split = Layout::new(
-        Direction::Vertical,
-        [Constraint::Min(1), Constraint::Length(1)],
-    )
-    .split(inner);
+    // Drop the hint line when height is tight so at least one relay row stays visible.
+    let show_hint = inner.height >= 2;
+    let (list_area, hint_area) = if show_hint {
+        let split = Layout::new(
+            Direction::Vertical,
+            [Constraint::Min(1), Constraint::Length(1)],
+        )
+        .split(inner);
+        (split[0], Some(split[1]))
+    } else {
+        (inner, None)
+    };
 
     if relays.is_empty() {
         f.render_widget(
@@ -42,7 +51,7 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
                 Style::default().fg(Color::DarkGray),
             ))
             .style(Style::default().bg(BACKGROUND_COLOR)),
-            split[0],
+            list_area,
         );
     } else {
         let selected = selected.min(relays.len() - 1);
@@ -61,26 +70,28 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
             )
             .highlight_symbol("\u{203a} ");
         let mut state = ListState::default().with_selected(Some(selected));
-        f.render_stateful_widget(list, split[0], &mut state);
+        f.render_stateful_widget(list, list_area, &mut state);
 
-        if relays.len() > split[0].height as usize {
+        if relays.len() > list_area.height as usize {
             let mut sb_state = ScrollbarState::new(relays.len()).position(selected);
             f.render_stateful_widget(
                 Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
-                split[0],
+                list_area,
                 &mut sb_state,
             );
         }
     }
 
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            "\u{2191}\u{2193} move \u{2022} Enter remove \u{2022} Esc close",
-            Style::default().fg(Color::DarkGray),
-        ))
-        .style(Style::default().bg(BACKGROUND_COLOR)),
-        split[1],
-    );
+    if let Some(hint_area) = hint_area {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "\u{2191}\u{2193} move \u{2022} Enter remove \u{2022} Esc close",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .style(Style::default().bg(BACKGROUND_COLOR)),
+            hint_area,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -153,5 +164,21 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "no relays configured"));
+    }
+
+    #[test]
+    fn render_keeps_relay_row_on_short_terminal() {
+        // On a 20x4 terminal the hint line is dropped but a relay row stays visible.
+        let relays = vec!["wss://relay.mostro.network".to_string()];
+        let backend = TestBackend::new(20, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_remove_relay_popup(f, &relays, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "relay"),
+            "a relay row must remain visible on short terminals"
+        );
     }
 }

@@ -117,6 +117,31 @@ fn test_normalize_relay_url_empty() {
 }
 
 #[test]
+fn test_normalize_relay_url_lowercases_scheme() {
+    // Scheme is accepted case-insensitively and canonicalized to lowercase.
+    assert_eq!(
+        normalize_relay_url("WSS://relay.example.com"),
+        "wss://relay.example.com"
+    );
+    assert_eq!(
+        normalize_relay_url("  Ws://relay.example.com  "),
+        "ws://relay.example.com"
+    );
+}
+
+#[test]
+fn test_validate_relay_accepts_uppercase_scheme() {
+    assert!(validate_relay("WSS://relay.damus.io").is_ok());
+    assert!(validate_relay(&normalize_relay_url("WSS://relay.damus.io")).is_ok());
+}
+
+#[test]
+fn test_validate_relay_rejects_missing_host() {
+    assert!(validate_relay("wss:///events").is_err());
+    assert!(validate_relay("ws://").is_err());
+}
+
+#[test]
 fn test_normalized_bare_url_passes_validation() {
     // The Add Relay flow normalizes before validating.
     assert!(validate_relay(&normalize_relay_url("relay.damus.io")).is_ok());
