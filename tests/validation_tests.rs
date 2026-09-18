@@ -1,5 +1,7 @@
 // Integration tests for validation functions
-use mostrix::ui::key_handler::{validate_mostro_pubkey, validate_npub, validate_relay};
+use mostrix::ui::key_handler::{
+    normalize_relay_url, validate_mostro_pubkey, validate_npub, validate_relay,
+};
 use nostr_sdk::prelude::{Keys, ToBech32};
 
 #[test]
@@ -79,4 +81,43 @@ fn test_validate_relay_invalid() {
     assert!(validate_relay("https://example.com").is_err());
     assert!(validate_relay("relay.damus.io").is_err());
     assert!(validate_relay("http://example.com").is_err());
+}
+
+#[test]
+fn test_normalize_relay_url_prepends_wss() {
+    // Bare host gets the default wss:// scheme.
+    assert_eq!(
+        normalize_relay_url("relay.damus.io"),
+        "wss://relay.damus.io"
+    );
+    // Whitespace is trimmed before prefixing.
+    assert_eq!(
+        normalize_relay_url("  relay.example.com  "),
+        "wss://relay.example.com"
+    );
+}
+
+#[test]
+fn test_normalize_relay_url_preserves_explicit_scheme() {
+    assert_eq!(
+        normalize_relay_url("wss://relay.damus.io"),
+        "wss://relay.damus.io"
+    );
+    assert_eq!(
+        normalize_relay_url("ws://relay.example.com"),
+        "ws://relay.example.com"
+    );
+    assert_eq!(normalize_relay_url("  ws://a.b  "), "ws://a.b");
+}
+
+#[test]
+fn test_normalize_relay_url_empty() {
+    assert_eq!(normalize_relay_url(""), "");
+    assert_eq!(normalize_relay_url("   "), "");
+}
+
+#[test]
+fn test_normalized_bare_url_passes_validation() {
+    // The Add Relay flow normalizes before validating.
+    assert!(validate_relay(&normalize_relay_url("relay.damus.io")).is_ok());
 }

@@ -58,11 +58,11 @@ use crate::ui::key_handler::message_handlers::{
 };
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
-    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
-    validate_ln_address_format,
+    remove_relay_from_settings, restore_default_relays_in_settings, save_currency_to_settings,
+    save_mostro_pubkey_to_settings, save_relay_to_settings, validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
-    normalize_mostro_pubkey, validate_currency, validate_relay,
+    normalize_mostro_pubkey, normalize_relay_url, validate_currency, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::chat_utils::{
@@ -632,6 +632,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
+        | UiMode::RemoveRelay(_)
+        | UiMode::ConfirmRemoveRelay(_, _)
+        | UiMode::ConfirmRestoreDefaultRelays(_)
         | UiMode::AddLnAddress(_)
         | UiMode::ConfirmLnAddress(_, _)
         | UiMode::ConfirmClearLnAddress(_)
@@ -1080,13 +1083,13 @@ fn handle_enter_settings_mode(
             }
         }
         UiMode::AddRelay(key_state) => {
-            // Validate relay URL format before proceeding to confirmation
-            match validate_relay(&key_state.key_input) {
+            // Default to wss:// so the user can type a bare host, then validate.
+            let normalized = normalize_relay_url(&key_state.key_input);
+            match validate_relay(&normalized) {
                 Ok(_) => {
-                    app.mode =
-                        handle_input_to_confirmation(&key_state.key_input, default_mode, |input| {
-                            UiMode::ConfirmRelay(input, true)
-                        });
+                    app.mode = handle_input_to_confirmation(&normalized, default_mode, |input| {
+                        UiMode::ConfirmRelay(input, true)
+                    });
                 }
                 Err(e) => {
                     // Show error popup
@@ -1113,6 +1116,59 @@ fn handle_enter_settings_mode(
                     }
                 });
             }
+        }
+        UiMode::RemoveRelay(selected) => {
+            let relays = crate::settings::load_settings_from_disk()
+                .map(|s| s.relays)
+                .unwrap_or_default();
+            if relays.len() <= 1 {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "At least one relay is required; cannot remove the last relay.".to_string(),
+                ));
+            } else if let Some(relay) = relays.get(selected) {
+                app.mode = UiMode::ConfirmRemoveRelay(relay.clone(), true);
+            } else {
+                app.mode = default_mode;
+            }
+        }
+        UiMode::ConfirmRemoveRelay(relay_string, selected_button) => {
+            if selected_button {
+                remove_relay_from_settings(&relay_string);
+                let relay_to_remove = relay_string.clone();
+                let client_clone = ctx.client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client_clone.remove_relay(relay_to_remove.trim()).await {
+                        log::error!("Failed to remove relay at runtime: {}", e);
+                    }
+                });
+                app.mode = default_mode;
+            } else {
+                // NO returns to the relay picker.
+                app.mode = UiMode::RemoveRelay(0);
+            }
+        }
+        UiMode::ConfirmRestoreDefaultRelays(selected_button) => {
+            if selected_button {
+                let old_relays = crate::settings::load_settings_from_disk()
+                    .map(|s| s.relays)
+                    .unwrap_or_default();
+                restore_default_relays_in_settings();
+                let defaults = crate::settings::default_relays();
+                let client_clone = ctx.client.clone();
+                tokio::spawn(async move {
+                    for relay in defaults.iter().filter(|d| !old_relays.contains(d)) {
+                        if let Err(e) = client_clone.add_relay(relay.trim()).await {
+                            log::error!("Failed to add default relay at runtime: {}", e);
+                        }
+                    }
+                    for relay in old_relays.iter().filter(|o| !defaults.contains(o)) {
+                        if let Err(e) = client_clone.remove_relay(relay.trim()).await {
+                            log::error!("Failed to remove relay at runtime: {}", e);
+                        }
+                    }
+                });
+            }
+            app.mode = default_mode;
         }
         UiMode::AddLnAddress(key_state) => match validate_ln_address_format(&key_state.key_input) {
             Ok(()) => {
@@ -1491,6 +1547,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::AddMostroPubkey(key_state);
             }
             Some(SettingsMenuAction::AddRelay) => app.mode = UiMode::AddRelay(key_state),
+            Some(SettingsMenuAction::RemoveRelay) => app.mode = UiMode::RemoveRelay(0),
+            Some(SettingsMenuAction::RestoreDefaultRelays) => {
+                app.mode = UiMode::ConfirmRestoreDefaultRelays(true)
+            }
             Some(SettingsMenuAction::SetBuyerLnAddress) => {
                 app.mode = UiMode::AddLnAddress(key_state)
             }

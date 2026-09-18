@@ -115,6 +115,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::AddRelay(_)
+        | UiMode::RemoveRelay(_)
         | UiMode::AddLnAddress(_)
         | UiMode::AddCurrency(_) => {
             // Dismiss key input popup
@@ -171,6 +172,15 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         }
         UiMode::ConfirmClearCurrencies(_) => {
             // Cancel clearing - return to normal mode
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::ConfirmRemoveRelay(_, _) => {
+            // Cancel removal - return to the relay picker
+            app.mode = UiMode::RemoveRelay(0);
+            true
+        }
+        UiMode::ConfirmRestoreDefaultRelays(_) => {
             app.mode = default_mode.clone();
             true
         }

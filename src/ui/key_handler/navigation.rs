@@ -100,6 +100,8 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
         | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmTradeIndexSync(_, ref mut selected_button)
+        | UiMode::ConfirmRemoveRelay(_, ref mut selected_button)
+        | UiMode::ConfirmRestoreDefaultRelays(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to YES button (left side)
             *selected_button = true;
@@ -184,6 +186,8 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
         | UiMode::ConfirmRestoreSession(ref mut selected_button)
         | UiMode::ConfirmImportSeed(_, ref mut selected_button)
         | UiMode::ConfirmTradeIndexSync(_, ref mut selected_button)
+        | UiMode::ConfirmRemoveRelay(_, ref mut selected_button)
+        | UiMode::ConfirmRestoreDefaultRelays(ref mut selected_button)
         | UiMode::ConfirmExit(ref mut selected_button) => {
             // Switch to NO button (right side)
             *selected_button = false;
@@ -284,6 +288,14 @@ fn handle_up_key(
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             form.focused = form.focused.prev(form.use_range);
         }
+        UiMode::RemoveRelay(ref mut selected) => {
+            let count = crate::settings::load_settings_from_disk()
+                .map(|s| s.relays.len())
+                .unwrap_or(0);
+            if count > 0 {
+                *selected = (*selected + count - 1) % count;
+            }
+        }
         UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -325,6 +337,8 @@ fn handle_up_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmRemoveRelay(_, _)
+        | UiMode::ConfirmRestoreDefaultRelays(_)
         | UiMode::ConfirmDeleteHistoryOrder(_, _)
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmRestoreSession(_)
@@ -435,6 +449,14 @@ fn handle_down_key(
         UiMode::UserMode(UserMode::CreatingOrder(form)) => {
             form.focused = form.focused.next(form.use_range);
         }
+        UiMode::RemoveRelay(ref mut selected) => {
+            let count = crate::settings::load_settings_from_disk()
+                .map(|s| s.relays.len())
+                .unwrap_or(0);
+            if count > 0 {
+                *selected = (*selected + 1) % count;
+            }
+        }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Navigate within disputes in progress list
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -482,6 +504,8 @@ fn handle_down_key(
         | UiMode::AddCurrency(_)
         | UiMode::ConfirmCurrency(_, _)
         | UiMode::ConfirmClearCurrencies(_)
+        | UiMode::ConfirmRemoveRelay(_, _)
+        | UiMode::ConfirmRestoreDefaultRelays(_)
         | UiMode::ConfirmDeleteHistoryOrder(_, _)
         | UiMode::ConfirmBulkDeleteHistory(_)
         | UiMode::ConfirmRestoreSession(_)

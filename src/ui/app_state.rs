@@ -57,6 +57,12 @@ pub enum UiMode {
     ConfirmMostroPubkey(String, bool),
     AddRelay(KeyInputState),
     ConfirmRelay(String, bool), // (relay_string, selected_button: true=Yes, false=No)
+    /// Settings: pick a relay to remove (list index into current relays).
+    RemoveRelay(usize),
+    /// Settings: confirm removing a relay (relay_url, selected_button).
+    ConfirmRemoveRelay(String, bool),
+    /// Settings: confirm restoring the built-in default relays (selected_button).
+    ConfirmRestoreDefaultRelays(bool),
     /// User-mode Settings: buyer Lightning address (`user@domain.com`).
     AddLnAddress(KeyInputState),
     ConfirmLnAddress(String, bool), // (address, selected_button)
@@ -164,6 +170,13 @@ impl Clone for UiMode {
             }
             UiMode::AddRelay(state) => UiMode::AddRelay(state.clone()),
             UiMode::ConfirmRelay(relay, selected) => UiMode::ConfirmRelay(relay.clone(), *selected),
+            UiMode::RemoveRelay(idx) => UiMode::RemoveRelay(*idx),
+            UiMode::ConfirmRemoveRelay(relay, selected) => {
+                UiMode::ConfirmRemoveRelay(relay.clone(), *selected)
+            }
+            UiMode::ConfirmRestoreDefaultRelays(selected) => {
+                UiMode::ConfirmRestoreDefaultRelays(*selected)
+            }
             UiMode::AddLnAddress(state) => UiMode::AddLnAddress(state.clone()),
             UiMode::ConfirmLnAddress(addr, selected) => {
                 UiMode::ConfirmLnAddress(addr.clone(), *selected)

@@ -79,6 +79,24 @@ pub fn save_relay_to_settings(relay_string: &str) {
     );
 }
 
+/// Remove a relay from the settings file.
+pub fn remove_relay_from_settings(relay_string: &str) {
+    save_settings_with(
+        |s| s.relays.retain(|r| r != relay_string),
+        "Failed to remove relay from settings",
+        "Relay removed from settings file",
+    );
+}
+
+/// Replace the relay list with the built-in defaults.
+pub fn restore_default_relays_in_settings() {
+    save_settings_with(
+        |s| s.relays = crate::settings::default_relays(),
+        "Failed to restore default relays",
+        "Default relays restored in settings file",
+    );
+}
+
 /// Save currency to settings file
 pub fn save_currency_to_settings(currency_string: &str) {
     save_settings_with(

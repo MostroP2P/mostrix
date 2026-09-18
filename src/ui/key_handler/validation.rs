@@ -104,6 +104,16 @@ pub fn normalize_mostro_pubkey(input: &str) -> Result<String, String> {
     Err("Invalid Mostro pubkey: expected npub1... (bech32) or 64-char hex string".to_string())
 }
 
+/// Normalize a user-entered relay URL: trim and default to `wss://` when no
+/// websocket scheme is typed, so users can enter a bare host.
+pub fn normalize_relay_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with("wss://") || trimmed.starts_with("ws://") {
+        return trimmed.to_string();
+    }
+    format!("wss://{trimmed}")
+}
+
 /// Validate if a relay URL has a valid format (must start with wss://)
 pub fn validate_relay(relay_str: &str) -> Result<(), String> {
     let relay = relay_str.trim();
@@ -113,6 +123,13 @@ pub fn validate_relay(relay_str: &str) -> Result<(), String> {
 
     if !relay.starts_with("wss://") && !relay.starts_with("ws://") {
         return Err("Relay URL must start with \"wss://\" or \"ws://\"".to_string());
+    }
+
+    let host = relay
+        .trim_start_matches("wss://")
+        .trim_start_matches("ws://");
+    if host.trim().is_empty() {
+        return Err("Relay URL is missing a host".to_string());
     }
 
     Ok(())

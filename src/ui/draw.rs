@@ -320,8 +320,8 @@ pub fn ui_draw(
         key_input_popup::render_key_input_popup(
             f,
             "📡 Add Relay",
-            "Enter relay URL (wss:// or ws://...):",
-            "wss://...",
+            "Enter relay URL (e.g. relay.example.com):",
+            "relay.example.com",
             key_state,
             false,
         );
@@ -332,6 +332,30 @@ pub fn ui_draw(
             "📡 Confirm Relay",
             relay_string,
             *selected_button,
+        );
+    }
+    if let UiMode::RemoveRelay(selected) = &app.mode {
+        let relays = crate::settings::load_settings_from_disk()
+            .map(|s| s.relays)
+            .unwrap_or_default();
+        remove_relay_popup::render_remove_relay_popup(f, &relays, *selected);
+    }
+    if let UiMode::ConfirmRemoveRelay(relay_string, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "📡 Remove Relay",
+            relay_string,
+            *selected_button,
+            Some("Remove this relay from settings?"),
+        );
+    }
+    if let UiMode::ConfirmRestoreDefaultRelays(selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "📡 Restore Default Relays",
+            "",
+            *selected_button,
+            Some("Replace your relay list with the built-in default relays?"),
         );
     }
     if let UiMode::AddLnAddress(key_state) = &app.mode {

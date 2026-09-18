@@ -243,8 +243,8 @@ pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
 pub use validation::{
-    hex_pubkey_to_npub, hex_seckey_to_nsec, normalize_mostro_pubkey, validate_currency,
-    validate_mostro_pubkey, validate_npub, validate_relay,
+    hex_pubkey_to_npub, hex_seckey_to_nsec, normalize_mostro_pubkey, normalize_relay_url,
+    validate_currency, validate_mostro_pubkey, validate_npub, validate_relay,
 };
 
 /// True when Disputes in Progress chat input should accept typing / paste.
@@ -1823,6 +1823,8 @@ pub fn handle_key_event(
                 | UiMode::ConfirmClearLnAddress(ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
+                | UiMode::ConfirmRemoveRelay(_, ref mut selected_button)
+                | UiMode::ConfirmRestoreDefaultRelays(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
                 | UiMode::ConfirmRestoreSession(ref mut selected_button)
