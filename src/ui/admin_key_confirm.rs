@@ -585,6 +585,7 @@ pub fn render_saved_ln_address_invoice_confirm(
 #[cfg(test)]
 mod tests {
     use super::render_recover_taken_disputes_confirm;
+    use crate::ui::admin_key_confirm::render_admin_key_confirm_with_message;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -627,5 +628,35 @@ mod tests {
             buffer_contains(buf, "YES"),
             "selected YES action must stay visible on 30x8"
         );
+    }
+
+    #[test]
+    fn confirm_with_message_renders_both_message_lines() {
+        // The remove-relay confirmation embeds the relay URL on the second
+        // message line; both lines must be painted (the key line is hidden
+        // whenever a custom message is set).
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let relay = "wss://relay.mostro.network";
+        let message = format!("Remove this relay from settings?\n{relay}");
+        terminal
+            .draw(|f| {
+                render_admin_key_confirm_with_message(
+                    f,
+                    "📡 Remove Relay",
+                    relay,
+                    true,
+                    Some(&message),
+                )
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Remove this relay from settings?"));
+        assert!(
+            buffer_contains(buf, relay),
+            "the relay URL must be visible on the confirmation popup"
+        );
+        assert!(buffer_contains(buf, "YES"));
+        assert!(buffer_contains(buf, "NO"));
     }
 }

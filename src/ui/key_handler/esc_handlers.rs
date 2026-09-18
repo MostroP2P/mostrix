@@ -115,7 +115,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)
         | UiMode::AddRelay(_)
-        | UiMode::RemoveRelay(_)
+        | UiMode::RemoveRelay(..)
         | UiMode::AddLnAddress(_)
         | UiMode::AddCurrency(_) => {
             // Dismiss key input popup
@@ -175,9 +175,12 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::ConfirmRemoveRelay(_, _) => {
-            // Cancel removal - return to the relay picker
-            app.mode = UiMode::RemoveRelay(0);
+        UiMode::ConfirmRemoveRelay(_, picker_index, _) => {
+            // Cancel removal - return to the relay picker on the same row
+            let relays = crate::settings::load_settings_from_disk()
+                .map(|s| s.relays)
+                .unwrap_or_default();
+            app.mode = UiMode::RemoveRelay(*picker_index, relays);
             true
         }
         UiMode::ConfirmRestoreDefaultRelays(_) => {

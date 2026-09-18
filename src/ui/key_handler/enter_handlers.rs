@@ -58,8 +58,9 @@ use crate::ui::key_handler::message_handlers::{
 };
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
-    remove_relay_from_settings, restore_default_relays_in_settings, save_currency_to_settings,
-    save_mostro_pubkey_to_settings, save_relay_to_settings, validate_ln_address_format,
+    plan_relay_reconcile, remove_relay_from_settings, restore_default_relays_in_settings,
+    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
+    validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
     normalize_mostro_pubkey, normalize_relay_url, validate_currency, validate_relay,
@@ -632,8 +633,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
-        | UiMode::RemoveRelay(_)
-        | UiMode::ConfirmRemoveRelay(_, _)
+        | UiMode::RemoveRelay(..)
+        | UiMode::ConfirmRemoveRelay(..)
         | UiMode::ConfirmRestoreDefaultRelays(_)
         | UiMode::AddLnAddress(_)
         | UiMode::ConfirmLnAddress(_, _)
@@ -1098,83 +1099,118 @@ fn handle_enter_settings_mode(
             }
         }
         UiMode::ConfirmRelay(relay_string, selected_button) => {
-            app.mode = handle_confirmation_enter(
-                selected_button,
-                &relay_string,
-                default_mode,
-                save_relay_to_settings,
-                |input| UiMode::AddRelay(create_key_input_state(input)),
-            );
-
-            // If YES was selected, also add the relay to the running Nostr client
             if selected_button {
-                let relay_to_add = relay_string.clone();
-                let client_clone = ctx.client.clone();
-                tokio::spawn(async move {
-                    // `and_connect` dials the relay; a bare `add_relay` only pools it.
-                    if let Err(e) = client_clone
-                        .add_relay(relay_to_add.trim())
-                        .and_connect()
-                        .await
-                    {
-                        log::error!("Failed to add relay at runtime: {}", e);
+                // Persist first; only touch the running client once the relay
+                // is durably in settings.toml, otherwise the change would
+                // silently revert on restart.
+                match save_relay_to_settings(&relay_string) {
+                    Ok(()) => {
+                        let relay_to_add = relay_string.clone();
+                        let client_clone = ctx.client.clone();
+                        tokio::spawn(async move {
+                            // `and_connect` dials the relay; a bare `add_relay` only pools it.
+                            if let Err(e) = client_clone
+                                .add_relay(relay_to_add.trim())
+                                .and_connect()
+                                .await
+                            {
+                                log::error!("Failed to add relay at runtime: {}", e);
+                            }
+                        });
+                        app.mode = default_mode;
                     }
-                });
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
+                    }
+                }
+            } else {
+                app.mode = UiMode::AddRelay(create_key_input_state(&relay_string));
             }
         }
-        UiMode::RemoveRelay(selected) => {
-            let relays = crate::settings::load_settings_from_disk()
-                .map(|s| s.relays)
-                .unwrap_or_default();
-            if relays.len() <= 1 {
+        UiMode::RemoveRelay(selected, relays) => {
+            if relays.is_empty() {
+                // Nothing to pick; close the picker.
+                app.mode = default_mode;
+            } else if relays.len() == 1 {
                 app.mode = UiMode::operation_result(OperationResult::Error(
                     "At least one relay is required; cannot remove the last relay.".to_string(),
                 ));
             } else if let Some(relay) = relays.get(selected) {
-                app.mode = UiMode::ConfirmRemoveRelay(relay.clone(), true);
+                app.mode = UiMode::ConfirmRemoveRelay(relay.clone(), selected, true);
             } else {
                 app.mode = default_mode;
             }
         }
-        UiMode::ConfirmRemoveRelay(relay_string, selected_button) => {
+        UiMode::ConfirmRemoveRelay(relay_string, picker_index, selected_button) => {
             if selected_button {
-                remove_relay_from_settings(&relay_string);
-                let relay_to_remove = relay_string.clone();
-                let client_clone = ctx.client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = client_clone.remove_relay(relay_to_remove.trim()).await {
-                        log::error!("Failed to remove relay at runtime: {}", e);
+                // Persist first; only update the running client after the
+                // settings write succeeds.
+                match remove_relay_from_settings(&relay_string) {
+                    Ok(()) => {
+                        let relay_to_remove = relay_string.clone();
+                        let client_clone = ctx.client.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = client_clone.remove_relay(relay_to_remove.trim()).await
+                            {
+                                log::error!("Failed to remove relay at runtime: {}", e);
+                            }
+                        });
+                        app.mode = default_mode;
                     }
-                });
-                app.mode = default_mode;
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
+                    }
+                }
             } else {
-                // NO returns to the relay picker.
-                app.mode = UiMode::RemoveRelay(0);
+                // NO returns to the relay picker on the same row.
+                let relays = crate::settings::load_settings_from_disk()
+                    .map(|s| s.relays)
+                    .unwrap_or_default();
+                app.mode = UiMode::RemoveRelay(picker_index, relays);
             }
         }
         UiMode::ConfirmRestoreDefaultRelays(selected_button) => {
             if selected_button {
-                let old_relays = crate::settings::load_settings_from_disk()
+                // Load the current list first; if settings are unreadable we
+                // must not touch the running client (extras would never be
+                // removed and disk state would diverge from the session).
+                let prior_relays = crate::settings::load_settings_from_disk()
                     .map(|s| s.relays)
-                    .unwrap_or_default();
-                restore_default_relays_in_settings();
-                let defaults = crate::settings::default_relays();
-                let client_clone = ctx.client.clone();
-                tokio::spawn(async move {
-                    for relay in defaults.iter().filter(|d| !old_relays.contains(d)) {
-                        // `and_connect` dials the relay; a bare `add_relay` only pools it.
-                        if let Err(e) = client_clone.add_relay(relay.trim()).and_connect().await {
-                            log::error!("Failed to add default relay at runtime: {}", e);
-                        }
+                    .map_err(|e| format!("Failed to load settings: {e}"));
+                let persisted =
+                    prior_relays.and_then(|old| restore_default_relays_in_settings().map(|()| old));
+                match persisted {
+                    Ok(old_relays) => {
+                        let defaults = crate::settings::default_relays();
+                        // Compare by parsed RelayUrl: `wss://host/` and
+                        // `wss://host` are the same pool entry, so a kept
+                        // default must be neither re-added nor removed.
+                        let (to_add, to_remove) = plan_relay_reconcile(&old_relays, &defaults);
+                        let client_clone = ctx.client.clone();
+                        tokio::spawn(async move {
+                            for relay in to_add {
+                                // `and_connect` dials the relay; a bare `add_relay` only pools it.
+                                if let Err(e) =
+                                    client_clone.add_relay(relay.trim()).and_connect().await
+                                {
+                                    log::error!("Failed to add default relay at runtime: {}", e);
+                                }
+                            }
+                            for relay in to_remove {
+                                if let Err(e) = client_clone.remove_relay(relay.trim()).await {
+                                    log::error!("Failed to remove relay at runtime: {}", e);
+                                }
+                            }
+                        });
+                        app.mode = default_mode;
                     }
-                    for relay in old_relays.iter().filter(|o| !defaults.contains(o)) {
-                        if let Err(e) = client_clone.remove_relay(relay.trim()).await {
-                            log::error!("Failed to remove relay at runtime: {}", e);
-                        }
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
                     }
-                });
+                }
+            } else {
+                app.mode = default_mode;
             }
-            app.mode = default_mode;
         }
         UiMode::AddLnAddress(key_state) => match validate_ln_address_format(&key_state.key_input) {
             Ok(()) => {
@@ -1553,7 +1589,14 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 app.mode = UiMode::AddMostroPubkey(key_state);
             }
             Some(SettingsMenuAction::AddRelay) => app.mode = UiMode::AddRelay(key_state),
-            Some(SettingsMenuAction::RemoveRelay) => app.mode = UiMode::RemoveRelay(0),
+            Some(SettingsMenuAction::RemoveRelay) => {
+                // Snapshot the configured relays once: the picker renders and
+                // navigates from this list instead of reading disk per frame.
+                let relays = crate::settings::load_settings_from_disk()
+                    .map(|s| s.relays)
+                    .unwrap_or_default();
+                app.mode = UiMode::RemoveRelay(0, relays);
+            }
             Some(SettingsMenuAction::RestoreDefaultRelays) => {
                 app.mode = UiMode::ConfirmRestoreDefaultRelays(true)
             }

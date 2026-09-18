@@ -1823,7 +1823,7 @@ pub fn handle_key_event(
                 | UiMode::ConfirmClearLnAddress(ref mut selected_button)
                 | UiMode::ConfirmCurrency(_, ref mut selected_button)
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
-                | UiMode::ConfirmRemoveRelay(_, ref mut selected_button)
+                | UiMode::ConfirmRemoveRelay(.., ref mut selected_button)
                 | UiMode::ConfirmRestoreDefaultRelays(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)

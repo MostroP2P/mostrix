@@ -334,28 +334,34 @@ pub fn ui_draw(
             *selected_button,
         );
     }
-    if let UiMode::RemoveRelay(selected) = &app.mode {
-        let relays = crate::settings::load_settings_from_disk()
-            .map(|s| s.relays)
-            .unwrap_or_default();
-        remove_relay_popup::render_remove_relay_popup(f, &relays, *selected);
+    if let UiMode::RemoveRelay(selected, relays) = &app.mode {
+        remove_relay_popup::render_remove_relay_popup(f, relays, *selected);
     }
-    if let UiMode::ConfirmRemoveRelay(relay_string, selected_button) = &app.mode {
+    if let UiMode::ConfirmRemoveRelay(relay_string, _, selected_button) = &app.mode {
+        // The key line is hidden when a custom message is set, so embed the
+        // URL in the message — the user must see which relay they are removing.
+        let message = format!("Remove this relay from settings?\n{relay_string}");
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "📡 Remove Relay",
             relay_string,
             *selected_button,
-            Some("Remove this relay from settings?"),
+            Some(&message),
         );
     }
     if let UiMode::ConfirmRestoreDefaultRelays(selected_button) = &app.mode {
+        let hosts = crate::settings::default_relays()
+            .iter()
+            .map(|r| r.trim_start_matches("wss://").trim_start_matches("ws://"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!("Replace your relay list with the built-in defaults?\n{hosts}");
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "📡 Restore Default Relays",
             "",
             *selected_button,
-            Some("Replace your relay list with the built-in default relays?"),
+            Some(&message),
         );
     }
     if let UiMode::AddLnAddress(key_state) = &app.mode {

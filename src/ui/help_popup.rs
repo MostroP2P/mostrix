@@ -266,7 +266,15 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Add Nostr Relay",
-            "Append a wss:// relay; duplicates are skipped.",
+            "Append a relay (a bare host gets wss://); duplicates are skipped.",
+        ),
+        (
+            "Remove Nostr Relay",
+            "Pick a relay and confirm: it is removed from settings.toml and the running client. The last relay cannot be removed.",
+        ),
+        (
+            "Restore Default Relays",
+            "Replace your relay list with the built-in defaults after confirmation; the running client is updated to match.",
         ),
         (
             "Add Currency Filter",
@@ -301,7 +309,15 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Add Nostr Relay",
-            "Append a wss:// relay; duplicates are skipped.",
+            "Append a relay (a bare host gets wss://); duplicates are skipped.",
+        ),
+        (
+            "Remove Nostr Relay",
+            "Pick a relay and confirm: it is removed from settings.toml and the running client. The last relay cannot be removed.",
+        ),
+        (
+            "Restore Default Relays",
+            "Replace your relay list with the built-in defaults after confirmation; the running client is updated to match.",
         ),
         (
             "Set Lightning Address (buyer)",
