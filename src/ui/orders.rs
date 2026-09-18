@@ -1225,21 +1225,30 @@ fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static 
                 Action::PayInvoice => "Pay the hold invoice to continue.",
                 Action::PayBondInvoice => {
                     // Only advertise the Enter-to-reopen shortcut when the row still
-                    // carries the bond invoice (lost after restart until persisted).
-                    let can_reopen = msg.buyer_invoice.as_ref().is_some_and(|s| !s.is_empty());
+                    // carries a payable bond invoice (lost after restart until
+                    // persisted; expired invoices are unpayable — cancel instead).
+                    let has_invoice = msg.buyer_invoice.as_ref().is_some_and(|s| !s.is_empty());
+                    let expired = crate::ui::message_notification::bond_invoice_is_expired(
+                        msg.buyer_invoice.as_deref(),
+                    );
+                    let can_reopen = has_invoice && !expired;
                     let maker_publish = msg.order_status == Some(Status::WaitingMakerBond)
                         || (msg.order_status.is_none() && msg.is_mine == Some(true));
-                    match (maker_publish, can_reopen) {
-                        (true, true) => {
-                            "Press Enter to reopen the bond QR and publish your order to the book."
+                    if has_invoice && expired {
+                        "Bond invoice expired — cancel the order to retake."
+                    } else {
+                        match (maker_publish, can_reopen) {
+                            (true, true) => {
+                                "Press Enter to reopen the bond QR and publish your order to the book."
+                            }
+                            (true, false) => {
+                                "Pay the anti-abuse bond to publish your order to the book."
+                            }
+                            (false, true) => {
+                                "Press Enter to reopen the bond QR and pay the anti-abuse bond."
+                            }
+                            (false, false) => "Pay the anti-abuse bond to continue.",
                         }
-                        (true, false) => {
-                            "Pay the anti-abuse bond to publish your order to the book."
-                        }
-                        (false, true) => {
-                            "Press Enter to reopen the bond QR and pay the anti-abuse bond."
-                        }
-                        (false, false) => "Pay the anti-abuse bond to continue.",
                     }
                 }
                 Action::AddBondInvoice => "Add a bond payout invoice to claim your share.",
@@ -2118,6 +2127,30 @@ mod message_emoji_and_badge_tests {
         let p = message_status_presentation(&m, false);
         assert_eq!(p.title, "Bond payment required");
         assert_eq!(p.next, Some("Pay the anti-abuse bond to continue."));
+    }
+
+    /// Fully-valid BOLT11 from the lightning-invoice `FromStr` doc example
+    /// (timestamp 2021-08-22, 1h expiry): parseable and long expired, so the
+    /// expired-bond banner path is deterministic.
+    const EXPIRED_BOLT11: &str = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcsh2pu5qc7lgq0xs578ngs6s0s68ua4h7cvspp5q6rmq35js88zp5dvwrv9m459tnk2zunwj5jalqtyxqulh0l5gflssp5nf55ny5gcrfl30xuhzj3nphgj27rstekmr9fw3ny5989s300gyus9qyysgqcqpcrzjqw2sxwe993h5pcm4dxzpvttgza8zhkqxpgffcrf5v25nwpr3cmfg7z54kuqq8rgqqqqqqqq2qqqqq9qq9qrzjqd0ylaqclj9424x9m8h2vcukcgnm6s56xfgu3j78zyqzhgs4hlpzvznlugqq9vsqqqqqqqlgqqqqqeqq9qrzjqwldmj9dha74df76zhx6l9we0vjdquygcdt3kssupehe64g6yyp5yz5rhuqqwccqqyqqqqlgqqqqjcqq9qrzjqf9e58aguqr0rcun0ajlvmzq3ek63cw2w282gv3z5uupmuwvgjtq2z55qsqqg6qqqyqqqrtnqqqzq3cqygrzjqvphmsywntrrhqjcraumvc4y6r8v4z5v593trte429v4hredj7ms5z52usqq9ngqqqqqqqlgqqqqqqgq9qrzjq2v0vp62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh38s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5j5r6drg6k6zcqj0fcwg";
+
+    #[test]
+    fn status_presentation_taker_bond_with_expired_invoice_prompts_cancel_not_reopen() {
+        // Expired bond invoice on the row: do not advertise Enter-to-reopen (the QR
+        // is unpayable); direct the user to cancel and retake instead.
+        let mut m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Buy),
+            Some(false),
+            Some(Status::WaitingTakerBond),
+        );
+        m.buyer_invoice = Some(EXPIRED_BOLT11.to_string());
+        let p = message_status_presentation(&m, false);
+        assert_eq!(p.title, "Bond payment required");
+        assert_eq!(
+            p.next,
+            Some("Bond invoice expired — cancel the order to retake.")
+        );
     }
 
     #[test]

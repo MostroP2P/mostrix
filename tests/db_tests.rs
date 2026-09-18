@@ -359,3 +359,17 @@ async fn test_bond_invoice_persist_and_load() {
     Order::update_bond_invoice(&pool, id, "").await.unwrap();
     assert_eq!(Order::load_bond_invoice(&pool, id).await.unwrap(), None);
 }
+
+#[tokio::test]
+async fn test_bond_invoice_update_without_order_row_errors() {
+    // If the order insert failed earlier, the UPDATE matches no row: surface that
+    // instead of silently reporting success (restart recovery would find nothing).
+    let pool = create_test_db().await.unwrap();
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let result = Order::update_bond_invoice(&pool, &missing_id, "lnbc1bond").await;
+    assert!(result.is_err());
+    assert_eq!(
+        Order::load_bond_invoice(&pool, &missing_id).await.unwrap(),
+        None
+    );
+}

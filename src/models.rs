@@ -831,16 +831,24 @@ impl Order {
     }
 
     /// Persist the anti-abuse bond BOLT11 so the bond QR can be reopened after a restart.
+    ///
+    /// Errors when no `orders` row matches `order_id` (e.g. the order insert failed
+    /// earlier), so callers can tell the bond invoice was not persisted.
     pub async fn update_bond_invoice(
         pool: &SqlitePool,
         order_id: &str,
         invoice: &str,
     ) -> Result<()> {
-        sqlx::query("UPDATE orders SET bond_invoice = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE orders SET bond_invoice = ? WHERE id = ?")
             .bind(invoice)
             .bind(order_id)
             .execute(pool)
             .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!(
+                "no orders row matched id {order_id}; bond invoice not persisted"
+            ));
+        }
         Ok(())
     }
 
