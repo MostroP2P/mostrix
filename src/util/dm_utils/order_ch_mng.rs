@@ -406,7 +406,11 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),
             body: None,
-            maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond),
+            // The daemon embeds `Pending` (not `WaitingMakerBond`) in the maker-bond
+            // payload, so also detect the maker-bond publish framing by role.
+            maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond)
+                || (order.status == Some(mostro_core::order::Status::Pending)
+                    && static_header.is_mine),
             solver_pubkey: None,
             dispute_id: None,
         };

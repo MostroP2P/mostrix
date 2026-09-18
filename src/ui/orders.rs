@@ -498,11 +498,16 @@ pub fn invoice_popup_allowed_for_order_status(
         ),
         // Anti-abuse bond: taker bond (`WaitingTakerBond`) or maker bond (`WaitingMakerBond`).
         // `None` covers fresh DMs that arrive before the local row hydrates.
+        // `Pending` is what the daemon actually embeds in the `PayBondInvoice`
+        // PaymentRequest payload (it mirrors the public NIP-69 book bucket — the
+        // order stays pending until the bond locks), so real bond rows carry
+        // `Pending`, not the bond statuses.
         Action::PayBondInvoice => matches!(
             order_status,
             Some(
                 mostro_core::order::Status::WaitingTakerBond
                     | mostro_core::order::Status::WaitingMakerBond
+                    | mostro_core::order::Status::Pending
             ) | None
         ),
         Action::AddInvoice => matches!(
@@ -541,6 +546,11 @@ pub fn local_user_must_act_on_invoice_popup(msg: &OrderMessage, popup_action: &A
         (_, Action::PayBondInvoice) => match msg.order_status {
             Some(mostro_core::order::Status::WaitingMakerBond) => is_maker,
             Some(mostro_core::order::Status::WaitingTakerBond) => !is_maker,
+            // The daemon embeds `Pending` in bond payloads (public-book bucket), so
+            // real bond rows sit at `Pending` while the bond is unpaid. The bond
+            // invoice is only ever sent to the party who must pay it, so the local
+            // user is always the actor here — maker or taker.
+            Some(mostro_core::order::Status::Pending) => true,
             // Create-order sync path: maker is always the actor before status hydrates.
             None => is_maker,
             _ => false,
@@ -862,7 +872,10 @@ pub fn order_message_to_notification(msg: &OrderMessage) -> MessageNotification 
         sat_amount: msg.sat_amount,
         invoice: msg.buyer_invoice.clone(),
         body,
-        maker_bond_publish: msg.order_status == Some(Status::WaitingMakerBond),
+        // Maker-bond publish framing: the daemon embeds `Pending` (not
+        // `WaitingMakerBond`) in the maker-bond payload, so also detect it by role.
+        maker_bond_publish: msg.order_status == Some(Status::WaitingMakerBond)
+            || (msg.order_status == Some(Status::Pending) && msg.is_mine == Some(true)),
         solver_pubkey,
         dispute_id,
     }
@@ -947,6 +960,16 @@ pub fn message_action_compact_label(action: &Action) -> &'static str {
 /// Keeps terminal statuses from showing stale action text after reboot replay.
 pub fn message_action_compact_label_for_message(msg: &OrderMessage) -> &'static str {
     match msg.order_status {
+        // Bond rows carry `Pending` from the daemon payload (public-book bucket);
+        // don't mask the outstanding bond payment as a plain pending book order.
+        Some(Status::Pending)
+            if matches!(
+                msg.message.get_inner_message_kind().action,
+                Action::PayBondInvoice
+            ) =>
+        {
+            message_action_compact_label(&Action::PayBondInvoice)
+        }
         Some(Status::Pending) => "Pending order",
         Some(Status::Success) => "Trade Completed",
         Some(Status::SettledByAdmin) => "Settled by admin",
@@ -1233,7 +1256,11 @@ fn actionable_next_step(msg: &OrderMessage, action: &Action) -> Option<&'static 
                     );
                     let can_reopen = has_invoice && !expired;
                     let maker_publish = msg.order_status == Some(Status::WaitingMakerBond)
-                        || (msg.order_status.is_none() && msg.is_mine == Some(true));
+                        || (msg.order_status.is_none() && msg.is_mine == Some(true))
+                        // The daemon embeds `Pending` in maker-bond payloads too
+                        // (neutral placeholder), so detect the maker bond by role.
+                        || (msg.order_status == Some(Status::Pending)
+                            && msg.is_mine == Some(true));
                     if has_invoice && expired {
                         "Bond invoice expired — cancel the order to retake."
                     } else {
@@ -2154,6 +2181,89 @@ mod message_emoji_and_badge_tests {
     }
 
     #[test]
+    fn status_presentation_taker_bond_pending_status_prompts_reopen() {
+        // Live-daemon shape: the bond payload embeds `Pending` (public-book bucket),
+        // so the row sits at `Pending` while the taker bond is unpaid. The banner
+        // must still surface the bond action and the Enter-to-reopen shortcut.
+        let mut m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::Pending),
+        );
+        m.buyer_invoice = Some("lnbc1bond".to_string());
+        let p = message_status_presentation(&m, false);
+        assert_eq!(p.title, "Bond payment required");
+        assert_eq!(
+            p.next,
+            Some("Press Enter to reopen the bond QR and pay the anti-abuse bond.")
+        );
+    }
+
+    #[test]
+    fn status_presentation_maker_bond_pending_status_uses_publish_copy() {
+        // Maker bond rows also carry `Pending` from the daemon; detect the maker
+        // publish framing by role so the copy stays accurate.
+        let mut m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Pending),
+        );
+        m.buyer_invoice = Some("lnbc1bond".to_string());
+        let p = message_status_presentation(&m, false);
+        assert_eq!(p.title, "Bond payment required");
+        assert_eq!(
+            p.next,
+            Some("Press Enter to reopen the bond QR and publish your order to the book.")
+        );
+    }
+
+    #[test]
+    fn sidebar_label_pending_bond_row_shows_bond_invoice() {
+        // `Pending` + `PayBondInvoice` is an unpaid bond, not a plain book order.
+        let m = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::Pending),
+        );
+        assert_eq!(message_action_compact_label_for_message(&m), "Bond Invoice");
+    }
+
+    #[test]
+    fn sidebar_label_pending_non_bond_row_stays_pending_order() {
+        let m = sample_msg(
+            Action::NewOrder,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Pending),
+        );
+        assert_eq!(
+            message_action_compact_label_for_message(&m),
+            "Pending order"
+        );
+    }
+
+    #[test]
+    fn notification_maker_bond_publish_detected_by_role_when_pending() {
+        let maker = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Pending),
+        );
+        assert!(order_message_to_notification(&maker).maker_bond_publish);
+        let taker = sample_msg(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::Pending),
+        );
+        assert!(!order_message_to_notification(&taker).maker_bond_publish);
+    }
+
+    #[test]
     fn status_presentation_hold_invoice_accepted_is_actionable() {
         // Mostro reports the hold invoice paid; the Enter router opens the
         // fiat-confirmation popup, so STATUS must prompt the buyer to act rather
@@ -2906,6 +3016,55 @@ mod invoice_popup_role_tests {
         assert!(!local_user_must_act_on_invoice_popup(
             &m,
             &Action::AddInvoice
+        ));
+    }
+
+    /// The daemon embeds `Pending` (public-book bucket) in the `PayBondInvoice`
+    /// payload, so a live taker-bond row sits at `Pending`: the taker must still
+    /// be the acting party or Messages-tab Enter can never reopen the bond QR.
+    #[test]
+    fn sell_taker_acts_on_bond_when_status_pending() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(false),
+            Some(Status::Pending),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    /// Same `Pending` embedding applies to the maker bond (create-order path).
+    #[test]
+    fn maker_acts_on_bond_when_status_pending() {
+        let m = sample_order_message(
+            Action::PayBondInvoice,
+            Some(mostro_core::order::Kind::Sell),
+            Some(true),
+            Some(Status::Pending),
+        );
+        assert!(local_user_must_act_on_invoice_popup(
+            &m,
+            &Action::PayBondInvoice
+        ));
+    }
+
+    #[test]
+    fn bond_invoice_popup_allowed_when_status_pending() {
+        assert!(invoice_popup_allowed_for_order_status(
+            &Action::PayBondInvoice,
+            Some(Status::Pending),
+        ));
+    }
+
+    /// A bond row that advanced past the bond window must still be gated out.
+    #[test]
+    fn bond_invoice_popup_rejected_after_trade_active() {
+        assert!(!invoice_popup_allowed_for_order_status(
+            &Action::PayBondInvoice,
+            Some(Status::Active),
         ));
     }
 }

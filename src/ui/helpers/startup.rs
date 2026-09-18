@@ -459,7 +459,21 @@ fn db_order_to_history_message(
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    let action = history_action_for_db_order(order);
+    // Taker bond still unpaid: the daemon keeps the order `Pending` on the public
+    // book until the bond locks, so the DB row says `pending` while the persisted
+    // bond BOLT11 (own column) proves the take is waiting on our bond payment.
+    // Reconstruct the actionable bond row so Messages-tab Enter reopens the QR.
+    // (Maker bonds stay `NewOrder`: once the maker bond locks, the published order
+    // is `Pending` too, so the DB row cannot distinguish paid from unpaid there.)
+    let taker_bond_pending = !order.is_mine
+        && status == Some(Status::Pending)
+        && bond_invoice.as_ref().is_some_and(|s| !s.is_empty());
+
+    let action = if taker_bond_pending {
+        Action::PayBondInvoice
+    } else {
+        history_action_for_db_order(order)
+    };
 
     let payload_order = SmallOrder {
         id: Some(order_id),
@@ -479,12 +493,14 @@ fn db_order_to_history_message(
     };
 
     let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
-    // On bond statuses, surface the persisted bond BOLT11 so Messages-tab Enter can
-    // reopen the QR after a restart (the bond invoice is stored in its own column).
-    let recovery_invoice = if matches!(
-        status,
-        Some(Status::WaitingTakerBond | Status::WaitingMakerBond)
-    ) {
+    // On bond statuses (or an unpaid taker bond still showing `pending`), surface
+    // the persisted bond BOLT11 so Messages-tab Enter can reopen the QR after a
+    // restart (the bond invoice is stored in its own column).
+    let recovery_invoice = if taker_bond_pending
+        || matches!(
+            status,
+            Some(Status::WaitingTakerBond | Status::WaitingMakerBond)
+        ) {
         bond_invoice.or_else(|| order.buyer_invoice.clone())
     } else {
         order.buyer_invoice.clone()
@@ -515,10 +531,15 @@ fn db_order_to_history_message(
         buyer_reputation,
         seller_reputation,
         read: true,
-        auto_popup_shown: !matches!(
-            status,
-            Some(Status::WaitingBuyerInvoice | Status::WaitingMakerBond | Status::WaitingTakerBond)
-        ),
+        auto_popup_shown: !(taker_bond_pending
+            || matches!(
+                status,
+                Some(
+                    Status::WaitingBuyerInvoice
+                        | Status::WaitingMakerBond
+                        | Status::WaitingTakerBond
+                )
+            )),
     };
     Some(history_message)
 }
@@ -1886,6 +1907,67 @@ mod history_action_for_db_order_tests {
         )
         .expect("history row");
         assert_eq!(msg.buyer_invoice.as_deref(), Some("lnbc1bond"));
+    }
+
+    #[test]
+    fn history_message_pending_taker_with_bond_invoice_becomes_bond_row() {
+        // Live-daemon shape: an unpaid taker bond leaves the DB row at `pending`
+        // (public-book bucket) with the bond BOLT11 in its own column. Reconstruct
+        // the actionable bond row, not a `NewOrder` row that Messages would strip.
+        let order = sample_order("pending", false, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::PayBondInvoice
+        );
+        assert_eq!(msg.buyer_invoice.as_deref(), Some("lnbc1bond"));
+        // Allow the startup re-popup, same as the waiting-*-bond statuses.
+        assert!(!msg.auto_popup_shown);
+    }
+
+    #[test]
+    fn history_message_pending_maker_with_bond_invoice_stays_new_order() {
+        // Maker ambiguity: a live published order is also `pending` with a
+        // (paid) bond invoice stored, so the DB row cannot prove the maker bond
+        // is still unpaid — keep the plain `NewOrder` reconstruction.
+        let order = sample_order("pending", true, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
+        assert!(msg.buyer_invoice.is_none());
+    }
+
+    #[test]
+    fn history_message_pending_taker_without_bond_invoice_stays_new_order() {
+        let order = sample_order("pending", false, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            None,
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
     }
 
     fn history_message(order: &Order, identity: &Keys) -> crate::ui::OrderMessage {
