@@ -876,24 +876,31 @@ pub fn clear_currency_filters() {
 
 **Status**: ✅ **Fully Implemented**
 
-Enhanced relay management allows admins to dynamically add relays without restarting the application.
+Enhanced relay management lets users add, remove, and restore relays without restarting the application.
 
 #### Features
 
 - **Dynamic Relay Addition**: New relays are added to the running Nostr client immediately
   - No restart required
-  - Relays are connected asynchronously in the background
-- **Settings Persistence**: Relays are saved to `settings.toml` and persist across restarts
+  - Relays are connected asynchronously in the background (`add_relay(...).and_connect()`)
+  - Bare hosts are accepted (`relay.example.com` becomes `wss://relay.example.com`)
+- **Relay Removal**: A picker lists the configured relays; confirming removes the relay from
+  `settings.toml` and the running client. Removing the last relay is blocked.
+- **Restore Defaults**: Replaces the relay list with the built-in defaults after confirmation;
+  the running client is reconciled by parsed relay URL (equivalent spellings such as a
+  trailing slash are kept, not removed).
+- **Settings Persistence**: Relays are saved to `settings.toml` and persist across restarts;
+  the running client is only updated after the settings write succeeds.
 - **Duplicate Prevention**: The system prevents adding the same relay twice
 - **Status Bar Display**: Active relays are displayed in the status bar
 
 #### Implementation
 
-**Source**: `src/ui/key_handler/enter_handlers.rs` (relay addition logic)
+**Source**: `src/ui/key_handler/enter_handlers.rs` (relay add/remove/restore logic)
 
 When a relay is added:
 
-1. Input is validated (must start with `wss://`)
+1. Input is normalized (bare host gets `wss://`) and validated
 2. Confirmation popup is shown
 3. Relay is added to `settings.toml`
 4. Relay is added to the running Nostr client via `tokio::spawn`

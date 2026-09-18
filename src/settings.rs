@@ -42,6 +42,11 @@ fn default_user_mode() -> String {
     "user".to_string()
 }
 
+/// Built-in default relay set used to bootstrap config and for "Restore default relays".
+pub fn default_relays() -> Vec<String> {
+    DEFAULT_RELAYS.iter().map(|r| r.to_string()).collect()
+}
+
 /// Production mostro-push-server instance the mobile apps register with.
 pub const DEFAULT_PUSH_SERVER_URL: &str = "https://mostro-push-server.fly.dev";
 

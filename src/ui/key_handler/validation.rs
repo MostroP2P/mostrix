@@ -104,15 +104,51 @@ pub fn normalize_mostro_pubkey(input: &str) -> Result<String, String> {
     Err("Invalid Mostro pubkey: expected npub1... (bech32) or 64-char hex string".to_string())
 }
 
-/// Validate if a relay URL has a valid format (must start with wss://)
+/// Normalize a user-entered relay URL: trim, canonicalize a `ws`/`wss` scheme to
+/// lowercase (accepted case-insensitively), and default to `wss://` when no
+/// websocket scheme is typed, so users can enter a bare host.
+pub fn normalize_relay_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        if scheme.eq_ignore_ascii_case("wss") || scheme.eq_ignore_ascii_case("ws") {
+            return format!("{}://{rest}", scheme.to_ascii_lowercase());
+        }
+        // Unknown scheme: leave as typed so `validate_relay` can reject it.
+        return trimmed.to_string();
+    }
+    format!("wss://{trimmed}")
+}
+
+/// Validate a relay URL: require a `ws`/`wss` scheme (case-insensitive) and a
+/// parseable host. Rejects hostless URLs such as `wss:///events`.
 pub fn validate_relay(relay_str: &str) -> Result<(), String> {
     let relay = relay_str.trim();
     if relay.is_empty() {
         return Err("Relay URL cannot be empty".to_string());
     }
 
-    if !relay.starts_with("wss://") && !relay.starts_with("ws://") {
+    let Some((scheme, rest)) = relay.split_once("://") else {
         return Err("Relay URL must start with \"wss://\" or \"ws://\"".to_string());
+    };
+    if !scheme.eq_ignore_ascii_case("wss") && !scheme.eq_ignore_ascii_case("ws") {
+        return Err("Relay URL must start with \"wss://\" or \"ws://\"".to_string());
+    }
+
+    // Reject a missing host (e.g. `wss:///events`) before full URL parsing.
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if host.is_empty() {
+        return Err("Relay URL is missing a host".to_string());
+    }
+
+    if RelayUrl::parse(relay).is_err() {
+        return Err("Relay URL is not a valid websocket URL".to_string());
     }
 
     Ok(())

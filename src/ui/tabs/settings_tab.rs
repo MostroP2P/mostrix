@@ -10,6 +10,8 @@ pub enum SettingsMenuAction {
     SwitchMode,
     ChangeMostroPubkey,
     AddRelay,
+    RemoveRelay,
+    RestoreDefaultRelays,
     SetBuyerLnAddress,
     ClearBuyerLnAddress,
     AddCurrencyFilter,
@@ -31,13 +33,18 @@ type SettingsMenuRow = (SettingsMenuAction, &'static str);
 /// set via **Change Admin Key** — generating a fresh keypair would overwrite
 /// `admin_privkey` with a key the daemon rejects.
 #[allow(clippy::redundant_static_lifetimes)]
-const ADMIN_SETTINGS: [SettingsMenuRow; 8] = [
+const ADMIN_SETTINGS: [SettingsMenuRow; 10] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
         "Change Mostro Pubkey",
     ),
     (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
+    (SettingsMenuAction::RemoveRelay, "Remove Nostr Relay"),
+    (
+        SettingsMenuAction::RestoreDefaultRelays,
+        "Restore Default Relays",
+    ),
     (SettingsMenuAction::AddCurrencyFilter, "Add Currency Filter"),
     (
         SettingsMenuAction::ClearCurrencyFilters,
@@ -50,13 +57,18 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 8] = [
 
 /// Single source of truth for User Settings rows (action + list label).
 #[allow(clippy::redundant_static_lifetimes)]
-const USER_SETTINGS: [SettingsMenuRow; 11] = [
+const USER_SETTINGS: [SettingsMenuRow; 13] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
         "Change Mostro Pubkey",
     ),
     (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
+    (SettingsMenuAction::RemoveRelay, "Remove Nostr Relay"),
+    (
+        SettingsMenuAction::RestoreDefaultRelays,
+        "Restore Default Relays",
+    ),
     (
         SettingsMenuAction::SetBuyerLnAddress,
         "Set Lightning Address (buyer)",
@@ -280,15 +292,15 @@ mod tests {
 
     #[test]
     fn admin_settings_omit_generate_new_keys() {
-        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 8);
+        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 10);
         assert!(ADMIN_SETTINGS
             .iter()
             .all(|(action, _)| *action != SettingsMenuAction::GenerateNewKeys));
         assert!(matches!(
-            settings_action_for_index(UserRole::Admin, 7),
+            settings_action_for_index(UserRole::Admin, 9),
             Some(SettingsMenuAction::ChangeAdminKey)
         ));
-        assert!(settings_action_for_index(UserRole::Admin, 8).is_none());
+        assert!(settings_action_for_index(UserRole::Admin, 10).is_none());
     }
 
     #[test]
