@@ -1111,7 +1111,12 @@ fn handle_enter_settings_mode(
                 let relay_to_add = relay_string.clone();
                 let client_clone = ctx.client.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = client_clone.add_relay(relay_to_add.trim()).await {
+                    // `and_connect` dials the relay; a bare `add_relay` only pools it.
+                    if let Err(e) = client_clone
+                        .add_relay(relay_to_add.trim())
+                        .and_connect()
+                        .await
+                    {
                         log::error!("Failed to add relay at runtime: {}", e);
                     }
                 });
@@ -1157,7 +1162,8 @@ fn handle_enter_settings_mode(
                 let client_clone = ctx.client.clone();
                 tokio::spawn(async move {
                     for relay in defaults.iter().filter(|d| !old_relays.contains(d)) {
-                        if let Err(e) = client_clone.add_relay(relay.trim()).await {
+                        // `and_connect` dials the relay; a bare `add_relay` only pools it.
+                        if let Err(e) = client_clone.add_relay(relay.trim()).and_connect().await {
                             log::error!("Failed to add default relay at runtime: {}", e);
                         }
                     }
