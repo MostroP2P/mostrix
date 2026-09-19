@@ -21,94 +21,65 @@ gpg: Good signature from "Arkanoider <github.913zc@simplelogin.com>" [ultimate]
 That will verify the signature of the manifest file, which ensures integrity and authenticity of the archive you've downloaded locally containing the binaries. Next, depending on your operating system, you should then re-compute the sha256 hash of the archive with `shasum -a 256 <filename>`, compare it with the corresponding one in the manifest file, and ensure they match exactly.
 
 
-## What's Changed in 0.3.3
+## What's Changed in 0.3.4
 
 ### 🚀 Features
 
 
-* simplify cancel affordance on pay/bond invoice popups by [@arkanoider](https://github.com/arkanoider)
-* prefer quadrant QR over sextants on narrow terminals by [@arkanoider](https://github.com/arkanoider)
-* keep Ack/Cancel visible on PayInvoice QR popups by [@arkanoider](https://github.com/arkanoider)
-* show a scannable QR on PayInvoice popups by [@arkanoider](https://github.com/arkanoider)
-* wake counterparty after peer order chat attachment send by [@arkanoider](https://github.com/arkanoider)
-* wake counterparty after peer order chat text send by [@arkanoider](https://github.com/arkanoider)
-* wake disputant after dispute chat send by [@arkanoider](https://github.com/arkanoider)
-* add push_server_url with production default by [@arkanoider](https://github.com/arkanoider)
-* add mostro-push-server notify module by [@arkanoider](https://github.com/arkanoider)
-* INSERT/COMMAND layers for My Trades chat by [@arkanoider](https://github.com/arkanoider)
-* refresh order details from Mostro with Shift+U by [@amuntri](https://github.com/amuntri)
+* add trusted Mostro instance picker and fix info on switch by [@arkanoider](https://github.com/arkanoider)
+* adaptive order book filters with Kind, Fiat, and stepped Premium by [@arkanoider](https://github.com/arkanoider)
+* add currency-aware payment method picker on new orders by [@arkanoider](https://github.com/arkanoider)
+* expose order filter shortcuts by [@ca-ruz](https://github.com/ca-ruz)
+* render orders filter UI by [@ca-ruz](https://github.com/ca-ruz)
+* add orders filter controls by [@ca-ruz](https://github.com/ca-ruz)
+* add order book filter state by [@ca-ruz](https://github.com/ca-ruz)
+* manage Blossom servers like relays by [@arkanoider](https://github.com/arkanoider)
+* recover the anti-abuse bond QR after Esc and restart by [@arkanoider](https://github.com/arkanoider)
+* added shadowbip and mostro-p2p relay as default at first launch by [@arkanoider](https://github.com/arkanoider)
 
 ### 🐛 Bug Fixes
 
 
-* keep one-shot hydration on the complete fetch path by [@arkanoider](https://github.com/arkanoider)
-* scope single connected relay and gate grace on data by [@arkanoider](https://github.com/arkanoider)
-* return on first responsive relay, not just Connected by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt by [@arkanoider](https://github.com/arkanoider)
-* rabbit rant by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt by [@arkanoider](https://github.com/arkanoider)
-* rabbit comment fix by [@arkanoider](https://github.com/arkanoider)
-* ermeme comment fix by [@arkanoider](https://github.com/arkanoider)
-* bind My Trades chat drafts to order and channel by [@arkanoider](https://github.com/arkanoider)
-* address My Trades INSERT/COMMAND review blockers by [@arkanoider](https://github.com/arkanoider)
-* keep local columns and refresh DB-built rows on Shift+U by [@amuntri](https://github.com/amuntri)
-* scope Shift+U refresh to its order and drop stale snapshots by [@amuntri](https://github.com/amuntri)
-* confirm Shift+U refresh and show it in Order Chat hints by [@arkanoider](https://github.com/arkanoider)
+* gate Mostro pubkey switch on a successful save by [@arkanoider](https://github.com/arkanoider)
+* address Hermeme and CodeRabbit order-filter review by [@arkanoider](https://github.com/arkanoider)
+* handle order filter review edge cases by [@ca-ruz](https://github.com/ca-ruz)
+* handle constrained order filter help shortcuts by [@ca-ruz](https://github.com/ca-ruz)
+* handle caps lock order filter input by [@ca-ruz](https://github.com/ca-ruz)
+* handle caps lock order filter shortcuts by [@ca-ruz](https://github.com/ca-ruz)
+* address order filter review edge cases by [@ca-ruz](https://github.com/ca-ruz)
+* make relay revision selection deterministic by [@ca-ruz](https://github.com/ca-ruz)
+* address order filter review feedback by [@ca-ruz](https://github.com/ca-ruz)
+* address order filter review feedback by [@ca-ruz](https://github.com/ca-ruz)
+* make stale-reply snapshot guard an atomic compare-and-write by [@arkanoider](https://github.com/arkanoider)
+* ignore stale AddBondInvoice replies that would regress order state by [@arkanoider](https://github.com/arkanoider)
+* treat PayBondInvoice rows at Pending status as bond-pending by [@arkanoider](https://github.com/arkanoider)
+* harden expired-invoice UX and persistence error reporting by [@arkanoider](https://github.com/arkanoider)
+* keep relay confirm identity and YES/NO on short terminals by [@arkanoider](https://github.com/arkanoider)
+* persist before client updates, reconcile by parsed URL by [@arkanoider](https://github.com/arkanoider)
+* connect relays added at runtime via and_connect by [@arkanoider](https://github.com/arkanoider)
+* robust URL validation and short-terminal remove popup by [@arkanoider](https://github.com/arkanoider)
+* read instance name from y tag third element by [@arkanoider](https://github.com/arkanoider)
 
 ### 💼 Other
 
 
-* perf(relay): scope UI fetches to connected relays by [@arkanoider](https://github.com/arkanoider) in [#189](https://github.com/MostroP2P/mostrix/pull/189)
-* feat(ui): show a scannable QR on PayInvoice popups by [@arkanoider](https://github.com/arkanoider) in [#188](https://github.com/MostroP2P/mostrix/pull/188)
-* docs(push): document chat-recipient wake and push_server_url switch by [@arkanoider](https://github.com/arkanoider) in [#187](https://github.com/MostroP2P/mostrix/pull/187)
-* test(push): add wake_target delivery-gate helper and tests by [@arkanoider](https://github.com/arkanoider) in [#186](https://github.com/MostroP2P/mostrix/pull/186)
-* feat(push): wake counterparty after peer order chat attachment send by [@arkanoider](https://github.com/arkanoider) in [#185](https://github.com/MostroP2P/mostrix/pull/185)
-* feat(push): wake counterparty after peer order chat text send by [@arkanoider](https://github.com/arkanoider) in [#184](https://github.com/MostroP2P/mostrix/pull/184)
-* feat(push): wake disputant after dispute chat send by [@arkanoider](https://github.com/arkanoider) in [#183](https://github.com/MostroP2P/mostrix/pull/183)
-* refactor(chat): return relay-accepted bool from chat send fns by [@arkanoider](https://github.com/arkanoider) in [#182](https://github.com/MostroP2P/mostrix/pull/182)
-* feat(settings): add push_server_url with production default by [@arkanoider](https://github.com/arkanoider) in [#181](https://github.com/MostroP2P/mostrix/pull/181)
-* feat(push): add mostro-push-server notify module by [@arkanoider](https://github.com/arkanoider) in [#180](https://github.com/MostroP2P/mostrix/pull/180)
-* feat(ui): INSERT/COMMAND layers for My Trades chat by [@arkanoider](https://github.com/arkanoider) in [#178](https://github.com/MostroP2P/mostrix/pull/178)
-* feat(orders): refresh order details from Mostro with Shift+U by [@arkanoider](https://github.com/arkanoider) in [#145](https://github.com/MostroP2P/mostrix/pull/145)
-* chore: relicense project under GPLv3 by [@arkanoider](https://github.com/arkanoider) in [#171](https://github.com/MostroP2P/mostrix/pull/171)
-
-### 🚜 Refactor
-
-
-* return relay-accepted bool from chat send fns by [@arkanoider](https://github.com/arkanoider)
-* move TUI terminal enter/leave into ui::terminal by [@arkanoider](https://github.com/arkanoider)
-
-### 📚 Documentation
-
-
-* document chat-recipient wake and push_server_url switch by [@arkanoider](https://github.com/arkanoider)
-
-### ⚡ Performance
-
-
-* scope UI fetches to connected relays by [@arkanoider](https://github.com/arkanoider)
+* feat(settings): manage Blossom servers like relays by [@arkanoider](https://github.com/arkanoider) in [#194](https://github.com/MostroP2P/mostrix/pull/194)
+* origin/main into feat/settings-blossom-servers by [@arkanoider](https://github.com/arkanoider)
+* feat(ui): adaptive order book filters (Kind / Fiat / Premium) by [@arkanoider](https://github.com/arkanoider) in [#193](https://github.com/MostroP2P/mostrix/pull/193)
+* feat(ui): currency-aware payment method picker on new orders by [@arkanoider](https://github.com/arkanoider) in [#192](https://github.com/MostroP2P/mostrix/pull/192)
+* feat(bond): recover the anti-abuse bond QR after Esc and restart by [@arkanoider](https://github.com/arkanoider) in [#191](https://github.com/MostroP2P/mostrix/pull/191)
+* Add relay remove/restore and bare-URL add in Settings by [@arkanoider](https://github.com/arkanoider) in [#190](https://github.com/MostroP2P/mostrix/pull/190)
+* Add relay remove/restore and bare-URL add in Settings by [@arkanoider](https://github.com/arkanoider)
 
 ### 🎨 Styling
 
 
-* rustfmt after rebase onto main by [@arkanoider](https://github.com/arkanoider)
-
-### 🧪 Testing
-
-
-* add wake_target delivery-gate helper and tests by [@arkanoider](https://github.com/arkanoider)
-
-### ⚙️ Miscellaneous Tasks
-
-
-* relicense project under GPLv3 by [@grunch](https://github.com/grunch)
+* improve order filter popup usability by [@ca-ruz](https://github.com/ca-ruz)
 
 ## Contributors
-* [@arkanoider](https://github.com/arkanoider) made their contribution in [#189](https://github.com/MostroP2P/mostrix/pull/189)
-* [@amuntri](https://github.com/amuntri) made their contribution
-* [@grunch](https://github.com/grunch) made their contribution
+* [@arkanoider](https://github.com/arkanoider) made their contribution in [#194](https://github.com/MostroP2P/mostrix/pull/194)
+* [@ca-ruz](https://github.com/ca-ruz) made their contribution
 
-**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.2...0.3.3
+**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.3...0.3.4
 
 <!-- generated by git-cliff -->
