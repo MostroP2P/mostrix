@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
-use crate::util::db_utils::{save_order, update_order_status};
+use crate::util::db_utils::update_order_status;
 use crate::util::dm_utils::{
     parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_TIMEOUT_MSG,
 };
@@ -54,6 +54,11 @@ async fn payment_request_payload_for_invoice(invoice: &str) -> Result<Option<Pay
     }
 }
 
+/// Persist the order snapshot carried by a DM reply, unless the stored row has
+/// already seen a newer DM. The freshness guard is part of the write itself
+/// (atomic compare-and-write on `last_seen_dm_ts`), so a DM landing between the
+/// caller's pre-check and this statement cannot be overwritten by the reply.
+#[allow(clippy::too_many_arguments)]
 async fn persist_order_payload_from_dm(
     pool: &sqlx::sqlite::SqlitePool,
     order_id: Uuid,
@@ -61,6 +66,7 @@ async fn persist_order_payload_from_dm(
     payload: &Option<Payload>,
     request_id: u64,
     trade_keys: &Keys,
+    reply_ts: i64,
 ) {
     let msg_request_id = i64::try_from(request_id).ok();
     let small_order = match (action, payload.as_ref()) {
@@ -72,9 +78,24 @@ async fn persist_order_payload_from_dm(
         _ => None,
     };
     if let Some(order) = small_order {
-        let _ =
-            Order::upsert_from_small_order_dm(pool, order_id, order, trade_keys, msg_request_id)
-                .await;
+        match Order::upsert_from_small_order_dm_if_fresh(
+            pool,
+            order_id,
+            order,
+            trade_keys,
+            msg_request_id,
+            reply_ts,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => log::info!(
+                "Skipped stale reply snapshot for order {order_id} (newer DM already persisted)"
+            ),
+            Err(e) => {
+                log::warn!("Failed to persist reply snapshot for order {order_id}: {e}")
+            }
+        }
     }
 }
 
@@ -204,33 +225,32 @@ async fn operation_result_from_bond_invoice_reply(
         .ok_or_else(|| anyhow::anyhow!("Missing trade_index for order"))?;
 
     // The reply round-trip can take seconds; meanwhile the DM listener may have
-    // processed a newer message for this order. When a newer DM was seen
-    // (`last_seen_dm_ts`) or the reply status would regress the persisted one, the
-    // reply is stale: still surface its invoice to the UI below, but keep the
-    // fresher persisted snapshot/status instead of overwriting them.
-    let current_db_order = Order::get_by_id(ctx.pool, &ctx.order_id.to_string())
-        .await
-        .ok();
+    // processed a newer message for this order. Snapshot writes below carry an
+    // atomic compare-and-write on `last_seen_dm_ts`, so a newer DM always wins
+    // even if it lands between this pre-check and the write. What SQL cannot
+    // express is the status-rank rule (e.g. a bond reply carrying `Pending`
+    // while the row already advanced): keep a cheap pre-check for that case and
+    // skip the snapshot write entirely. Either way the invoice is still
+    // surfaced to the UI below.
     let reply_status = match &inner.payload {
         Some(Payload::Order(o)) => o.status,
         Some(Payload::PaymentRequest(Some(o), _, _)) => o.status,
         _ => None,
     }
     .or_else(|| inferred_status_from_trade_action(&inner.action));
-    let reply_is_stale = current_db_order.as_ref().is_some_and(|current| {
-        let newer_dm_seen = current.last_seen_dm_ts.is_some_and(|ts| ts > ctx.timestamp);
-        let status_would_regress = reply_status.is_some_and(|candidate| {
+    let status_would_regress = match Order::get_by_id(ctx.pool, &ctx.order_id.to_string()).await {
+        Ok(current) => reply_status.is_some_and(|candidate| {
             !should_apply_status_transition(
-                status_from_db(current),
+                status_from_db(&current),
                 candidate,
-                order_kind_from_db(current),
+                order_kind_from_db(&current),
                 Some(&inner.action),
             )
-        });
-        newer_dm_seen || status_would_regress
-    });
+        }),
+        Err(_) => false,
+    };
 
-    if !reply_is_stale {
+    if !status_would_regress {
         persist_order_payload_from_dm(
             ctx.pool,
             ctx.order_id,
@@ -238,6 +258,7 @@ async fn operation_result_from_bond_invoice_reply(
             &inner.payload,
             ctx.request_id,
             ctx.order_trade_keys,
+            ctx.timestamp,
         )
         .await;
     }
@@ -263,14 +284,18 @@ async fn operation_result_from_bond_invoice_reply(
             if order_to_save.id.is_none() {
                 order_to_save.id = Some(ctx.order_id);
             }
-            if !reply_is_stale {
-                let _ = save_order(
+            if !status_would_regress {
+                // Same atomic freshness guard as persist_order_payload_from_dm:
+                // a newer DM processed during the reply wait keeps its row.
+                // (Also preserves `last_seen_dm_ts`/`created_at`, which the
+                // previous `save_order` update path reset.)
+                let _ = Order::upsert_from_small_order_dm_if_fresh(
+                    ctx.pool,
+                    ctx.order_id,
                     order_to_save.clone(),
                     ctx.order_trade_keys,
-                    ctx.request_id,
-                    trade_index,
-                    ctx.pool,
-                    ctx.db_order.is_mine,
+                    i64::try_from(ctx.request_id).ok(),
+                    ctx.timestamp,
                 )
                 .await;
             }

@@ -541,6 +541,59 @@ impl Order {
         Ok(())
     }
 
+    /// Like [`Order::update_db`], but as an atomic compare-and-write: the update
+    /// applies only while the stored row has not seen a newer DM than
+    /// `max_seen_dm_ts`. Equal timestamps are allowed — the repository permits a
+    /// different action to share a timestamp, so this is not a strict rejection.
+    ///
+    /// Returns `Ok(true)` when the row was written, `Ok(false)` when a fresher
+    /// row (or no row) matched and nothing was written.
+    async fn update_db_if_fresh(
+        &self,
+        pool: &SqlitePool,
+        max_seen_dm_ts: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let written = sqlx::query(
+            r#"
+            UPDATE orders
+            SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
+                fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
+                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
+                request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
+            WHERE id = ? AND (last_seen_dm_ts IS NULL OR last_seen_dm_ts <= ?)
+            "#,
+        )
+        .bind(&self.kind)
+        .bind(&self.status)
+        .bind(self.amount)
+        .bind(self.min_amount)
+        .bind(self.max_amount)
+        .bind(&self.fiat_code)
+        .bind(self.fiat_amount)
+        .bind(&self.payment_method)
+        .bind(self.premium)
+        .bind(self.is_mine)
+        .bind(&self.trade_keys)
+        .bind(&self.counterparty_pubkey)
+        .bind(&self.order_chat_shared_key_hex)
+        .bind(&self.dispute_id)
+        .bind(&self.solver_pubkey)
+        .bind(&self.dispute_chat_shared_key_hex)
+        .bind(&self.buyer_invoice)
+        .bind(self.request_id)
+        .bind(self.trade_index)
+        .bind(self.created_at)
+        .bind(self.expires_at)
+        .bind(self.last_seen_dm_ts)
+        .bind(&self.id)
+        .bind(max_seen_dm_ts)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(written > 0)
+    }
+
     fn build_order_from_small_order(
         id: String,
         small_order: &mostro_core::prelude::SmallOrder,
@@ -660,6 +713,87 @@ impl Order {
                     );
                     updated.update_db(pool).await?;
                     Ok(updated)
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    /// Like [`Order::upsert_from_small_order_dm`], but the write is an atomic
+    /// compare-and-write on the row's DM freshness: the update applies only
+    /// while the stored row has not seen a newer DM than `reply_ts`
+    /// (`last_seen_dm_ts <= reply_ts`; equal timestamps are allowed since a
+    /// different action may legitimately share a timestamp).
+    ///
+    /// Use this for request/reply paths (e.g. `AddBondInvoice`) where the row
+    /// may have advanced via the DM listener while the reply was in flight:
+    /// the guard travels with the write, so a newer DM landing between the
+    /// caller's freshness read and this statement still wins.
+    ///
+    /// Returns `Ok(true)` when the snapshot was applied, `Ok(false)` when a
+    /// fresher row was left untouched.
+    pub async fn upsert_from_small_order_dm_if_fresh(
+        pool: &SqlitePool,
+        order_id_fallback: uuid::Uuid,
+        mut small_order: mostro_core::prelude::SmallOrder,
+        trade_keys: &nostr_sdk::prelude::Keys,
+        message_request_id: Option<i64>,
+        reply_ts: i64,
+    ) -> Result<bool> {
+        if let Some(payload_id) = small_order.id {
+            if payload_id != order_id_fallback {
+                anyhow::bail!(
+                    "Rejected DM order upsert: payload id {} does not match routed order id {}",
+                    payload_id,
+                    order_id_fallback
+                );
+            }
+        }
+        let resolved_id = order_id_fallback;
+        small_order.id = Some(resolved_id);
+        let id_str = resolved_id.to_string();
+
+        let existing = Self::get_by_id(pool, &id_str).await.ok();
+        let order_row = Self::build_order_from_small_order(
+            id_str.clone(),
+            &small_order,
+            trade_keys,
+            existing.as_ref(),
+            message_request_id,
+        );
+
+        if existing.is_some() {
+            return Ok(order_row.update_db_if_fresh(pool, reply_ts).await?);
+        }
+        if order_row.trade_index.is_none() {
+            anyhow::bail!(
+                "Cannot insert order {} from DM without persisted trade_index; this indicates an inconsistent local state.",
+                id_str
+            );
+        }
+
+        match order_row.insert_db(pool).await {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                let is_unique_violation = match e.as_database_error() {
+                    Some(db_err) => {
+                        let code = db_err.code().map(|c| c.to_string()).unwrap_or_default();
+                        code == "1555" || code == "2067"
+                    }
+                    None => false,
+                };
+                if is_unique_violation {
+                    // Concurrent insert won the race: fall back to the guarded update.
+                    let ex = Self::get_by_id(pool, &id_str).await?;
+                    let updated = Self::build_order_from_small_order(
+                        id_str,
+                        &small_order,
+                        trade_keys,
+                        Some(&ex),
+                        message_request_id,
+                    );
+                    Ok(updated.update_db_if_fresh(pool, reply_ts).await?)
                 } else {
                     Err(e.into())
                 }
@@ -1954,6 +2088,109 @@ mod upsert_from_small_order_dm_tests {
             .await
             .expect("apply");
         assert_eq!(outcome, super::SnapshotApply::Superseded);
+    }
+
+    #[tokio::test]
+    async fn fresh_upsert_applies_when_last_seen_is_older() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await; // last_seen_dm_ts = 1_700_000_000
+
+        let mut reply = sample_small_order(id, 2000);
+        reply.status = Some(Status::FiatSent);
+        let applied = Order::upsert_from_small_order_dm_if_fresh(
+            &pool,
+            id,
+            reply,
+            &keys,
+            None,
+            1_700_000_100,
+        )
+        .await
+        .expect("upsert");
+        assert!(applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("fiat-sent"));
+        assert_eq!(stored.amount, 2000);
+        // The reply write must not clobber the DM freshness marker.
+        assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
+    }
+
+    #[tokio::test]
+    async fn fresh_upsert_allows_equal_timestamp() {
+        // A different action may legitimately share a timestamp: no strict rejection.
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await; // last_seen_dm_ts = 1_700_000_000
+
+        let applied = Order::upsert_from_small_order_dm_if_fresh(
+            &pool,
+            id,
+            sample_small_order(id, 2000),
+            &keys,
+            None,
+            1_700_000_000,
+        )
+        .await
+        .expect("upsert");
+        assert!(applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.amount, 2000);
+    }
+
+    #[tokio::test]
+    async fn fresh_upsert_applies_when_last_seen_is_null() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await;
+        sqlx::query("UPDATE orders SET last_seen_dm_ts = NULL WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&pool)
+            .await
+            .expect("clear last_seen_dm_ts");
+
+        let applied = Order::upsert_from_small_order_dm_if_fresh(
+            &pool,
+            id,
+            sample_small_order(id, 2000),
+            &keys,
+            None,
+            1_700_000_000,
+        )
+        .await
+        .expect("upsert");
+        assert!(applied);
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.amount, 2000);
+    }
+
+    #[tokio::test]
+    async fn fresh_upsert_skips_when_newer_dm_seen() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        seed_active_order(&pool, id, &keys).await; // last_seen_dm_ts = 1_700_000_000
+
+        let mut stale_reply = sample_small_order(id, 2000);
+        stale_reply.status = Some(Status::FiatSent);
+        let applied = Order::upsert_from_small_order_dm_if_fresh(
+            &pool,
+            id,
+            stale_reply,
+            &keys,
+            None,
+            1_699_999_999, // reply predates the last seen DM
+        )
+        .await
+        .expect("upsert");
+        assert!(!applied, "stale reply must not be applied");
+        let stored = Order::get_by_id(&pool, &id.to_string()).await.unwrap();
+        assert_eq!(stored.status.as_deref(), Some("active"));
+        assert_eq!(stored.amount, 1000);
+        assert_eq!(stored.last_seen_dm_ts, Some(1_700_000_000));
     }
 }
 
