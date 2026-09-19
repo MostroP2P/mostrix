@@ -25,6 +25,8 @@ use crate::ui::{apply_kind_color, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_CO
 /// projection (`helpers/order_selection.rs`) so highlight and Enter stay aligned.
 /// Vertical scrollbar uses [`render_table_list_scrollbar`] (offset + data-row track).
 /// On short terminals (`height < 4`) the header is dropped so a data row remains.
+/// An empty book still updates [`UiMode::OrderFilters`] inline/popup state and
+/// keeps the filter bar (or popup) usable so Shift+F editing does not disappear.
 pub fn render_orders_tab(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -55,6 +57,29 @@ pub fn render_orders_tab(
     };
 
     if orders_lock.is_empty() {
+        // Keep filter editing usable when the book is empty (inline bar / popup mode).
+        let use_inline = orders_filter_inline_layout(area.width, area.height);
+        if let UiMode::OrderFilters(ref mut state) = app.mode {
+            state.inline = use_inline;
+        }
+        let editing_filters = matches!(app.mode, UiMode::OrderFilters(_));
+        let show_bar = if use_inline {
+            true
+        } else {
+            app.order_filters.has_active_filters() && !editing_filters
+        };
+        let (filter_area, table_area) = split_filter_and_table(area, show_bar, use_inline);
+        if let Some(filter_area) = filter_area {
+            if let UiMode::OrderFilters(ref state) = app.mode {
+                if state.inline {
+                    render_order_filter_editable_bar(f, filter_area, state);
+                } else {
+                    render_order_filter_bar(f, filter_area, app);
+                }
+            } else {
+                render_order_filter_bar(f, filter_area, app);
+            }
+        }
         let paragraph = Paragraph::new(Span::styled(
             "📭 No offers found with requested parameters…",
             Style::default().fg(Color::Red),
@@ -67,7 +92,12 @@ pub fn render_orders_tab(
                 .border_style(Style::default().fg(PRIMARY_COLOR))
                 .style(Style::default().bg(BACKGROUND_COLOR)),
         );
-        f.render_widget(paragraph, area);
+        f.render_widget(paragraph, table_area);
+        if let (Some(filter_area), UiMode::OrderFilters(state)) = (filter_area, &app.mode) {
+            if state.currency_picker.open {
+                render_order_filter_currency_dropdown(f, filter_area, area, state);
+            }
+        }
         return;
     }
 
@@ -448,20 +478,30 @@ fn render_filter_list_dropdown(
     selected: usize,
     hint: &str,
 ) {
-    let x = anchor.x.saturating_add(2);
-    let max_width = (bounds.x + bounds.width).saturating_sub(x);
-    let width = 42u16.clamp(24, max_width.max(24)).min(max_width);
+    let mut x = anchor.x.saturating_add(2);
+    let end = bounds.x.saturating_add(bounds.width);
+    let mut max_width = end.saturating_sub(x);
+    if max_width < 24 {
+        x = bounds.x;
+        max_width = bounds.width;
+    }
+    let width = if max_width == 0 {
+        0
+    } else {
+        42u16.min(max_width).max(24u16.min(max_width))
+    };
     let content_rows = rows.len().clamp(1, 8) as u16;
     let height = content_rows + 3;
     let mut y = anchor.y + anchor.height;
     if y + height > bounds.y + bounds.height {
-        y = anchor.y.saturating_sub(height);
+        y = anchor.y.saturating_sub(height).max(bounds.y);
     }
+    let available = (bounds.y + bounds.height).saturating_sub(y);
     let popup = Rect {
         x,
         y,
         width,
-        height: height.min(bounds.y + bounds.height - y),
+        height: height.min(available),
     };
     f.render_widget(Clear, popup);
     let block = Block::default()
@@ -1303,6 +1343,33 @@ mod tests {
         assert!(buffer_contains(buf, "Order Filters (editing)"));
         assert!(buffer_contains(buf, "Fiat:EUR▾"));
         assert!(buffer_contains(buf, "No offers match"));
+    }
+
+    #[test]
+    fn empty_order_book_keeps_inline_filter_bar_when_editing() {
+        let backend = TestBackend::new(130, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "USD".to_string(),
+                ..Default::default()
+            },
+            false,
+        ));
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        match &app.mode {
+            UiMode::OrderFilters(state) => assert!(state.inline),
+            other => panic!("expected OrderFilters, got {other:?}"),
+        }
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "No offers found"));
     }
 
     #[test]

@@ -146,8 +146,9 @@ fn close_currency_picker(form: &mut FormState) {
 
 /// Intercept keys for the multi-select payment-method dropdown.
 ///
-/// Closed: Enter, Space, or typing opens the overlay. Open: ↑↓ move, Enter
-/// toggles a listed method or adds a sanitized custom name, Space with an
+/// Closed: Enter, Space, or typing opens the overlay; Backspace is consumed so
+/// normal field editing cannot char-delete a multi-select value. Open: ↑↓ move,
+/// Enter toggles a listed method or adds a sanitized custom name, Space with an
 /// empty filter also toggles, Esc closes and keeps the current selection.
 /// Returns `Some(true)` when consumed, or `None` to let normal dispatch continue.
 pub fn handle_payment_method_picker_key(code: KeyCode, app: &mut AppState) -> Option<bool> {
@@ -179,6 +180,8 @@ pub fn handle_payment_method_picker_key(code: KeyCode, app: &mut AppState) -> Op
                 form.payment_method_picker.selected = 0;
                 Some(true)
             }
+            // Do not let normal Backspace rewrite a multi-select value char-by-char.
+            KeyCode::Backspace => Some(true),
             _ => None,
         }
     } else {
@@ -500,6 +503,18 @@ mod tests {
         let form = creating_form(&app);
         assert!(form.payment_method_picker.open);
         assert!(form.payment_method.is_empty());
+    }
+
+    #[test]
+    fn payment_method_picker_closed_backspace_does_not_mutate_selection() {
+        let mut app = creating_order_on_method("Cash App, Zelle", false);
+        assert_eq!(
+            handle_payment_method_picker_key(KeyCode::Backspace, &mut app),
+            Some(true)
+        );
+        let form = creating_form(&app);
+        assert!(!form.payment_method_picker.open);
+        assert_eq!(form.payment_method, "Cash App, Zelle");
     }
 
     #[test]

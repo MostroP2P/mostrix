@@ -691,6 +691,47 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect) {
     f.render_widget(hint, area);
 }
 
+/// Place a form dropdown inside `bounds`, preferring the value column under `anchor`.
+///
+/// When the anchored x leaves less than 24 columns, falls back to a compact
+/// full-width placement. Vertical fallback above the anchor is clamped to
+/// `bounds.y` so the popup stays inside the form panel on short terminals.
+fn anchored_dropdown_rect(
+    anchor: Rect,
+    bounds: Rect,
+    preferred_width: u16,
+    content_rows: u16,
+) -> Rect {
+    const MIN_W: u16 = 24;
+    let mut x = anchor.x.saturating_add(VALUE_OFFSET as u16);
+    let end = bounds.x.saturating_add(bounds.width);
+    let mut max_width = end.saturating_sub(x);
+    // When the value column leaves too little room, use a compact full-width placement.
+    if max_width < MIN_W {
+        x = bounds.x;
+        max_width = bounds.width;
+    }
+    let width = if max_width == 0 {
+        0
+    } else {
+        preferred_width.min(max_width).max(MIN_W.min(max_width))
+    };
+    let height = content_rows.saturating_add(3); // border (2) + hint (1)
+    let mut y = anchor.y.saturating_add(1);
+    if y.saturating_add(height) > bounds.y.saturating_add(bounds.height) {
+        y = anchor.y.saturating_sub(height).max(bounds.y);
+    } else {
+        y = y.max(bounds.y);
+    }
+    let available = bounds.y.saturating_add(bounds.height).saturating_sub(y);
+    Rect {
+        x,
+        y,
+        width,
+        height: height.min(available),
+    }
+}
+
 fn render_currency_dropdown(
     f: &mut ratatui::Frame,
     anchor: Rect,
@@ -705,21 +746,8 @@ fn render_currency_dropdown(
         .selected
         .min(filtered.len().saturating_sub(1));
 
-    let x = anchor.x + VALUE_OFFSET as u16;
-    let max_width = (bounds.x + bounds.width).saturating_sub(x);
-    let width = 40u16.clamp(24, max_width.max(24)).min(max_width);
     let content_rows = filtered.len().clamp(1, 8) as u16;
-    let height = content_rows + 3; // border (2) + hint (1)
-    let mut y = anchor.y + 1;
-    if y + height > bounds.y + bounds.height {
-        y = anchor.y.saturating_sub(height);
-    }
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height: height.min(bounds.y + bounds.height - y),
-    };
+    let popup = anchored_dropdown_rect(anchor, bounds, 40, content_rows);
 
     f.render_widget(Clear, popup);
 
@@ -828,21 +856,8 @@ fn render_payment_method_dropdown(
         .selected
         .min(rows.len().saturating_sub(1));
 
-    let x = anchor.x + VALUE_OFFSET as u16;
-    let max_width = (bounds.x + bounds.width).saturating_sub(x);
-    let width = 48u16.clamp(24, max_width.max(24)).min(max_width);
     let content_rows = rows.len().clamp(1, 8) as u16;
-    let height = content_rows + 3; // border (2) + hint (1)
-    let mut y = anchor.y + 1;
-    if y + height > bounds.y + bounds.height {
-        y = anchor.y.saturating_sub(height);
-    }
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height: height.min(bounds.y + bounds.height - y),
-    };
+    let popup = anchored_dropdown_rect(anchor, bounds, 48, content_rows);
 
     f.render_widget(Clear, popup);
 
@@ -1355,5 +1370,35 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Payment methods for USD"));
         assert!(buffer_contains(buf, "Cash App"));
+    }
+
+    #[test]
+    fn payment_method_picker_stays_usable_on_narrow_terminal() {
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        form.payment_method_picker.open = true;
+        // Narrow enough that an anchored VALUE_OFFSET column would leave <24 cols.
+        let backend = ratatui::backend::TestBackend::new(40, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment methods"));
+        assert!(buffer_contains(buf, "Cash App") || buffer_contains(buf, "type filter"));
+    }
+
+    #[test]
+    fn payment_method_picker_stays_inside_short_form() {
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        form.payment_method_picker.open = true;
+        let backend = ratatui::backend::TestBackend::new(80, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment methods"));
     }
 }
