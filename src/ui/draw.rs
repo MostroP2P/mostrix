@@ -436,7 +436,9 @@ No: paste BOLT11 or Lightning address manually."
         );
     }
     if let UiMode::OrderFilters(state) = &app.mode {
-        tabs::orders_tab::render_order_filter_popup(f, state);
+        if !state.inline {
+            tabs::orders_tab::render_order_filter_popup(f, state);
+        }
     }
     if let UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) = &app.mode {
         admin_key_confirm::render_admin_key_confirm_with_message(

@@ -281,11 +281,14 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 Renders a table of pending orders from the Mostro network. Status and order kinds are color-coded for readability.
 
 - **Scrolling**: persistent [`TableState`](https://docs.rs/ratatui) on `AppState.orders_table_state` so ↑↓ keeps the selected row in view without resetting the viewport each frame (aligned with Disputes Pending). A vertical scrollbar from `render_table_list_scrollbar` appears when row count exceeds the visible body; thumb tracks viewport **offset** and stays on the data-row track (does not overwrite borders/header).
-- **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same currency-filtered book projection. If the stored id is hidden by `currencies_filter`, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
+- **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same filtered book projection (`currencies_filter` from Settings, then local `order_filters`). If the stored id is hidden by filters, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
+- **Order filters** (`OrderBookFilters` on `AppState`, `UiMode::OrderFilters`): **Shift+F** edits, **Shift+X** clears. Filters cover **Kind** (Any/Buy/Sell), **Fiat currency** (searchable picker), and a single **Premium** % (exact match; **↑** / **↓** step by 1; `0%` white, positive green, negative red; Backspace clears to Any).
+  - **Large terminals** (`width ≥ 110` and `height ≥ 12`): an editable inline filter bar sits above the table. **Tab** moves fields, **↑↓** rotate Kind / step Premium / browse Fiat, **Enter** applies (stays in edit mode), **Esc** exits edit mode.
+  - **Smaller terminals**: **Shift+F** opens a compact popup with the same three fields; **Enter** applies and closes.
 - **Narrow terminals** (`width < 100`): compact column set (Kind / Fiat Amt / Premium / Payment) — Premium stays visible.
 - **Short terminals** (`height < 4`): header row is dropped so at least one data row remains visible.
 
-**Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`
+**Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`, `src/ui/orders.rs` (`OrderBookFilters`), `src/ui/currencies.rs` (fiat picker)
 
 ### 2. Messages Tab
 

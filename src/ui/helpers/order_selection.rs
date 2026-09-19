@@ -21,29 +21,8 @@ pub fn order_passes_currency_filter(order: &SmallOrder, currencies_filter: &[Str
     filter_set.contains(&order.fiat_code.to_uppercase())
 }
 
-fn parse_i64_filter(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok()
-}
-
-fn parse_days_filter(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok().filter(|v| *v > 0)
-}
-
-fn fiat_amount_bounds(order: &SmallOrder) -> (i64, i64) {
-    match (order.min_amount, order.max_amount) {
-        (Some(min), Some(max)) => (min, max),
-        (Some(min), None) => (min, i64::MAX),
-        (None, Some(max)) => (0, max),
-        (None, None) => (order.fiat_amount, order.fiat_amount),
-    }
-}
-
-/// Whether `order` passes local Orders-tab filters.
-pub fn order_passes_order_filters_at(
-    order: &SmallOrder,
-    filters: &OrderBookFilters,
-    now: i64,
-) -> bool {
+/// Whether `order` passes local Orders-tab filters (kind, fiat, premium band).
+pub fn order_passes_order_filters(order: &SmallOrder, filters: &OrderBookFilters) -> bool {
     match filters.kind {
         OrderBookKindFilter::Any => {}
         OrderBookKindFilter::Buy if !matches!(order.kind, Some(Kind::Buy)) => return false,
@@ -56,55 +35,16 @@ pub fn order_passes_order_filters_at(
         return false;
     }
 
-    let payment = filters.payment_method.trim().to_ascii_lowercase();
-    if !payment.is_empty()
-        && !order
-            .payment_method
-            .to_ascii_lowercase()
-            .contains(payment.as_str())
-    {
-        return false;
-    }
-
-    let (order_min, order_max) = fiat_amount_bounds(order);
-    if let Some(min) = parse_i64_filter(&filters.fiat_amount_min) {
-        if order_max < min {
-            return false;
-        }
-    }
-    if let Some(max) = parse_i64_filter(&filters.fiat_amount_max) {
-        if order_min > max {
-            return false;
-        }
-    }
-
-    if let Some(min) = parse_i64_filter(&filters.premium_min) {
-        if order.premium < min {
-            return false;
-        }
-    }
-    if let Some(max) = parse_i64_filter(&filters.premium_max) {
-        if order.premium > max {
-            return false;
-        }
-    }
-
-    if let Some(days) = parse_days_filter(&filters.created_within_days) {
-        let Some(created_at) = order.created_at else {
-            return false;
-        };
-        let cutoff = now.saturating_sub(days.saturating_mul(86_400));
-        if created_at < cutoff {
-            return false;
-        }
-    }
-
-    true
+    filters.premium.is_none_or(|p| order.premium == p)
 }
 
-/// Whether `order` passes local Orders-tab filters using the current wall clock.
-pub fn order_passes_order_filters(order: &SmallOrder, filters: &OrderBookFilters) -> bool {
-    order_passes_order_filters_at(order, filters, chrono::Utc::now().timestamp())
+/// Alias kept for call sites that previously passed a wall-clock timestamp.
+pub fn order_passes_order_filters_at(
+    order: &SmallOrder,
+    filters: &OrderBookFilters,
+    _now: i64,
+) -> bool {
+    order_passes_order_filters(order, filters)
 }
 
 /// Filtered book rows as `(original_index, order)` pairs.
@@ -211,18 +151,23 @@ mod tests {
     }
 
     #[test]
-    fn local_filters_match_kind_fiat_and_payment_method() {
+    fn local_filters_match_kind_fiat_and_exact_premium() {
         let buy = Uuid::new_v4();
         let sell = Uuid::new_v4();
         let orders = vec![
-            order(buy, "USD", "Cash App"),
-            sell_order(sell, "EUR", "SEPA"),
+            SmallOrder {
+                premium: 5,
+                ..order(buy, "USD", "Cash App")
+            },
+            SmallOrder {
+                premium: -2,
+                ..sell_order(sell, "EUR", "SEPA")
+            },
         ];
         let filters = OrderBookFilters {
             kind: OrderBookKindFilter::Sell,
             fiat_code: "eur".to_string(),
-            payment_method: "sep".to_string(),
-            ..Default::default()
+            premium: Some(-2),
         };
 
         let filtered = get_filtered_book_orders(&orders, &[], &filters);
@@ -231,33 +176,54 @@ mod tests {
     }
 
     #[test]
-    fn local_filters_match_numeric_ranges_and_created_at() {
-        let fresh = Uuid::new_v4();
-        let old = Uuid::new_v4();
-        let now = 2_000_000;
-        let fresh_order = SmallOrder {
-            premium: 5,
-            fiat_amount: 150,
-            created_at: Some(now - 3_600),
-            ..order(fresh, "USD", "cash")
-        };
-        let old_order = SmallOrder {
-            premium: -2,
-            fiat_amount: 300,
-            created_at: Some(now - 10 * 86_400),
-            ..order(old, "USD", "cash")
-        };
-        let filters = OrderBookFilters {
-            fiat_amount_min: "100".to_string(),
-            fiat_amount_max: "200".to_string(),
-            premium_min: "0".to_string(),
-            premium_max: "10".to_string(),
-            created_within_days: "1".to_string(),
+    fn exact_premium_filter_keeps_matching_percent_only() {
+        let zero = Uuid::new_v4();
+        let discount = Uuid::new_v4();
+        let markup = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                premium: 0,
+                ..order(zero, "USD", "cash")
+            },
+            SmallOrder {
+                premium: -3,
+                ..order(discount, "USD", "cash")
+            },
+            SmallOrder {
+                premium: 4,
+                ..order(markup, "USD", "cash")
+            },
+        ];
+
+        let at_zero = OrderBookFilters {
+            premium: Some(0),
             ..Default::default()
         };
+        assert_eq!(get_filtered_book_orders(&orders, &[], &at_zero).len(), 1);
+        assert_eq!(
+            get_filtered_book_orders(&orders, &[], &at_zero)[0].1.id,
+            Some(zero)
+        );
 
-        assert!(order_passes_order_filters_at(&fresh_order, &filters, now));
-        assert!(!order_passes_order_filters_at(&old_order, &filters, now));
+        let at_minus_three = OrderBookFilters {
+            premium: Some(-3),
+            ..Default::default()
+        };
+        assert_eq!(
+            get_filtered_book_orders(&orders, &[], &at_minus_three)[0]
+                .1
+                .id,
+            Some(discount)
+        );
+
+        let at_four = OrderBookFilters {
+            premium: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(
+            get_filtered_book_orders(&orders, &[], &at_four)[0].1.id,
+            Some(markup)
+        );
     }
 
     /// Regression for the highlight/Enter mismatch: after a currency filter hides

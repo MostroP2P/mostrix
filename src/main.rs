@@ -280,19 +280,15 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
 }
 
 fn append_paste_to_order_filter(state: &mut OrderBookFilterState, text: &str) {
-    let target = match state.focused {
-        OrderBookFilterField::Kind => None,
-        OrderBookFilterField::FiatCurrency => Some(&mut state.filters.fiat_code),
-        OrderBookFilterField::FiatAmountMin => Some(&mut state.filters.fiat_amount_min),
-        OrderBookFilterField::FiatAmountMax => Some(&mut state.filters.fiat_amount_max),
-        OrderBookFilterField::PremiumMin => Some(&mut state.filters.premium_min),
-        OrderBookFilterField::PremiumMax => Some(&mut state.filters.premium_max),
-        OrderBookFilterField::PaymentMethod => Some(&mut state.filters.payment_method),
-        OrderBookFilterField::CreatedWithinDays => Some(&mut state.filters.created_within_days),
-    };
-
-    if let Some(target) = target {
-        target.push_str(text);
+    // Only Fiat accepts free-text paste (opens as filter when typing); Kind/Premium cycle.
+    if state.focused == OrderBookFilterField::FiatCurrency {
+        let filtered: String = text.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        if !filtered.is_empty() {
+            state
+                .filters
+                .fiat_code
+                .push_str(&filtered.to_ascii_uppercase());
+        }
     }
 }
 

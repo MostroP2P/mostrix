@@ -31,13 +31,58 @@ impl OrderBookKindFilter {
         }
     }
 
-    pub fn cycle(&mut self) {
+    pub fn cycle_next(&mut self) {
         *self = match self {
             Self::Any => Self::Buy,
             Self::Buy => Self::Sell,
             Self::Sell => Self::Any,
         };
     }
+
+    pub fn cycle_prev(&mut self) {
+        *self = match self {
+            Self::Any => Self::Sell,
+            Self::Buy => Self::Any,
+            Self::Sell => Self::Buy,
+        };
+    }
+}
+
+/// Optional exact premium % filter. `None` = Any; ↑↓ step by 1.
+///
+/// Display color: `0` white, negative red, positive green, unset gray.
+#[must_use]
+pub fn order_book_premium_label(premium: Option<i64>) -> String {
+    match premium {
+        None => "Any".to_string(),
+        Some(0) => "0%".to_string(),
+        Some(v) if v > 0 => format!("+{v}%"),
+        Some(v) => format!("{v}%"),
+    }
+}
+
+#[must_use]
+pub fn order_book_premium_color(premium: Option<i64>) -> Color {
+    match premium {
+        None => Color::Gray,
+        Some(0) => Color::White,
+        Some(v) if v < 0 => Color::Red,
+        Some(_) => Color::Green,
+    }
+}
+
+/// Step the premium filter by `delta` (±1).
+/// From unset (`Any`): ↑ starts at `+1%`, ↓ starts at `-1%`.
+pub fn step_order_book_premium(premium: &mut Option<i64>, delta: i64) {
+    if delta == 0 {
+        return;
+    }
+    let next = match *premium {
+        None if delta > 0 => 1,
+        None => -1,
+        Some(v) => v.saturating_add(delta),
+    };
+    *premium = Some(next);
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -45,37 +90,18 @@ pub enum OrderBookFilterField {
     #[default]
     Kind,
     FiatCurrency,
-    FiatAmountMin,
-    FiatAmountMax,
-    PremiumMin,
-    PremiumMax,
-    PaymentMethod,
-    CreatedWithinDays,
+    Premium,
 }
 
 impl OrderBookFilterField {
-    pub const ALL: [Self; 8] = [
-        Self::Kind,
-        Self::FiatCurrency,
-        Self::FiatAmountMin,
-        Self::FiatAmountMax,
-        Self::PremiumMin,
-        Self::PremiumMax,
-        Self::PaymentMethod,
-        Self::CreatedWithinDays,
-    ];
+    pub const ALL: [Self; 3] = [Self::Kind, Self::FiatCurrency, Self::Premium];
 
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Kind => "Buy/Sell",
             Self::FiatCurrency => "Fiat currency",
-            Self::FiatAmountMin => "Fiat amount min",
-            Self::FiatAmountMax => "Fiat amount max",
-            Self::PremiumMin => "Premium min %",
-            Self::PremiumMax => "Premium max %",
-            Self::PaymentMethod => "Payment method",
-            Self::CreatedWithinDays => "Created within days",
+            Self::Premium => "Premium",
         }
     }
 
@@ -96,12 +122,8 @@ impl OrderBookFilterField {
 pub struct OrderBookFilters {
     pub kind: OrderBookKindFilter,
     pub fiat_code: String,
-    pub fiat_amount_min: String,
-    pub fiat_amount_max: String,
-    pub premium_min: String,
-    pub premium_max: String,
-    pub payment_method: String,
-    pub created_within_days: String,
+    /// Exact premium % match when `Some`; `None` means any premium.
+    pub premium: Option<i64>,
 }
 
 impl OrderBookFilters {
@@ -109,12 +131,7 @@ impl OrderBookFilters {
     pub fn has_active_filters(&self) -> bool {
         self.kind != OrderBookKindFilter::Any
             || !self.fiat_code.trim().is_empty()
-            || !self.fiat_amount_min.trim().is_empty()
-            || !self.fiat_amount_max.trim().is_empty()
-            || !self.premium_min.trim().is_empty()
-            || !self.premium_max.trim().is_empty()
-            || !self.payment_method.trim().is_empty()
-            || !self.created_within_days.trim().is_empty()
+            || self.premium.is_some()
     }
 
     #[must_use]
@@ -126,25 +143,11 @@ impl OrderBookFilters {
         if !self.fiat_code.trim().is_empty() {
             parts.push(format!("fiat={}", self.fiat_code.trim().to_uppercase()));
         }
-        if !self.fiat_amount_min.trim().is_empty() || !self.fiat_amount_max.trim().is_empty() {
+        if self.premium.is_some() {
             parts.push(format!(
-                "fiat amount={}..{}",
-                empty_as_any(&self.fiat_amount_min),
-                empty_as_any(&self.fiat_amount_max)
+                "premium={}",
+                order_book_premium_label(self.premium)
             ));
-        }
-        if !self.premium_min.trim().is_empty() || !self.premium_max.trim().is_empty() {
-            parts.push(format!(
-                "premium={}..{}%",
-                empty_as_any(&self.premium_min),
-                empty_as_any(&self.premium_max)
-            ));
-        }
-        if !self.payment_method.trim().is_empty() {
-            parts.push(format!("payment~{}", self.payment_method.trim()));
-        }
-        if !self.created_within_days.trim().is_empty() {
-            parts.push(format!("created<={}d", self.created_within_days.trim()));
         }
         if parts.is_empty() {
             "none".to_string()
@@ -158,14 +161,87 @@ impl OrderBookFilters {
 pub struct OrderBookFilterState {
     pub filters: OrderBookFilters,
     pub focused: OrderBookFilterField,
+    /// Searchable currency dropdown (Create Order style).
+    pub currency_picker: CurrencyPicker,
+    /// True when the Orders tab shows the editable inline filter bar.
+    pub inline: bool,
 }
 
-fn empty_as_any(value: &str) -> &str {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        "*"
-    } else {
-        trimmed
+impl OrderBookFilterState {
+    /// Draft editor seeded from the applied session filters.
+    #[must_use]
+    pub fn from_filters(filters: OrderBookFilters, inline: bool) -> Self {
+        Self {
+            filters,
+            focused: OrderBookFilterField::Kind,
+            currency_picker: CurrencyPicker::default(),
+            inline,
+        }
+    }
+}
+
+/// Whether the Orders content area is large enough for an editable inline filter bar.
+#[must_use]
+pub fn orders_filter_inline_layout(area_width: u16, area_height: u16) -> bool {
+    area_width >= 110 && area_height >= 12
+}
+
+#[cfg(test)]
+mod order_book_filter_helper_tests {
+    use super::*;
+
+    #[test]
+    fn inline_layout_requires_width_and_height_thresholds() {
+        assert!(orders_filter_inline_layout(110, 12));
+        assert!(!orders_filter_inline_layout(109, 12));
+        assert!(!orders_filter_inline_layout(110, 11));
+        assert!(!orders_filter_inline_layout(80, 20));
+    }
+
+    #[test]
+    fn premium_steps_by_one_from_any() {
+        let mut p = None;
+        step_order_book_premium(&mut p, 1);
+        assert_eq!(p, Some(1));
+        step_order_book_premium(&mut p, 1);
+        assert_eq!(p, Some(2));
+        step_order_book_premium(&mut p, 1);
+        assert_eq!(p, Some(3));
+        step_order_book_premium(&mut p, -1);
+        assert_eq!(p, Some(2));
+        step_order_book_premium(&mut p, -1);
+        assert_eq!(p, Some(1));
+        step_order_book_premium(&mut p, -1);
+        assert_eq!(p, Some(0));
+        step_order_book_premium(&mut p, -1);
+        assert_eq!(p, Some(-1));
+
+        let mut down = None;
+        step_order_book_premium(&mut down, -1);
+        assert_eq!(down, Some(-1));
+        step_order_book_premium(&mut down, -1);
+        assert_eq!(down, Some(-2));
+    }
+
+    #[test]
+    fn premium_label_and_color() {
+        assert_eq!(order_book_premium_label(None), "Any");
+        assert_eq!(order_book_premium_label(Some(0)), "0%");
+        assert_eq!(order_book_premium_label(Some(3)), "+3%");
+        assert_eq!(order_book_premium_label(Some(-2)), "-2%");
+        assert_eq!(order_book_premium_color(None), Color::Gray);
+        assert_eq!(order_book_premium_color(Some(0)), Color::White);
+        assert_eq!(order_book_premium_color(Some(1)), Color::Green);
+        assert_eq!(order_book_premium_color(Some(-1)), Color::Red);
+    }
+
+    #[test]
+    fn kind_cycle() {
+        let mut k = OrderBookKindFilter::Any;
+        k.cycle_next();
+        assert_eq!(k, OrderBookKindFilter::Buy);
+        k.cycle_prev();
+        assert_eq!(k, OrderBookKindFilter::Any);
     }
 }
 
@@ -529,7 +605,7 @@ impl FormField {
 }
 
 /// State for the searchable currency dropdown on the Currency field.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CurrencyPicker {
     pub open: bool,      // whether the dropdown overlay is visible
     pub filter: String,  // typed query used to narrow the list
@@ -537,7 +613,7 @@ pub struct CurrencyPicker {
 }
 
 /// State for the multi-select payment-method dropdown on the Method field.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PaymentMethodPicker {
     pub open: bool,      // whether the dropdown overlay is visible
     pub filter: String,  // typed query used to narrow the list
