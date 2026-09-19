@@ -68,6 +68,16 @@ pub enum UiMode {
     ConfirmRemoveRelay(String, usize, bool),
     /// Settings: confirm restoring the built-in default relays (selected_button).
     ConfirmRestoreDefaultRelays(bool),
+    /// Settings: enter a Blossom server HTTPS base.
+    AddBlossomServer(KeyInputState),
+    /// Settings: confirm adding a Blossom server (url, selected_button).
+    ConfirmBlossomServer(String, bool),
+    /// Settings: pick a Blossom server to remove (snapshot taken at open).
+    RemoveBlossomServer(usize, Vec<String>),
+    /// Settings: confirm removing a Blossom server (url, picker index, selected_button).
+    ConfirmRemoveBlossomServer(String, usize, bool),
+    /// Settings: confirm restoring the built-in default Blossom servers.
+    ConfirmRestoreDefaultBlossomServers(bool),
     /// User-mode Settings: buyer Lightning address (`user@domain.com`).
     AddLnAddress(KeyInputState),
     ConfirmLnAddress(String, bool), // (address, selected_button)
@@ -184,6 +194,19 @@ impl Clone for UiMode {
             }
             UiMode::ConfirmRestoreDefaultRelays(selected) => {
                 UiMode::ConfirmRestoreDefaultRelays(*selected)
+            }
+            UiMode::AddBlossomServer(state) => UiMode::AddBlossomServer(state.clone()),
+            UiMode::ConfirmBlossomServer(url, selected) => {
+                UiMode::ConfirmBlossomServer(url.clone(), *selected)
+            }
+            UiMode::RemoveBlossomServer(idx, servers) => {
+                UiMode::RemoveBlossomServer(*idx, servers.clone())
+            }
+            UiMode::ConfirmRemoveBlossomServer(url, idx, selected) => {
+                UiMode::ConfirmRemoveBlossomServer(url.clone(), *idx, *selected)
+            }
+            UiMode::ConfirmRestoreDefaultBlossomServers(selected) => {
+                UiMode::ConfirmRestoreDefaultBlossomServers(*selected)
             }
             UiMode::AddLnAddress(state) => UiMode::AddLnAddress(state.clone()),
             UiMode::ConfirmLnAddress(addr, selected) => {

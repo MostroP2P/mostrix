@@ -179,6 +179,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 - **Input Validation**: All inputs are validated before processing:
   - Mostro pubkey: Must be 64-character hex string
   - Relay URLs: Must start with `wss://`
+  - Blossom server URLs: Must start with `https://`
   - Currency codes: Non-empty, max 10 characters
   - Solver public key: Accepts `npub1...` **or** 64-char hex public key
   - Admin private key: Accepts `nsec1...` **or** 64-char hex secret key

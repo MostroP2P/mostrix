@@ -15,8 +15,11 @@ nsec_privkey = 'nsec1_privkey_format'
 user_mode = "user"
 # Lightning address when you buy (receive via LNURL-pay); leave empty if unused.
 ln_address = ""
-# Blossom media servers for encrypted chat attachments (tried in order on upload).
-# blossom_servers = ["https://blossom.primal.net", "https://blossom.band"]
+# Blossom HTTPS bases for encrypted chat attachments (tried in order on upload).
+# Empty list uses the built-in defaults (same as Mostro Mobile). Manage from Settings:
+# Add / Remove / Restore Default Blossom Servers. A down host is skipped; send fails
+# only after every server in the list has been tried.
+# blossom_servers = ["https://cdn.hzrd149.com", "https://nostr.download"]
 # mostro-push-server used to wake chat recipients' phones after a chat message.
 # Defaults to the production instance the mobile apps register with. Set to an
 # empty string to disable it (e.g. to avoid revealing to the server which trade

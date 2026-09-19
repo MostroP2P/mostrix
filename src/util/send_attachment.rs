@@ -18,7 +18,8 @@ use crate::ui::helpers::{
 };
 use crate::ui::{OperationResult, UserChatSender, UserOrderChatMessage};
 use crate::util::blossom::{
-    encrypt_blob, upload_blob_with_retry, BLOSSOM_MAX_BLOB_SIZE, DEFAULT_BLOSSOM_SERVERS,
+    blossom_http_client, default_blossom_servers, encrypt_blob, upload_blob_with_retry,
+    BLOSSOM_MAX_BLOB_SIZE,
 };
 use crate::util::chat_utils::{
     keys_from_shared_hex, order_chat_decryption_key_bytes,
@@ -47,13 +48,11 @@ enum SendAttachmentAttempt {
     UploadOkSendFailed(PreparedOrderChatAttachment, String),
 }
 
-/// Resolves Blossom server list from settings or defaults.
+/// Resolves the Blossom upload list: empty `settings.blossom_servers` uses
+/// [`default_blossom_servers`]; a non-empty list is used as-is (tried in order).
 pub fn blossom_servers_from_settings(settings: &Settings) -> Vec<String> {
     if settings.blossom_servers.is_empty() {
-        DEFAULT_BLOSSOM_SERVERS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        default_blossom_servers()
     } else {
         settings.blossom_servers.clone()
     }
@@ -230,7 +229,7 @@ async fn send_order_chat_attachment_from_path(
         ));
     }
 
-    let http = reqwest::Client::new();
+    let http = blossom_http_client()?;
     let blossom_url =
         upload_blob_with_retry(&http, blossom_servers, &encrypted_blob, &keys.trade_keys).await?;
     let outbound = build_outbound_payload(&validated, blossom_url.clone(), &encrypted_blob)?;
@@ -341,4 +340,28 @@ pub fn spawn_send_order_chat_attachment(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    #[test]
+    fn empty_settings_use_default_blossom_servers() {
+        let settings = Settings::default();
+        let servers = blossom_servers_from_settings(&settings);
+        assert_eq!(servers.len(), default_blossom_servers().len());
+        assert_eq!(servers[0], default_blossom_servers()[0]);
+    }
+
+    #[test]
+    fn configured_blossom_servers_replace_defaults() {
+        let settings = Settings {
+            blossom_servers: vec!["https://example.invalid".into()],
+            ..Settings::default()
+        };
+        let servers = blossom_servers_from_settings(&settings);
+        assert_eq!(servers, vec!["https://example.invalid".to_string()]);
+    }
 }

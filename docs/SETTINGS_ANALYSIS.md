@@ -21,10 +21,11 @@ This document provides a comprehensive analysis of the Settings tab features imp
 - **Restart requirement**: After saving the mnemonic, Mostrix must be restarted so the app can use the rotated keys everywhere.
 - **First-launch behavior**: If Mostrix had to bootstrap a brand-new `settings.toml`, the backup popup is shown immediately as an overlay on the initial Orders/Disputes tab (no forced navigation to Settings).
 
-### Blossom servers (`blossom_servers`, optional)
+### Blossom servers (`blossom_servers`)
 
-- **Field**: `Settings.blossom_servers` (`Vec<String>`, default empty). Not exposed in the Settings tab UI; edit `settings.toml` directly (see commented example in repo `settings.toml`).
-- **Behavior**: When empty, My Trades attachment **upload** uses `DEFAULT_BLOSSOM_SERVERS` in `src/util/blossom.rs`. When non-empty, `upload_blob_with_retry` tries each HTTPS base in order until one accepts the PUT. Upload authorization (NIP-24242) is signed with the order **trade key** (same identity that signs the kind-14 chat inner rumor), not an ephemeral key.
+- **Field**: `Settings.blossom_servers` (`Vec<String>`, default empty). Empty still means “use built-in defaults” at send time.
+- **UI**: Settings tab (User and Admin), immediately after the relay rows: **Add Blossom Server** (`AddBlossomServer` → `ConfirmBlossomServer`), **Remove Blossom Server** (`RemoveBlossomServer` picker → `ConfirmRemoveBlossomServer`), **Restore Default Blossom Servers** (`ConfirmRestoreDefaultBlossomServers`). Persistence lives in `src/ui/key_handler/settings.rs` (`save_blossom_server_to_settings` / `remove_blossom_server_from_settings` / `restore_default_blossom_servers_in_settings`).
+- **Behavior**: When empty, My Trades attachment **upload** uses `DEFAULT_BLOSSOM_SERVERS`. When non-empty, `upload_blob_with_retry` tries each HTTPS base in order until one accepts the PUT. The first add/remove on an empty list materializes the defaults first. The last server cannot be removed. Restore writes the compiled default list. Upload authorization (NIP-24242) is signed with the order **trade key**.
 - **Scope**: Used by My Trades outbound send (**Ctrl+O**, `src/util/send_attachment.rs`); receive/save (Ctrl+S) uses the `blossom_url` embedded in each message, not this list.
 
 ### Instance PoW (not a settings field)

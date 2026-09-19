@@ -58,12 +58,14 @@ use crate::ui::key_handler::message_handlers::{
 };
 use crate::ui::key_handler::settings::{
     clear_currency_filters, clear_ln_address_from_settings, handle_mode_switch,
-    plan_relay_reconcile, remove_relay_from_settings, restore_default_relays_in_settings,
-    save_currency_to_settings, save_mostro_pubkey_to_settings, save_relay_to_settings,
-    validate_ln_address_format,
+    load_blossom_servers_for_ui, plan_relay_reconcile, remove_blossom_server_from_settings,
+    remove_relay_from_settings, restore_default_blossom_servers_in_settings,
+    restore_default_relays_in_settings, save_blossom_server_to_settings, save_currency_to_settings,
+    save_mostro_pubkey_to_settings, save_relay_to_settings, validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
-    normalize_mostro_pubkey, normalize_relay_url, validate_currency, validate_relay,
+    normalize_blossom_server_url, normalize_mostro_pubkey, normalize_relay_url,
+    validate_blossom_server, validate_currency, validate_relay,
 };
 use crate::ui::tabs::settings_tab::{settings_action_for_index, SettingsMenuAction};
 use crate::util::chat_utils::{
@@ -641,6 +643,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::RemoveRelay(..)
         | UiMode::ConfirmRemoveRelay(..)
         | UiMode::ConfirmRestoreDefaultRelays(_)
+        | UiMode::AddBlossomServer(_)
+        | UiMode::ConfirmBlossomServer(_, _)
+        | UiMode::RemoveBlossomServer(..)
+        | UiMode::ConfirmRemoveBlossomServer(..)
+        | UiMode::ConfirmRestoreDefaultBlossomServers(_)
         | UiMode::AddLnAddress(_)
         | UiMode::ConfirmLnAddress(_, _)
         | UiMode::ConfirmClearLnAddress(_)
@@ -1255,6 +1262,76 @@ fn handle_enter_settings_mode(
                 app.mode = default_mode;
             }
         }
+        UiMode::AddBlossomServer(key_state) => {
+            let normalized = normalize_blossom_server_url(&key_state.key_input);
+            match validate_blossom_server(&normalized) {
+                Ok(_) => {
+                    app.mode = handle_input_to_confirmation(&normalized, default_mode, |input| {
+                        UiMode::ConfirmBlossomServer(input, true)
+                    });
+                }
+                Err(e) => {
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
+                }
+            }
+        }
+        UiMode::ConfirmBlossomServer(server, selected_button) => {
+            if selected_button {
+                match save_blossom_server_to_settings(&server) {
+                    Ok(()) => {
+                        app.mode = default_mode;
+                    }
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
+                    }
+                }
+            } else {
+                app.mode = UiMode::AddBlossomServer(create_key_input_state(&server));
+            }
+        }
+        UiMode::RemoveBlossomServer(selected, servers) => {
+            if servers.is_empty() {
+                app.mode = default_mode;
+            } else if servers.len() == 1 {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "At least one Blossom server is required; cannot remove the last server."
+                        .to_string(),
+                ));
+            } else if let Some(server) = servers.get(selected) {
+                app.mode = UiMode::ConfirmRemoveBlossomServer(server.clone(), selected, true);
+            } else {
+                app.mode = default_mode;
+            }
+        }
+        UiMode::ConfirmRemoveBlossomServer(server, picker_index, selected_button) => {
+            if selected_button {
+                match remove_blossom_server_from_settings(&server) {
+                    Ok(()) => {
+                        app.mode = default_mode;
+                    }
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
+                    }
+                }
+            } else {
+                let servers = load_blossom_servers_for_ui();
+                app.mode = UiMode::RemoveBlossomServer(picker_index, servers);
+            }
+        }
+        UiMode::ConfirmRestoreDefaultBlossomServers(selected_button) => {
+            if selected_button {
+                match restore_default_blossom_servers_in_settings() {
+                    Ok(()) => {
+                        app.mode = default_mode;
+                    }
+                    Err(e) => {
+                        app.mode = UiMode::operation_result(OperationResult::Error(e));
+                    }
+                }
+            } else {
+                app.mode = default_mode;
+            }
+        }
         UiMode::AddLnAddress(key_state) => match validate_ln_address_format(&key_state.key_input) {
             Ok(()) => {
                 let trimmed = key_state.key_input.trim().to_string();
@@ -1644,6 +1721,15 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             Some(SettingsMenuAction::RestoreDefaultRelays) => {
                 app.mode = UiMode::ConfirmRestoreDefaultRelays(true)
+            }
+            Some(SettingsMenuAction::AddBlossomServer) => {
+                app.mode = UiMode::AddBlossomServer(key_state)
+            }
+            Some(SettingsMenuAction::RemoveBlossomServer) => {
+                app.mode = UiMode::RemoveBlossomServer(0, load_blossom_servers_for_ui());
+            }
+            Some(SettingsMenuAction::RestoreDefaultBlossomServers) => {
+                app.mode = UiMode::ConfirmRestoreDefaultBlossomServers(true)
             }
             Some(SettingsMenuAction::SetBuyerLnAddress) => {
                 app.mode = UiMode::AddLnAddress(key_state)

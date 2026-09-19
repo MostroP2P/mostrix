@@ -335,6 +335,18 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Replace your relay list with the built-in defaults after confirmation; the running client is updated to match.",
         ),
         (
+            "Add Blossom Server",
+            "Append an HTTPS Blossom host (a bare host gets https://). If the list was empty, built-in defaults are saved first so one add does not replace them.",
+        ),
+        (
+            "Remove Blossom Server",
+            "Pick a Blossom server and confirm: it is removed from settings.toml. The last server cannot be removed.",
+        ),
+        (
+            "Restore Default Blossom Servers",
+            "Replace your Blossom list with the built-in defaults (same hosts as Mostro Mobile) after confirmation.",
+        ),
+        (
             "Add Currency Filter",
             "Add a fiat code (e.g. USD). The order book only shows matching orders.",
         ),
@@ -376,6 +388,18 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         (
             "Restore Default Relays",
             "Replace your relay list with the built-in defaults after confirmation; the running client is updated to match.",
+        ),
+        (
+            "Add Blossom Server",
+            "Append an HTTPS Blossom host (a bare host gets https://). If the list was empty, built-in defaults are saved first so one add does not replace them.",
+        ),
+        (
+            "Remove Blossom Server",
+            "Pick a Blossom server and confirm: it is removed from settings.toml. The last server cannot be removed.",
+        ),
+        (
+            "Restore Default Blossom Servers",
+            "Replace your Blossom list with the built-in defaults (same hosts as Mostro Mobile) after confirmation.",
         ),
         (
             "Set Lightning Address (buyer)",
@@ -696,6 +720,19 @@ mod help_content_tests {
                 "missing {expected:?} from narrow compact My Trades help"
             );
         }
+    }
+
+    #[test]
+    fn settings_instructions_list_blossom_server_rows() {
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_settings_instructions_popup(f, UserRole::User))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Add Blossom Server"));
+        assert!(buffer_contains(buf, "Remove Blossom Server"));
+        assert!(buffer_contains(buf, "Restore Default Blossom Servers"));
     }
 
     #[test]

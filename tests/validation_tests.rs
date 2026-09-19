@@ -1,6 +1,7 @@
 // Integration tests for validation functions
 use mostrix::ui::key_handler::{
-    normalize_relay_url, validate_mostro_pubkey, validate_npub, validate_relay,
+    normalize_blossom_server_url, normalize_relay_url, validate_blossom_server,
+    validate_mostro_pubkey, validate_npub, validate_relay,
 };
 use nostr_sdk::prelude::{Keys, ToBech32};
 
@@ -145,4 +146,27 @@ fn test_validate_relay_rejects_missing_host() {
 fn test_normalized_bare_url_passes_validation() {
     // The Add Relay flow normalizes before validating.
     assert!(validate_relay(&normalize_relay_url("relay.damus.io")).is_ok());
+}
+
+#[test]
+fn test_validate_blossom_server_valid() {
+    assert!(validate_blossom_server("https://cdn.hzrd149.com").is_ok());
+    assert!(validate_blossom_server("  https://nostr.download  ").is_ok());
+}
+
+#[test]
+fn test_validate_blossom_server_invalid() {
+    assert!(validate_blossom_server("").is_err());
+    assert!(validate_blossom_server("http://cdn.hzrd149.com").is_err());
+    assert!(validate_blossom_server("wss://relay.example").is_err());
+    assert!(validate_blossom_server("https://").is_err());
+}
+
+#[test]
+fn test_normalize_blossom_server_url_bare_host() {
+    assert_eq!(
+        normalize_blossom_server_url("cdn.hzrd149.com"),
+        "https://cdn.hzrd149.com"
+    );
+    assert!(validate_blossom_server(&normalize_blossom_server_url("cdn.hzrd149.com")).is_ok());
 }

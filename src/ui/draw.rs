@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::shared::permissions::SolverPermission;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::*;
+use crate::util::blossom::default_blossom_servers;
 use crate::util::fatal::request_fatal_restart;
 
 /// Preferred content height so bordered tab panels can still show one data row
@@ -364,6 +365,56 @@ pub fn ui_draw(
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
             "📡 Restore Default Relays",
+            "",
+            *selected_button,
+            Some(&message),
+        );
+    }
+    if let UiMode::AddBlossomServer(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "🌸 Add Blossom Server",
+            "Enter Blossom URL (e.g. blossom.example.com):",
+            "blossom.example.com",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::ConfirmBlossomServer(server, selected_button) = &app.mode {
+        admin_key_confirm::render_admin_key_confirm(
+            f,
+            "🌸 Confirm Blossom Server",
+            server,
+            *selected_button,
+        );
+    }
+    if let UiMode::RemoveBlossomServer(selected, servers) = &app.mode {
+        remove_relay_popup::render_remove_blossom_popup(f, servers, *selected);
+    }
+    if let UiMode::ConfirmRemoveBlossomServer(server, _, selected_button) = &app.mode {
+        let message = format!("{server}\nRemove this Blossom server from settings?");
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🌸 Remove Blossom Server",
+            server,
+            *selected_button,
+            Some(&message),
+        );
+    }
+    if let UiMode::ConfirmRestoreDefaultBlossomServers(selected_button) = &app.mode {
+        let hosts = default_blossom_servers()
+            .iter()
+            .map(|s| {
+                s.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message =
+            format!("{hosts}\nReplace your Blossom server list with the built-in defaults?");
+        admin_key_confirm::render_admin_key_confirm_with_message(
+            f,
+            "🌸 Restore Default Blossom Servers",
             "",
             *selected_button,
             Some(&message),

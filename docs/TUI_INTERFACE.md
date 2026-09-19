@@ -85,7 +85,7 @@ Focused on trading and order management.
 - **Orders**: View the global order book (persistent `TableState` scrolls with ↑↓; shared vertical scrollbar confined to data rows).
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Restore Session** (rebuild SQLite from Mostro + background hydrate of Messages tab trade DMs and My Trades peer chat without restart — see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)); **Select Mostro Instance** — trusted communities picker (Mobile catalog + [MostroEuropa](https://mostroeuropa.github.io/#connect)) plus type/paste custom npub/hex (`UiMode::SelectMostroInstance`, `src/ui/mostro_instances.rs`); **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
+- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Restore Session** (rebuild SQLite from Mostro + background hydrate of Messages tab trade DMs and My Trades peer chat without restart — see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)); **Select Mostro Instance** — trusted communities picker (Mobile catalog + [MostroEuropa](https://mostroeuropa.github.io/#connect)) plus type/paste custom npub/hex (`UiMode::SelectMostroInstance`, `src/ui/mostro_instances.rs`); **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). Relays and **Blossom servers** share the same add / remove / restore-defaults pattern. The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
 - **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), multi-select payment-method picker (per-currency list from `payment_methods.json`), and silent draft persistence when switching tabs.
 
 ### Admin Role
@@ -112,7 +112,7 @@ Focused on dispute resolution and protocol management.
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key (set `admin_privkey` to the Mostro daemon nsec)
-  - Manage relays and currency filters
+  - Manage relays, Blossom servers, and currency filters
   - (**User mode**) Generate New Keys / Lightning address options
 
 For detailed information about admin dispute resolution workflows, see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) and [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
@@ -152,7 +152,7 @@ Popups are implemented by rendering additional widgets on top of the main layout
 The primary shared popup is the **operation result** modal, used for:
 
 - Order creation / take-order flows
-- Settings validation errors (invalid pubkey, relay, currency, Lightning address format, LNURL verification failure, etc.)
+- Settings validation errors (invalid pubkey, relay, Blossom server, currency, Lightning address format, LNURL verification failure, etc.)
 - Admin actions (add solver, finalize disputes)
 - Blossom attachment downloads and Observer-mode Shared key errors
 

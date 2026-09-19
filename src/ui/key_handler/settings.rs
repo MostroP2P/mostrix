@@ -1,4 +1,6 @@
+use crate::ui::key_handler::validation::normalize_blossom_server_url;
 use crate::ui::{AppState, UserRole};
+use crate::util::blossom::default_blossom_servers;
 use lnurl::lightning_address::LightningAddress;
 use nostr_sdk::prelude::RelayUrl;
 use std::str::FromStr;
@@ -137,6 +139,83 @@ pub fn restore_default_relays_in_settings() -> Result<(), String> {
         |s| s.relays = crate::settings::default_relays(),
         "Failed to restore default relays",
         "Default relays restored in settings file",
+    )
+}
+
+fn same_blossom_server(a: &str, b: &str) -> bool {
+    normalize_blossom_server_url(a).eq_ignore_ascii_case(&normalize_blossom_server_url(b))
+}
+
+fn ensure_blossom_servers_materialized(servers: &mut Vec<String>) {
+    if servers.is_empty() {
+        *servers = default_blossom_servers();
+    }
+}
+
+/// Append a Blossom server. An empty on-disk list means "use defaults", so the
+/// first edit materializes those defaults before inserting — otherwise adding
+/// one host would replace the whole built-in set.
+fn add_blossom_entry(servers: &mut Vec<String>, server: &str) {
+    ensure_blossom_servers_materialized(servers);
+    if !servers.iter().any(|s| same_blossom_server(s, server)) {
+        servers.push(server.to_string());
+    }
+}
+
+/// Pure mutation behind [`remove_blossom_server_from_settings`]: materializes
+/// defaults when the list is empty, then refuses to delete the last server.
+fn remove_blossom_entry(servers: &mut Vec<String>, server: &str) -> Result<(), String> {
+    ensure_blossom_servers_materialized(servers);
+    let Some(pos) = servers.iter().position(|s| same_blossom_server(s, server)) else {
+        return Ok(());
+    };
+    if servers.len() <= 1 {
+        return Err(
+            "At least one Blossom server is required; cannot remove the last server.".to_string(),
+        );
+    }
+    servers.remove(pos);
+    Ok(())
+}
+
+/// Effective Blossom list for the remove picker (empty on disk → built-in defaults).
+pub fn load_blossom_servers_for_ui() -> Vec<String> {
+    crate::settings::load_settings_from_disk()
+        .map(|s| crate::util::send_attachment::blossom_servers_from_settings(&s))
+        .unwrap_or_else(|_| default_blossom_servers())
+}
+
+/// Save a Blossom server to settings; `Ok(())` only after a successful disk write.
+///
+/// An empty on-disk list is treated as "use defaults": those hosts are written
+/// first, then `server` is appended unless it is already in the list.
+pub fn save_blossom_server_to_settings(server: &str) -> Result<(), String> {
+    try_save_settings_with(
+        |s| add_blossom_entry(&mut s.blossom_servers, server),
+        "Failed to save Blossom server to settings",
+        "Blossom server added to settings file",
+    )
+}
+
+/// Remove a Blossom server from settings; `Ok(())` only after a successful disk write.
+///
+/// An empty on-disk list is materialized to the built-in defaults first. Refuses
+/// to delete the last remaining server.
+pub fn remove_blossom_server_from_settings(server: &str) -> Result<(), String> {
+    try_update_settings(
+        |s| remove_blossom_entry(&mut s.blossom_servers, server),
+        "Failed to remove Blossom server from settings",
+        "Blossom server removed from settings file",
+    )
+}
+
+/// Replace the Blossom list with [`crate::util::blossom::default_blossom_servers`];
+/// `Ok(())` only after a successful disk write.
+pub fn restore_default_blossom_servers_in_settings() -> Result<(), String> {
+    try_save_settings_with(
+        |s| s.blossom_servers = default_blossom_servers(),
+        "Failed to restore default Blossom servers",
+        "Default Blossom servers restored in settings file",
     )
 }
 
@@ -299,5 +378,42 @@ mod tests {
         let (to_add, to_remove) = plan_relay_reconcile(&old, &new);
         assert_eq!(to_add, vec!["wss://relay.mostro.network".to_string()]);
         assert_eq!(to_remove, vec!["not a url".to_string()]);
+    }
+
+    #[test]
+    fn add_blossom_entry_materializes_defaults_before_insert() {
+        let mut servers = Vec::new();
+        add_blossom_entry(&mut servers, "https://custom.example");
+        let defaults = default_blossom_servers();
+        assert_eq!(servers.len(), defaults.len() + 1);
+        assert_eq!(servers[defaults.len()], "https://custom.example");
+        assert_eq!(&servers[..defaults.len()], defaults.as_slice());
+    }
+
+    #[test]
+    fn add_blossom_entry_skips_duplicate_default() {
+        let mut servers = Vec::new();
+        let first = default_blossom_servers()[0].clone();
+        add_blossom_entry(&mut servers, &format!("{first}/"));
+        assert_eq!(servers, default_blossom_servers());
+    }
+
+    #[test]
+    fn remove_blossom_entry_refuses_to_empty_list() {
+        let mut servers = vec!["https://only.example".to_string()];
+        let err = remove_blossom_entry(&mut servers, "https://only.example")
+            .expect_err("removing the last blossom server must fail");
+        assert!(err.contains("At least one Blossom server"));
+        assert_eq!(servers, vec!["https://only.example".to_string()]);
+    }
+
+    #[test]
+    fn remove_blossom_entry_from_empty_materializes_then_removes() {
+        let mut servers = Vec::new();
+        let first = default_blossom_servers()[0].clone();
+        remove_blossom_entry(&mut servers, &first).expect("removal must succeed");
+        let mut expected = default_blossom_servers();
+        expected.remove(0);
+        assert_eq!(servers, expected);
     }
 }

@@ -1,4 +1,5 @@
 use crate::ui::key_handler::confirmation::{create_key_input_state, handle_confirmation_esc};
+use crate::ui::key_handler::settings::load_blossom_servers_for_ui;
 use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserMode, UserRole, UserTab};
 
 /// Handle Esc key
@@ -117,6 +118,8 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         | UiMode::SelectMostroInstance(_)
         | UiMode::AddRelay(_)
         | UiMode::RemoveRelay(..)
+        | UiMode::AddBlossomServer(_)
+        | UiMode::RemoveBlossomServer(..)
         | UiMode::AddLnAddress(_)
         | UiMode::AddCurrency(_) => {
             // Dismiss key input popup
@@ -155,6 +158,12 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             });
             true
         }
+        UiMode::ConfirmBlossomServer(server, _) => {
+            app.mode = handle_confirmation_esc(server, |input| {
+                UiMode::AddBlossomServer(create_key_input_state(input))
+            });
+            true
+        }
         UiMode::ConfirmLnAddress(addr, _) => {
             app.mode = handle_confirmation_esc(addr, |input| {
                 UiMode::AddLnAddress(create_key_input_state(input))
@@ -185,6 +194,15 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             true
         }
         UiMode::ConfirmRestoreDefaultRelays(_) => {
+            app.mode = default_mode.clone();
+            true
+        }
+        UiMode::ConfirmRemoveBlossomServer(_, picker_index, _) => {
+            let servers = load_blossom_servers_for_ui();
+            app.mode = UiMode::RemoveBlossomServer(*picker_index, servers);
+            true
+        }
+        UiMode::ConfirmRestoreDefaultBlossomServers(_) => {
             app.mode = default_mode.clone();
             true
         }
