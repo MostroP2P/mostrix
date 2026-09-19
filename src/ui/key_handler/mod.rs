@@ -633,6 +633,16 @@ pub fn normalize_seed_paste(pasted_text: &str) -> String {
 /// Append (or replace, for seed import) pasted text into the focused settings /
 /// admin key-input popup. Returns `true` when the paste was applied.
 pub fn apply_paste_to_focused_key_input(app: &mut AppState, pasted_text: &str) -> bool {
+    if let UiMode::SelectMostroInstance(ref mut picker) = app.mode {
+        let filtered: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return true;
+        }
+        picker.filter.push_str(&filtered);
+        picker.selected = 0;
+        return true;
+    }
+
     let is_seed_import = matches!(app.mode, UiMode::ImportSeedWords(_));
     let key_state = match &mut app.mode {
         UiMode::AddMostroPubkey(ref mut ks)
@@ -1755,6 +1765,23 @@ pub fn handle_key_event(
     {
         if invoice_state.focused && handle_invoice_input(code, invoice_state) {
             return Some(true); // Skip further processing
+        }
+    }
+
+    // Handle key input for Mostro instance picker (filter + list navigation via arrows).
+    if let UiMode::SelectMostroInstance(ref mut picker) = app.mode {
+        match code {
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.selected = 0;
+                return Some(true);
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                picker.filter.push(c);
+                picker.selected = 0;
+                return Some(true);
+            }
+            _ => {}
         }
     }
 

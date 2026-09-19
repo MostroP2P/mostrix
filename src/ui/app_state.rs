@@ -23,7 +23,7 @@ use crate::ui::orders::{
 };
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
-use nostr_sdk::prelude::Keys;
+use nostr_sdk::prelude::{Keys, PublicKey};
 
 #[derive(Debug)]
 pub enum UiMode {
@@ -52,8 +52,10 @@ pub enum UiMode {
     UserSaveAttachmentPopup(String, usize),
     /// User order chat send attachment file picker: pinned order id (Ctrl+O on My Trades tab).
     UserSendAttachmentPicker(String),
-    /// Settings: enter Mostro pubkey (`npub` or hex).
+    /// Settings: enter Mostro pubkey (`npub` or hex) — legacy free-text path.
     AddMostroPubkey(KeyInputState),
+    /// Settings: pick a trusted Mostro instance or type a custom pubkey.
+    SelectMostroInstance(crate::ui::mostro_instances::MostroInstancePicker),
     /// Settings: confirm Mostro pubkey (hex string, Yes/No).
     ConfirmMostroPubkey(String, bool),
     AddRelay(KeyInputState),
@@ -170,6 +172,7 @@ impl Clone for UiMode {
                 UiMode::UserSendAttachmentPicker(order_id.clone())
             }
             UiMode::AddMostroPubkey(state) => UiMode::AddMostroPubkey(state.clone()),
+            UiMode::SelectMostroInstance(state) => UiMode::SelectMostroInstance(state.clone()),
             UiMode::ConfirmMostroPubkey(key, selected) => {
                 UiMode::ConfirmMostroPubkey(key.clone(), *selected)
             }
@@ -453,18 +456,29 @@ impl AppState {
 
     /// Replace cached instance info and keep [`Self::transport`] in sync.
     ///
-    /// Fail-closed on stale revisions: when both the incoming and cached values carry
-    /// `last_updated`, an older `created_at` is ignored so a lagging or malicious relay
-    /// cannot roll transport / fee / PoW display back (MOSTRO-075 monotonicity).
-    /// Explicit `None` still clears (invalid pubkey, hard fetch errors).
+    /// Fail-closed on stale revisions **for the same Mostro pubkey**: when both the
+    /// incoming and cached values share an author and carry `last_updated`, an older
+    /// `created_at` is ignored so a lagging or malicious relay cannot roll transport /
+    /// fee / PoW display back (MOSTRO-075 monotonicity).
+    ///
+    /// Switching coordinators always replaces the cache (different `pubkey`), even if
+    /// the new kind-38385 event is older than the previous instance's revision.
+    /// Explicit `None` still clears (invalid pubkey, hard fetch errors, instance switch).
     pub fn set_mostro_info(&mut self, info: Option<MostroInstanceInfo>) {
         if let (Some(new), Some(old)) = (info.as_ref(), self.mostro_info.as_ref()) {
-            if let (Some(new_ts), Some(old_ts)) = (new.last_updated, old.last_updated) {
-                if new_ts < old_ts {
-                    log::warn!(
-                        "Ignoring stale Mostro instance info (created_at {new_ts} < cached {old_ts})"
-                    );
-                    return;
+            let same_instance = match (new.pubkey, old.pubkey) {
+                (Some(a), Some(b)) => a == b,
+                // Legacy / test values without author: keep monotonicity.
+                _ => true,
+            };
+            if same_instance {
+                if let (Some(new_ts), Some(old_ts)) = (new.last_updated, old.last_updated) {
+                    if new_ts < old_ts {
+                        log::warn!(
+                            "Ignoring stale Mostro instance info (created_at {new_ts} < cached {old_ts})"
+                        );
+                        return;
+                    }
                 }
             }
         }
@@ -475,6 +489,21 @@ impl AppState {
             );
         }
         self.mostro_info = info;
+    }
+
+    /// Drop cached instance info when it does not belong to `active_mostro`.
+    ///
+    /// Used after a coordinator switch when a fetch returns NotFound/Rejected so the
+    /// previous instance's name/fees are not left on screen.
+    pub fn clear_mostro_info_if_not_for(&mut self, active_mostro: PublicKey) {
+        let keep = self
+            .mostro_info
+            .as_ref()
+            .and_then(|i| i.pubkey)
+            .is_none_or(|pk| pk == active_mostro);
+        if !keep {
+            self.set_mostro_info(None);
+        }
     }
 
     /// True when the Observer Shared key field should accept typing and paste.
@@ -631,11 +660,13 @@ mod tests {
         assert!(!app.observer_loading);
     }
 
-    /// MOSTRO-075: stale created_at must not roll transport back.
+    /// MOSTRO-075: stale created_at must not roll transport back (same instance).
     #[test]
     fn set_mostro_info_rejects_older_created_at() {
         let mut app = AppState::new(UserRole::User);
+        let pk = Keys::generate().public_key();
         let newer = MostroInstanceInfo {
+            pubkey: Some(pk),
             last_updated: Some(Timestamp::from(2_000)),
             protocol_version: Some(2),
             ..Default::default()
@@ -644,6 +675,7 @@ mod tests {
         assert_eq!(app.transport, Transport::Nip44Direct);
 
         let older = MostroInstanceInfo {
+            pubkey: Some(pk),
             last_updated: Some(Timestamp::from(1_000)),
             protocol_version: Some(1),
             ..Default::default()
@@ -653,6 +685,58 @@ mod tests {
         assert_eq!(
             app.mostro_info.as_ref().and_then(|i| i.protocol_version),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn set_mostro_info_replaces_when_switching_instance_even_if_older() {
+        let mut app = AppState::new(UserRole::User);
+        let pk_a = Keys::generate().public_key();
+        let pk_b = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(pk_a),
+            name: Some("InstanceA".into()),
+            last_updated: Some(Timestamp::from(5_000)),
+            protocol_version: Some(2),
+            ..Default::default()
+        }));
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(pk_b),
+            name: Some("InstanceB".into()),
+            last_updated: Some(Timestamp::from(1_000)),
+            protocol_version: Some(2),
+            ..Default::default()
+        }));
+        assert_eq!(
+            app.mostro_info.as_ref().and_then(|i| i.name.as_deref()),
+            Some("InstanceB")
+        );
+        assert_eq!(app.mostro_info.as_ref().and_then(|i| i.pubkey), Some(pk_b));
+    }
+
+    #[test]
+    fn clear_mostro_info_if_not_for_drops_other_instance() {
+        let mut app = AppState::new(UserRole::User);
+        let pk_a = Keys::generate().public_key();
+        let pk_b = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(pk_a),
+            name: Some("A".into()),
+            last_updated: Some(Timestamp::from(1_000)),
+            ..Default::default()
+        }));
+        app.clear_mostro_info_if_not_for(pk_b);
+        assert!(app.mostro_info.is_none());
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(pk_b),
+            name: Some("B".into()),
+            last_updated: Some(Timestamp::from(1_000)),
+            ..Default::default()
+        }));
+        app.clear_mostro_info_if_not_for(pk_b);
+        assert_eq!(
+            app.mostro_info.as_ref().and_then(|i| i.name.as_deref()),
+            Some("B")
         );
     }
 

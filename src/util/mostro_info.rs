@@ -59,8 +59,15 @@ pub fn format_instance_info_age(ts: &Timestamp) -> String {
 /// All fields are optional because different instances may omit some tags.
 #[derive(Clone, Debug, Default)]
 pub struct MostroInstanceInfo {
+    /// Author of the authenticated kind-38385 event (Mostro instance pubkey).
+    ///
+    /// Set by [`mostro_info_from_authenticated_event`]. Used by
+    /// [`crate::ui::AppState::set_mostro_info`] so stale `created_at` rejection
+    /// applies only within the same instance (not across coordinator switches).
+    pub pubkey: Option<PublicKey>,
     /// When the instance info event was created (set at fetch parse time, not from tags).
-    /// Used by [`crate::ui::AppState::set_mostro_info`] to reject older revisions.
+    /// Used by [`crate::ui::AppState::set_mostro_info`] to reject older revisions
+    /// for the same [`Self::pubkey`].
     pub name: Option<String>,
     pub last_updated: Option<Timestamp>,
     pub mostro_version: Option<String>,
@@ -244,6 +251,7 @@ pub fn select_authentic_instance_info_event(
 /// (or equivalent checks).
 pub fn mostro_info_from_authenticated_event(event: &Event) -> Result<MostroInstanceInfo> {
     let mut info = mostro_info_from_tags(event.tags.clone())?;
+    info.pubkey = Some(event.pubkey);
     info.last_updated = Some(event.created_at);
     Ok(info)
 }

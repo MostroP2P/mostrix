@@ -21,6 +21,8 @@ pub mod import_seed_popup;
 pub mod key_handler;
 pub mod key_input_popup;
 pub mod message_notification;
+pub mod mostro_instance_picker;
+pub mod mostro_instances;
 pub(crate) mod navigation;
 pub mod network_status;
 pub mod offline_overlay;

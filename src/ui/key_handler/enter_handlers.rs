@@ -634,6 +634,7 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             true
         }
         UiMode::AddMostroPubkey(_)
+        | UiMode::SelectMostroInstance(_)
         | UiMode::ConfirmMostroPubkey(_, _)
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
@@ -1032,6 +1033,29 @@ fn handle_enter_settings_mode(
     ctx: &super::EnterKeyContext<'_>,
 ) -> bool {
     match mode {
+        UiMode::SelectMostroInstance(picker) => {
+            use crate::ui::mostro_instances::{picker_rows, MostroInstancePickerRow};
+            let rows = picker_rows(&picker.filter);
+            if rows.is_empty() {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "No match. Type a full npub or hex pubkey for a custom instance.".to_string(),
+                ));
+                return true;
+            }
+            let idx = picker.selected.min(rows.len() - 1);
+            let raw = match &rows[idx] {
+                MostroInstancePickerRow::Trusted(n) => n.pubkey.clone(),
+                MostroInstancePickerRow::Custom(s) => s.clone(),
+            };
+            match normalize_mostro_pubkey(&raw) {
+                Ok(normalized) => {
+                    app.mode = UiMode::ConfirmMostroPubkey(normalized, true);
+                }
+                Err(e) => {
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
+                }
+            }
+        }
         UiMode::AddMostroPubkey(key_state) => {
             // Accept npub or hex; normalize to hex before confirmation (settings store hex).
             match normalize_mostro_pubkey(&key_state.key_input) {
@@ -1052,7 +1076,11 @@ fn handle_enter_settings_mode(
                 &key_string,
                 default_mode,
                 save_mostro_pubkey_to_settings,
-                |input| UiMode::AddMostroPubkey(create_key_input_state(input)),
+                |_input| {
+                    UiMode::SelectMostroInstance(
+                        crate::ui::mostro_instances::MostroInstancePicker::default(),
+                    )
+                },
             );
 
             // If the selected button is YES, spawn a task to refresh Mostro instance info
@@ -1076,6 +1104,11 @@ fn handle_enter_settings_mode(
                         return false;
                     }
                 }
+                // Drop the previous coordinator's kind-38385 cache immediately so the
+                // status bar / Mostro Info tab cannot keep showing the old name while
+                // the new fetch is in flight (and so stale created_at from A cannot
+                // block applying B — see AppState::set_mostro_info).
+                app.set_mostro_info(None);
                 app.pending_fetch_scheduler_reload = true;
                 spawn_refresh_mostro_info_task(
                     ctx.client.clone(),
@@ -1590,7 +1623,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         match settings_action_for_index(app.user_role, app.selected_settings_option) {
             Some(SettingsMenuAction::SwitchMode) => handle_mode_switch(app),
             Some(SettingsMenuAction::ChangeMostroPubkey) => {
-                app.mode = UiMode::AddMostroPubkey(key_state);
+                app.mode = UiMode::SelectMostroInstance(
+                    crate::ui::mostro_instances::MostroInstancePicker::default(),
+                );
             }
             Some(SettingsMenuAction::AddRelay) => app.mode = UiMode::AddRelay(key_state),
             Some(SettingsMenuAction::RemoveRelay) => {

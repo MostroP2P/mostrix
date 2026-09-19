@@ -689,8 +689,19 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             mostro_info_result = mostro_info_rx.recv() => {
                 if let Some(res) = mostro_info_result {
+                    let active_mostro = match current_mostro_pubkey.lock() {
+                        Ok(pk) => *pk,
+                        Err(_) => mostro_pubkey,
+                    };
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
+                            // Drop late replies from a previous coordinator after a switch.
+                            if info.pubkey.is_some_and(|pk| pk != active_mostro) {
+                                log::warn!(
+                                    "Ignoring Mostro instance info for a non-active pubkey (stale switch race)"
+                                );
+                                continue;
+                            }
                             let old_transport = app.transport;
                             app.set_mostro_info(Some(*info));
                             if old_transport != app.transport {
@@ -702,7 +713,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 if let Err(e) = respawn_trade_dm_listener(
                                     &mut app,
                                     &client,
-                                    mostro_pubkey,
+                                    active_mostro,
                                     &pool,
                                     &mut message_listener_handle,
                                     &message_notification_tx,
@@ -722,6 +733,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                         MostroInfoFetchResult::NotFound { message }
                         | MostroInfoFetchResult::Rejected { message } => {
+                            // After a switch, do not keep the previous instance's name/fees
+                            // when the new pubkey has no usable kind-38385 event.
+                            app.clear_mostro_info_if_not_for(active_mostro);
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );

@@ -294,6 +294,12 @@ fn handle_up_key(
                 *selected = (*selected + count - 1) % count;
             }
         }
+        UiMode::SelectMostroInstance(ref mut picker) => {
+            let count = crate::ui::mostro_instances::picker_rows(&picker.filter).len();
+            if count > 0 {
+                picker.selected = (picker.selected + count - 1) % count;
+            }
+        }
         UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -452,6 +458,12 @@ fn handle_down_key(
             let count = relays.len();
             if count > 0 {
                 *selected = (*selected + 1) % count;
+            }
+        }
+        UiMode::SelectMostroInstance(ref mut picker) => {
+            let count = crate::ui::mostro_instances::picker_rows(&picker.filter).len();
+            if count > 0 {
+                picker.selected = (picker.selected + 1) % count;
             }
         }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {

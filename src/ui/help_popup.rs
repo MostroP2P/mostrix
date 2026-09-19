@@ -319,7 +319,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Toggle User vs Admin UI. Saves user_mode in settings.toml, reloads tabs, and may reload admin disputes.",
         ),
         (
-            "Change Mostro Pubkey",
+            "Select Mostro Instance",
             "Set the Mostro daemon pubkey (npub or hex) used for subscriptions and orders.",
         ),
         (
@@ -362,7 +362,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Switch to Admin when you need dispute tools. Saves user_mode and reloads tabs.",
         ),
         (
-            "Change Mostro Pubkey",
+            "Select Mostro Instance",
             "Set the Mostro daemon pubkey (npub or hex) used for subscriptions and orders.",
         ),
         (
