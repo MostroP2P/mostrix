@@ -9,6 +9,7 @@ use ratatui::widgets::{
 use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::currencies::{filter_options, name_for, resolve_options};
 use crate::ui::orders::FormField;
+use crate::ui::payment_methods::{parse_selected, picker_rows, PickerItem};
 use crate::util::MostroInstanceInfo;
 
 /// Width of the label column inside the details panel.
@@ -82,14 +83,19 @@ pub fn render_order_form(
     )
     .split(rows[0]);
 
-    let currency_row = render_details(f, top[0], form, accepted, min_amt, max_amt);
+    let anchors = render_details(f, top[0], form, accepted, min_amt, max_amt);
     render_preview(f, top[1], form, accepted);
     render_help(f, rows[1], form);
     render_footer(f, rows[2]);
 
     if form.currency_picker.open {
-        if let Some(anchor) = currency_row {
+        if let Some(anchor) = anchors.currency {
             render_currency_dropdown(f, anchor, inner, form, accepted);
+        }
+    }
+    if form.payment_method_picker.open {
+        if let Some(anchor) = anchors.method {
+            render_payment_method_dropdown(f, anchor, inner, form);
         }
     }
 }
@@ -103,8 +109,14 @@ enum Vis<'a> {
     Flex,
 }
 
-/// Render the "Order details" panel. Returns the Rect of the Currency row so the
-/// dropdown overlay can be anchored beneath it.
+/// Overlay anchors returned by the details panel.
+struct DetailsAnchors {
+    currency: Option<Rect>,
+    method: Option<Rect>,
+}
+
+/// Render the "Order details" panel. Returns row rects so dropdown overlays
+/// can be anchored beneath Currency / Method.
 fn render_details(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -112,7 +124,7 @@ fn render_details(
     accepted: &[String],
     min_amt: Option<i64>,
     max_amt: Option<i64>,
-) -> Option<Rect> {
+) -> DetailsAnchors {
     let block = Block::default()
         .title(" Order details ")
         .borders(Borders::ALL)
@@ -184,7 +196,10 @@ fn render_details(
 
     let strip_width = (inner.width as usize).saturating_sub(VALUE_OFFSET + 1);
 
-    let mut currency_row: Option<Rect> = None;
+    let mut anchors = DetailsAnchors {
+        currency: None,
+        method: None,
+    };
     let mut cursor: Option<(Rect, usize, usize)> = None;
 
     for (item, chunk) in items.iter().zip(chunks.iter()) {
@@ -226,15 +241,21 @@ fn render_details(
             }
             Vis::Field(row, status) => {
                 let focused = row.field == form.focused;
-                if row.field == FormField::Currency {
-                    currency_row = Some(*chunk);
+                match row.field {
+                    FormField::Currency => anchors.currency = Some(*chunk),
+                    FormField::PaymentMethod => anchors.method = Some(*chunk),
+                    _ => {}
                 }
                 f.render_widget(
                     Paragraph::new(field_line(row, focused, strip_width, *status))
                         .style(Style::default().bg(BACKGROUND_COLOR)),
                     *chunk,
                 );
-                if focused && row.editable && !form.currency_picker.open {
+                if focused
+                    && row.editable
+                    && !form.currency_picker.open
+                    && !form.payment_method_picker.open
+                {
                     cursor = Some((*chunk, row.prefix_len, row.text_len));
                 }
             }
@@ -246,7 +267,7 @@ fn render_details(
         f.set_cursor_position((x, chunk.y));
     }
 
-    currency_row
+    anchors
 }
 
 /// Build a single field line: focus arrow + `label` on the panel background,
@@ -424,13 +445,33 @@ fn build_rows(form: &FormState) -> Vec<Row> {
         });
     }
 
+    let method_val = if form.payment_method_picker.open {
+        Line::from(vec![
+            Span::raw(form.payment_method_picker.filter.clone()),
+            Span::styled("▏", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        let trimmed = form.payment_method.trim();
+        if trimmed.is_empty() {
+            Line::from(vec![
+                Span::styled("— none —", Style::default().fg(Color::DarkGray)),
+                Span::styled("   ▾ pick", Style::default().fg(Color::DarkGray)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::raw(trimmed.to_string()),
+                Span::styled("   ▾ pick", Style::default().fg(Color::DarkGray)),
+            ])
+        }
+    };
+
     rows.push(Row {
         field: FormField::PaymentMethod,
         label: "Method",
-        value: dim_if_empty(&form.payment_method, "(any)"),
+        value: method_val,
         prefix_len: 0,
-        text_len: form.payment_method.len(),
-        editable: true,
+        text_len: 0,
+        editable: false,
     });
     rows.push(Row {
         field: FormField::Premium,
@@ -650,6 +691,47 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect) {
     f.render_widget(hint, area);
 }
 
+/// Place a form dropdown inside `bounds`, preferring the value column under `anchor`.
+///
+/// When the anchored x leaves less than 24 columns, falls back to a compact
+/// full-width placement. Vertical fallback above the anchor is clamped to
+/// `bounds.y` so the popup stays inside the form panel on short terminals.
+fn anchored_dropdown_rect(
+    anchor: Rect,
+    bounds: Rect,
+    preferred_width: u16,
+    content_rows: u16,
+) -> Rect {
+    const MIN_W: u16 = 24;
+    let mut x = anchor.x.saturating_add(VALUE_OFFSET as u16);
+    let end = bounds.x.saturating_add(bounds.width);
+    let mut max_width = end.saturating_sub(x);
+    // When the value column leaves too little room, use a compact full-width placement.
+    if max_width < MIN_W {
+        x = bounds.x;
+        max_width = bounds.width;
+    }
+    let width = if max_width == 0 {
+        0
+    } else {
+        preferred_width.min(max_width).max(MIN_W.min(max_width))
+    };
+    let height = content_rows.saturating_add(3); // border (2) + hint (1)
+    let mut y = anchor.y.saturating_add(1);
+    if y.saturating_add(height) > bounds.y.saturating_add(bounds.height) {
+        y = anchor.y.saturating_sub(height).max(bounds.y);
+    } else {
+        y = y.max(bounds.y);
+    }
+    let available = bounds.y.saturating_add(bounds.height).saturating_sub(y);
+    Rect {
+        x,
+        y,
+        width,
+        height: height.min(available),
+    }
+}
+
 fn render_currency_dropdown(
     f: &mut ratatui::Frame,
     anchor: Rect,
@@ -664,21 +746,8 @@ fn render_currency_dropdown(
         .selected
         .min(filtered.len().saturating_sub(1));
 
-    let x = anchor.x + VALUE_OFFSET as u16;
-    let max_width = (bounds.x + bounds.width).saturating_sub(x);
-    let width = 40u16.clamp(24, max_width.max(24)).min(max_width);
     let content_rows = filtered.len().clamp(1, 8) as u16;
-    let height = content_rows + 3; // border (2) + hint (1)
-    let mut y = anchor.y + 1;
-    if y + height > bounds.y + bounds.height {
-        y = anchor.y.saturating_sub(height);
-    }
-    let popup = Rect {
-        x,
-        y,
-        width,
-        height: height.min(bounds.y + bounds.height - y),
-    };
+    let popup = anchored_dropdown_rect(anchor, bounds, 40, content_rows);
 
     f.render_widget(Clear, popup);
 
@@ -767,6 +836,119 @@ fn render_currency_dropdown(
 
     let caret_x =
         anchor.x + VALUE_OFFSET as u16 + form.currency_picker.filter.chars().count() as u16;
+    f.set_cursor_position((caret_x, anchor.y));
+}
+
+fn render_payment_method_dropdown(
+    f: &mut ratatui::Frame,
+    anchor: Rect,
+    bounds: Rect,
+    form: &FormState,
+) {
+    let rows = picker_rows(
+        &form.fiat_code,
+        &form.payment_method,
+        &form.payment_method_picker.filter,
+    );
+    let selected_names = parse_selected(&form.payment_method);
+    let selected = form
+        .payment_method_picker
+        .selected
+        .min(rows.len().saturating_sub(1));
+
+    let content_rows = rows.len().clamp(1, 8) as u16;
+    let popup = anchored_dropdown_rect(anchor, bounds, 48, content_rows);
+
+    f.render_widget(Clear, popup);
+
+    let code = form.fiat_code.trim().to_ascii_uppercase();
+    let title = if code.is_empty() {
+        " Payment methods (default) ".to_string()
+    } else {
+        format!(" Payment methods for {code} ")
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PRIMARY_COLOR))
+        .style(Style::default().bg(BACKGROUND_COLOR));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let split = Layout::new(
+        Direction::Vertical,
+        [Constraint::Min(1), Constraint::Length(1)],
+    )
+    .split(inner);
+
+    if rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "  no match — type a custom method and press Enter",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .style(Style::default().bg(BACKGROUND_COLOR)),
+            split[0],
+        );
+    } else {
+        let items: Vec<ListItem> = rows
+            .iter()
+            .map(|row| match row {
+                PickerItem::Listed(name) => {
+                    let checked = selected_names.iter().any(|s| s.eq_ignore_ascii_case(name));
+                    let mark = if checked { "[x]" } else { "[ ]" };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{mark} "),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(name.clone()),
+                    ]))
+                }
+                PickerItem::Custom(name) => ListItem::new(Line::from(vec![
+                    Span::styled(
+                        "+ add custom: ",
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                    Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                ])),
+            })
+            .collect();
+
+        let list = List::new(items)
+            .style(Style::default().fg(Color::White).bg(BACKGROUND_COLOR))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(PRIMARY_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› ");
+        let mut state = ListState::default().with_selected(Some(selected));
+        f.render_stateful_widget(list, split[0], &mut state);
+
+        if rows.len() > split[0].height as usize {
+            let mut sb_state = ScrollbarState::new(rows.len()).position(selected);
+            f.render_stateful_widget(
+                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                split[0],
+                &mut sb_state,
+            );
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "type filter • ↑↓ move • Enter toggle/add • Esc done",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .style(Style::default().bg(BACKGROUND_COLOR)),
+        split[1],
+    );
+
+    let caret_x =
+        anchor.x + VALUE_OFFSET as u16 + form.payment_method_picker.filter.chars().count() as u16;
     f.set_cursor_position((caret_x, anchor.y));
 }
 
@@ -1008,6 +1190,15 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
             ),
         ];
     }
+    if form.payment_method_picker.open {
+        return vec![
+            Line::from("Payment Method"),
+            Line::from(
+                "Type to filter, ↑↓ to move, Enter (or Space with an empty filter) \
+                 to toggle a method or add a custom one. Esc keeps the selection.",
+            ),
+        ];
+    }
     match form.focused {
         FormField::OrderType => vec![
             Line::from("Order Type"),
@@ -1031,7 +1222,10 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
         ],
         FormField::PaymentMethod => vec![
             Line::from("Payment Method"),
-            Line::from("How you send/receive fiat. Spaces allowed (e.g. \"Bank transfer\")."),
+            Line::from(
+                "Press Enter/Space or start typing to open methods for this currency. \
+                 Select several, or type a custom name.",
+            ),
         ],
         FormField::Premium => vec![
             Line::from("Premium (%)"),
@@ -1137,5 +1331,74 @@ mod tests {
             validate(&form, &accepted),
             PreviewStatus::Invalid(ref s) if s.contains("currency")
         ));
+    }
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    #[test]
+    fn closed_method_row_shows_pick_hint() {
+        let form = FormState::new_default_form();
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Method"));
+        assert!(buffer_contains(buf, "▾ pick"));
+    }
+
+    #[test]
+    fn open_method_picker_title_includes_fiat_code() {
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        form.payment_method_picker.open = true;
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment methods for USD"));
+        assert!(buffer_contains(buf, "Cash App"));
+    }
+
+    #[test]
+    fn payment_method_picker_stays_usable_on_narrow_terminal() {
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        form.payment_method_picker.open = true;
+        // Narrow enough that an anchored VALUE_OFFSET column would leave <24 cols.
+        let backend = ratatui::backend::TestBackend::new(40, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment methods"));
+        assert!(buffer_contains(buf, "Cash App") || buffer_contains(buf, "type filter"));
+    }
+
+    #[test]
+    fn payment_method_picker_stays_inside_short_form() {
+        let mut form = FormState::new_default_form();
+        form.focused = FormField::PaymentMethod;
+        form.payment_method_picker.open = true;
+        let backend = ratatui::backend::TestBackend::new(80, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Payment methods"));
     }
 }

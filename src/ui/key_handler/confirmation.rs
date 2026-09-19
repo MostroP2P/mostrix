@@ -16,25 +16,26 @@ where
     }
 }
 
-/// Helper: Handle Enter key in confirmation mode (YES/NO selection)
+/// Helper: Handle Enter key in confirmation mode (YES/NO selection).
+///
+/// On YES, `save_fn` runs first. `Ok(default_mode)` is returned only after a
+/// successful save so callers can gate runtime side effects on persistence.
 pub fn handle_confirmation_enter<F1, F2>(
     selected_button: bool,
     input_string: &str,
     default_mode: UiMode,
     save_fn: F1,
     create_input: F2,
-) -> UiMode
+) -> Result<UiMode, String>
 where
-    F1: FnOnce(&str),
+    F1: FnOnce(&str) -> Result<(), String>,
     F2: FnOnce(&str) -> UiMode,
 {
     if selected_button {
-        // YES selected - save
-        save_fn(input_string);
-        default_mode
+        save_fn(input_string)?;
+        Ok(default_mode)
     } else {
-        // NO selected - go back to input
-        create_input(input_string)
+        Ok(create_input(input_string))
     }
 }
 
@@ -52,5 +53,53 @@ pub fn create_key_input_state(input: &str) -> crate::ui::KeyInputState {
         key_input: input.to_string(),
         focused: true,
         just_pasted: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yes_returns_default_mode_after_successful_save() {
+        let mode = handle_confirmation_enter(
+            true,
+            "abc",
+            UiMode::Normal,
+            |_| Ok(()),
+            |_| panic!("NO callback must not run on YES"),
+        )
+        .expect("successful save returns default mode");
+        assert!(matches!(mode, UiMode::Normal));
+    }
+
+    #[test]
+    fn yes_returns_err_when_save_fails() {
+        let err = handle_confirmation_enter(
+            true,
+            "abc",
+            UiMode::Normal,
+            |_| Err("disk full".to_string()),
+            |_| panic!("NO callback must not run on YES"),
+        )
+        .expect_err("failed save must not yield default mode");
+        assert_eq!(err, "disk full");
+    }
+
+    #[test]
+    fn no_skips_save_and_returns_input_mode() {
+        let mut went_back = false;
+        handle_confirmation_enter(
+            false,
+            "abc",
+            UiMode::Normal,
+            |_| panic!("save must not run on NO"),
+            |_| {
+                went_back = true;
+                UiMode::Normal
+            },
+        )
+        .expect("NO path does not persist");
+        assert!(went_back);
     }
 }

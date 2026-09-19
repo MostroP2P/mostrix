@@ -516,11 +516,12 @@ pub(crate) fn handle_enter_admin_mode(
                     false,
                     &key_string,
                     default_mode,
-                    |_| {},
+                    |_| Ok(()),
                     |input| {
                         UiMode::AdminMode(AdminMode::SetupAdminKey(create_key_input_state(input)))
                     },
-                );
+                )
+                .unwrap_or_else(|e| UiMode::operation_result(OperationResult::Error(e)));
             }
         }
         _ => {

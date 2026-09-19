@@ -115,6 +115,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         UiMode::AdminMode(AdminMode::AddSolver(_))
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AddMostroPubkey(_)
+        | UiMode::SelectMostroInstance(_)
         | UiMode::AddRelay(_)
         | UiMode::RemoveRelay(..)
         | UiMode::AddBlossomServer(_)
@@ -145,10 +146,10 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             });
             true
         }
-        UiMode::ConfirmMostroPubkey(key_string, _) => {
-            app.mode = handle_confirmation_esc(key_string, |input| {
-                UiMode::AddMostroPubkey(create_key_input_state(input))
-            });
+        UiMode::ConfirmMostroPubkey(_, _) => {
+            app.mode = UiMode::SelectMostroInstance(
+                crate::ui::mostro_instances::MostroInstancePicker::default(),
+            );
             true
         }
         UiMode::ConfirmRelay(relay_string, _) => {

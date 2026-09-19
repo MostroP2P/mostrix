@@ -299,6 +299,12 @@ pub fn ui_draw(
     }
 
     // Shared settings popups
+    if let UiMode::SelectMostroInstance(picker) = &app.mode {
+        let current = crate::settings::load_settings_from_disk()
+            .map(|s| s.mostro_pubkey)
+            .unwrap_or_default();
+        mostro_instance_picker::render_mostro_instance_picker(f, picker, &current);
+    }
     if let UiMode::AddMostroPubkey(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
             f,
@@ -310,12 +316,10 @@ pub fn ui_draw(
         );
     }
     if let UiMode::ConfirmMostroPubkey(key_string, selected_button) = &app.mode {
-        admin_key_confirm::render_admin_key_confirm(
-            f,
-            "🌐 Confirm Mostro Pubkey",
-            key_string,
-            *selected_button,
-        );
+        let title = crate::ui::mostro_instances::region_for_pubkey(key_string)
+            .map(|region| format!("🌐 Confirm Mostro — {region}"))
+            .unwrap_or_else(|| "🌐 Confirm Mostro Pubkey".to_string());
+        admin_key_confirm::render_admin_key_confirm(f, &title, key_string, *selected_button);
     }
     if let UiMode::AddRelay(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
@@ -485,6 +489,11 @@ No: paste BOLT11 or Lightning address manually."
             *selected_button,
             Some("Are you sure you want to clear all currencies filters?"),
         );
+    }
+    if let UiMode::OrderFilters(state) = &app.mode {
+        if !state.inline {
+            tabs::orders_tab::render_order_filter_popup(f, state);
+        }
     }
     if let UiMode::ConfirmDeleteHistoryOrder(order_id, selected_button) = &app.mode {
         admin_key_confirm::render_admin_key_confirm_with_message(

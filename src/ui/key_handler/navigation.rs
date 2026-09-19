@@ -301,6 +301,12 @@ fn handle_up_key(
                 *selected = (*selected + count - 1) % count;
             }
         }
+        UiMode::SelectMostroInstance(ref mut picker) => {
+            let count = crate::ui::mostro_instances::picker_rows(&picker.filter).len();
+            if count > 0 {
+                picker.selected = (picker.selected + count - 1) % count;
+            }
+        }
         UiMode::UserMode(UserMode::ConfirmingOrder { .. })
         | UiMode::UserMode(UserMode::TakingOrder(_))
         | UiMode::UserMode(UserMode::WaitingForMostro(_))
@@ -308,6 +314,7 @@ fn handle_up_key(
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::HelpPopup(..)
         | UiMode::SettingsInstructionsPopup(..)
+        | UiMode::OrderFilters(_)
         | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)
@@ -465,6 +472,12 @@ fn handle_down_key(
                 *selected = (*selected + 1) % count;
             }
         }
+        UiMode::SelectMostroInstance(ref mut picker) => {
+            let count = crate::ui::mostro_instances::picker_rows(&picker.filter).len();
+            if count > 0 {
+                picker.selected = (picker.selected + 1) % count;
+            }
+        }
         UiMode::AdminMode(AdminMode::ManagingDispute) => {
             // Navigate within disputes in progress list
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -478,6 +491,7 @@ fn handle_down_key(
         | UiMode::UserMode(UserMode::WaitingAddInvoice)
         | UiMode::HelpPopup(..)
         | UiMode::SettingsInstructionsPopup(..)
+        | UiMode::OrderFilters(_)
         | UiMode::OperationResult(_)
         | UiMode::NewMessageNotification(_, _, _)
         | UiMode::ViewingMessage(_)

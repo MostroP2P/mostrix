@@ -40,7 +40,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 13] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
-        "Change Mostro Pubkey",
+        "Select Mostro Instance",
     ),
     (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
     (SettingsMenuAction::RemoveRelay, "Remove Nostr Relay"),
@@ -73,7 +73,7 @@ const USER_SETTINGS: [SettingsMenuRow; 16] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
-        "Change Mostro Pubkey",
+        "Select Mostro Instance",
     ),
     (SettingsMenuAction::AddRelay, "Add Nostr Relay"),
     (SettingsMenuAction::RemoveRelay, "Remove Nostr Relay"),

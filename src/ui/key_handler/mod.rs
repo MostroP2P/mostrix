@@ -22,6 +22,7 @@ use crate::ui::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
         get_visible_attachment_messages, is_dispute_finalized, selected_filtered_dispute,
     },
+    orders::{OrderBookFilterField, OrderBookFilterState, OrderBookFilters},
     send_attachment_picker::{
         close_user_send_attachment_picker, explorer_selection_is_sendable_file,
         open_user_send_attachment_picker,
@@ -541,7 +542,8 @@ fn handle_clipboard_copy(text: String) -> bool {
     {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
-        rx.recv().unwrap_or(false)
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or(false)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -632,6 +634,16 @@ pub fn normalize_seed_paste(pasted_text: &str) -> String {
 /// Append (or replace, for seed import) pasted text into the focused settings /
 /// admin key-input popup. Returns `true` when the paste was applied.
 pub fn apply_paste_to_focused_key_input(app: &mut AppState, pasted_text: &str) -> bool {
+    if let UiMode::SelectMostroInstance(ref mut picker) = app.mode {
+        let filtered: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return true;
+        }
+        picker.filter.push_str(&filtered);
+        picker.selected = 0;
+        return true;
+    }
+
     let is_seed_import = matches!(app.mode, UiMode::ImportSeedWords(_));
     let key_state = match &mut app.mode {
         UiMode::AddMostroPubkey(ref mut ks)
@@ -902,6 +914,33 @@ fn handle_pay_invoice_display_keys(code: KeyCode, invoice_state: &mut InvoiceInp
     }
 }
 
+fn is_shift_char_shortcut(key_event: &KeyEvent, lower: char, upper: char) -> bool {
+    match key_event.code {
+        KeyCode::Char(c) if c == upper => true,
+        KeyCode::Char(c) if c == lower => {
+            key_event.modifiers.contains(KeyModifiers::SHIFT)
+                || key_event
+                    .state
+                    .contains(crossterm::event::KeyEventState::CAPS_LOCK)
+        }
+        _ => false,
+    }
+}
+
+fn is_order_filter_open_shortcut(key_event: &KeyEvent) -> bool {
+    if key_event.modifiers.intersects(
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::HYPER
+            | KeyModifiers::META,
+    ) {
+        return false;
+    }
+
+    is_shift_char_shortcut(key_event, 'f', 'F') || matches!(key_event.code, KeyCode::Char('f'))
+}
+
 fn update_invoice_notification_action_selection(
     code: KeyCode,
     invoice_state: &mut InvoiceInputState,
@@ -917,6 +956,241 @@ fn update_invoice_notification_action_selection(
         }
         _ => false,
     }
+}
+
+fn handle_order_filter_paste_shortcut<F>(
+    app: &mut AppState,
+    key_event: &KeyEvent,
+    mut _read_clipboard: F,
+) -> Option<bool>
+where
+    F: FnMut() -> Option<String>,
+{
+    // Filters are cycle/picker only — paste is ignored but still consumes the shortcut.
+    if !matches!(app.mode, UiMode::OrderFilters(_)) || !is_paste_shortcut(key_event) {
+        return None;
+    }
+    Some(true)
+}
+
+fn order_filter_picker_open(state: &OrderBookFilterState) -> bool {
+    state.currency_picker.open
+}
+
+fn close_order_filter_pickers(state: &mut OrderBookFilterState) {
+    state.currency_picker.open = false;
+    state.currency_picker.filter.clear();
+    state.currency_picker.selected = 0;
+}
+
+fn open_order_filter_currency_picker(state: &mut OrderBookFilterState) {
+    close_order_filter_pickers(state);
+    let options = crate::ui::currencies::resolve_options(&[]);
+    let current = state.filters.fiat_code.trim().to_ascii_uppercase();
+    let idx = options.iter().position(|o| o.code == current).unwrap_or(0);
+    state.currency_picker.open = true;
+    state.currency_picker.filter.clear();
+    state.currency_picker.selected = idx;
+}
+
+fn handle_order_filter_currency_picker_key(
+    state: &mut OrderBookFilterState,
+    code: KeyCode,
+) -> bool {
+    if !state.currency_picker.open {
+        return false;
+    }
+    let options = crate::ui::currencies::resolve_options(&[]);
+    let filtered = crate::ui::currencies::filter_options(&options, &state.currency_picker.filter);
+    match code {
+        KeyCode::Up => {
+            if !filtered.is_empty() {
+                let n = filtered.len();
+                state.currency_picker.selected = (state.currency_picker.selected + n - 1) % n;
+            }
+        }
+        KeyCode::Down => {
+            if !filtered.is_empty() {
+                let n = filtered.len();
+                state.currency_picker.selected = (state.currency_picker.selected + 1) % n;
+            }
+        }
+        KeyCode::Enter => {
+            let filter = state.currency_picker.filter.trim().to_ascii_uppercase();
+            let idx = state
+                .currency_picker
+                .selected
+                .min(filtered.len().saturating_sub(1));
+            if let Some(choice) = filtered.iter().find(|o| o.code == filter) {
+                state.filters.fiat_code = choice.code.clone();
+            } else if filter.len() == 3 && filter.chars().all(|c| c.is_ascii_alphabetic()) {
+                state.filters.fiat_code = filter;
+            } else if let Some(choice) = filtered.get(idx) {
+                state.filters.fiat_code = choice.code.clone();
+            }
+            close_order_filter_pickers(state);
+        }
+        KeyCode::Esc => close_order_filter_pickers(state),
+        KeyCode::Backspace => {
+            state.currency_picker.filter.pop();
+            state.currency_picker.selected = 0;
+        }
+        KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
+            state.currency_picker.filter.push(c.to_ascii_uppercase());
+            state.currency_picker.selected = 0;
+        }
+        _ => {}
+    }
+    true
+}
+
+fn rotate_focused_order_filter(state: &mut OrderBookFilterState, next: bool) {
+    match state.focused {
+        OrderBookFilterField::Kind => {
+            if next {
+                state.filters.kind.cycle_next();
+            } else {
+                state.filters.kind.cycle_prev();
+            }
+        }
+        OrderBookFilterField::Premium => {
+            // ↑ increases %, ↓ decreases % (opposite of Kind's next/prev sense).
+            crate::ui::orders::step_order_book_premium(
+                &mut state.filters.premium,
+                if next { -1 } else { 1 },
+            );
+        }
+        OrderBookFilterField::FiatCurrency => {
+            // Without an open picker, ↑↓ open it and rotate the highlighted currency.
+            if !state.currency_picker.open {
+                open_order_filter_currency_picker(state);
+            }
+            let options = crate::ui::currencies::resolve_options(&[]);
+            let filtered =
+                crate::ui::currencies::filter_options(&options, &state.currency_picker.filter);
+            if filtered.is_empty() {
+                return;
+            }
+            let n = filtered.len();
+            state.currency_picker.selected = if next {
+                (state.currency_picker.selected + 1) % n
+            } else {
+                (state.currency_picker.selected + n - 1) % n
+            };
+            if let Some(choice) = filtered.get(state.currency_picker.selected) {
+                state.filters.fiat_code = choice.code.clone();
+            }
+        }
+    }
+}
+
+fn apply_order_filters(app: &mut AppState, state: OrderBookFilterState) {
+    app.order_filters = state.filters;
+    app.selected_order_id = None;
+    app.orders_table_state = ratatui::widgets::TableState::default();
+}
+
+fn handle_order_filter_key(app: &mut AppState, code: KeyCode, key_event: &KeyEvent) -> bool {
+    let UiMode::OrderFilters(mut state) = app.mode.clone() else {
+        return false;
+    };
+
+    // Global clear — must run before the currency picker consumes `X` as filter text.
+    if matches!(code, KeyCode::Char('x') | KeyCode::Char('X'))
+        && is_shift_char_shortcut(key_event, 'x', 'X')
+    {
+        state.filters = OrderBookFilters::default();
+        close_order_filter_pickers(&mut state);
+        app.mode = UiMode::OrderFilters(state);
+        return true;
+    }
+
+    if handle_order_filter_currency_picker_key(&mut state, code) {
+        app.mode = UiMode::OrderFilters(state);
+        return true;
+    }
+
+    match code {
+        KeyCode::Esc => {
+            if order_filter_picker_open(&state) {
+                close_order_filter_pickers(&mut state);
+                app.mode = UiMode::OrderFilters(state);
+            } else {
+                app.mode = UiMode::UserMode(UserMode::Normal);
+            }
+        }
+        KeyCode::Enter => {
+            let inline = state.inline;
+            apply_order_filters(app, state);
+            if inline {
+                app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+                    app.order_filters.clone(),
+                    true,
+                ));
+            } else {
+                app.mode = UiMode::UserMode(UserMode::Normal);
+            }
+        }
+        KeyCode::BackTab => {
+            close_order_filter_pickers(&mut state);
+            state.focused = state.focused.prev();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Tab => {
+            close_order_filter_pickers(&mut state);
+            state.focused = state.focused.next();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Up => {
+            rotate_focused_order_filter(&mut state, false);
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Down => {
+            rotate_focused_order_filter(&mut state, true);
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::FiatCurrency => {
+            open_order_filter_currency_picker(&mut state);
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::Kind => {
+            state.filters.kind.cycle_next();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::Premium => {
+            crate::ui::orders::step_order_book_premium(&mut state.filters.premium, 1);
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Backspace
+            if matches!(
+                state.focused,
+                OrderBookFilterField::FiatCurrency | OrderBookFilterField::Premium
+            ) =>
+        {
+            match state.focused {
+                OrderBookFilterField::FiatCurrency => {
+                    state.filters.fiat_code.clear();
+                    close_order_filter_pickers(&mut state);
+                }
+                OrderBookFilterField::Premium => {
+                    state.filters.premium = None;
+                }
+                _ => {}
+            }
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(c)
+            if !c.is_control() && state.focused == OrderBookFilterField::FiatCurrency =>
+        {
+            open_order_filter_currency_picker(&mut state);
+            state.currency_picker.filter.push(c.to_ascii_uppercase());
+            app.mode = UiMode::OrderFilters(state);
+        }
+        _ => {
+            app.mode = UiMode::OrderFilters(state);
+        }
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -946,6 +1220,16 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    if let Some(handled) =
+        handle_order_filter_paste_shortcut(app, &key_event, read_clipboard_text_best_effort)
+    {
+        return Some(handled);
+    }
+
+    if matches!(app.mode, UiMode::OrderFilters(_)) {
+        return Some(handle_order_filter_key(app, code, &key_event));
+    }
 
     // Help popup (Ctrl+H): close on Esc, Enter, or Ctrl+H; restore previous mode so input state is preserved
     if let UiMode::HelpPopup(_, ref previous_mode) = &app.mode {
@@ -1488,6 +1772,23 @@ pub fn handle_key_event(
         }
     }
 
+    // Handle key input for Mostro instance picker (filter + list navigation via arrows).
+    if let UiMode::SelectMostroInstance(ref mut picker) = app.mode {
+        match code {
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.selected = 0;
+                return Some(true);
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                picker.filter.push(c);
+                picker.selected = 0;
+                return Some(true);
+            }
+            _ => {}
+        }
+    }
+
     // Handle key input for shared settings popups and admin popups
     if matches!(
         app.mode,
@@ -1762,6 +2063,39 @@ pub fn handle_key_event(
         }
     }
 
+    if let Tab::User(UserTab::Orders) = app.active_tab {
+        match code {
+            KeyCode::Char('f') | KeyCode::Char('F')
+                if is_order_filter_open_shortcut(&key_event) =>
+            {
+                if matches!(
+                    app.mode,
+                    UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                ) {
+                    app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+                        app.order_filters.clone(),
+                        false,
+                    ));
+                    return Some(true);
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Char('X')
+                if is_shift_char_shortcut(&key_event, 'x', 'X') =>
+            {
+                if matches!(
+                    app.mode,
+                    UiMode::Normal | UiMode::UserMode(UserMode::Normal)
+                ) {
+                    app.order_filters = OrderBookFilters::default();
+                    app.selected_order_id = None;
+                    app.orders_table_state = ratatui::widgets::TableState::default();
+                    return Some(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
     // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
@@ -1795,6 +2129,11 @@ pub fn handle_key_event(
 
     // Currency dropdown (Create New Order) captures keys while open and on open triggers.
     if let Some(consumed) = form_input::handle_currency_picker_key(code, app) {
+        return Some(consumed);
+    }
+
+    // Payment-method dropdown (Create New Order) — same early-interceptor pattern.
+    if let Some(consumed) = form_input::handle_payment_method_picker_key(code, app) {
         return Some(consumed);
     }
 
@@ -2151,6 +2490,438 @@ mod key_handler_tests {
                 "{action:?} must be ignored while waiting"
             );
         }
+    }
+
+    #[test]
+    fn shift_x_clears_order_filter_popup_state() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "MXN".to_string(),
+                premium: Some(3),
+                ..Default::default()
+            },
+            false,
+        );
+        state.focused = OrderBookFilterField::Kind;
+        app.mode = UiMode::OrderFilters(state);
+
+        let handled = handle_order_filter_key(
+            &mut app,
+            KeyCode::Char('X'),
+            &KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.filters.fiat_code.is_empty());
+                assert_eq!(state.filters.premium, None);
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_x_clears_filters_while_fiat_picker_is_open() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "MXN".to_string(),
+                premium: Some(3),
+                ..Default::default()
+            },
+            false,
+        );
+        state.focused = OrderBookFilterField::FiatCurrency;
+        state.currency_picker.open = true;
+        state.currency_picker.filter = "x".to_string();
+        app.mode = UiMode::OrderFilters(state);
+
+        let handled = handle_order_filter_key(
+            &mut app,
+            KeyCode::Char('X'),
+            &KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.filters.fiat_code.is_empty());
+                assert_eq!(state.filters.premium, None);
+                assert!(!state.currency_picker.open);
+                assert!(state.currency_picker.filter.is_empty());
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_x_clears_filters_while_premium_focused() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "EUR".to_string(),
+                premium: Some(-2),
+                ..Default::default()
+            },
+            false,
+        );
+        state.focused = OrderBookFilterField::Premium;
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Char('x'),
+            &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::SHIFT),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.filters.fiat_code.is_empty());
+                assert_eq!(state.filters.premium, None);
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uppercase_x_without_shift_modifier_clears_order_filter_popup_state() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "MXN".to_string(),
+                premium: Some(-2),
+                ..Default::default()
+            },
+            false,
+        );
+        state.focused = OrderBookFilterField::Kind;
+        app.mode = UiMode::OrderFilters(state);
+
+        let handled = handle_order_filter_key(
+            &mut app,
+            KeyCode::Char('X'),
+            &KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.filters.fiat_code.is_empty());
+                assert_eq!(state.filters.premium, None);
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typing_on_currency_opens_picker_filter() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(OrderBookFilters::default(), false);
+        state.focused = OrderBookFilterField::FiatCurrency;
+        app.mode = UiMode::OrderFilters(state);
+
+        // Prefer a letter that is not the Shift+X clear shortcut.
+        let handled = handle_order_filter_key(
+            &mut app,
+            KeyCode::Char('e'),
+            &KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+
+        assert!(handled);
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.currency_picker.open);
+                assert_eq!(state.currency_picker.filter, "E");
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn order_filter_paste_shortcut_is_consumed_without_changing_filters() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+            OrderBookFilters::default(),
+            false,
+        ));
+
+        let handled = handle_order_filter_paste_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            || Some("sell".to_string()),
+        );
+
+        assert_eq!(handled, Some(true));
+        match app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters, OrderBookFilters::default()),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn currency_picker_enter_sets_fiat_code() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(OrderBookFilters::default(), false);
+        state.focused = OrderBookFilterField::FiatCurrency;
+        state.currency_picker.open = true;
+        state.currency_picker.filter = "EUR".to_string();
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(state.filters.fiat_code, "EUR");
+                assert!(!state.currency_picker.open);
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn up_down_steps_premium_percent() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(OrderBookFilters::default(), false);
+        state.focused = OrderBookFilterField::Premium;
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Up,
+            &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        ));
+        match &app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters.premium, Some(1)),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Up,
+            &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        ));
+        match &app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters.premium, Some(2)),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Down,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => assert_eq!(state.filters.premium, Some(1)),
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tab_moves_between_fields_only() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+            OrderBookFilters::default(),
+            false,
+        ));
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Tab,
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ));
+        match &app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(state.focused, OrderBookFilterField::FiatCurrency)
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Right,
+            &KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(
+                    state.focused,
+                    OrderBookFilterField::FiatCurrency,
+                    "Left/Right must not change field focus"
+                );
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_applies_and_stays_in_inline_edit_mode() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                fiat_code: "USD".to_string(),
+                ..Default::default()
+            },
+            true,
+        );
+        state.focused = OrderBookFilterField::FiatCurrency;
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+        assert_eq!(app.order_filters.fiat_code, "USD");
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(state.inline);
+                assert_eq!(state.filters.fiat_code, "USD");
+            }
+            other => panic!("expected OrderFilters mode after inline Enter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_applies_and_closes_popup_mode() {
+        let mut app = AppState::new(UserRole::User);
+        let state = OrderBookFilterState::from_filters(
+            OrderBookFilters {
+                premium: Some(0),
+                ..Default::default()
+            },
+            false,
+        );
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+        assert_eq!(app.order_filters.premium, Some(0));
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
+    }
+
+    #[test]
+    fn esc_exits_inline_edit_mode_to_normal() {
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+            OrderBookFilters::default(),
+            true,
+        ));
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Esc,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ));
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
+    }
+
+    #[test]
+    fn esc_closes_open_picker_before_exiting() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(OrderBookFilters::default(), false);
+        state.currency_picker.open = true;
+        state.currency_picker.filter = "EU".to_string();
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Esc,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert!(!state.currency_picker.open);
+                assert!(state.currency_picker.filter.is_empty());
+            }
+            other => panic!("expected OrderFilters after Esc on picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn down_rotates_kind_when_focused() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters(OrderBookFilters::default(), false);
+        state.focused = OrderBookFilterField::Kind;
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Down,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ));
+        match app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(
+                    state.filters.kind,
+                    crate::ui::orders::OrderBookKindFilter::Buy
+                );
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn order_filter_shortcut_detection_accepts_shift_or_uppercase() {
+        assert!(is_shift_char_shortcut(
+            &KeyEvent::new(KeyCode::Char('f'), KeyModifiers::SHIFT),
+            'f',
+            'F'
+        ));
+        assert!(is_shift_char_shortcut(
+            &KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
+            'f',
+            'F'
+        ));
+        assert!(is_shift_char_shortcut(
+            &KeyEvent::new_with_kind_and_state(
+                KeyCode::Char('f'),
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Press,
+                crossterm::event::KeyEventState::CAPS_LOCK,
+            ),
+            'f',
+            'F'
+        ));
+        assert!(!is_shift_char_shortcut(
+            &KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+            'f',
+            'F'
+        ));
+    }
+
+    #[test]
+    fn order_filter_open_shortcut_accepts_plain_f_for_caps_lock_terminals() {
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('F'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::SHIFT
+        )));
+    }
+
+    #[test]
+    fn order_filter_open_shortcut_ignores_control_f() {
+        assert!(!is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_order_filter_open_shortcut(&KeyEvent::new(
+            KeyCode::Char('F'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
     }
 
     #[test]

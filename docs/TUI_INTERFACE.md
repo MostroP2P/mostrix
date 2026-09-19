@@ -85,8 +85,8 @@ Focused on trading and order management.
 - **Orders**: View the global order book (persistent `TableState` scrolls with ↑↓; shared vertical scrollbar confined to data rows).
 - **My Trades**: Manage active trades.
 - **Messages**: Direct messages for trade coordination.
-- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Restore Session** (rebuild SQLite from Mostro + background hydrate of Messages tab trade DMs and My Trades peer chat without restart — see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)); **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). Relays and **Blossom servers** share the same add / remove / restore-defaults pattern. The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
-- **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), and silent draft persistence when switching tabs.
+- **Settings**: Local configuration. **User mode**: key rotation via **Generate New Keys** and mnemonic backup prompts; **Restore Session** (rebuild SQLite from Mostro + background hydrate of Messages tab trade DMs and My Trades peer chat without restart — see [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)); **Select Mostro Instance** — trusted communities picker (Mobile catalog + [MostroEuropa](https://mostroeuropa.github.io/#connect)) plus type/paste custom npub/hex (`UiMode::SelectMostroInstance`, `src/ui/mostro_instances.rs`); **Set Lightning Address (buyer)** / **Clear Lightning Address** — optional `user@domain.com` stored in `settings.toml`; confirm-save fetches LNURL metadata (`payRequest`) before persisting (see `src/util/ln_address.rs`, `spawn_verify_and_save_ln_address_task`). **Admin mode**: **Change Admin Key** / **Add Dispute Solver** (no Generate New Keys — admin must use the Mostro daemon nsec). Relays and **Blossom servers** share the same add / remove / restore-defaults pattern. The visible menu and **Enter** routing share **`ADMIN_SETTINGS`** / **`USER_SETTINGS`** in `src/ui/tabs/settings_tab.rs` (`SettingsMenuAction` + label per row; **`settings_action_for_index`**).
+- **Create New Order**: Sectioned order form with live preview, searchable currency picker (instance `fiat_currencies_accepted` or bundled ISO list), multi-select payment-method picker (per-currency list from `payment_methods.json`), and silent draft persistence when switching tabs.
 
 ### Admin Role
 
@@ -247,14 +247,15 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 ### Specialized Input
 
 - **Forms**: Character input and Backspace are handled by `form_input::handle_char_input` and `form_input::handle_backspace` for fields in `FormState` while `UiMode::UserMode(UserMode::CreatingOrder(_))`.
-  - **Create New Order** (`src/ui/order_form.rs`, `src/ui/orders.rs` — `FormState` / `FormField`, `src/ui/currencies.rs` — picker metadata):
+  - **Create New Order** (`src/ui/order_form.rs`, `src/ui/orders.rs` — `FormState` / `FormField`, `src/ui/currencies.rs` / `src/ui/payment_methods.rs` — picker metadata):
     - **Layout**: Two-column body — **Order details** (left, sectioned **TRADE** / **PRICING** / **TERMS** with compact input strips) + **Live preview** receipt card (right); contextual **Field help** strip and footer key hints below.
     - **Focus**: **Tab** / **Shift+Tab** cycle fields; focused row shows a `▸` accent and green input strip; inline **✓** / **✗** per field; section headers turn green when all fields in that section validate.
-    - **Toggles**: **Space** on **Order Type** toggles buy/sell (`⇄ Space` hint); **Space** on **Fiat Amount** toggles single/range; **Space** on **Payment Method** inserts a space (labels like `SEPA Instant` are allowed).
-    - **Currency picker** (`CurrencyPicker` on `FormState`, `form_input::handle_currency_picker_key` — early interceptor in `key_handler/mod.rs`): on **Currency**, **Enter** / **Space** / typing opens a searchable dropdown anchored under the row. Options come from `MostroInstanceInfo.fiat_currencies_accepted` when non-empty, else the bundled ISO-4217 list in `currencies.rs` (code + human name; no emoji flags — terminal fonts rarely render them). **↑/↓** move, **Enter** selects, **Esc** closes; filter matches code prefix or name substring.
+    - **Toggles**: **Space** on **Order Type** toggles buy/sell (`⇄ Space` hint); **Space** on **Fiat Amount** toggles single/range; **Space** on **Payment Method** (closed) opens the method picker (same as Enter / typing).
+    - **Currency picker** (`CurrencyPicker` on `FormState`, `form_input::handle_currency_picker_key` — early interceptor in `key_handler/mod.rs`): on **Currency**, **Enter** / **Space** / typing opens a searchable dropdown anchored under the row. Options come from `MostroInstanceInfo.fiat_currencies_accepted` when non-empty, else the bundled ISO-4217 list in `currencies.rs` (code + human name; no emoji flags — terminal fonts rarely render them). **↑/↓** move, **Enter** selects, **Esc** closes; filter matches code prefix or name substring. Changing the selected currency **clears** `payment_method`.
+    - **Payment method picker** (`PaymentMethodPicker` on `FormState`, `form_input::handle_payment_method_picker_key` — interceptor next to the currency one): on **Method**, **Enter** / **Space** / typing opens a multi-select dropdown of standard methods for the current fiat (bundled `src/ui/payment_methods.json`, Mostro Mobile snapshot plus extras such as Satispay on EUR). **↑/↓** move, **Enter** toggles a listed method or adds a sanitized custom name (`+ add custom` row), **Space** with an empty filter also toggles, **Esc** keeps the selection. While closed, **Backspace** is consumed so it cannot silently rewrite the comma-separated value. The field stores a comma-separated string for protocol submit.
     - **Submit**: **Enter** on a complete form opens `ConfirmingOrder` (YES/NO); **Esc** cancels and clears `order_form_draft`.
     - **Draft persistence**: **Left** / **Right** tab navigation silently saves the form to `AppState.order_form_draft` and switches tabs. Returning to Create New Order restores the draft (`navigation::restore_or_new_form`, auto-init in `draw.rs` when tab is active in `Normal` mode).
-  - **Global shortcut guard**: `c` / `C` (copy invoice / observer clear) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency**, the picker interceptor runs first and consumes most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
+  - **Global shortcut guard**: `c` / `C` (copy invoice / observer clear) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency** and **Payment Method**, the picker interceptors run first and consume most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste; enabled at startup via `EnableBracketedPaste`)
@@ -280,11 +281,14 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 Renders a table of pending orders from the Mostro network. Status and order kinds are color-coded for readability.
 
 - **Scrolling**: persistent [`TableState`](https://docs.rs/ratatui) on `AppState.orders_table_state` so ↑↓ keeps the selected row in view without resetting the viewport each frame (aligned with Disputes Pending). A vertical scrollbar from `render_table_list_scrollbar` appears when row count exceeds the visible body; thumb tracks viewport **offset** and stays on the data-row track (does not overwrite borders/header).
-- **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same currency-filtered book projection. If the stored id is hidden by `currencies_filter`, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
+- **Selection by order id** (`selected_order_id` + `helpers/order_selection.rs`): ↑↓ / highlight / Enter all resolve through the same filtered book projection (`currencies_filter` from Settings, then local `order_filters`). If the stored id is hidden by filters, selection falls back to the first visible row so take/cancel never targets a filtered-out order. Survives book reorders better than a raw list index.
+- **Order filters** (`OrderBookFilters` on `AppState`, `UiMode::OrderFilters`): **Shift+F** edits, **Shift+X** clears (works from any focused filter field, including while the fiat picker is open). Filters cover **Kind** (Any/Buy/Sell), **Fiat currency** (searchable picker), and a single **Premium** % (exact match; **↑** / **↓** step by 1; `0%` white, positive green, negative red; Backspace clears to Any).
+  - **Large terminals** (`width ≥ 110` and `height ≥ 12`): an editable inline filter bar sits above the table. **Tab** moves fields, **↑↓** rotate Kind / step Premium / browse Fiat, **Enter** applies (stays in edit mode), **Esc** exits edit mode.
+  - **Smaller terminals**: **Shift+F** opens a compact popup with the same three fields; **Enter** applies and closes.
 - **Narrow terminals** (`width < 100`): compact column set (Kind / Fiat Amt / Premium / Payment) — Premium stays visible.
 - **Short terminals** (`height < 4`): header row is dropped so at least one data row remains visible.
 
-**Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`
+**Source**: `src/ui/tabs/orders_tab.rs`, `src/ui/helpers/order_selection.rs`, `src/ui/orders.rs` (`OrderBookFilters`), `src/ui/currencies.rs` (fiat picker)
 
 ### 2. Messages Tab
 
@@ -315,15 +319,16 @@ Displays a list of direct messages related to the user's trades. Messages are tr
 
 Stateful form for publishing buy/sell orders. Supports fixed amounts, market price (`0` sats), fiat ranges, and optional Lightning invoice / expiration.
 
-**Source**: `src/ui/order_form.rs`, `src/ui/order_confirm.rs`, `src/ui/currencies.rs`, `src/ui/key_handler/form_input.rs`, `src/ui/key_handler/navigation.rs`
+**Source**: `src/ui/order_form.rs`, `src/ui/order_confirm.rs`, `src/ui/currencies.rs`, `src/ui/payment_methods.rs`, `src/ui/key_handler/form_input.rs`, `src/ui/key_handler/navigation.rs`
 
 #### State
 
 | Type | Location | Role |
 |------|----------|------|
-| `FormState` | `src/ui/orders.rs` | Field values, `focused`, `use_range`, embedded `CurrencyPicker` |
+| `FormState` | `src/ui/orders.rs` | Field values, `focused`, `use_range`, embedded `CurrencyPicker` / `PaymentMethodPicker` |
 | `FormField` | `src/ui/orders.rs` | Order Type, Currency, Amount (sats), Fiat (+ max when range), Payment Method, Premium, Invoice, Expiration |
 | `CurrencyPicker` | `src/ui/orders.rs` | `open`, `filter`, `selected` (index into filtered list) |
+| `PaymentMethodPicker` | `src/ui/orders.rs` | `open`, `filter`, `selected` (index into filtered list, including optional custom row) |
 | `order_form_draft` | `AppState` | `Option<FormState>` — draft silently kept when leaving the tab via Left/Right |
 | `UserMode::CreatingOrder` | `src/ui/user_state.rs` | Active editing |
 | `UserMode::ConfirmingOrder` | `src/ui/user_state.rs` | Pre-submit YES/NO popup |
@@ -336,11 +341,12 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
   - **Order details** — three sections with vertically centered content inside the panel:
     - **TRADE**: Type (colored buy/sell dot), Currency (bold cyan code + dim name + `▾ pick`)
     - **PRICING**: Amount (`market` when 0/empty), Fiat min (+ Fiat max when range)
-    - **TERMS**: Method, Premium, Invoice, Expiry
+    - **TERMS**: Method (joined names + `▾ pick`, or `— none —`), Premium, Invoice, Expiry
   - **Live preview** — rounded **Order** receipt card with implied `≈ …/BTC` when computable; status dot (`ready` / `fill: …` / `invalid: …`).
   - **Field help** — one-line contextual help for the focused field (`build_field_help`).
   - **Footer** — `Enter` submit / `Tab` focus / `Space` toggle / `Esc` cancel.
 - **Currency dropdown** (`render_currency_dropdown`): modal overlay when `currency_picker.open`; list shows bold ISO code + dim name; title includes accepted count from instance or “common” fallback list.
+- **Payment method dropdown** (`render_payment_method_dropdown`): modal overlay when `payment_method_picker.open`; checkboxes `[x]` / `[ ]` for methods of the current fiat (plus selected custom names); a `+ add custom` row appears when the filter is a new sanitized name. Title is `Payment methods for USD` (or `(default)` when the fiat code is empty).
 
 #### Currency metadata (`src/ui/currencies.rs`)
 
@@ -349,6 +355,13 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 - `filter_options(options, query)`: case-insensitive code-prefix or name-substring filter.
 - `lookup` / `name_for`: enrich display strings (confirmation popup, selected currency row).
 - **No emoji flags** in the UI — regional-indicator emoji degrade to letter pairs in most terminal fonts.
+
+#### Payment method catalog (`src/ui/payment_methods.rs`)
+
+- Bundled JSON (`payment_methods.json`): snapshot of Mostro Mobile `assets/data/payment_methods.json`, plus Mostrix extras (Satispay on EUR).
+- `methods_for(fiat_code)`: currency list, or `default` (`Bank Transfer`, `Cash in person`) when unknown.
+- `filter_methods` / `parse_selected` / `join_selected` / `toggle_method` / `sanitize_custom` (strips `, " \ [ ] { }`).
+- `picker_rows`: filtered catalog + already-selected custom names, plus a `Custom` row when the filter is a new name.
 
 #### Tab lifecycle (`src/ui/draw.rs`, `navigation.rs`)
 
@@ -362,10 +375,11 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
 ```text
 src/ui/order_form.rs          # render_order_form, validation, preview
 src/ui/currencies.rs          # ISO list + resolve/filter helpers
-src/ui/orders.rs              # FormState, FormField, CurrencyPicker
+src/ui/payment_methods.rs     # per-currency method lists + picker helpers
+src/ui/orders.rs              # FormState, FormField, CurrencyPicker, PaymentMethodPicker
 src/ui/order_confirm.rs       # render_order_confirm
 src/ui/draw.rs                # tab render + draft restore on entry
-src/ui/key_handler/form_input.rs   # char/backspace + handle_currency_picker_key
+src/ui/key_handler/form_input.rs   # char/backspace + currency/method picker interceptors
 src/ui/key_handler/navigation.rs   # silent draft save on leave, restore_or_new_form
 src/ui/key_handler/enter_handlers.rs  # ConfirmingOrder Enter
 src/ui/key_handler/esc_handlers.rs    # Esc clears draft
