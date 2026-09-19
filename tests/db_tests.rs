@@ -322,3 +322,54 @@ async fn test_order_new_requires_positive_trade_index() {
     let result = Order::new(&pool, small_order, &trade_keys, Some(123), 0, true).await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn test_bond_invoice_persist_and_load() {
+    let pool = create_test_db().await.unwrap();
+    let trade_keys = Keys::generate();
+
+    let mut small_order = SmallOrder::default();
+    let order_id = uuid::Uuid::new_v4();
+    small_order.id = Some(order_id);
+    small_order.kind = Some(mostro_core::order::Kind::Buy);
+    small_order.status = Some(mostro_core::order::Status::WaitingTakerBond);
+    small_order.fiat_code = "USD".to_string();
+    small_order.payment_method = "ln".to_string();
+
+    let order = Order::new(&pool, small_order, &trade_keys, None, 1, false)
+        .await
+        .unwrap();
+    let id = order.id.as_deref().unwrap();
+
+    // Nothing persisted yet.
+    assert_eq!(Order::load_bond_invoice(&pool, id).await.unwrap(), None);
+
+    Order::update_bond_invoice(&pool, id, "lnbc1bond")
+        .await
+        .unwrap();
+    assert_eq!(
+        Order::load_bond_invoice(&pool, id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("lnbc1bond")
+    );
+
+    // An empty stored value normalizes to None.
+    Order::update_bond_invoice(&pool, id, "").await.unwrap();
+    assert_eq!(Order::load_bond_invoice(&pool, id).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn test_bond_invoice_update_without_order_row_errors() {
+    // If the order insert failed earlier, the UPDATE matches no row: surface that
+    // instead of silently reporting success (restart recovery would find nothing).
+    let pool = create_test_db().await.unwrap();
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let result = Order::update_bond_invoice(&pool, &missing_id, "lnbc1bond").await;
+    assert!(result.is_err());
+    assert_eq!(
+        Order::load_bond_invoice(&pool, &missing_id).await.unwrap(),
+        None
+    );
+}

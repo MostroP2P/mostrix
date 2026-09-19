@@ -9,13 +9,14 @@ use uuid::Uuid;
 
 use crate::models::Order;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
-use crate::util::db_utils::{save_order, update_order_status};
+use crate::util::db_utils::update_order_status;
 use crate::util::dm_utils::{
     parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_TIMEOUT_MSG,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
     build_order_chat_static_header, handle_mostro_response, inferred_status_from_trade_action,
+    should_apply_status_transition,
 };
 
 /// Matches the timeout branch in [`wait_for_dm`].
@@ -53,6 +54,11 @@ async fn payment_request_payload_for_invoice(invoice: &str) -> Result<Option<Pay
     }
 }
 
+/// Persist the order snapshot carried by a DM reply, unless the stored row has
+/// already seen a newer DM. The freshness guard is part of the write itself
+/// (atomic compare-and-write on `last_seen_dm_ts`), so a DM landing between the
+/// caller's pre-check and this statement cannot be overwritten by the reply.
+#[allow(clippy::too_many_arguments)]
 async fn persist_order_payload_from_dm(
     pool: &sqlx::sqlite::SqlitePool,
     order_id: Uuid,
@@ -60,6 +66,7 @@ async fn persist_order_payload_from_dm(
     payload: &Option<Payload>,
     request_id: u64,
     trade_keys: &Keys,
+    reply_ts: i64,
 ) {
     let msg_request_id = i64::try_from(request_id).ok();
     let small_order = match (action, payload.as_ref()) {
@@ -71,9 +78,24 @@ async fn persist_order_payload_from_dm(
         _ => None,
     };
     if let Some(order) = small_order {
-        let _ =
-            Order::upsert_from_small_order_dm(pool, order_id, order, trade_keys, msg_request_id)
-                .await;
+        match Order::upsert_from_small_order_dm_if_fresh(
+            pool,
+            order_id,
+            order,
+            trade_keys,
+            msg_request_id,
+            reply_ts,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => log::info!(
+                "Skipped stale reply snapshot for order {order_id} (newer DM already persisted)"
+            ),
+            Err(e) => {
+                log::warn!("Failed to persist reply snapshot for order {order_id}: {e}")
+            }
+        }
     }
 }
 
@@ -161,7 +183,6 @@ async fn apply_status_from_reply(
     order_id: Uuid,
     action: &Action,
     payload: &Option<Payload>,
-    baseline: Option<Status>,
 ) {
     let candidate = if let Some(Payload::Order(o)) = payload {
         o.status
@@ -170,7 +191,12 @@ async fn apply_status_from_reply(
         inferred_status_from_trade_action(action)
     };
     if let Some(status) = candidate {
-        if baseline != Some(status) {
+        // Re-read the current row: the order may have advanced while we waited for
+        // the reply, so never regress a fresher persisted status.
+        let current = Order::get_by_id(pool, &order_id.to_string()).await.ok();
+        let baseline = current.as_ref().and_then(status_from_db);
+        let kind = current.as_ref().and_then(order_kind_from_db);
+        if should_apply_status_transition(baseline, status, kind, Some(action)) {
             let _ = update_order_status(pool, &order_id.to_string(), status).await;
         }
     }
@@ -198,23 +224,45 @@ async fn operation_result_from_bond_invoice_reply(
         .trade_index
         .ok_or_else(|| anyhow::anyhow!("Missing trade_index for order"))?;
 
-    persist_order_payload_from_dm(
-        ctx.pool,
-        ctx.order_id,
-        &inner.action,
-        &inner.payload,
-        ctx.request_id,
-        ctx.order_trade_keys,
-    )
-    .await;
-    apply_status_from_reply(
-        ctx.pool,
-        ctx.order_id,
-        &inner.action,
-        &inner.payload,
-        status_from_db(ctx.db_order),
-    )
-    .await;
+    // The reply round-trip can take seconds; meanwhile the DM listener may have
+    // processed a newer message for this order. Snapshot writes below carry an
+    // atomic compare-and-write on `last_seen_dm_ts`, so a newer DM always wins
+    // even if it lands between this pre-check and the write. What SQL cannot
+    // express is the status-rank rule (e.g. a bond reply carrying `Pending`
+    // while the row already advanced): keep a cheap pre-check for that case and
+    // skip the snapshot write entirely. Either way the invoice is still
+    // surfaced to the UI below.
+    let reply_status = match &inner.payload {
+        Some(Payload::Order(o)) => o.status,
+        Some(Payload::PaymentRequest(Some(o), _, _)) => o.status,
+        _ => None,
+    }
+    .or_else(|| inferred_status_from_trade_action(&inner.action));
+    let status_would_regress = match Order::get_by_id(ctx.pool, &ctx.order_id.to_string()).await {
+        Ok(current) => reply_status.is_some_and(|candidate| {
+            !should_apply_status_transition(
+                status_from_db(&current),
+                candidate,
+                order_kind_from_db(&current),
+                Some(&inner.action),
+            )
+        }),
+        Err(_) => false,
+    };
+
+    if !status_would_regress {
+        persist_order_payload_from_dm(
+            ctx.pool,
+            ctx.order_id,
+            &inner.action,
+            &inner.payload,
+            ctx.request_id,
+            ctx.order_trade_keys,
+            ctx.timestamp,
+        )
+        .await;
+    }
+    apply_status_from_reply(ctx.pool, ctx.order_id, &inner.action, &inner.payload).await;
 
     let order_msg = build_order_message_from_reply(
         ctx.response_message,
@@ -236,15 +284,21 @@ async fn operation_result_from_bond_invoice_reply(
             if order_to_save.id.is_none() {
                 order_to_save.id = Some(ctx.order_id);
             }
-            let _ = save_order(
-                order_to_save.clone(),
-                ctx.order_trade_keys,
-                ctx.request_id,
-                trade_index,
-                ctx.pool,
-                ctx.db_order.is_mine,
-            )
-            .await;
+            if !status_would_regress {
+                // Same atomic freshness guard as persist_order_payload_from_dm:
+                // a newer DM processed during the reply wait keeps its row.
+                // (Also preserves `last_seen_dm_ts`/`created_at`, which the
+                // previous `save_order` update path reset.)
+                let _ = Order::upsert_from_small_order_dm_if_fresh(
+                    ctx.pool,
+                    ctx.order_id,
+                    order_to_save.clone(),
+                    ctx.order_trade_keys,
+                    i64::try_from(ctx.request_id).ok(),
+                    ctx.timestamp,
+                )
+                .await;
+            }
             let popup_action = if inner.action == Action::PayBondInvoice {
                 Action::PayBondInvoice
             } else {
@@ -487,5 +541,98 @@ mod tests {
         assert!(is_wait_for_dm_timeout(&timeout));
         let canceled = anyhow::anyhow!(WAIT_FOR_DM_CANCELED_MSG);
         assert!(!is_wait_for_dm_timeout(&canceled));
+    }
+
+    async fn create_test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders table");
+        pool
+    }
+
+    async fn insert_order_with_status(
+        pool: &sqlx::SqlitePool,
+        id: Uuid,
+        kind: &str,
+        status: Status,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, payment_method, premium, is_mine)
+            VALUES (?, ?, ?, 1000, 'USD', 100, 'SEPA', 0, 0)
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(kind)
+        .bind(status.to_string())
+        .execute(pool)
+        .await
+        .expect("insert order");
+    }
+
+    #[tokio::test]
+    async fn apply_status_from_reply_does_not_regress_fresher_status() {
+        // The order advanced to waiting-payment while the AddBondInvoice reply was
+        // in flight; the stale reply (inferred waiting-taker-bond) must not regress it.
+        let pool = create_test_pool().await;
+        let order_id = Uuid::new_v4();
+        insert_order_with_status(&pool, order_id, "sell", Status::WaitingPayment).await;
+
+        apply_status_from_reply(
+            &pool,
+            order_id,
+            &Action::PayBondInvoice,
+            &Some(Payload::PaymentRequest(None, "lnbc1bond".to_string(), None)),
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order");
+        assert_eq!(stored.status, Some(Status::WaitingPayment.to_string()));
+    }
+
+    #[tokio::test]
+    async fn apply_status_from_reply_applies_forward_status() {
+        // Fresh reply (waiting-buyer-invoice -> active on invoice acceptance) still applies.
+        let pool = create_test_pool().await;
+        let order_id = Uuid::new_v4();
+        insert_order_with_status(&pool, order_id, "sell", Status::WaitingBuyerInvoice).await;
+
+        let reply_order = SmallOrder {
+            id: Some(order_id),
+            kind: Some(mostro_core::order::Kind::Sell),
+            status: Some(Status::Active),
+            ..Default::default()
+        };
+        apply_status_from_reply(
+            &pool,
+            order_id,
+            &Action::AddInvoice,
+            &Some(Payload::Order(reply_order)),
+        )
+        .await;
+
+        let stored = Order::get_by_id(&pool, &order_id.to_string())
+            .await
+            .expect("order");
+        assert_eq!(stored.status, Some(Status::Active.to_string()));
     }
 }

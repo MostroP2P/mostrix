@@ -129,7 +129,15 @@ fn pay_invoice_popup_layout(
     let chrome = if bond { QR_CHROME_BOND } else { QR_CHROME_PAY };
     let max_qr_w = area.width.saturating_sub(4);
     let max_qr_h = area.height.saturating_sub(chrome);
-    let visual = invoice_visual(invoice, show_qr, max_qr_w, max_qr_h);
+    // An expired bond invoice must not render as a payable-looking QR: fall back
+    // to the copyable text card so the red expiry note is the unmissable message.
+    let visual = if bond && bond_invoice_is_expired(invoice) {
+        InvoiceVisual::Text {
+            fallback_hint: false,
+        }
+    } else {
+        invoice_visual(invoice, show_qr, max_qr_w, max_qr_h)
+    };
 
     match visual {
         InvoiceVisual::Qr(view) => {
@@ -438,12 +446,11 @@ fn render_pay_qr_compact(
     let chunks = Layout::new(Direction::Vertical, constraints).split(popup);
     let mut idx = 1;
     if bond {
-        render_centered_label(
-            f,
-            chunks[idx],
-            "Locked, not spent — refunded on normal completion",
-            Color::Yellow,
+        let (bond_note, bond_note_color) = bond_note_line(
+            notification.invoice.as_deref(),
+            popup.width.saturating_sub(2),
         );
+        render_centered_label(f, chunks[idx], bond_note, bond_note_color);
         idx += 1;
     }
     render_centered_label(
@@ -886,13 +893,56 @@ fn render_pay_invoice(
     );
 }
 
+/// True when the bond BOLT11 has passed its own expiry (still shown so the user
+/// can copy it, but flagged as unpayable).
+pub(crate) fn bond_invoice_is_expired(invoice: Option<&str>) -> bool {
+    invoice
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<lightning_invoice::Bolt11Invoice>().ok())
+        .map(|inv| inv.is_expired())
+        .unwrap_or(false)
+}
+
+const BOND_NOTE_LOCKED: &str = "Locked, not spent \u{2014} refunded on normal completion";
+const BOND_NOTE_LOCKED_SHORT: &str = "Locked, not spent \u{2014} refunded on completion";
+const BOND_NOTE_EXPIRED: &str =
+    "\u{26a0}\u{fe0f} Bond invoice expired \u{2014} cancel the order to retake";
+const BOND_NOTE_EXPIRED_SHORT: &str =
+    "\u{26a0}\u{fe0f} Bond expired \u{2014} cancel order to retake";
+
+/// Bond note row: red expiry warning once the invoice lapses, else the yellow
+/// locked-funds reassurance. `max_width` is the usable popup width in columns;
+/// on narrow terminals a shorter variant keeps the essential instruction
+/// (expired → cancel the order) from being clipped away.
+fn bond_note_line(invoice: Option<&str>, max_width: u16) -> (&'static str, Color) {
+    let fits = |note: &str| Span::raw(note).width() as u16 <= max_width;
+    if bond_invoice_is_expired(invoice) {
+        let note = if fits(BOND_NOTE_EXPIRED) {
+            BOND_NOTE_EXPIRED
+        } else {
+            BOND_NOTE_EXPIRED_SHORT
+        };
+        (note, Color::Red)
+    } else {
+        let note = if fits(BOND_NOTE_LOCKED) {
+            BOND_NOTE_LOCKED
+        } else {
+            BOND_NOTE_LOCKED_SHORT
+        };
+        (note, Color::Yellow)
+    }
+}
+
 /// Renders PayBondInvoice notification popup.
 ///
 /// Mirrors `render_pay_invoice` (half-block QR, or text when the code does not
-/// fit) and adds a yellow one-line explanation that the bond sats are locked,
-/// not spent, and refunded on normal completion. Used for the anti-abuse bond
-/// hold invoice that takers must pay before the trade flow starts (Mostro
-/// daemon Phase 1.5+).
+/// fit) and adds a one-line explanation that the bond sats are locked, not
+/// spent, and refunded on normal completion. An expired bond invoice is flagged
+/// with a red cancel-to-retake warning instead (see [`bond_note_line`]) and
+/// never renders a QR (see [`pay_invoice_popup_layout`]). Used for the
+/// anti-abuse bond hold invoice that takers must pay before the trade flow
+/// starts (Mostro daemon Phase 1.5+).
 fn render_pay_bond_invoice(
     f: &mut ratatui::Frame,
     popup: Rect,
@@ -925,11 +975,15 @@ fn render_pay_bond_invoice(
     render_order_id_header(f, chunks[1], &order_id_str);
     render_message_preview(f, chunks[2], &notification.message_preview, true);
 
+    let (bond_note, bond_note_color) = bond_note_line(
+        notification.invoice.as_deref(),
+        popup.width.saturating_sub(2),
+    );
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "Locked, not spent — refunded on normal completion",
+            bond_note,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(bond_note_color)
                 .add_modifier(Modifier::BOLD),
         )]))
         .alignment(ratatui::layout::Alignment::Center),
@@ -1999,5 +2053,82 @@ mod tests {
                 "narrow help must keep {key} visible: {text}"
             );
         }
+    }
+
+    #[test]
+    fn bond_note_defaults_to_locked_when_invoice_unparseable_or_missing() {
+        for inv in [None, Some(""), Some("lnbc1bond")] {
+            assert!(!super::bond_invoice_is_expired(inv));
+            let (note, color) = super::bond_note_line(inv, 90);
+            assert!(note.contains("Locked"), "expected locked note for {inv:?}");
+            assert_eq!(color, ratatui::style::Color::Yellow);
+        }
+    }
+
+    /// Fully-valid BOLT11 from the lightning-invoice `FromStr` doc example
+    /// (timestamp 2021-08-22, 1h expiry): parseable and long expired, so tests can
+    /// exercise the expired-bond paths deterministically.
+    const EXPIRED_BOLT11: &str = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcsh2pu5qc7lgq0xs578ngs6s0s68ua4h7cvspp5q6rmq35js88zp5dvwrv9m459tnk2zunwj5jalqtyxqulh0l5gflssp5nf55ny5gcrfl30xuhzj3nphgj27rstekmr9fw3ny5989s300gyus9qyysgqcqpcrzjqw2sxwe993h5pcm4dxzpvttgza8zhkqxpgffcrf5v25nwpr3cmfg7z54kuqq8rgqqqqqqqq2qqqqq9qq9qrzjqd0ylaqclj9424x9m8h2vcukcgnm6s56xfgu3j78zyqzhgs4hlpzvznlugqq9vsqqqqqqqlgqqqqqeqq9qrzjqwldmj9dha74df76zhx6l9we0vjdquygcdt3kssupehe64g6yyp5yz5rhuqqwccqqyqqqqlgqqqqjcqq9qrzjqf9e58aguqr0rcun0ajlvmzq3ek63cw2w282gv3z5uupmuwvgjtq2z55qsqqg6qqqyqqqrtnqqqzq3cqygrzjqvphmsywntrrhqjcraumvc4y6r8v4z5v593trte429v4hredj7ms5z52usqq9ngqqqqqqqlgqqqqqqgq9qrzjq2v0vp62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh38s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5j5r6drg6k6zcqj0fcwg";
+
+    #[test]
+    fn bond_note_flags_expired_invoice_in_red() {
+        assert!(super::bond_invoice_is_expired(Some(EXPIRED_BOLT11)));
+        let (note, color) = super::bond_note_line(Some(EXPIRED_BOLT11), 90);
+        assert_eq!(color, ratatui::style::Color::Red);
+        assert!(
+            note.contains("expired") && note.contains("cancel the order"),
+            "expiry note must keep the recovery instruction: {note}"
+        );
+    }
+
+    #[test]
+    fn bond_note_uses_short_variant_on_narrow_terminal() {
+        // Below the full note's width the short variant must keep "expired" and
+        // "cancel" visible instead of clipping the instruction away.
+        let (note, color) = super::bond_note_line(Some(EXPIRED_BOLT11), 45);
+        assert_eq!(color, ratatui::style::Color::Red);
+        assert_eq!(note, super::BOND_NOTE_EXPIRED_SHORT);
+        assert!(note.contains("expired") && note.contains("cancel"));
+        let (locked, _) = super::bond_note_line(None, 45);
+        assert_eq!(locked, super::BOND_NOTE_LOCKED_SHORT);
+    }
+
+    #[test]
+    fn expired_bond_popup_shows_text_not_qr() {
+        // An expired bond invoice must not render as a payable-looking QR: the
+        // popup falls back to the text card with the red cancel-to-retake note.
+        let notification = pay_notification(Action::PayBondInvoice, EXPIRED_BOLT11);
+        let state = display_only_state();
+        let buf = draw_pay(90, 30, &notification, &state);
+        let text = buffer_text_collapsed(&buf);
+        assert!(
+            !buffer_has_qr_glyph(&buf),
+            "expired bond must not show a QR: {text}"
+        );
+        assert!(
+            text.contains("Bond invoice expired"),
+            "expiry warning missing: {text}"
+        );
+        // Wrapped rows gain separators in the flattened buffer; a long prefix is
+        // enough to prove the BOLT11 is shown as copyable text.
+        assert!(
+            text.contains(&EXPIRED_BOLT11[..60]),
+            "invoice must stay copyable as text: {text}"
+        );
+    }
+
+    #[test]
+    fn unparseable_bond_popup_keeps_qr() {
+        // Sanity: a non-expired (here: unparseable) bond invoice still takes the
+        // normal QR path — the expiry gate must not hide payable QRs.
+        let notification = pay_notification(Action::PayBondInvoice, "lnbc1bond");
+        let state = display_only_state();
+        let buf = draw_pay(90, 30, &notification, &state);
+        let text = buffer_text_collapsed(&buf);
+        assert!(
+            buffer_has_qr_glyph(&buf),
+            "active bond invoice must keep its QR: {text}"
+        );
+        assert!(text.contains("Locked"), "locked note missing: {text}");
     }
 }

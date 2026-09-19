@@ -445,6 +445,7 @@ fn db_order_to_history_message(
     sender: PublicKey,
     buyer_reputation: Option<UserInfo>,
     seller_reputation: Option<UserInfo>,
+    bond_invoice: Option<String>,
 ) -> Option<OrderMessage> {
     let order_id_str = order.id.as_deref()?;
     let order_id = Uuid::parse_str(order_id_str).ok()?;
@@ -458,7 +459,21 @@ fn db_order_to_history_message(
         .as_deref()
         .and_then(|k| OrderKind::from_str(k).ok());
 
-    let action = history_action_for_db_order(order);
+    // Taker bond still unpaid: the daemon keeps the order `Pending` on the public
+    // book until the bond locks, so the DB row says `pending` while the persisted
+    // bond BOLT11 (own column) proves the take is waiting on our bond payment.
+    // Reconstruct the actionable bond row so Messages-tab Enter reopens the QR.
+    // (Maker bonds stay `NewOrder`: once the maker bond locks, the published order
+    // is `Pending` too, so the DB row cannot distinguish paid from unpaid there.)
+    let taker_bond_pending = !order.is_mine
+        && status == Some(Status::Pending)
+        && bond_invoice.as_ref().is_some_and(|s| !s.is_empty());
+
+    let action = if taker_bond_pending {
+        Action::PayBondInvoice
+    } else {
+        history_action_for_db_order(order)
+    };
 
     let payload_order = SmallOrder {
         id: Some(order_id),
@@ -478,6 +493,18 @@ fn db_order_to_history_message(
     };
 
     let request_id = order.request_id.and_then(|id| u64::try_from(id).ok());
+    // On bond statuses (or an unpaid taker bond still showing `pending`), surface
+    // the persisted bond BOLT11 so Messages-tab Enter can reopen the QR after a
+    // restart (the bond invoice is stored in its own column).
+    let recovery_invoice = if taker_bond_pending
+        || matches!(
+            status,
+            Some(Status::WaitingTakerBond | Status::WaitingMakerBond)
+        ) {
+        bond_invoice.or_else(|| order.buyer_invoice.clone())
+    } else {
+        order.buyer_invoice.clone()
+    };
     let message = Message::new_order(
         Some(order_id),
         request_id,
@@ -496,7 +523,7 @@ fn db_order_to_history_message(
         order_id: Some(order_id),
         trade_index,
         sat_amount: None,
-        buyer_invoice: order.buyer_invoice.clone(),
+        buyer_invoice: recovery_invoice,
         order_kind: kind,
         is_mine: Some(order.is_mine),
         order_status: status,
@@ -504,10 +531,15 @@ fn db_order_to_history_message(
         buyer_reputation,
         seller_reputation,
         read: true,
-        auto_popup_shown: !matches!(
-            status,
-            Some(Status::WaitingBuyerInvoice | Status::WaitingMakerBond | Status::WaitingTakerBond)
-        ),
+        auto_popup_shown: !(taker_bond_pending
+            || matches!(
+                status,
+                Some(
+                    Status::WaitingBuyerInvoice
+                        | Status::WaitingMakerBond
+                        | Status::WaitingTakerBond
+                )
+            )),
     };
     Some(history_message)
 }
@@ -561,9 +593,17 @@ pub async fn sync_user_order_history_messages_from_db(pool: &SqlitePool, app: &m
                 .unwrap_or((None, None)),
             None => (None, None),
         };
-        if let Some(msg) =
-            db_order_to_history_message(row, sender, buyer_reputation, seller_reputation)
-        {
+        let bond_invoice = match row.id.as_deref() {
+            Some(id) => Order::load_bond_invoice(pool, id).await.unwrap_or(None),
+            None => None,
+        };
+        if let Some(msg) = db_order_to_history_message(
+            row,
+            sender,
+            buyer_reputation,
+            seller_reputation,
+            bond_invoice,
+        ) {
             history_messages.push(msg);
         }
     }
@@ -620,9 +660,16 @@ pub async fn merge_refreshed_orders_into_history(
         let (buyer_reputation, seller_reputation) = Order::load_trade_reputation(pool, &id_str)
             .await
             .unwrap_or((None, None));
-        if let Some(msg) =
-            db_order_to_history_message(&row, sender, buyer_reputation, seller_reputation)
-        {
+        let bond_invoice = Order::load_bond_invoice(pool, &id_str)
+            .await
+            .unwrap_or(None);
+        if let Some(msg) = db_order_to_history_message(
+            &row,
+            sender,
+            buyer_reputation,
+            seller_reputation,
+            bond_invoice,
+        ) {
             fresh_messages.push(msg);
         }
         if let Some(h) = order_chat_static_from_db_order(&row) {
@@ -1839,14 +1886,92 @@ mod history_action_for_db_order_tests {
             Keys::generate().public_key(),
             Some(buyer),
             None,
+            None,
         )
         .expect("history row");
         assert_eq!(msg.buyer_reputation.as_ref().map(|r| r.reviews), Some(5));
         assert!(msg.seller_reputation.is_none());
     }
 
+    #[test]
+    fn history_message_uses_persisted_bond_invoice_for_bond_status() {
+        // After a restart a waiting-taker-bond row carries the persisted bond BOLT11
+        // so Messages-tab Enter can reopen the QR.
+        let order = sample_order("waiting-taker-bond", false, "buy", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(msg.buyer_invoice.as_deref(), Some("lnbc1bond"));
+    }
+
+    #[test]
+    fn history_message_pending_taker_with_bond_invoice_becomes_bond_row() {
+        // Live-daemon shape: an unpaid taker bond leaves the DB row at `pending`
+        // (public-book bucket) with the bond BOLT11 in its own column. Reconstruct
+        // the actionable bond row, not a `NewOrder` row that Messages would strip.
+        let order = sample_order("pending", false, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::PayBondInvoice
+        );
+        assert_eq!(msg.buyer_invoice.as_deref(), Some("lnbc1bond"));
+        // Allow the startup re-popup, same as the waiting-*-bond statuses.
+        assert!(!msg.auto_popup_shown);
+    }
+
+    #[test]
+    fn history_message_pending_maker_with_bond_invoice_stays_new_order() {
+        // Maker ambiguity: a live published order is also `pending` with a
+        // (paid) bond invoice stored, so the DB row cannot prove the maker bond
+        // is still unpaid — keep the plain `NewOrder` reconstruction.
+        let order = sample_order("pending", true, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            Some("lnbc1bond".to_string()),
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
+        assert!(msg.buyer_invoice.is_none());
+    }
+
+    #[test]
+    fn history_message_pending_taker_without_bond_invoice_stays_new_order() {
+        let order = sample_order("pending", false, "sell", None);
+        let msg = super::db_order_to_history_message(
+            &order,
+            Keys::generate().public_key(),
+            None,
+            None,
+            None,
+        )
+        .expect("history row");
+        assert_eq!(
+            msg.message.get_inner_message_kind().action,
+            Action::NewOrder
+        );
+    }
+
     fn history_message(order: &Order, identity: &Keys) -> crate::ui::OrderMessage {
-        super::db_order_to_history_message(order, identity.public_key(), None, None)
+        super::db_order_to_history_message(order, identity.public_key(), None, None, None)
             .expect("history row")
     }
 

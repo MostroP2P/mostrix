@@ -10,6 +10,7 @@ use crate::ui::{
     OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
+use crate::util::order_utils::should_apply_status_transition;
 use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
 use uuid::Uuid;
 
@@ -174,7 +175,32 @@ fn maybe_insert_payment_request_placeholder(
                 if existing.order_status.is_none() {
                     existing.order_status = order.status;
                 }
-                if existing_row_is_reputation_placeholder(existing) && !invoice.is_empty() {
+                // Attach the invoice to the row so Messages-tab Enter can reopen the
+                // Pay/PayBond popup after Esc. Besides reputation placeholders, cover a
+                // pre-existing take-order row that has no invoice yet (bond recovery).
+                let existing_has_invoice = existing
+                    .buyer_invoice
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty());
+                let is_payment_request =
+                    matches!(action, Action::PayBondInvoice | Action::PayInvoice);
+                let should_attach_invoice = !invoice.is_empty()
+                    && (existing_row_is_reputation_placeholder(existing)
+                        || (is_payment_request && !existing_has_invoice));
+                if should_attach_invoice {
+                    // Align status with the fresh request so the reopen gate passes,
+                    // but never regress a row that already advanced further (e.g. a
+                    // stale/replayed payment-request response).
+                    if let Some(candidate) = order.status {
+                        if should_apply_status_transition(
+                            existing.order_status,
+                            candidate,
+                            existing.order_kind,
+                            Some(&action),
+                        ) {
+                            existing.order_status = Some(candidate);
+                        }
+                    }
                     let request_id = existing.message.get_inner_message_kind().request_id;
                     existing.message = Message::new_order(
                         Some(order_id),
@@ -390,7 +416,11 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             sat_amount: *sat_amount,
             invoice: Some(invoice.clone()),
             body: None,
-            maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond),
+            // The daemon embeds `Pending` (not `WaitingMakerBond`) in the maker-bond
+            // payload, so also detect the maker-bond publish framing by role.
+            maker_bond_publish: order.status == Some(mostro_core::order::Status::WaitingMakerBond)
+                || (order.status == Some(mostro_core::order::Status::Pending)
+                    && static_header.is_mine),
             solver_pubkey: None,
             dispute_id: None,
         };
@@ -715,6 +745,206 @@ mod tests {
         assert_eq!(stored.rating, buyer_info.rating);
         assert_eq!(stored.reviews, buyer_info.reviews);
         assert!(row.seller_reputation.is_none());
+    }
+
+    #[test]
+    fn payment_request_attaches_bond_invoice_to_existing_take_order_row() {
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        // Pre-existing take-buy row (not a reputation placeholder, no invoice yet).
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(Some(order_id), None, Some(3), Action::TakeBuy, None),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 3,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Buy),
+            is_mine: Some(false),
+            order_status: None,
+            order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Buy),
+                    status: Some(Status::WaitingTakerBond),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1bond".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 3,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Buy),
+                    created_at: None,
+                    trade_index: 3,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: false,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayBondInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        let inner = row.message.get_inner_message_kind();
+        assert_eq!(inner.action, Action::PayBondInvoice);
+        match &inner.payload {
+            Some(Payload::PaymentRequest(_, invoice, amount)) => {
+                assert_eq!(invoice, "lnbc1bond");
+                assert_eq!(*amount, Some(1000));
+            }
+            other => panic!("expected PaymentRequest payload, got {other:?}"),
+        }
+        // Row now carries the bond invoice + bond status so Enter can reopen the popup.
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1bond"));
+        assert_eq!(row.order_status, Some(Status::WaitingTakerBond));
+    }
+
+    #[test]
+    fn payment_request_attach_does_not_regress_advanced_row_status() {
+        // Stale bond response arriving after the row already advanced: the invoice
+        // must still attach (so the popup can reopen), but the fresher non-empty
+        // row status must be preserved.
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(Some(order_id), None, Some(3), Action::TakeSell, None),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 3,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(false),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    status: Some(Status::Pending),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1bond".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 3,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    created_at: None,
+                    trade_index: 3,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: false,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayBondInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        let inner = row.message.get_inner_message_kind();
+        assert_eq!(inner.action, Action::PayBondInvoice);
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1bond"));
+        assert_eq!(
+            row.order_status,
+            Some(Status::WaitingBuyerInvoice),
+            "stale Pending response must not regress an advanced row status"
+        );
+    }
+
+    #[test]
+    fn payment_request_attach_still_applies_forward_row_status() {
+        // Forward alignment must keep working through the guard: a sell row at
+        // waiting-buyer-invoice advances to waiting-payment when the fresh
+        // payment request attaches.
+        let mut app = AppState::new(UserRole::User);
+        let order_id = uuid::Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        app.messages.lock().unwrap().push(OrderMessage {
+            message: Message::new_order(Some(order_id), None, Some(3), Action::TakeSell, None),
+            timestamp: 1,
+            sender,
+            order_id: Some(order_id),
+            trade_index: 3,
+            sat_amount: None,
+            buyer_invoice: None,
+            order_kind: Some(mostro_core::order::Kind::Sell),
+            is_mine: Some(false),
+            order_status: Some(Status::WaitingBuyerInvoice),
+            order_snapshot: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            read: true,
+            auto_popup_shown: true,
+        });
+
+        handle_operation_result(
+            OperationResult::PaymentRequestRequired {
+                order: SmallOrder {
+                    id: Some(order_id),
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    status: Some(Status::WaitingPayment),
+                    amount: 1000,
+                    ..Default::default()
+                },
+                invoice: "lnbc1hold".to_string(),
+                sat_amount: Some(1000),
+                trade_index: 3,
+                static_header: OrderChatStaticHeader {
+                    order_id,
+                    kind: Some(mostro_core::order::Kind::Sell),
+                    created_at: None,
+                    trade_index: 3,
+                    initiator_trade_pubkey: sender.to_string(),
+                    is_mine: false,
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                action: Action::PayInvoice,
+            },
+            &mut app,
+        );
+
+        let messages = app.messages.lock().unwrap();
+        let row = messages
+            .iter()
+            .find(|m| m.order_id == Some(order_id))
+            .expect("trade row");
+        assert_eq!(row.buyer_invoice.as_deref(), Some("lnbc1hold"));
+        assert_eq!(row.order_status, Some(Status::WaitingPayment));
     }
 
     #[test]
