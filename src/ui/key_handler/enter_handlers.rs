@@ -1071,7 +1071,7 @@ fn handle_enter_settings_mode(
             }
         }
         UiMode::ConfirmMostroPubkey(key_string, selected_button) => {
-            app.mode = handle_confirmation_enter(
+            match handle_confirmation_enter(
                 selected_button,
                 &key_string,
                 default_mode,
@@ -1081,43 +1081,49 @@ fn handle_enter_settings_mode(
                         crate::ui::mostro_instances::MostroInstancePicker::default(),
                     )
                 },
-            );
-
-            // If the selected button is YES, spawn a task to refresh Mostro instance info
-            // using the new pubkey (no disk round-trip); UI stays responsive.
-            if selected_button {
-                let new_pubkey = match PublicKey::from_str(&key_string) {
-                    Ok(pk) => pk,
-                    Err(e) => {
-                        log::error!("Invalid pubkey after confirmation: {}", e);
-                        return false;
-                    }
-                };
-                match ctx.current_mostro_pubkey.lock() {
-                    Ok(mut active_pubkey) => {
-                        *active_pubkey = new_pubkey;
-                    }
-                    Err(e) => {
-                        crate::util::request_fatal_restart(format!(
-                            "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+            ) {
+                Ok(mode) => {
+                    app.mode = mode;
+                    // Persist succeeded (or YES was not selected). Only then switch
+                    // the live pubkey / fetch — a failed save must not take effect.
+                    if selected_button {
+                        let new_pubkey = match PublicKey::from_str(&key_string) {
+                            Ok(pk) => pk,
+                            Err(e) => {
+                                log::error!("Invalid pubkey after confirmation: {}", e);
+                                return false;
+                            }
+                        };
+                        match ctx.current_mostro_pubkey.lock() {
+                            Ok(mut active_pubkey) => {
+                                *active_pubkey = new_pubkey;
+                            }
+                            Err(e) => {
+                                crate::util::request_fatal_restart(format!(
+                                    "Mostrix encountered an internal error (poisoned Mostro pubkey lock: {e}). Please restart the app."
+                                ));
+                                return false;
+                            }
+                        }
+                        // Drop the previous coordinator's kind-38385 cache immediately so the
+                        // status bar / Mostro Info tab cannot keep showing the old name while
+                        // the new fetch is in flight (and so stale created_at from A cannot
+                        // block applying B — see AppState::set_mostro_info).
+                        app.set_mostro_info(None);
+                        app.pending_fetch_scheduler_reload = true;
+                        spawn_refresh_mostro_info_task(
+                            ctx.client.clone(),
+                            new_pubkey,
+                            ctx.mostro_info_tx.clone(),
+                        );
+                        app.mode = UiMode::operation_result(OperationResult::Info(
+                            "Fetching Mostro instance info...".to_string(),
                         ));
-                        return false;
                     }
                 }
-                // Drop the previous coordinator's kind-38385 cache immediately so the
-                // status bar / Mostro Info tab cannot keep showing the old name while
-                // the new fetch is in flight (and so stale created_at from A cannot
-                // block applying B — see AppState::set_mostro_info).
-                app.set_mostro_info(None);
-                app.pending_fetch_scheduler_reload = true;
-                spawn_refresh_mostro_info_task(
-                    ctx.client.clone(),
-                    new_pubkey,
-                    ctx.mostro_info_tx.clone(),
-                );
-                app.mode = UiMode::operation_result(OperationResult::Info(
-                    "Fetching Mostro instance info...".to_string(),
-                ));
+                Err(e) => {
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
+                }
             }
         }
         UiMode::AddRelay(key_state) => {
