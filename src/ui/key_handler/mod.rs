@@ -243,8 +243,9 @@ pub use input_helpers::{handle_invoice_input, handle_key_input};
 pub use navigation::{handle_navigation, handle_tab_navigation};
 pub use settings::handle_mode_switch;
 pub use validation::{
-    hex_pubkey_to_npub, hex_seckey_to_nsec, normalize_mostro_pubkey, normalize_relay_url,
-    validate_currency, validate_mostro_pubkey, validate_npub, validate_relay,
+    hex_pubkey_to_npub, hex_seckey_to_nsec, normalize_blossom_server_url, normalize_mostro_pubkey,
+    normalize_relay_url, validate_blossom_server, validate_currency, validate_mostro_pubkey,
+    validate_npub, validate_relay,
 };
 
 /// True when Disputes in Progress chat input should accept typing / paste.
@@ -635,6 +636,7 @@ pub fn apply_paste_to_focused_key_input(app: &mut AppState, pasted_text: &str) -
     let key_state = match &mut app.mode {
         UiMode::AddMostroPubkey(ref mut ks)
         | UiMode::AddRelay(ref mut ks)
+        | UiMode::AddBlossomServer(ref mut ks)
         | UiMode::AddLnAddress(ref mut ks)
         | UiMode::AddCurrency(ref mut ks)
         | UiMode::ImportSeedWords(ref mut ks)
@@ -1491,6 +1493,7 @@ pub fn handle_key_event(
         app.mode,
         UiMode::AddMostroPubkey(_)
             | UiMode::AddRelay(_)
+            | UiMode::AddBlossomServer(_)
             | UiMode::AddLnAddress(_)
             | UiMode::AddCurrency(_)
             | UiMode::ImportSeedWords(_)
@@ -1500,6 +1503,7 @@ pub fn handle_key_event(
         let key_state = match &mut app.mode {
             UiMode::AddMostroPubkey(ref mut ks) => Some(ks),
             UiMode::AddRelay(ref mut ks) => Some(ks),
+            UiMode::AddBlossomServer(ref mut ks) => Some(ks),
             UiMode::AddLnAddress(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
             UiMode::ImportSeedWords(ref mut ks) => Some(ks),
@@ -1818,6 +1822,7 @@ pub fn handle_key_event(
                 })
                 | UiMode::ConfirmMostroPubkey(_, ref mut selected_button)
                 | UiMode::ConfirmRelay(_, ref mut selected_button)
+                | UiMode::ConfirmBlossomServer(_, ref mut selected_button)
                 | UiMode::ConfirmLnAddress(_, ref mut selected_button)
                 | UiMode::ConfirmSavedLnAddressForInvoice(_, ref mut selected_button)
                 | UiMode::ConfirmClearLnAddress(ref mut selected_button)
@@ -1825,6 +1830,8 @@ pub fn handle_key_event(
                 | UiMode::ConfirmClearCurrencies(ref mut selected_button)
                 | UiMode::ConfirmRemoveRelay(.., ref mut selected_button)
                 | UiMode::ConfirmRestoreDefaultRelays(ref mut selected_button)
+                | UiMode::ConfirmRemoveBlossomServer(.., ref mut selected_button)
+                | UiMode::ConfirmRestoreDefaultBlossomServers(ref mut selected_button)
                 | UiMode::ConfirmDeleteHistoryOrder(_, ref mut selected_button)
                 | UiMode::ConfirmBulkDeleteHistory(ref mut selected_button)
                 | UiMode::ConfirmRestoreSession(ref mut selected_button)

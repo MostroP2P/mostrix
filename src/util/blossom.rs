@@ -1,6 +1,7 @@
 //! Blossom URL resolution, blob download/upload, and ChaCha20-Poly1305 encrypt/decrypt.
 //! Matches Mostro Mobile encrypted file messaging: blob layout [nonce:12][ciphertext][tag:16].
 //! Shared key for decryption: ECDH(admin_sk, sender_pubkey), same as mostro-cli with roles swapped.
+//! Uploads try each configured server in order; one failed host does not abort the send.
 
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -21,20 +22,41 @@ use crate::ui::{ChatAttachment, OperationResult};
 const BLOSSOM_AUTH_KIND: Kind = Kind::Custom(24242);
 
 /// Default Blossom servers (Mostro Mobile `BlossomConfig.defaultServers`).
+///
+/// Chat attachments are encrypted before upload (`application/octet-stream`).
+/// Only include servers that accept opaque blobs and retain them; media-only
+/// hosts sniff content and reject every attachment.
 pub const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
-    "https://blossom.primal.net",
-    "https://blossom.band",
-    "https://nostr.media",
-    "https://blossom.sector01.com",
-    "https://24242.io",
-    "https://otherstuff.shaving.kiwi",
-    "https://blossom.f7z.io",
-    "https://nosto.re",
-    "https://blossom.poster.place",
+    "https://cdn.hzrd149.com",
+    "https://nostr.download",
+    "https://blossom-01.uid.ovh",
+    "https://files.sovbit.host",
+    "https://blssm.us",
 ];
 
-/// Upload timeout (seconds).
+/// Upload timeout (seconds) for the PUT body (large files).
 const BLOSSOM_UPLOAD_TIMEOUT_SECS: u64 = 300;
+
+/// TCP/TLS connect timeout so a hung or blackholed host fails over quickly.
+const BLOSSOM_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Built-in default Blossom bases: owned copy of [`DEFAULT_BLOSSOM_SERVERS`]
+/// (Mostro Mobile `BlossomConfig.defaultServers`).
+pub fn default_blossom_servers() -> Vec<String> {
+    DEFAULT_BLOSSOM_SERVERS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// HTTP client for Blossom upload (short connect timeout, long transfer timeout).
+pub fn blossom_http_client() -> Result<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(BLOSSOM_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(BLOSSOM_UPLOAD_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| anyhow!("blossom HTTP client: {e}"))
+}
 
 /// Derives the 32-byte shared decryption key from our (admin) private key and the sender's public key.
 /// Mirror of mostro-cli's derive_shared_key: they use (trade_sk, admin_pubkey); we use (admin_sk, sender_pubkey).
@@ -222,6 +244,11 @@ pub async fn upload_blob(
 }
 
 /// Tries each server in order until one accepts the upload.
+/// A single failed host does not abort the send; only exhausting the list fails.
+///
+/// # Errors
+/// Returns `all N Blossom servers failed. Last error: …` when every host fails,
+/// or `no Blossom servers configured` when `servers` is empty.
 pub async fn upload_blob_with_retry(
     http: &Client,
     servers: &[String],
@@ -241,7 +268,11 @@ pub async fn upload_blob_with_retry(
             }
         }
     }
-    Err(last_err)
+    Err(anyhow!(
+        "all {} Blossom servers failed. Last error: {}",
+        servers.len(),
+        last_err
+    ))
 }
 
 /// Sanitizes a filename to avoid path traversal: only [a-zA-Z0-9_.-] allowed.
@@ -366,5 +397,164 @@ mod tests {
         let json_str = std::str::from_utf8(&json).expect("utf8");
         let event = Event::from_json(json_str).expect("event json");
         assert_eq!(event.pubkey, keys.public_key());
+    }
+
+    #[test]
+    fn default_blossom_servers_are_https_bases() {
+        assert!(!DEFAULT_BLOSSOM_SERVERS.is_empty());
+        for server in DEFAULT_BLOSSOM_SERVERS {
+            assert!(
+                server.starts_with("https://"),
+                "expected https base, got {server}"
+            );
+            assert!(
+                !server.ends_with('/'),
+                "base must not have trailing slash: {server}"
+            );
+        }
+        assert!(
+            !DEFAULT_BLOSSOM_SERVERS
+                .iter()
+                .any(|s| s.contains("poster.place")),
+            "dead host blossom.poster.place must not be in the default list"
+        );
+    }
+
+    fn content_length_from_headers(headers: &[u8]) -> Option<usize> {
+        let text = std::str::from_utf8(headers).ok()?;
+        for line in text.split("\r\n") {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                return value.trim().parse().ok();
+            }
+        }
+        None
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        use std::io::Read;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => data.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+            if let Some(idx) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let header_end = idx + 4;
+                if let Some(len) = content_length_from_headers(&data[..header_end]) {
+                    if data.len() >= header_end + len {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        data
+    }
+
+    fn install_rustls_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    fn spawn_put_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock blossom");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let req = read_http_request(&mut stream);
+            let header_text = String::from_utf8_lossy(&req).to_ascii_lowercase();
+            if header_text.contains("expect: 100-continue") {
+                let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                let _ = read_http_request(&mut stream);
+            }
+            let reason = if (200..300).contains(&status) {
+                "OK"
+            } else {
+                "ERR"
+            };
+            let resp = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn upload_retries_next_server_after_unreachable_host() {
+        install_rustls_provider();
+        let (ok_base, handle) = spawn_put_server(200, "ok");
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let keys = Keys::generate();
+        let servers = vec!["http://127.0.0.1:1".to_string(), ok_base.clone()];
+        let url = upload_blob_with_retry(&http, &servers, b"blob", &keys)
+            .await
+            .expect("second server must succeed after the first is down");
+        assert!(
+            url.starts_with(&ok_base),
+            "expected upload URL on the healthy server, got {url}"
+        );
+        handle.join().ok();
+    }
+
+    #[tokio::test]
+    async fn upload_retries_next_server_after_http_error() {
+        install_rustls_provider();
+        let (bad_base, bad_handle) = spawn_put_server(500, "nope");
+        let (ok_base, ok_handle) = spawn_put_server(200, "ok");
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let keys = Keys::generate();
+        let servers = vec![bad_base, ok_base.clone()];
+        let url = upload_blob_with_retry(&http, &servers, b"blob", &keys)
+            .await
+            .expect("HTTP 500 on the first host must not block failover");
+        assert!(
+            url.starts_with(&ok_base),
+            "expected upload URL on the healthy server, got {url}"
+        );
+        bad_handle.join().ok();
+        ok_handle.join().ok();
+    }
+
+    #[tokio::test]
+    async fn upload_all_servers_fail_mentions_count_and_last_error() {
+        install_rustls_provider();
+        let (bad_a, handle_a) = spawn_put_server(401, "auth");
+        let (bad_b, handle_b) = spawn_put_server(502, "gateway");
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let keys = Keys::generate();
+        let servers = vec![bad_a, bad_b.clone()];
+        let err = upload_blob_with_retry(&http, &servers, b"blob", &keys)
+            .await
+            .expect_err("every server failed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("all 2 Blossom servers failed"),
+            "expected aggregate failure, got {msg}"
+        );
+        assert!(
+            msg.contains("502") || msg.contains(&bad_b),
+            "expected last-server detail in {msg}"
+        );
+        handle_a.join().ok();
+        handle_b.join().ok();
     }
 }

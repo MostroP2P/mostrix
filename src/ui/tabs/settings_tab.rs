@@ -12,6 +12,9 @@ pub enum SettingsMenuAction {
     AddRelay,
     RemoveRelay,
     RestoreDefaultRelays,
+    AddBlossomServer,
+    RemoveBlossomServer,
+    RestoreDefaultBlossomServers,
     SetBuyerLnAddress,
     ClearBuyerLnAddress,
     AddCurrencyFilter,
@@ -33,7 +36,7 @@ type SettingsMenuRow = (SettingsMenuAction, &'static str);
 /// set via **Change Admin Key** — generating a fresh keypair would overwrite
 /// `admin_privkey` with a key the daemon rejects.
 #[allow(clippy::redundant_static_lifetimes)]
-const ADMIN_SETTINGS: [SettingsMenuRow; 10] = [
+const ADMIN_SETTINGS: [SettingsMenuRow; 13] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -44,6 +47,15 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 10] = [
     (
         SettingsMenuAction::RestoreDefaultRelays,
         "Restore Default Relays",
+    ),
+    (SettingsMenuAction::AddBlossomServer, "Add Blossom Server"),
+    (
+        SettingsMenuAction::RemoveBlossomServer,
+        "Remove Blossom Server",
+    ),
+    (
+        SettingsMenuAction::RestoreDefaultBlossomServers,
+        "Restore Default Blossom Servers",
     ),
     (SettingsMenuAction::AddCurrencyFilter, "Add Currency Filter"),
     (
@@ -57,7 +69,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 10] = [
 
 /// Single source of truth for User Settings rows (action + list label).
 #[allow(clippy::redundant_static_lifetimes)]
-const USER_SETTINGS: [SettingsMenuRow; 13] = [
+const USER_SETTINGS: [SettingsMenuRow; 16] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -68,6 +80,15 @@ const USER_SETTINGS: [SettingsMenuRow; 13] = [
     (
         SettingsMenuAction::RestoreDefaultRelays,
         "Restore Default Relays",
+    ),
+    (SettingsMenuAction::AddBlossomServer, "Add Blossom Server"),
+    (
+        SettingsMenuAction::RemoveBlossomServer,
+        "Remove Blossom Server",
+    ),
+    (
+        SettingsMenuAction::RestoreDefaultBlossomServers,
+        "Restore Default Blossom Servers",
     ),
     (
         SettingsMenuAction::SetBuyerLnAddress,
@@ -292,15 +313,15 @@ mod tests {
 
     #[test]
     fn admin_settings_omit_generate_new_keys() {
-        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 10);
+        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 13);
         assert!(ADMIN_SETTINGS
             .iter()
             .all(|(action, _)| *action != SettingsMenuAction::GenerateNewKeys));
         assert!(matches!(
-            settings_action_for_index(UserRole::Admin, 9),
+            settings_action_for_index(UserRole::Admin, 12),
             Some(SettingsMenuAction::ChangeAdminKey)
         ));
-        assert!(settings_action_for_index(UserRole::Admin, 10).is_none());
+        assert!(settings_action_for_index(UserRole::Admin, 13).is_none());
     }
 
     #[test]
@@ -381,6 +402,32 @@ mod tests {
         assert!(!ADMIN_SETTINGS
             .iter()
             .any(|(a, _)| *a == SettingsMenuAction::ImportSeedWords));
+    }
+
+    #[test]
+    fn blossom_server_rows_follow_relay_rows_in_both_menus() {
+        for rows in [ADMIN_SETTINGS.as_slice(), USER_SETTINGS.as_slice()] {
+            let labels: Vec<&str> = rows.iter().map(|(_, l)| *l).collect();
+            let restore_relays = labels
+                .iter()
+                .position(|l| *l == "Restore Default Relays")
+                .unwrap();
+            let add_blossom = labels
+                .iter()
+                .position(|l| *l == "Add Blossom Server")
+                .unwrap();
+            let remove_blossom = labels
+                .iter()
+                .position(|l| *l == "Remove Blossom Server")
+                .unwrap();
+            let restore_blossom = labels
+                .iter()
+                .position(|l| *l == "Restore Default Blossom Servers")
+                .unwrap();
+            assert_eq!(add_blossom, restore_relays + 1);
+            assert_eq!(remove_blossom, add_blossom + 1);
+            assert_eq!(restore_blossom, remove_blossom + 1);
+        }
     }
 
     #[test]

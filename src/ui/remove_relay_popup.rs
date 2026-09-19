@@ -9,21 +9,26 @@ use ratatui::widgets::{
 use super::helpers::create_centered_popup;
 use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
-/// Centered dropdown-style popup to pick a relay to remove, mirroring the
-/// create-order currency picker (List + scrollbar + hint line).
-pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], selected: usize) {
+/// Centered dropdown-style popup to pick a URL from a list (relays, Blossom servers).
+pub fn render_remove_url_list_popup(
+    f: &mut ratatui::Frame,
+    title: &str,
+    empty_message: &str,
+    urls: &[String],
+    selected: usize,
+) {
     let area = f.area();
-    let content_rows = relays.len().clamp(1, 8) as u16;
+    let content_rows = urls.len().clamp(1, 8) as u16;
     let width = 60u16.min(area.width).max(1);
     // Size to available height (borders + rows); never subtract a margin that
-    // could starve the single relay row on short terminals (e.g. 20x4).
+    // could starve the single row on short terminals (e.g. 20x4).
     let height = (content_rows + 3).min(area.height).max(3.min(area.height));
     let popup = create_centered_popup(area, width, height);
 
     f.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" \u{1f4e1} Remove Relay ")
+        .title(title.to_string())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -31,7 +36,7 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    // Drop the hint line when height is tight so at least one relay row stays visible.
+    // Drop the hint line when height is tight so at least one row stays visible.
     let show_hint = inner.height >= 2;
     let (list_area, hint_area) = if show_hint {
         let split = Layout::new(
@@ -44,20 +49,20 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
         (inner, None)
     };
 
-    if relays.is_empty() {
+    if urls.is_empty() {
         f.render_widget(
             Paragraph::new(Span::styled(
-                "  no relays configured",
+                empty_message.to_string(),
                 Style::default().fg(Color::DarkGray),
             ))
             .style(Style::default().bg(BACKGROUND_COLOR)),
             list_area,
         );
     } else {
-        let selected = selected.min(relays.len() - 1);
-        let items: Vec<ListItem> = relays
+        let selected = selected.min(urls.len() - 1);
+        let items: Vec<ListItem> = urls
             .iter()
-            .map(|relay| ListItem::new(Line::from(Span::raw(relay.clone()))))
+            .map(|url| ListItem::new(Line::from(Span::raw(url.clone()))))
             .collect();
 
         let list = List::new(items)
@@ -72,8 +77,8 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
         let mut state = ListState::default().with_selected(Some(selected));
         f.render_stateful_widget(list, list_area, &mut state);
 
-        if relays.len() > list_area.height as usize {
-            let mut sb_state = ScrollbarState::new(relays.len()).position(selected);
+        if urls.len() > list_area.height as usize {
+            let mut sb_state = ScrollbarState::new(urls.len()).position(selected);
             f.render_stateful_widget(
                 Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
                 list_area,
@@ -92,6 +97,29 @@ pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], sele
             hint_area,
         );
     }
+}
+
+/// Centered dropdown-style popup to pick a relay to remove, mirroring the
+/// create-order currency picker (List + scrollbar + hint line).
+pub fn render_remove_relay_popup(f: &mut ratatui::Frame, relays: &[String], selected: usize) {
+    render_remove_url_list_popup(
+        f,
+        " \u{1f4e1} Remove Relay ",
+        "  no relays configured",
+        relays,
+        selected,
+    );
+}
+
+/// Same picker as [`render_remove_relay_popup`], for Blossom server HTTPS bases.
+pub fn render_remove_blossom_popup(f: &mut ratatui::Frame, servers: &[String], selected: usize) {
+    render_remove_url_list_popup(
+        f,
+        " \u{1f338} Remove Blossom Server ",
+        "  no blossom servers configured",
+        servers,
+        selected,
+    );
 }
 
 #[cfg(test)]
@@ -180,5 +208,22 @@ mod tests {
             buffer_contains(buf, "relay"),
             "a relay row must remain visible on short terminals"
         );
+    }
+
+    #[test]
+    fn render_blossom_popup_lists_servers() {
+        let servers = vec![
+            "https://cdn.hzrd149.com".to_string(),
+            "https://nostr.download".to_string(),
+        ];
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_remove_blossom_popup(f, &servers, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Remove Blossom Server"));
+        assert!(buffer_contains(buf, "cdn.hzrd149.com"));
+        assert!(buffer_contains(buf, "nostr.download"));
     }
 }

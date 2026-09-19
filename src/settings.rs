@@ -30,7 +30,10 @@ pub struct Settings {
     /// Lightning address for receiving sats when acting as buyer (`user@domain.com`). Empty string = unset.
     #[serde(default)]
     pub ln_address: String,
-    /// Blossom servers for encrypted chat attachment uploads (tried in order). Empty = built-in defaults.
+    /// Blossom HTTPS bases for encrypted chat attachment uploads (tried in order).
+    /// Empty means use [`crate::util::blossom::default_blossom_servers`]. The Settings
+    /// tab add/remove/restore flow writes this list; the first edit materializes
+    /// defaults so adding one host does not replace the built-in set.
     #[serde(default)]
     pub blossom_servers: Vec<String>,
     /// mostro-push-server base URL used to wake chat recipients' phones. Empty string disables the wake.

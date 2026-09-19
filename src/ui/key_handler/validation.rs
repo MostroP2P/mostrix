@@ -154,6 +154,55 @@ pub fn validate_relay(relay_str: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Normalize a user-entered Blossom server base: trim, accept `https://` or
+/// `blossom://`, default to `https://` when no scheme is typed, and strip a
+/// trailing slash so list membership matches the upload client.
+pub fn normalize_blossom_server_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let with_scheme = if let Some(rest) = trimmed.strip_prefix("blossom://") {
+        format!("https://{rest}")
+    } else if let Some((scheme, rest)) = trimmed.split_once("://") {
+        if scheme.eq_ignore_ascii_case("https") {
+            format!("https://{rest}")
+        } else {
+            return trimmed.to_string();
+        }
+    } else {
+        format!("https://{trimmed}")
+    };
+    with_scheme.trim_end_matches('/').to_string()
+}
+
+/// Validate a Blossom server base: require `https://` and a host.
+/// Call after [`normalize_blossom_server_url`] so a bare host or `blossom://` URL is accepted.
+pub fn validate_blossom_server(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Blossom server URL cannot be empty".to_string());
+    }
+
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err("Blossom server URL must start with \"https://\"".to_string());
+    };
+    if !scheme.eq_ignore_ascii_case("https") {
+        return Err("Blossom server URL must start with \"https://\"".to_string());
+    }
+
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if host.is_empty() {
+        return Err("Blossom server URL is missing a host".to_string());
+    }
+
+    Ok(())
+}
+
 /// Validate if a currency code is valid (non-empty, typically 3 uppercase letters)
 pub fn validate_currency(currency_str: &str) -> Result<(), String> {
     let currency = currency_str.trim();
@@ -296,5 +345,30 @@ mod tests {
         assert!(normalize_mostro_pubkey("").is_err());
         assert!(normalize_mostro_pubkey("not-a-key").is_err());
         assert!(normalize_mostro_pubkey("npub1invalid").is_err());
+    }
+
+    #[test]
+    fn normalize_blossom_server_url_prepends_https_and_strips_slash() {
+        assert_eq!(
+            normalize_blossom_server_url("cdn.hzrd149.com"),
+            "https://cdn.hzrd149.com"
+        );
+        assert_eq!(
+            normalize_blossom_server_url("  https://cdn.hzrd149.com/  "),
+            "https://cdn.hzrd149.com"
+        );
+        assert_eq!(
+            normalize_blossom_server_url("blossom://cdn.hzrd149.com"),
+            "https://cdn.hzrd149.com"
+        );
+    }
+
+    #[test]
+    fn validate_blossom_server_accepts_https_and_rejects_http() {
+        assert!(validate_blossom_server("https://cdn.hzrd149.com").is_ok());
+        assert!(validate_blossom_server("").is_err());
+        assert!(validate_blossom_server("http://cdn.hzrd149.com").is_err());
+        assert!(validate_blossom_server("wss://relay.example").is_err());
+        assert!(validate_blossom_server("https:///upload").is_err());
     }
 }
