@@ -1975,6 +1975,11 @@ pub fn handle_key_event(
         return Some(consumed);
     }
 
+    // Payment-method dropdown (Create New Order) — same early-interceptor pattern.
+    if let Some(consumed) = form_input::handle_payment_method_picker_key(code, app) {
+        return Some(consumed);
+    }
+
     match code {
         KeyCode::Left | KeyCode::Right => {
             // Handle Left/Right for button selection in confirmation popups

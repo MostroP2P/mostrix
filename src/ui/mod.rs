@@ -29,6 +29,7 @@ pub mod order_confirm;
 pub mod order_form;
 pub mod order_take;
 pub(crate) mod orders;
+pub mod payment_methods;
 pub mod pending_trade_index_retry;
 pub mod recover_disputes_picker;
 pub mod remove_relay_popup;
