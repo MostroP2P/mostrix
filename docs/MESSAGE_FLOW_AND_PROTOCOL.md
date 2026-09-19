@@ -21,7 +21,7 @@ Mostro daemons advertise wire format on the **instance status** event (kind **38
 
 - Tag **`protocol_version`**: `"2"` is the supported Mostrix wire. `"1"` (GiftWrap) is parsed for display only; Mostrix does not send or subscribe protocol GiftWrap ([mostro#786](https://github.com/MostroP2P/mostro/issues/786)).
 - Mostrix parses this into [`MostroInstanceInfo.protocol_version`](../src/util/mostro_info.rs). [`transport_from_instance`](../src/util/mostro_info.rs) always returns `Nip44Direct`. Intake authenticates the kind-38385 event client-side ([`fetch_mostro_instance_info`](../src/util/mostro_info.rs) / MOSTRO-075).
-- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored). A v1 advertisement logs a warning.
+- [`AppState.transport`](../src/ui/app_state.rs) is kept in sync when instance info updates ([`set_mostro_info`](../src/ui/app_state.rs); older `created_at` than the cache is ignored **for the same Mostro pubkey**). A v1 advertisement logs a warning.
 - The **Mostro Info** tab displays protocol version and wire transport (NIP-44), plus a warning when the instance advertises v1.
 
 **Outbound send (implemented):** [`send_dm`](../src/util/dm_utils/mod.rs) uses [`wrap_message_with`](../src/util/mod.rs) with `Transport::Nip44Direct` and default NIP-40 expiration (30 days) when `expiration` is `None`.

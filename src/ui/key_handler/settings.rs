@@ -62,15 +62,15 @@ pub fn try_save_admin_key_to_settings(key_string: &str) -> Result<(), String> {
     }
 }
 
-/// Save Mostro pubkey to settings file.
+/// Save Mostro pubkey to settings file; `Ok(())` only after a successful disk write.
 ///
 /// `key_string` should already be lowercase hex from [`super::validation::normalize_mostro_pubkey`].
-pub fn save_mostro_pubkey_to_settings(key_string: &str) {
-    save_settings_with(
+pub fn save_mostro_pubkey_to_settings(key_string: &str) -> Result<(), String> {
+    try_save_settings_with(
         |s| s.mostro_pubkey = key_string.to_string(),
         "Failed to save Mostro pubkey to settings",
         "Mostro pubkey saved to settings file",
-    );
+    )
 }
 
 /// Validate Lightning address shape (`user@domain.com`) before opening the confirm dialog.

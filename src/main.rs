@@ -213,6 +213,7 @@ async fn drain_order_result_queue(
     }
 }
 
+use crate::ui::orders::{OrderBookFilterField, OrderBookFilterState};
 use crate::ui::{AppState, ChatAttachment, UiMode, UserRole};
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -243,6 +244,13 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 }
 
 fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
+    let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
+
+    if let UiMode::OrderFilters(ref mut state) = app.mode {
+        append_paste_to_order_filter(state, &filtered_text);
+        return;
+    }
+
     // Handle paste for invoice input
     if let UiMode::NewMessageNotification(_, Action::AddInvoice, ref mut invoice_state) = app.mode {
         if invoice_state.focused {
@@ -261,7 +269,6 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
 
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
-        let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
         app.observer_shared_key_input.push_str(&filtered_text);
     }
 
@@ -270,6 +277,19 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
 
     // My Trades order chat (INSERT) — same filter / newline behavior
     let _ = append_paste_to_order_chat(app, pasted_text);
+}
+
+fn append_paste_to_order_filter(state: &mut OrderBookFilterState, text: &str) {
+    // Only Fiat accepts free-text paste (opens as filter when typing); Kind/Premium cycle.
+    if state.focused == OrderBookFilterField::FiatCurrency {
+        let filtered: String = text.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        if !filtered.is_empty() {
+            state
+                .filters
+                .fiat_code
+                .push_str(&filtered.to_ascii_uppercase());
+        }
+    }
 }
 
 /// Draws the TUI interface with tabs and active content.
@@ -669,8 +689,19 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             mostro_info_result = mostro_info_rx.recv() => {
                 if let Some(res) = mostro_info_result {
+                    let active_mostro = match current_mostro_pubkey.lock() {
+                        Ok(pk) => *pk,
+                        Err(_) => mostro_pubkey,
+                    };
                     match res {
                         MostroInfoFetchResult::Ok { info, message } => {
+                            // Drop late replies from a previous coordinator after a switch.
+                            if info.pubkey.is_some_and(|pk| pk != active_mostro) {
+                                log::warn!(
+                                    "Ignoring Mostro instance info for a non-active pubkey (stale switch race)"
+                                );
+                                continue;
+                            }
                             let old_transport = app.transport;
                             app.set_mostro_info(Some(*info));
                             if old_transport != app.transport {
@@ -682,7 +713,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 if let Err(e) = respawn_trade_dm_listener(
                                     &mut app,
                                     &client,
-                                    mostro_pubkey,
+                                    active_mostro,
                                     &pool,
                                     &mut message_listener_handle,
                                     &message_notification_tx,
@@ -702,6 +733,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                         MostroInfoFetchResult::NotFound { message }
                         | MostroInfoFetchResult::Rejected { message } => {
+                            // After a switch, do not keep the previous instance's name/fees
+                            // when the new pubkey has no usable kind-38385 event.
+                            app.clear_mostro_info_if_not_for(active_mostro);
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );
@@ -951,6 +985,15 @@ async fn main() -> Result<(), anyhow::Error> {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
         };
+        let order_filter_shortcuts = if app.user_role == UserRole::User
+            && matches!(
+                app.active_tab,
+                crate::ui::navigation::Tab::User(crate::ui::navigation::UserTab::Orders)
+            ) {
+            " | Shift+F: Order filters | Shift+X: Clear order filters"
+        } else {
+            ""
+        };
         // Mostro instance name from the kind-38385 `y` tag.
         let mostro_alias = match app.mostro_info.as_ref() {
             Some(info) => info.name.as_deref().unwrap_or("unknown").to_string(),
@@ -963,8 +1006,8 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
-                "💱 Currencies: {} - Filters: {}",
-                mostro_instance_currencies, currencies_filter_str
+                "💱 Currencies: {} - Filters: {}{}",
+                mostro_instance_currencies, currencies_filter_str, order_filter_shortcuts
             ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
