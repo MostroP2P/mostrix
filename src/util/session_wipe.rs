@@ -707,6 +707,7 @@ ln_address = "user@domain.com"
             ln_address: "user@domain.com".to_string(),
             blossom_servers: vec![],
             push_server_url: String::new(),
+            notifications: Default::default(),
         };
 
         clear_ln_address(&mut settings);

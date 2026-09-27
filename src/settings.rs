@@ -39,6 +39,39 @@ pub struct Settings {
     /// mostro-push-server base URL used to wake chat recipients' phones. Empty string disables the wake.
     #[serde(default = "default_push_server_url")]
     pub push_server_url: String,
+    /// Out-of-focus alerts (terminal bell, window title badge). Kept last: TOML
+    /// tables must follow plain keys when serialized.
+    #[serde(default)]
+    pub notifications: NotificationSettings,
+}
+
+/// `[notifications]` table: how Mostrix gets attention while the terminal is in the background.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// Ring the terminal bell; most terminals turn it into a taskbar flash / urgency hint.
+    pub bell: bool,
+    /// Prefix the window title with the unread count, e.g. `(2) Mostrix`.
+    pub title_badge: bool,
+    /// Play a desktop notification sound on this machine (skipped over SSH unless
+    /// `sound_command` is set).
+    pub sound: bool,
+    /// Shell command to play instead of the built-in sound player chain. Empty = auto.
+    pub sound_command: String,
+    /// Alert only while the terminal is unfocused (or focus is unknown and the user is idle).
+    pub only_when_unfocused: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            bell: true,
+            title_badge: true,
+            sound: true,
+            sound_command: String::new(),
+            only_when_unfocused: true,
+        }
+    }
 }
 
 fn default_user_mode() -> String {
@@ -77,6 +110,7 @@ impl Default for Settings {
             ln_address: String::new(),
             blossom_servers: Vec::new(),
             push_server_url: default_push_server_url(),
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -466,6 +500,58 @@ user_mode = "user"
             via_config.ln_address.is_empty(),
             "config crate path must match direct toml::from_str for backwards compatibility"
         );
+    }
+
+    #[test]
+    fn legacy_settings_without_notifications_table_use_defaults() {
+        let toml_missing_table = r#"
+mostro_pubkey = "npub1test"
+nsec_privkey = "nsec1test"
+admin_privkey = ""
+relays = ["wss://relay.example.com"]
+log_level = "info"
+currencies_filter = []
+"#;
+        let parsed: Settings = toml::from_str(toml_missing_table).expect("toml parse");
+        assert_eq!(parsed.notifications, NotificationSettings::default());
+    }
+
+    #[test]
+    fn partial_notifications_table_keeps_other_defaults() {
+        let toml = r#"
+mostro_pubkey = "npub1test"
+nsec_privkey = "nsec1test"
+admin_privkey = ""
+relays = []
+log_level = "info"
+currencies_filter = []
+
+[notifications]
+bell = false
+"#;
+        let cfg = config::Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .expect("config build");
+        let parsed: Settings = cfg.try_deserialize().expect("config -> Settings");
+        assert!(!parsed.notifications.bell);
+        assert!(parsed.notifications.title_badge);
+        assert!(parsed.notifications.only_when_unfocused);
+    }
+
+    #[test]
+    fn notifications_table_round_trips_through_save_format() {
+        let mut settings = Settings::default();
+        settings.notifications.title_badge = false;
+        let serialized = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: Settings = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(parsed.notifications, settings.notifications);
+    }
+
+    #[test]
+    fn embedded_default_template_parses_notifications() {
+        let parsed: Settings = toml::from_str(DEFAULT_SETTINGS_TOML).expect("template parse");
+        assert_eq!(parsed.notifications, NotificationSettings::default());
     }
 
     #[test]

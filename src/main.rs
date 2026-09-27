@@ -768,6 +768,22 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 };
 
+                match &event {
+                    Event::FocusGained => {
+                        app.terminal_alert.set_focus(true);
+                        continue;
+                    }
+                    Event::FocusLost => {
+                        app.terminal_alert.set_focus(false);
+                        continue;
+                    }
+                    Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved) => {}
+                    Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {
+                        app.terminal_alert.note_input(std::time::Instant::now());
+                    }
+                    _ => {}
+                }
+
                 // Handle paste events (bracketed paste mode)
                 if let Event::Paste(pasted_text) = event {
                     apply_pasted_text_to_active_input(&mut app, &pasted_text);
@@ -1011,6 +1027,17 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
         ];
         terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
+        app.terminal_alert
+            .set_settings(&current_settings.notifications);
+        if let Err(e) = app
+            .terminal_alert
+            .flush(terminal.backend_mut(), std::time::Instant::now())
+        {
+            log::debug!("Failed to write terminal alert: {e}");
+        }
+        if app.terminal_alert.take_sound_request() {
+            crate::util::alert_sound::play_alert_sound(&current_settings.notifications);
+        }
     }
 
     // Restore terminal to its original state.

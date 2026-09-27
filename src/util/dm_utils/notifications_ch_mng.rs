@@ -348,8 +348,20 @@ pub fn apply_open_invoice_popup_from_execute(
     );
 }
 
+/// Replayed DM at or below the order's startup hydration floor.
+fn is_below_startup_floor(notification: &MessageNotification, app: &AppState) -> bool {
+    notification
+        .order_id
+        .and_then(|id| app.startup_popup_floor_ts.get(&id))
+        .is_some_and(|floor| notification.timestamp <= *floor)
+}
+
 /// Handle message notification from the notification channel
 pub fn handle_message_notification(notification: MessageNotification, app: &mut AppState) {
+    if !is_below_startup_floor(&notification, app) {
+        app.terminal_alert.record_event(notification.timestamp);
+    }
+
     if let Some(order_id) = notification.order_id {
         if let Some(header) = app.order_chat_static.get_mut(&order_id) {
             if notification.solver_pubkey.is_some() {
@@ -783,6 +795,64 @@ mod tests {
         let header = app.order_chat_static.get(&order_id).expect("static header");
         assert_eq!(header.dispute_id.as_deref(), Some("dispute-id"));
         assert_eq!(header.solver_pubkey.as_deref(), Some("solver-pubkey"));
+    }
+
+    fn fresh_ts() -> i64 {
+        chrono::Utc::now().timestamp() + 60
+    }
+
+    #[test]
+    fn new_dm_while_unfocused_records_terminal_alert() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.terminal_alert.set_focus(false);
+        let mut n = notification(order_id, Action::FiatSentOk, None, None);
+        n.timestamp = fresh_ts();
+
+        handle_message_notification(n, &mut app);
+
+        assert_eq!(app.terminal_alert.unread(), 1);
+    }
+
+    #[test]
+    fn new_dm_while_focused_does_not_alert() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.terminal_alert.set_focus(true);
+        let mut n = notification(order_id, Action::FiatSentOk, None, None);
+        n.timestamp = fresh_ts();
+
+        handle_message_notification(n, &mut app);
+
+        assert_eq!(app.terminal_alert.unread(), 0);
+    }
+
+    #[test]
+    fn dm_replayed_below_startup_floor_does_not_alert() {
+        let order_id = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.terminal_alert.set_focus(false);
+        let ts = fresh_ts();
+        app.startup_popup_floor_ts.insert(order_id, ts);
+        let mut n = notification(order_id, Action::FiatSentOk, None, None);
+        n.timestamp = ts;
+
+        handle_message_notification(n, &mut app);
+
+        assert_eq!(app.terminal_alert.unread(), 0);
+    }
+
+    #[test]
+    fn dm_older_than_launch_does_not_alert() {
+        let mut app = AppState::new(UserRole::User);
+        app.terminal_alert.set_focus(false);
+        // `notification()` uses timestamp 1: long before this process started.
+        handle_message_notification(
+            notification(Uuid::new_v4(), Action::FiatSentOk, None, None),
+            &mut app,
+        );
+
+        assert_eq!(app.terminal_alert.unread(), 0);
     }
 
     #[test]

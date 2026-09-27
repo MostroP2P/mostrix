@@ -1312,6 +1312,7 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 UserChatChannel::Peer => UserChatSender::Peer,
                 UserChatChannel::Solver => UserChatSender::Peer,
             };
+            let from_other_party = sender_label == UserChatSender::Peer;
 
             let msg = UserOrderChatMessage {
                 sender: sender_label,
@@ -1340,6 +1341,9 @@ pub fn apply_user_order_chat_updates(app: &mut AppState, updates: Vec<crate::ui:
                 }
             }
             messages_vec.push(msg);
+            if from_other_party {
+                app.terminal_alert.record_event(ts);
+            }
             if ts > max_ts {
                 max_ts = ts;
             }
@@ -1530,6 +1534,7 @@ pub async fn apply_admin_chat_updates(
             }
             let _ = remember_dispute_chat_inner_id(&dispute_key, party, &inner_id);
             messages_vec.push(msg);
+            app.terminal_alert.record_event(ts);
             if ts > max_ts {
                 max_ts = ts;
             }
@@ -1782,6 +1787,115 @@ mod clear_session_chat_projection_tests {
             .lock()
             .expect("lock")
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chat_terminal_alert_tests {
+    use super::{apply_admin_chat_updates, apply_user_order_chat_updates};
+    use crate::models::AdminDispute;
+    use crate::ui::helpers::install_test_chat_home;
+    use crate::ui::{
+        AdminChatUpdate, AppState, ChatParty, DecodedChatMessage, OrderChatUpdate, UserChatChannel,
+        UserRole,
+    };
+    use nostr_sdk::prelude::{EventId, Keys, PublicKey};
+
+    fn temp_chat_home() -> impl Drop {
+        let dir = std::env::temp_dir().join(format!("mostrix-alert-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp home");
+        install_test_chat_home(dir)
+    }
+
+    fn decoded(sender: PublicKey, timestamp: i64, content: &str) -> DecodedChatMessage {
+        let mut id = [0u8; 32];
+        id[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        DecodedChatMessage {
+            content: content.to_string(),
+            timestamp,
+            sender,
+            inner_event_id: EventId::from_byte_array(id),
+        }
+    }
+
+    fn unfocused_app(role: UserRole) -> AppState {
+        let mut app = AppState::new(role);
+        app.terminal_alert.set_focus(false);
+        app
+    }
+
+    fn fresh_ts() -> i64 {
+        chrono::Utc::now().timestamp() + 60
+    }
+
+    #[test]
+    fn peer_chat_message_alerts_but_own_relay_echo_does_not() {
+        let _home = temp_chat_home();
+        let mut app = unfocused_app(UserRole::User);
+        let local = Keys::generate().public_key();
+        let peer = Keys::generate().public_key();
+        let ts = fresh_ts();
+
+        apply_user_order_chat_updates(
+            &mut app,
+            vec![OrderChatUpdate {
+                order_id: uuid::Uuid::new_v4().to_string(),
+                channel: UserChatChannel::Peer,
+                local_trade_pubkey: local,
+                messages: vec![decoded(local, ts, "mine"), decoded(peer, ts + 1, "theirs")],
+            }],
+        );
+
+        assert_eq!(app.terminal_alert.unread(), 1);
+    }
+
+    #[test]
+    fn historical_peer_chat_does_not_alert() {
+        let _home = temp_chat_home();
+        let mut app = unfocused_app(UserRole::User);
+
+        apply_user_order_chat_updates(
+            &mut app,
+            vec![OrderChatUpdate {
+                order_id: uuid::Uuid::new_v4().to_string(),
+                channel: UserChatChannel::Solver,
+                local_trade_pubkey: Keys::generate().public_key(),
+                messages: vec![decoded(Keys::generate().public_key(), 1_000, "old")],
+            }],
+        );
+
+        assert_eq!(app.terminal_alert.unread(), 0);
+    }
+
+    #[tokio::test]
+    async fn admin_dispute_chat_from_party_alerts() {
+        let _home = temp_chat_home();
+        let mut app = unfocused_app(UserRole::Admin);
+        let buyer = Keys::generate().public_key();
+        let dispute_id = uuid::Uuid::new_v4().to_string();
+        app.admin_disputes_in_progress.push(AdminDispute {
+            dispute_id: dispute_id.clone(),
+            buyer_pubkey: Some(buyer.to_hex()),
+            ..Default::default()
+        });
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+
+        apply_admin_chat_updates(
+            &mut app,
+            vec![AdminChatUpdate {
+                dispute_id,
+                party: ChatParty::Buyer,
+                messages: vec![decoded(buyer, fresh_ts(), "help")],
+            }],
+            None,
+            &pool,
+        )
+        .await
+        .expect("apply");
+
+        assert_eq!(app.terminal_alert.unread(), 1);
     }
 }
 

@@ -25,3 +25,19 @@ ln_address = ""
 # empty string to disable it (e.g. to avoid revealing to the server which trade
 # pubkeys you chat with; routing through Tor/a proxy also covers this).
 push_server_url = "https://mostro-push-server.fly.dev"
+
+# Alerts while Mostrix runs in a background / minimized terminal. Triggered by
+# new trade messages from Mostro and new chat messages; nothing is sent off-device.
+[notifications]
+# Ring the terminal bell (most terminals flash the taskbar or set an urgency hint).
+bell = true
+# Show the unread count in the window title, e.g. "(2) Mostrix".
+title_badge = true
+# Play a notification sound on this machine (paplay / pw-play / canberra-gtk-play
+# on Linux, afplay on macOS). Skipped over SSH unless sound_command is set.
+sound = true
+# Custom shell command to play instead, e.g. "paplay ~/sounds/ding.oga". Empty = auto.
+sound_command = ""
+# Only alert when the terminal is not focused. Terminals without focus reporting
+# alert only after 30 s without keyboard/mouse input.
+only_when_unfocused = true

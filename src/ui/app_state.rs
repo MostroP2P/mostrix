@@ -21,6 +21,7 @@ use crate::ui::orders::{
     MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters,
     OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
+use crate::ui::terminal_alert::TerminalAlertState;
 use crate::ui::user_state::UserMode;
 use crate::util::MostroInstanceInfo;
 use nostr_sdk::prelude::{Keys, PublicKey};
@@ -398,6 +399,8 @@ pub struct AppState {
     /// Preserved New Order form draft so leaving/returning to the tab keeps input.
     /// Cleared on explicit cancel (Esc) or successful submit.
     pub order_form_draft: Option<FormState>,
+    /// Bell / window-title badge for events that arrive while the terminal is in the background.
+    pub terminal_alert: TerminalAlertState,
 }
 
 impl AppState {
@@ -474,6 +477,7 @@ impl AppState {
             pending_post_take_operation_result: None,
             fatal_exit_on_close: false,
             order_form_draft: None,
+            terminal_alert: TerminalAlertState::new(chrono::Utc::now().timestamp()),
         }
     }
 
