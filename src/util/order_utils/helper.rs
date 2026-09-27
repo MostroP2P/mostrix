@@ -1021,6 +1021,63 @@ mod tests {
         event
     }
 
+    fn open_time_tags(id: Uuid, extra: &[(&str, &str)]) -> Tags {
+        let mut tags = vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec!["initiated".to_string()]),
+        ];
+        for (name, value) in extra {
+            tags.push(Tag::custom(*name, vec![value.to_string()]));
+        }
+        Tags::from_list(tags)
+    }
+
+    #[test]
+    fn dispute_from_tags_reads_published_at_open_time() {
+        let id = Uuid::new_v4();
+        let tags = open_time_tags(id, &[("published_at", "1700000200")]);
+        assert_eq!(dispute_from_tags(tags).unwrap().created_at, 1_700_000_200);
+    }
+
+    #[test]
+    fn dispute_from_tags_prefers_published_at_over_legacy_created_at_in_any_order() {
+        let id = Uuid::new_v4();
+        let orders = [
+            [("published_at", "1700000200"), ("created_at", "1700000100")],
+            [("created_at", "1700000100"), ("published_at", "1700000200")],
+        ];
+        for extra in orders {
+            let tags = open_time_tags(id, &extra);
+            assert_eq!(
+                dispute_from_tags(tags).unwrap().created_at,
+                1_700_000_200,
+                "tags {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_from_tags_falls_back_to_legacy_created_at_when_published_at_is_unusable() {
+        let id = Uuid::new_v4();
+        for bad in ["not-a-number", "0", "-5"] {
+            let tags = open_time_tags(id, &[("published_at", bad), ("created_at", "1700000100")]);
+            assert_eq!(
+                dispute_from_tags(tags).unwrap().created_at,
+                1_700_000_100,
+                "published_at {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_from_tags_ignores_invalid_or_non_positive_published_at() {
+        let id = Uuid::new_v4();
+        for bad in ["not-a-number", "0", "-5"] {
+            let tags = open_time_tags(id, &[("published_at", bad)]);
+            assert_eq!(dispute_from_tags(tags).unwrap().created_at, 0, "{bad:?}");
+        }
+    }
+
     #[test]
     fn dispute_from_tags_reads_created_at_open_time() {
         let id = Uuid::new_v4();
