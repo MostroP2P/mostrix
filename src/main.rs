@@ -1026,9 +1026,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 mostro_instance_currencies, currencies_filter_str, order_filter_shortcuts
             ),
         ];
-        terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
         app.terminal_alert
-            .set_settings(&current_settings.notifications);
+            .set_enabled(current_settings.notifications_enabled);
+        terminal.draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status_lines)))?;
         if let Err(e) = app
             .terminal_alert
             .flush(terminal.backend_mut(), std::time::Instant::now())
@@ -1036,7 +1036,7 @@ async fn main() -> Result<(), anyhow::Error> {
             log::debug!("Failed to write terminal alert: {e}");
         }
         if app.terminal_alert.take_sound_request() {
-            crate::util::alert_sound::play_alert_sound(&current_settings.notifications);
+            crate::util::alert_sound::play_alert_sound();
         }
     }
 

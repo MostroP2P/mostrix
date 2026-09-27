@@ -9,6 +9,7 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
 // 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
 // 80×24 terminals take the compact layout instead of clipping the full list.
+const NOTIFICATIONS_HELP: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages and chats. Saves notifications_enabled in settings.toml.";
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
@@ -355,6 +356,10 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
             "Remove all filters so every configured currency can appear again.",
         ),
         (
+            "Background Alerts",
+            NOTIFICATIONS_HELP,
+        ),
+        (
             "View Seed Words",
             "Show your BIP-39 mnemonic from the local database. Press C to copy. Treat as highly sensitive.",
         ),
@@ -416,6 +421,10 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         (
             "Clear Currency Filters",
             "Remove all filters so every configured currency can appear again.",
+        ),
+        (
+            "Background Alerts",
+            NOTIFICATIONS_HELP,
         ),
         (
             "View Seed Words",

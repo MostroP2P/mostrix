@@ -1,12 +1,11 @@
 //! Out-of-focus alerts: terminal bell, notification sound request, and
-//! window-title unread badge.
+//! window-title unread badge, all behind the single `notifications_enabled` setting.
 //!
 //! Events (trade DMs, chat messages) and focus/input changes only mutate
 //! [`TerminalAlertState`]. Bytes reach the terminal exclusively through
 //! [`TerminalAlertState::flush`], which the main loop calls right after
 //! `terminal.draw` so escape sequences never interleave with a frame.
 
-use crate::settings::NotificationSettings;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -33,13 +32,13 @@ pub enum Focus {
 
 #[derive(Debug)]
 pub struct TerminalAlertState {
-    settings: NotificationSettings,
+    enabled: bool,
     /// Unix seconds at launch; older events are startup hydration, not news.
     launch_ts: i64,
     focus: Focus,
     last_input: Option<Instant>,
     unread: usize,
-    /// Bell and/or sound owed for events since the last flush.
+    /// Bell + sound owed for events since the last flush.
     attention_pending: bool,
     last_attention: Option<Instant>,
     /// Set by [`Self::flush`]; the main loop plays the sound (needs the async runtime).
@@ -51,7 +50,7 @@ pub struct TerminalAlertState {
 impl TerminalAlertState {
     pub fn new(launch_ts: i64) -> Self {
         Self {
-            settings: NotificationSettings::default(),
+            enabled: true,
             launch_ts,
             focus: Focus::Unknown,
             last_input: None,
@@ -63,13 +62,15 @@ impl TerminalAlertState {
         }
     }
 
-    pub fn set_settings(&mut self, settings: &NotificationSettings) {
-        if self.settings != *settings {
-            self.settings = settings.clone();
-            if !self.wants_attention() {
-                self.attention_pending = false;
-            }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.clear_unread();
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     pub fn focus(&self) -> Focus {
@@ -101,27 +102,15 @@ impl TerminalAlertState {
     }
 
     pub fn record_event_at(&mut self, event_ts: i64, now: Instant) -> bool {
-        if event_ts < self.launch_ts {
-            return false;
-        }
-        if !self.wants_attention() && !self.settings.title_badge {
-            return false;
-        }
-        if self.settings.only_when_unfocused && self.user_is_present(now) {
+        if !self.enabled || event_ts < self.launch_ts || self.user_is_present(now) {
             return false;
         }
         self.unread = self.unread.saturating_add(1);
-        if self.wants_attention() {
-            self.attention_pending = true;
-        }
+        self.attention_pending = true;
         true
     }
 
-    fn wants_attention(&self) -> bool {
-        self.settings.bell || self.settings.sound
-    }
-
-    /// True once per flushed alert when `sound` is enabled; resets on read.
+    /// True once per flushed alert; resets on read.
     pub fn take_sound_request(&mut self) -> bool {
         std::mem::take(&mut self.sound_requested)
     }
@@ -141,14 +130,6 @@ impl TerminalAlertState {
         self.attention_pending = false;
     }
 
-    fn desired_badge(&self) -> usize {
-        if self.settings.title_badge {
-            self.unread
-        } else {
-            0
-        }
-    }
-
     /// Write pending bell / title changes to `out` and arm [`Self::take_sound_request`].
     /// No-op when nothing changed.
     pub fn flush(&mut self, out: &mut impl Write, now: Instant) -> io::Result<()> {
@@ -159,22 +140,19 @@ impl TerminalAlertState {
                 .is_none_or(|t| now.saturating_duration_since(t) >= ATTENTION_COOLDOWN)
         {
             self.last_attention = Some(now);
-            self.sound_requested = self.settings.sound;
-            if self.settings.bell {
-                out.write_all(BELL.as_bytes())?;
-                wrote = true;
-            }
+            self.sound_requested = true;
+            out.write_all(BELL.as_bytes())?;
+            wrote = true;
         }
-        let desired = self.desired_badge();
-        if desired != self.shown_badge {
+        if self.unread != self.shown_badge {
             // Raw OSC 0 rather than crossterm `SetTitle`, which may bypass `out` via WinAPI.
-            write!(out, "\x1b]0;{}\x07", title_text(desired))?;
-            if desired == 0 {
+            write!(out, "\x1b]0;{}\x07", title_text(self.unread))?;
+            if self.unread == 0 {
                 // Title-stack terminals get their original title back; others keep "Mostrix".
                 out.write_all(POP_TITLE.as_bytes())?;
                 out.write_all(PUSH_TITLE.as_bytes())?;
             }
-            self.shown_badge = desired;
+            self.shown_badge = self.unread;
             wrote = true;
         }
         if wrote {
@@ -197,6 +175,7 @@ mod tests {
     use super::*;
 
     const LAUNCH: i64 = 1_000;
+    const RESTORE_TITLE: &str = "\x1b]0;Mostrix\x07";
 
     fn state() -> TerminalAlertState {
         TerminalAlertState::new(LAUNCH)
@@ -224,16 +203,19 @@ mod tests {
     }
 
     #[test]
-    fn unfocused_event_rings_bell_and_sets_badge() {
+    fn unfocused_event_rings_bell_sets_badge_and_requests_sound() {
         let mut s = state();
         s.set_focus(false);
         let now = Instant::now();
         assert!(s.record_event_at(LAUNCH + 1, now));
         assert!(s.record_event_at(LAUNCH + 2, now));
+        assert!(!s.take_sound_request(), "only armed by flush");
         let out = flushed(&mut s, now);
         assert_eq!(out.matches(BELL).count(), 2, "bell + OSC title terminator");
         assert!(out.contains("(2) Mostrix"));
         assert!(!out.contains(POP_TITLE));
+        assert!(s.take_sound_request());
+        assert!(!s.take_sound_request());
     }
 
     #[test]
@@ -242,17 +224,7 @@ mod tests {
         s.set_focus(true);
         assert!(!s.record_event_at(LAUNCH + 1, Instant::now()));
         assert_eq!(flushed(&mut s, Instant::now()), "");
-    }
-
-    #[test]
-    fn focused_user_alerted_when_only_when_unfocused_disabled() {
-        let mut s = state();
-        s.set_settings(&NotificationSettings {
-            only_when_unfocused: false,
-            ..NotificationSettings::default()
-        });
-        s.set_focus(true);
-        assert!(s.record_event_at(LAUNCH + 1, Instant::now()));
+        assert!(!s.take_sound_request());
     }
 
     #[test]
@@ -282,7 +254,7 @@ mod tests {
         s.set_focus(true);
         assert_eq!(s.unread(), 0);
         let out = flushed(&mut s, now);
-        assert!(out.contains("\x1b]0;Mostrix\x07"));
+        assert!(out.contains(RESTORE_TITLE));
         assert!(out.ends_with(&format!("{POP_TITLE}{PUSH_TITLE}")));
         assert_eq!(flushed(&mut s, now), "", "restore is written once");
     }
@@ -299,116 +271,50 @@ mod tests {
     }
 
     #[test]
-    fn bell_respects_cooldown() {
-        let mut s = state();
-        s.set_settings(&NotificationSettings {
-            title_badge: false,
-            ..NotificationSettings::default()
-        });
-        s.set_focus(false);
-        let t0 = Instant::now();
-        s.record_event_at(LAUNCH + 1, t0);
-        assert_eq!(flushed(&mut s, t0), BELL);
-        s.record_event_at(LAUNCH + 2, t0 + Duration::from_secs(1));
-        assert_eq!(flushed(&mut s, t0 + Duration::from_secs(1)), "");
-        s.record_event_at(LAUNCH + 3, t0 + Duration::from_secs(4));
-        assert_eq!(flushed(&mut s, t0 + Duration::from_secs(4)), BELL);
-    }
-
-    #[test]
-    fn bell_disabled_only_updates_title() {
-        let mut s = state();
-        s.set_settings(&NotificationSettings {
-            bell: false,
-            ..NotificationSettings::default()
-        });
-        s.set_focus(false);
-        let now = Instant::now();
-        assert!(s.record_event_at(LAUNCH + 1, now));
-        assert_eq!(flushed(&mut s, now), "\x1b]0;(1) Mostrix\x07");
-    }
-
-    #[test]
-    fn all_channels_disabled_records_nothing() {
-        let mut s = state();
-        s.set_settings(&NotificationSettings {
-            bell: false,
-            title_badge: false,
-            sound: false,
-            only_when_unfocused: false,
-            ..NotificationSettings::default()
-        });
-        assert!(!s.record_event_at(LAUNCH + 1, Instant::now()));
-        assert_eq!(s.unread(), 0);
-    }
-
-    #[test]
-    fn flushed_alert_requests_sound_once() {
-        let mut s = state();
-        s.set_focus(false);
-        let now = Instant::now();
-        s.record_event_at(LAUNCH + 1, now);
-        assert!(!s.take_sound_request(), "only armed by flush");
-        flushed(&mut s, now);
-        assert!(s.take_sound_request());
-        assert!(!s.take_sound_request());
-    }
-
-    #[test]
-    fn sound_shares_bell_cooldown() {
+    fn bell_and_sound_respect_cooldown() {
         let mut s = state();
         s.set_focus(false);
         let t0 = Instant::now();
         s.record_event_at(LAUNCH + 1, t0);
-        flushed(&mut s, t0);
+        assert!(flushed(&mut s, t0).starts_with(BELL));
         assert!(s.take_sound_request());
+
         let t1 = t0 + Duration::from_secs(1);
         s.record_event_at(LAUNCH + 2, t1);
-        flushed(&mut s, t1);
+        assert!(!flushed(&mut s, t1).starts_with(BELL));
         assert!(!s.take_sound_request());
-    }
 
-    #[test]
-    fn sound_only_plays_without_writing_bell() {
-        let mut s = state();
-        s.set_settings(&NotificationSettings {
-            bell: false,
-            title_badge: false,
-            ..NotificationSettings::default()
-        });
-        s.set_focus(false);
-        let now = Instant::now();
-        assert!(s.record_event_at(LAUNCH + 1, now));
-        assert_eq!(flushed(&mut s, now), "");
+        let t2 = t0 + Duration::from_secs(4);
+        s.record_event_at(LAUNCH + 3, t2);
+        assert!(flushed(&mut s, t2).starts_with(BELL));
         assert!(s.take_sound_request());
     }
 
     #[test]
-    fn sound_disabled_never_requests() {
+    fn disabled_records_nothing() {
         let mut s = state();
-        s.set_settings(&NotificationSettings {
-            sound: false,
-            ..NotificationSettings::default()
-        });
+        s.set_enabled(false);
         s.set_focus(false);
         let now = Instant::now();
-        s.record_event_at(LAUNCH + 1, now);
-        assert_eq!(flushed(&mut s, now).matches(BELL).count(), 2);
+        assert!(!s.record_event_at(LAUNCH + 1, now));
+        assert_eq!(flushed(&mut s, now), "");
         assert!(!s.take_sound_request());
     }
 
     #[test]
-    fn disabling_badge_while_shown_restores_title() {
+    fn disabling_clears_shown_badge_and_reenabling_starts_fresh() {
         let mut s = state();
         s.set_focus(false);
         let now = Instant::now();
         s.record_event_at(LAUNCH + 1, now);
         flushed(&mut s, now);
-        s.set_settings(&NotificationSettings {
-            title_badge: false,
-            ..NotificationSettings::default()
-        });
-        let out = flushed(&mut s, now);
-        assert!(out.contains("\x1b]0;Mostrix\x07"));
+
+        s.set_enabled(false);
+        assert!(!s.enabled());
+        assert_eq!(s.unread(), 0);
+        assert!(flushed(&mut s, now).contains(RESTORE_TITLE));
+
+        s.set_enabled(true);
+        assert_eq!(flushed(&mut s, now), "", "old count must not come back");
     }
 }

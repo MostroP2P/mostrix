@@ -1,10 +1,9 @@
 //! Local notification sound for out-of-focus alerts.
 //!
 //! Many terminals (e.g. on Pop!_OS / GNOME) turn the bell into a silent taskbar
-//! hint, so Mostrix can also play a short desktop sound itself. Players are
+//! hint, so Mostrix also plays a short desktop sound itself. Players are
 //! external commands tried in order; stdio is detached so nothing reaches the TUI.
 
-use crate::settings::NotificationSettings;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -32,24 +31,12 @@ impl SoundCommand {
     }
 }
 
-/// Players to try, in order. A custom `sound_command` replaces the built-in chain.
+/// Players to try, in order.
 pub fn sound_candidates(
-    settings: &NotificationSettings,
     remote_session: bool,
     file_exists: impl Fn(&str) -> bool,
 ) -> Vec<SoundCommand> {
-    if !settings.sound {
-        return Vec::new();
-    }
-    let custom = settings.sound_command.trim();
-    if !custom.is_empty() {
-        return vec![if cfg!(windows) {
-            SoundCommand::new("cmd", &["/C", custom])
-        } else {
-            SoundCommand::new("sh", &["-c", custom])
-        }];
-    }
-    // Over SSH the built-in players would sound on the remote host, not at the user.
+    // Over SSH the players would sound on the remote host, not at the user.
     if remote_session {
         return Vec::new();
     }
@@ -84,8 +71,8 @@ fn is_remote_session() -> bool {
 
 /// Fire-and-forget: try each candidate until one exits successfully.
 /// Must be called from within the Tokio runtime.
-pub fn play_alert_sound(settings: &NotificationSettings) {
-    let candidates = sound_candidates(settings, is_remote_session(), |p| Path::new(p).exists());
+pub fn play_alert_sound() {
+    let candidates = sound_candidates(is_remote_session(), |p| Path::new(p).exists());
     if candidates.is_empty() {
         return;
     }
@@ -112,43 +99,15 @@ pub fn play_alert_sound(settings: &NotificationSettings) {
 mod tests {
     use super::*;
 
-    fn settings() -> NotificationSettings {
-        NotificationSettings::default()
-    }
-
     #[test]
-    fn sound_disabled_yields_no_candidates() {
-        let s = NotificationSettings {
-            sound: false,
-            sound_command: "echo hi".into(),
-            ..settings()
-        };
-        assert!(sound_candidates(&s, false, |_| true).is_empty());
-    }
-
-    #[test]
-    fn custom_command_wins_and_runs_even_over_ssh() {
-        let s = NotificationSettings {
-            sound_command: "  paplay ~/ding.oga ".into(),
-            ..settings()
-        };
-        let c = sound_candidates(&s, true, |_| true);
-        assert_eq!(c.len(), 1);
-        assert_eq!(
-            c[0].args.last().map(String::as_str),
-            Some("paplay ~/ding.oga")
-        );
-    }
-
-    #[test]
-    fn remote_session_skips_builtin_players() {
-        assert!(sound_candidates(&settings(), true, |_| true).is_empty());
+    fn remote_session_skips_players() {
+        assert!(sound_candidates(true, |_| true).is_empty());
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_prefers_first_existing_freedesktop_sound() {
-        let c = sound_candidates(&settings(), false, |p| p.ends_with("message.oga"));
+        let c = sound_candidates(false, |p| p.ends_with("message.oga"));
         assert_eq!(
             c[0],
             SoundCommand::new(
@@ -163,16 +122,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_without_sound_files_falls_back_to_canberra() {
-        let c = sound_candidates(&settings(), false, |_| false);
+        let c = sound_candidates(false, |_| false);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].program, "canberra-gtk-play");
-    }
-
-    #[tokio::test]
-    async fn play_with_sound_disabled_spawns_nothing() {
-        play_alert_sound(&NotificationSettings {
-            sound: false,
-            ..settings()
-        });
     }
 }

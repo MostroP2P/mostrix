@@ -137,6 +137,7 @@ pub fn ui_draw(
             content_area,
             app.user_role,
             app.selected_settings_option,
+            app.terminal_alert.enabled(),
         ),
         (Tab::User(UserTab::CreateNewOrder), UserRole::User) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(form)) = &app.mode {
@@ -163,6 +164,7 @@ pub fn ui_draw(
                 content_area,
                 app.user_role,
                 app.selected_settings_option,
+                app.terminal_alert.enabled(),
             )
         }
         (Tab::User(UserTab::Exit), UserRole::User)
