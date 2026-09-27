@@ -298,11 +298,15 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
 
 /// Parse dispute from nostr tags.
 ///
-/// When present, the `created_at` tag is the dispute open time from Mostro's
-/// SQLite (`disputes.created_at` on kind 38386). It is independent of the Nostr
-/// event's `created_at` (publish/replace time used for NIP-33 ordering).
+/// The `published_at` tag is the dispute open time from Mostro's SQLite
+/// (`disputes.created_at` on kind 38386). Daemons from v0.18.5 until the rename
+/// publish it as a `created_at` tag, read as a fallback; `published_at` wins when
+/// both are present. Either is independent of the Nostr event's `created_at`
+/// (publish/replace time used for NIP-33 ordering).
 pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();
+    let mut published_at = None;
+    let mut legacy_created_at = None;
     for tag in tags {
         let t = tag.to_vec();
 
@@ -326,26 +330,29 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
                     .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
                 dispute.status = status.to_string();
             }
-            "created_at" => {
-                // Prefer a positive unix-seconds open time; ignore malformed tags.
-                if let Ok(ts) = value.parse::<i64>() {
-                    if ts > 0 {
-                        dispute.created_at = ts;
-                    }
-                }
-            }
+            "published_at" => published_at = positive_timestamp(value),
+            "created_at" => legacy_created_at = positive_timestamp(value),
             _ => {}
         }
+    }
+
+    if let Some(ts) = published_at.or(legacy_created_at) {
+        dispute.created_at = ts;
     }
 
     Ok(dispute)
 }
 
+/// A positive unix-seconds timestamp; `None` for malformed or non-positive values.
+fn positive_timestamp(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok().filter(|ts| *ts > 0)
+}
+
 /// Parse disputes from events.
 ///
 /// Keeps only the latest NIP-33 revision per dispute id (greatest Nostr
-/// `event.created_at`). For display, prefers the kind-38386 `created_at` **tag**
-/// (dispute open time from Mostro) and falls back to `event.created_at` when the
+/// `event.created_at`). For display, prefers the kind-38386 open-time **tag**
+/// (`published_at`, or the legacy `created_at` tag; see [`dispute_from_tags`]) and falls back to `event.created_at` when the
 /// tag is missing (older daemons / unreposted events).
 pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
     // (published_at, dispute) — published_at drives latest-wins; dispute.created_at is open time.
