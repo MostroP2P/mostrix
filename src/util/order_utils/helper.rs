@@ -330,8 +330,9 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
                     .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
                 dispute.status = status.to_string();
             }
-            "published_at" => published_at = positive_timestamp(value),
-            "created_at" => legacy_created_at = positive_timestamp(value),
+            // An unusable duplicate must not erase a valid value read earlier.
+            "published_at" => published_at = positive_timestamp(value).or(published_at),
+            "created_at" => legacy_created_at = positive_timestamp(value).or(legacy_created_at),
             _ => {}
         }
     }
