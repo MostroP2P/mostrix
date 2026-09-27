@@ -1086,6 +1086,21 @@ mod tests {
     }
 
     #[test]
+    fn dispute_from_tags_keeps_a_valid_open_time_when_a_later_duplicate_is_unusable() {
+        let id = Uuid::new_v4();
+        for tag in ["published_at", "created_at"] {
+            for bad in ["not-a-number", "0", "-5"] {
+                let tags = open_time_tags(id, &[(tag, "1700000100"), (tag, bad)]);
+                assert_eq!(
+                    dispute_from_tags(tags).unwrap().created_at,
+                    1_700_000_100,
+                    "{tag} then {bad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dispute_from_tags_reads_created_at_open_time() {
         let id = Uuid::new_v4();
         let dispute =
