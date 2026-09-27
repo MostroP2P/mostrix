@@ -1,13 +1,17 @@
 //! Crossterm / ratatui terminal lifecycle for the Mostrix TUI.
 //!
 //! Owns enter/leave of raw mode, alternate screen, mouse capture, bracketed
-//! paste, and best-effort keyboard-enhancement flags (Ctrl+I vs Tab).
+//! paste, focus reporting, the saved window title, and best-effort
+//! keyboard-enhancement flags (Ctrl+I vs Tab).
 
+use crate::ui::terminal_alert::{POP_TITLE, PUSH_TITLE};
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -51,9 +55,10 @@ impl Drop for KeyboardEnhancementGuard {
     }
 }
 
-/// Enter raw mode + alternate screen + mouse + bracketed paste, then try to
-/// enable keyboard enhancement. Returns the ratatui terminal and a guard that
-/// pops enhancement flags on every exit path (including early `?`).
+/// Enter raw mode + alternate screen + mouse + bracketed paste + focus reporting,
+/// save the window title (for the unread badge), then try to enable keyboard
+/// enhancement. Returns the ratatui terminal and a guard that pops enhancement
+/// flags on every exit path (including early `?`).
 pub fn enter() -> io::Result<(MostrixTerminal, KeyboardEnhancementGuard)> {
     enable_raw_mode()?;
     let mut out = stdout();
@@ -61,15 +66,12 @@ pub fn enter() -> io::Result<(MostrixTerminal, KeyboardEnhancementGuard)> {
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableBracketedPaste
+        EnableBracketedPaste,
+        EnableFocusChange,
+        Print(PUSH_TITLE)
     ) {
-        // Best-effort undo of whichever of the three above actually applied.
-        let _ = execute!(
-            out,
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            DisableBracketedPaste
-        );
+        // Best-effort undo of whichever of the above actually applied.
+        let _ = restore_modes(&mut out);
         let _ = disable_raw_mode();
         return Err(e);
     }
@@ -79,16 +81,23 @@ pub fn enter() -> io::Result<(MostrixTerminal, KeyboardEnhancementGuard)> {
         Ok(terminal) => Ok((terminal, keyboard_enhancement)),
         Err(e) => {
             drop(keyboard_enhancement);
-            let _ = execute!(
-                stdout(),
-                LeaveAlternateScreen,
-                DisableMouseCapture,
-                DisableBracketedPaste
-            );
+            let _ = restore_modes(&mut stdout());
             let _ = disable_raw_mode();
             Err(e)
         }
     }
+}
+
+/// Undo the terminal modes set by [`enter`] (everything except raw mode).
+fn restore_modes(out: &mut impl Write) -> io::Result<()> {
+    execute!(
+        out,
+        Print(POP_TITLE),
+        DisableFocusChange,
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )
 }
 
 /// Restore the terminal to its pre-[`enter`] state.
@@ -98,12 +107,7 @@ pub fn enter() -> io::Result<(MostrixTerminal, KeyboardEnhancementGuard)> {
 /// this returns or until the process unwinds.
 pub fn leave(terminal: &mut MostrixTerminal) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        DisableBracketedPaste
-    )?;
+    restore_modes(terminal.backend_mut())?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -118,5 +122,16 @@ mod tests {
         let guard = KeyboardEnhancementGuard::try_enable(&mut buf);
         // Whether push succeeded depends on the writer; Drop must stay safe either way.
         drop(guard);
+    }
+
+    // Windows crossterm may route mode commands through WinAPI instead of the writer.
+    #[cfg(not(windows))]
+    #[test]
+    fn restore_modes_restores_title_and_disables_focus_reporting() {
+        let mut buf = Vec::new();
+        restore_modes(&mut buf).expect("write to Vec");
+        let out = String::from_utf8(buf).expect("utf8");
+        assert!(out.starts_with(POP_TITLE));
+        assert!(out.contains("\x1b[?1004l"), "focus reporting off");
     }
 }

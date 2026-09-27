@@ -25,3 +25,9 @@ ln_address = ""
 # empty string to disable it (e.g. to avoid revealing to the server which trade
 # pubkeys you chat with; routing through Tor/a proxy also covers this).
 push_server_url = "https://mostro-push-server.fly.dev"
+
+# Alerts while Mostrix runs in a background / minimized terminal: terminal bell,
+# unread count in the window title ("(2) Mostrix") and a notification sound, for
+# new trade messages and chat messages. Only fires while the terminal is not
+# focused. Also toggled from Settings -> Background Alerts.
+notifications_enabled = true

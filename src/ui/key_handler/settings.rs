@@ -277,6 +277,27 @@ pub fn clear_currency_filters() {
     );
 }
 
+/// Pure mutation behind [`toggle_notifications`]; returns the new value.
+fn flip_notifications_enabled(s: &mut crate::settings::Settings) -> bool {
+    s.notifications_enabled = !s.notifications_enabled;
+    s.notifications_enabled
+}
+
+/// Flip `notifications_enabled` on disk (Enter on "Background Alerts") and apply it
+/// to the running alert state so the row label and alerts update immediately.
+pub fn toggle_notifications(app: &mut AppState) -> Result<(), String> {
+    let mut updated = None;
+    try_save_settings_with(
+        |s| updated = Some(flip_notifications_enabled(s)),
+        "Failed to toggle background alerts",
+        "Background alerts toggled in settings file",
+    )?;
+    if let Some(enabled) = updated {
+        app.terminal_alert.set_enabled(enabled);
+    }
+    Ok(())
+}
+
 /// Toggle User/Admin from Settings (Enter on "Switch Mode").
 pub fn handle_mode_switch(app: &mut AppState) {
     let new_role = match app.user_role {
@@ -396,6 +417,15 @@ mod tests {
         let first = default_blossom_servers()[0].clone();
         add_blossom_entry(&mut servers, &format!("{first}/"));
         assert_eq!(servers, default_blossom_servers());
+    }
+
+    #[test]
+    fn flip_notifications_enabled_toggles_the_flag() {
+        let mut settings = crate::settings::Settings::default();
+        assert!(!flip_notifications_enabled(&mut settings));
+        assert!(!settings.notifications_enabled);
+        assert!(flip_notifications_enabled(&mut settings));
+        assert!(settings.notifications_enabled);
     }
 
     #[test]

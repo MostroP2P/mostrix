@@ -39,6 +39,14 @@ pub struct Settings {
     /// mostro-push-server base URL used to wake chat recipients' phones. Empty string disables the wake.
     #[serde(default = "default_push_server_url")]
     pub push_server_url: String,
+    /// Out-of-focus alerts (terminal bell, window-title badge, notification sound).
+    /// Toggled from Settings → Background Alerts.
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
+}
+
+fn default_notifications_enabled() -> bool {
+    true
 }
 
 fn default_user_mode() -> String {
@@ -77,6 +85,7 @@ impl Default for Settings {
             ln_address: String::new(),
             blossom_servers: Vec::new(),
             push_server_url: default_push_server_url(),
+            notifications_enabled: default_notifications_enabled(),
         }
     }
 }
@@ -466,6 +475,37 @@ user_mode = "user"
             via_config.ln_address.is_empty(),
             "config crate path must match direct toml::from_str for backwards compatibility"
         );
+    }
+
+    #[test]
+    fn legacy_settings_without_notifications_flag_enable_alerts() {
+        let toml_missing_key = r#"
+mostro_pubkey = "npub1test"
+nsec_privkey = "nsec1test"
+admin_privkey = ""
+relays = ["wss://relay.example.com"]
+log_level = "info"
+currencies_filter = []
+"#;
+        let parsed: Settings = toml::from_str(toml_missing_key).expect("toml parse");
+        assert!(parsed.notifications_enabled);
+    }
+
+    #[test]
+    fn notifications_flag_round_trips_through_save_format() {
+        let settings = Settings {
+            notifications_enabled: false,
+            ..Settings::default()
+        };
+        let serialized = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: Settings = toml::from_str(&serialized).expect("reparse");
+        assert!(!parsed.notifications_enabled);
+    }
+
+    #[test]
+    fn embedded_default_template_enables_notifications() {
+        let parsed: Settings = toml::from_str(DEFAULT_SETTINGS_TOML).expect("template parse");
+        assert!(parsed.notifications_enabled);
     }
 
     #[test]

@@ -61,7 +61,8 @@ use crate::ui::key_handler::settings::{
     load_blossom_servers_for_ui, plan_relay_reconcile, remove_blossom_server_from_settings,
     remove_relay_from_settings, restore_default_blossom_servers_in_settings,
     restore_default_relays_in_settings, save_blossom_server_to_settings, save_currency_to_settings,
-    save_mostro_pubkey_to_settings, save_relay_to_settings, validate_ln_address_format,
+    save_mostro_pubkey_to_settings, save_relay_to_settings, toggle_notifications,
+    validate_ln_address_format,
 };
 use crate::ui::key_handler::validation::{
     normalize_blossom_server_url, normalize_mostro_pubkey, normalize_relay_url,
@@ -1742,6 +1743,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             Some(SettingsMenuAction::ClearCurrencyFilters) => {
                 app.mode = UiMode::ConfirmClearCurrencies(true);
+            }
+            Some(SettingsMenuAction::ToggleNotifications) => {
+                if let Err(e) = toggle_notifications(app) {
+                    app.mode = UiMode::operation_result(OperationResult::Error(e));
+                }
             }
             Some(SettingsMenuAction::ViewSeedWords) => {
                 spawn_load_seed_words_task(ctx.pool.clone(), ctx.seed_words_tx.clone());

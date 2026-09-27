@@ -19,6 +19,7 @@ pub enum SettingsMenuAction {
     ClearBuyerLnAddress,
     AddCurrencyFilter,
     ClearCurrencyFilters,
+    ToggleNotifications,
     ViewSeedWords,
     RestoreSession,
     ImportSeedWords,
@@ -29,6 +30,9 @@ pub enum SettingsMenuAction {
 
 type SettingsMenuRow = (SettingsMenuAction, &'static str);
 
+/// Base label for the `notifications_enabled` toggle; rendered with an ON/OFF suffix.
+pub const NOTIFICATIONS_LABEL: &str = "Background Alerts";
+
 /// Single source of truth for Admin Settings rows (action + list label).
 ///
 /// Admin mode intentionally omits **Generate New Keys**: `AdminAddSolver` and
@@ -36,7 +40,7 @@ type SettingsMenuRow = (SettingsMenuAction, &'static str);
 /// set via **Change Admin Key** — generating a fresh keypair would overwrite
 /// `admin_privkey` with a key the daemon rejects.
 #[allow(clippy::redundant_static_lifetimes)]
-const ADMIN_SETTINGS: [SettingsMenuRow; 13] = [
+const ADMIN_SETTINGS: [SettingsMenuRow; 14] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -62,6 +66,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 13] = [
         SettingsMenuAction::ClearCurrencyFilters,
         "Clear Currency Filters",
     ),
+    (SettingsMenuAction::ToggleNotifications, NOTIFICATIONS_LABEL),
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
     (SettingsMenuAction::AddDisputeSolver, "Add Dispute Solver"),
     (SettingsMenuAction::ChangeAdminKey, "Change Admin Key"),
@@ -69,7 +74,7 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 13] = [
 
 /// Single source of truth for User Settings rows (action + list label).
 #[allow(clippy::redundant_static_lifetimes)]
-const USER_SETTINGS: [SettingsMenuRow; 16] = [
+const USER_SETTINGS: [SettingsMenuRow; 17] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -103,6 +108,7 @@ const USER_SETTINGS: [SettingsMenuRow; 16] = [
         SettingsMenuAction::ClearCurrencyFilters,
         "Clear Currency Filters",
     ),
+    (SettingsMenuAction::ToggleNotifications, NOTIFICATIONS_LABEL),
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
     (SettingsMenuAction::ImportSeedWords, "Import Seed Words"),
     (SettingsMenuAction::RestoreSession, "Restore Session"),
@@ -127,6 +133,17 @@ pub fn settings_action_for_index(user_role: UserRole, idx: usize) -> Option<Sett
 /// Package version from `Cargo.toml` (`CARGO_PKG_VERSION`).
 pub const MOSTRIX_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Display label for a row; toggles show their current state.
+fn row_label(action: SettingsMenuAction, label: &str, notifications_enabled: bool) -> String {
+    match action {
+        SettingsMenuAction::ToggleNotifications => format!(
+            "{label}: {}",
+            if notifications_enabled { "ON" } else { "OFF" }
+        ),
+        _ => label.to_string(),
+    }
+}
+
 /// Render the Settings tab UI
 ///
 /// Displays settings options based on user role (User or Admin).
@@ -137,6 +154,7 @@ pub fn render_settings_tab(
     area: Rect,
     user_role: UserRole,
     selected_option: usize,
+    notifications_enabled: bool,
 ) {
     let block = Block::default()
         .title("⚙️  Settings")
@@ -232,7 +250,7 @@ pub fn render_settings_tab(
         .enumerate()
         .skip(offset)
         .take(visible_rows)
-        .map(|(i, (_, label))| {
+        .map(|(i, (action, label))| {
             let row_idx = offset + i;
             let style = if row_idx == selected_option {
                 Style::default()
@@ -241,7 +259,10 @@ pub fn render_settings_tab(
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(Span::styled(*label, style)))
+            ListItem::new(Line::from(Span::styled(
+                row_label(*action, label, notifications_enabled),
+                style,
+            )))
         })
         .collect();
 
@@ -313,15 +334,15 @@ mod tests {
 
     #[test]
     fn admin_settings_omit_generate_new_keys() {
-        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 13);
+        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 14);
         assert!(ADMIN_SETTINGS
             .iter()
             .all(|(action, _)| *action != SettingsMenuAction::GenerateNewKeys));
         assert!(matches!(
-            settings_action_for_index(UserRole::Admin, 12),
+            settings_action_for_index(UserRole::Admin, 13),
             Some(SettingsMenuAction::ChangeAdminKey)
         ));
-        assert!(settings_action_for_index(UserRole::Admin, 13).is_none());
+        assert!(settings_action_for_index(UserRole::Admin, 14).is_none());
     }
 
     #[test]
@@ -341,7 +362,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_settings_tab(f, f.area(), UserRole::User, 0);
+                render_settings_tab(f, f.area(), UserRole::User, 0, true);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -357,7 +378,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_settings_tab(f, f.area(), UserRole::User, 0);
+                render_settings_tab(f, f.area(), UserRole::User, 0, true);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -440,10 +461,47 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_settings_tab(f, f.area(), UserRole::User, import_idx);
+                render_settings_tab(f, f.area(), UserRole::User, import_idx, true);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Import Seed Words"));
+    }
+
+    #[test]
+    fn notifications_toggle_follows_currency_filters_in_both_menus() {
+        for rows in [ADMIN_SETTINGS.as_slice(), USER_SETTINGS.as_slice()] {
+            let clear = rows
+                .iter()
+                .position(|(a, _)| *a == SettingsMenuAction::ClearCurrencyFilters)
+                .unwrap();
+            assert_eq!(rows[clear + 1].0, SettingsMenuAction::ToggleNotifications);
+        }
+    }
+
+    fn render_toggle_row(role: UserRole, enabled: bool) -> ratatui::buffer::Buffer {
+        let idx = settings_rows(role)
+            .iter()
+            .position(|(a, _)| *a == SettingsMenuAction::ToggleNotifications)
+            .expect("toggle row");
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|f| render_settings_tab(f, f.area(), role, idx, enabled))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn render_shows_notifications_toggle_state() {
+        for role in [UserRole::User, UserRole::Admin] {
+            assert!(buffer_contains(
+                &render_toggle_row(role, true),
+                "Background Alerts: ON"
+            ));
+            assert!(buffer_contains(
+                &render_toggle_row(role, false),
+                "Background Alerts: OFF"
+            ));
+        }
     }
 }
