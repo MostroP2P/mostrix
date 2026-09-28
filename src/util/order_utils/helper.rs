@@ -298,11 +298,15 @@ pub fn validate_range_amount(take_state: &mut TakeOrderState) {
 
 /// Parse dispute from nostr tags.
 ///
-/// When present, the `created_at` tag is the dispute open time from Mostro's
-/// SQLite (`disputes.created_at` on kind 38386). It is independent of the Nostr
-/// event's `created_at` (publish/replace time used for NIP-33 ordering).
+/// The `published_at` tag is the dispute open time from Mostro's SQLite
+/// (`disputes.created_at` on kind 38386). Daemons from v0.18.5 until the rename
+/// publish it as a `created_at` tag, read as a fallback; `published_at` wins when
+/// both are present. Either is independent of the Nostr event's `created_at`
+/// (publish/replace time used for NIP-33 ordering).
 pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
     let mut dispute = Dispute::default();
+    let mut published_at = None;
+    let mut legacy_created_at = None;
     for tag in tags {
         let t = tag.to_vec();
 
@@ -326,29 +330,34 @@ pub fn dispute_from_tags(tags: Tags) -> Result<Dispute> {
                     .map_err(|_| anyhow::anyhow!("Invalid dispute status"))?;
                 dispute.status = status.to_string();
             }
-            "created_at" => {
-                // Prefer a positive unix-seconds open time; ignore malformed tags.
-                if let Ok(ts) = value.parse::<i64>() {
-                    if ts > 0 {
-                        dispute.created_at = ts;
-                    }
-                }
-            }
+            // An unusable duplicate must not erase a valid value read earlier.
+            "published_at" => published_at = positive_timestamp(value).or(published_at),
+            "created_at" => legacy_created_at = positive_timestamp(value).or(legacy_created_at),
             _ => {}
         }
+    }
+
+    if let Some(ts) = published_at.or(legacy_created_at) {
+        dispute.created_at = ts;
     }
 
     Ok(dispute)
 }
 
+/// A positive unix-seconds timestamp; `None` for malformed or non-positive values.
+fn positive_timestamp(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok().filter(|ts| *ts > 0)
+}
+
 /// Parse disputes from events.
 ///
 /// Keeps only the latest NIP-33 revision per dispute id (greatest Nostr
-/// `event.created_at`). For display, prefers the kind-38386 `created_at` **tag**
-/// (dispute open time from Mostro) and falls back to `event.created_at` when the
+/// `event.created_at`). For display, prefers the kind-38386 open-time **tag**
+/// (`published_at`, or the legacy `created_at` tag; see [`dispute_from_tags`]) and falls back to `event.created_at` when the
 /// tag is missing (older daemons / unreposted events).
 pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
-    // (published_at, dispute) — published_at drives latest-wins; dispute.created_at is open time.
+    // (event_created_at, dispute) — Nostr event stamp drives latest-wins;
+    // dispute.created_at is open time from the published_at / legacy created_at tag.
     let mut latest_by_id: HashMap<Uuid, (i64, Dispute)> = HashMap::new();
 
     for event in events.iter() {
@@ -365,21 +374,21 @@ pub fn parse_disputes_events(events: NostrEvents) -> Vec<Dispute> {
             }
         };
 
-        let published_at = event.created_at.as_secs() as i64;
+        let event_created_at = event.created_at.as_secs() as i64;
         // Tag open time wins for UI; event stamp is only a fallback for legacy events.
         if dispute.created_at <= 0 {
-            dispute.created_at = published_at;
+            dispute.created_at = event_created_at;
         }
 
         latest_by_id
             .entry(dispute.id)
-            .and_modify(|(existing_published_at, existing)| {
-                if published_at > *existing_published_at {
-                    *existing_published_at = published_at;
+            .and_modify(|(existing_event_created_at, existing)| {
+                if event_created_at > *existing_event_created_at {
+                    *existing_event_created_at = event_created_at;
                     *existing = dispute.clone();
                 }
             })
-            .or_insert((published_at, dispute));
+            .or_insert((event_created_at, dispute));
     }
 
     // Newest dispute open time first (Pending "Created" column).
@@ -943,13 +952,23 @@ mod tests {
     use std::str::FromStr;
     use uuid::Uuid;
 
+    /// Kind-38386 tags using the current open-time tag name (`published_at`).
     fn dispute_tags(id: Uuid, status: &str, opened_at: Option<i64>) -> Tags {
+        dispute_tags_with_open_time(id, status, "published_at", opened_at)
+    }
+
+    fn dispute_tags_with_open_time(
+        id: Uuid,
+        status: &str,
+        open_time_tag: &str,
+        opened_at: Option<i64>,
+    ) -> Tags {
         let mut tags = vec![
             Tag::identifier(id.to_string()),
             Tag::custom("s", vec![status.to_string()]),
         ];
         if let Some(ts) = opened_at {
-            tags.push(Tag::custom("created_at", vec![ts.to_string()]));
+            tags.push(Tag::custom(open_time_tag, vec![ts.to_string()]));
         }
         Tags::from_list(tags)
     }
@@ -959,11 +978,34 @@ mod tests {
         id: Uuid,
         status: &str,
         opened_at: Option<i64>,
-        published_at: u64,
+        event_created_at: u64,
+    ) -> Event {
+        dispute_event_with_open_time(
+            keys,
+            id,
+            status,
+            "published_at",
+            opened_at,
+            event_created_at,
+        )
+    }
+
+    fn dispute_event_with_open_time(
+        keys: &Keys,
+        id: Uuid,
+        status: &str,
+        open_time_tag: &str,
+        opened_at: Option<i64>,
+        event_created_at: u64,
     ) -> Event {
         EventBuilder::new(Kind::Custom(NOSTR_DISPUTE_EVENT_KIND), "")
-            .tags(dispute_tags(id, status, opened_at))
-            .custom_created_at(Timestamp::from(published_at))
+            .tags(dispute_tags_with_open_time(
+                id,
+                status,
+                open_time_tag,
+                opened_at,
+            ))
+            .custom_created_at(Timestamp::from(event_created_at))
             .finalize(keys)
             .expect("dispute event")
     }
@@ -1021,11 +1063,88 @@ mod tests {
         event
     }
 
+    fn open_time_tags(id: Uuid, extra: &[(&str, &str)]) -> Tags {
+        let mut tags = vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec!["initiated".to_string()]),
+        ];
+        for (name, value) in extra {
+            tags.push(Tag::custom(*name, vec![value.to_string()]));
+        }
+        Tags::from_list(tags)
+    }
+
+    #[test]
+    fn dispute_from_tags_reads_published_at_open_time() {
+        let id = Uuid::new_v4();
+        let tags = open_time_tags(id, &[("published_at", "1700000200")]);
+        assert_eq!(dispute_from_tags(tags).unwrap().created_at, 1_700_000_200);
+    }
+
+    #[test]
+    fn dispute_from_tags_prefers_published_at_over_legacy_created_at_in_any_order() {
+        let id = Uuid::new_v4();
+        let orders = [
+            [("published_at", "1700000200"), ("created_at", "1700000100")],
+            [("created_at", "1700000100"), ("published_at", "1700000200")],
+        ];
+        for extra in orders {
+            let tags = open_time_tags(id, &extra);
+            assert_eq!(
+                dispute_from_tags(tags).unwrap().created_at,
+                1_700_000_200,
+                "tags {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_from_tags_falls_back_to_legacy_created_at_when_published_at_is_unusable() {
+        let id = Uuid::new_v4();
+        for bad in ["not-a-number", "0", "-5"] {
+            let tags = open_time_tags(id, &[("published_at", bad), ("created_at", "1700000100")]);
+            assert_eq!(
+                dispute_from_tags(tags).unwrap().created_at,
+                1_700_000_100,
+                "published_at {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_from_tags_ignores_invalid_or_non_positive_published_at() {
+        let id = Uuid::new_v4();
+        for bad in ["not-a-number", "0", "-5"] {
+            let tags = open_time_tags(id, &[("published_at", bad)]);
+            assert_eq!(dispute_from_tags(tags).unwrap().created_at, 0, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn dispute_from_tags_keeps_a_valid_open_time_when_a_later_duplicate_is_unusable() {
+        let id = Uuid::new_v4();
+        for tag in ["published_at", "created_at"] {
+            for bad in ["not-a-number", "0", "-5"] {
+                let tags = open_time_tags(id, &[(tag, "1700000100"), (tag, bad)]);
+                assert_eq!(
+                    dispute_from_tags(tags).unwrap().created_at,
+                    1_700_000_100,
+                    "{tag} then {bad:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn dispute_from_tags_reads_created_at_open_time() {
         let id = Uuid::new_v4();
-        let dispute =
-            dispute_from_tags(dispute_tags(id, "initiated", Some(1_700_000_100))).unwrap();
+        let dispute = dispute_from_tags(dispute_tags_with_open_time(
+            id,
+            "initiated",
+            "created_at",
+            Some(1_700_000_100),
+        ))
+        .unwrap();
         assert_eq!(dispute.id, id);
         assert_eq!(dispute.status, DisputeStatus::Initiated.to_string());
         assert_eq!(dispute.created_at, 1_700_000_100);
@@ -1051,13 +1170,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_disputes_prefers_created_at_tag_over_event_stamp() {
+    fn parse_disputes_prefers_published_at_tag_over_event_stamp() {
         let keys = Keys::generate();
         let id = Uuid::new_v4();
         let events: BTreeSet<_> = [dispute_event(
             &keys,
             id,
             "initiated",
+            Some(1_700_000_100),
+            1_800_000_000,
+        )]
+        .into_iter()
+        .collect();
+
+        let parsed = parse_disputes_events(events);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].created_at, 1_700_000_100);
+        assert_eq!(parsed[0].status, DisputeStatus::Initiated.to_string());
+    }
+
+    #[test]
+    fn parse_disputes_prefers_legacy_created_at_tag_over_event_stamp() {
+        let keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let events: BTreeSet<_> = [dispute_event_with_open_time(
+            &keys,
+            id,
+            "initiated",
+            "created_at",
             Some(1_700_000_100),
             1_800_000_000,
         )]
