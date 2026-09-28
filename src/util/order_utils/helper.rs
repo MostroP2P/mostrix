@@ -980,7 +980,14 @@ mod tests {
         opened_at: Option<i64>,
         event_created_at: u64,
     ) -> Event {
-        dispute_event_with_open_time(keys, id, status, "published_at", opened_at, event_created_at)
+        dispute_event_with_open_time(
+            keys,
+            id,
+            status,
+            "published_at",
+            opened_at,
+            event_created_at,
+        )
     }
 
     fn dispute_event_with_open_time(
