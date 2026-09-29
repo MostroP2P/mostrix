@@ -43,9 +43,9 @@ pub use chat_visibility::{
 };
 pub use dispute_selection::{
     clamp_pending_dispute_selection, get_filtered_disputes, get_initiated_disputes,
-    move_dispute_selection, move_pending_dispute_selection, retain_closed_displayed_dispute,
-    selected_display_idx, selected_filtered_dispute, selected_pending_display_idx,
-    selected_pending_dispute,
+    move_dispute_selection, move_pending_dispute_selection, open_taken_dispute,
+    retain_closed_displayed_dispute, selected_display_idx, selected_filtered_dispute,
+    selected_pending_display_idx, selected_pending_dispute,
 };
 pub use formatting::{
     dispute_status_color, format_local_timestamp, format_order_id, format_premium,

@@ -473,6 +473,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_END_BOTTOM.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
+                HELP_CTRL_T_TAKEOVER.to_string(),
             ];
             if !is_finalized {
                 lines.push(HELP_DIP_SHIFT_I_INPUT.to_string());
@@ -490,6 +491,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             vec![
                 HELP_DP_ENTER_TAKE.to_string(),
                 HELP_DP_SELECT_DISPUTE.to_string(),
+                HELP_CTRL_T_TAKEOVER.to_string(),
             ],
         ),
         Tab::Admin(AdminTab::Observer) => (
@@ -661,6 +663,24 @@ mod help_content_tests {
             assert!(
                 buffer_contains(buf, expected),
                 "missing {expected:?} from compact My Trades help"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_tabs_help_lists_the_takeover_shortcut() {
+        for tab in [
+            Tab::Admin(AdminTab::DisputesPending),
+            Tab::Admin(AdminTab::DisputesInProgress),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            let app = AppState::new(UserRole::Admin);
+
+            terminal.draw(|f| render_help_popup(f, &app, tab)).unwrap();
+
+            assert!(
+                buffer_contains(terminal.backend().buffer(), "Ctrl+T"),
+                "missing Ctrl+T in {tab:?} help"
             );
         }
     }

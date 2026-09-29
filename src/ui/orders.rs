@@ -464,6 +464,14 @@ pub enum OperationResult {
         deleted_order_ids: Vec<uuid::Uuid>,
         message: String,
     },
+    /// Mostro assigned a dispute to this solver (`AdminTookDispute` saved).
+    /// A take-over (the dispute was already `in-progress`) also opens it in
+    /// Disputes in Progress.
+    DisputeTaken {
+        dispute_id: uuid::Uuid,
+        message: String,
+        takeover: bool,
+    },
     /// Local-only admin dispute removal; drop from In Progress list / chat maps.
     AdminDisputeDeleted {
         dispute_id: String,

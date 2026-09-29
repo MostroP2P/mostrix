@@ -554,6 +554,14 @@ No: paste BOLT11 or Lightning address manually."
             )),
         );
     }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) = &app.mode {
+        crate::ui::takeover_picker::render_takeover_picker(
+            f,
+            candidates,
+            *cursor,
+            chrono::Utc::now().timestamp(),
+        );
+    }
     if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {
         candidates,
         cursor,

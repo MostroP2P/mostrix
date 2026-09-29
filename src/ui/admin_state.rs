@@ -28,6 +28,11 @@ pub enum AdminMode {
         cursor: usize,
         checked: Vec<bool>,
     },
+    /// Ctrl+T: pick an in-progress dispute Serbero wrote about to take it over.
+    SelectTakeoverDispute {
+        candidates: Vec<crate::ui::takeover_picker::TakeoverCandidate>,
+        cursor: usize,
+    },
     /// Confirm re-requesting `AdminTakeDispute` for the selected orphan IDs.
     ConfirmRecoverTakenDisputes {
         /// Full picker state so Esc/No can return to the list.

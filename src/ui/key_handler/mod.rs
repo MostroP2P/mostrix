@@ -257,6 +257,17 @@ fn admin_dispute_chat_input_active(app: &AppState) -> bool {
         && !app.admin_show_solver_dms
 }
 
+/// Ctrl+T opens the take-over picker from the dispute tabs when no popup is open.
+fn takeover_shortcut_available(app: &AppState) -> bool {
+    matches!(
+        app.active_tab,
+        Tab::Admin(AdminTab::DisputesPending) | Tab::Admin(AdminTab::DisputesInProgress)
+    ) && matches!(
+        app.mode,
+        UiMode::AdminMode(AdminMode::Normal) | UiMode::AdminMode(AdminMode::ManagingDispute)
+    )
+}
+
 /// True when My Trades chat input should accept typing / paste (INSERT layer).
 fn order_chat_input_active(app: &AppState) -> bool {
     matches!(app.active_tab, Tab::User(UserTab::MyTrades))
@@ -1850,6 +1861,16 @@ pub fn handle_key_event(
 
     // Same "copied" indicator reset for the Shift+K Shared key disclosure popup.
     reset_disclosure_copied_indicator(&mut app.mode, &key_event);
+
+    // Ctrl+T: take over a dispute Serbero wrote about (Disputes Pending / In Progress).
+    // A Ctrl chord is never typed text, so it works while the chat input is on.
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char('t') | KeyCode::Char('T'))
+        && takeover_shortcut_available(app)
+    {
+        admin_handlers::begin_takeover_picker(app, disputes);
+        return Some(true);
+    }
 
     // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
     // Check these BEFORE handle_admin_chat_input to prevent interception
@@ -3572,6 +3593,89 @@ mod key_handler_tests {
 mod solver_dms_input_tests {
     use super::*;
     use crate::ui::UserRole;
+
+    #[test]
+    fn ctrl_t_works_on_both_dispute_tabs_even_while_typing() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesPending);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        assert!(takeover_shortcut_available(&app));
+
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        assert!(takeover_shortcut_available(&app));
+
+        app.admin_chat_input_enabled = true;
+        assert!(takeover_shortcut_available(&app));
+
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(uuid::Uuid::nil(), true));
+        assert!(!takeover_shortcut_available(&app));
+
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        assert!(!takeover_shortcut_available(&app));
+    }
+
+    #[tokio::test]
+    async fn ctrl_t_opens_the_takeover_picker_while_the_chat_input_is_on() {
+        use crate::util::solver_dms::{index_by_dispute, SolverDm};
+        let dispute = uuid::Uuid::from_u128(7);
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = true;
+        app.solver_dms = index_by_dispute(vec![SolverDm {
+            event_id: "e".into(),
+            sender_pubkey: String::new(),
+            recipient_pubkey: String::new(),
+            dispute_id: Some(dispute.to_string()),
+            subject: "mediating".into(),
+            text: String::new(),
+            created_at: chrono::Utc::now().timestamp(),
+        }]);
+        let disputes = Arc::new(Mutex::new(vec![Dispute {
+            id: dispute,
+            status: "in-progress".into(),
+            ..Default::default()
+        }]));
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pk = Keys::generate().public_key();
+        let (order_tx, _order_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ln_tx, _ln_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rot_tx, _rot_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (seed_tx, _seed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (info_tx, _info_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dm_tx, _dm_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let handled = handle_key_event(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            &mut app,
+            &orders,
+            &disputes,
+            &pool,
+            &Client::default(),
+            pk,
+            &Arc::new(Mutex::new(pk)),
+            &order_tx,
+            &ln_tx,
+            &rot_tx,
+            &seed_tx,
+            &info_tx,
+            &|_| {},
+            None,
+            None,
+            None,
+            &dm_tx,
+        );
+
+        assert_eq!(handled, Some(true));
+        assert!(app.admin_chat_input.is_empty(), "the chord is not typed");
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. })
+        ));
+    }
 
     #[test]
     fn the_serbero_pane_takes_no_chat_input() {

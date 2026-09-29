@@ -267,6 +267,17 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         remove_admin_dispute_from_app_state(app, &dispute_id);
         result = OperationResult::Info(message);
     }
+    if let OperationResult::DisputeTaken {
+        dispute_id,
+        message,
+        takeover,
+    } = result
+    {
+        if takeover {
+            crate::ui::helpers::open_taken_dispute(app, &dispute_id.to_string());
+        }
+        result = OperationResult::Info(message);
+    }
     if let OperationResult::SessionRestored { message } = result {
         result = OperationResult::Info(message);
     }
@@ -545,6 +556,50 @@ mod tests {
         order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
     };
     use crate::ui::{FormState, UserRole};
+
+    #[test]
+    fn a_takeover_opens_the_dispute_in_progress_and_confirms() {
+        use crate::ui::{AdminTab, Tab};
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesPending);
+        let dispute_id = Uuid::from_u128(5);
+
+        handle_operation_result(
+            OperationResult::DisputeTaken {
+                dispute_id,
+                message: "taken".to_string(),
+                takeover: true,
+            },
+            &mut app,
+        );
+
+        assert_eq!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress));
+        assert_eq!(app.selected_dispute_id, Some(dispute_id.to_string()));
+        match &app.mode {
+            UiMode::OperationResult(r) => {
+                assert!(matches!(r.as_ref(), OperationResult::Info(m) if m == "taken"))
+            }
+            other => panic!("expected confirmation popup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pending_take_stays_on_its_tab() {
+        use crate::ui::{AdminTab, Tab};
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesPending);
+
+        handle_operation_result(
+            OperationResult::DisputeTaken {
+                dispute_id: Uuid::from_u128(5),
+                message: "taken".to_string(),
+                takeover: false,
+            },
+            &mut app,
+        );
+
+        assert_eq!(app.active_tab, Tab::Admin(AdminTab::DisputesPending));
+    }
     use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
 

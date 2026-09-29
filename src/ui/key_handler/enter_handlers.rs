@@ -45,9 +45,9 @@ use zeroize::Zeroizing;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
-    begin_confirm_recover_selection, execute_delete_admin_dispute_action,
-    execute_finalize_dispute_action, execute_recover_taken_disputes_action,
-    execute_take_dispute_action, handle_enter_admin_mode,
+    admin_dispute_home_mode, begin_confirm_recover_selection, choose_takeover_candidate,
+    execute_delete_admin_dispute_action, execute_finalize_dispute_action,
+    execute_recover_taken_disputes_action, execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -867,8 +867,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 // YES selected - take the dispute
                 execute_take_dispute_action(app, dispute_id, ctx);
             } else {
-                // NO selected - go back to normal mode
-                app.mode = default_mode;
+                // NO selected - back to the dispute tab's resting mode
+                app.mode = admin_dispute_home_mode(app);
             }
             true
         }
@@ -878,6 +878,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             checked,
         }) => {
             begin_confirm_recover_selection(app, candidates, cursor, checked);
+            true
+        }
+        UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) => {
+            choose_takeover_candidate(app, &candidates, cursor);
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {

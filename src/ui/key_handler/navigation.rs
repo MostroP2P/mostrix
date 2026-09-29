@@ -219,6 +219,14 @@ fn handle_up_key(
         crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), false);
         return;
     }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+        candidates,
+        ref mut cursor,
+    }) = &mut app.mode
+    {
+        crate::ui::takeover_picker::move_takeover_cursor(cursor, candidates.len(), false);
+        return;
+    }
     match &mut app.mode {
         UiMode::Normal
         | UiMode::UserMode(UserMode::Normal)
@@ -326,6 +334,7 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
@@ -382,6 +391,14 @@ fn handle_down_key(
     }) = &mut app.mode
     {
         crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), true);
+        return;
+    }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+        candidates,
+        ref mut cursor,
+    }) = &mut app.mode
+    {
+        crate::ui::takeover_picker::move_takeover_cursor(cursor, candidates.len(), true);
         return;
     }
     match &mut app.mode {
@@ -503,6 +520,7 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
