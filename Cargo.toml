@@ -8,7 +8,8 @@ authors = ["Francisco Calderón <negrunch@grunch.dev>"]
 description = "Mostro TUI client"
 
 [dependencies]
-ratatui = "0.30.2"
+# `unstable-rendered-line-info`: `Paragraph::line_count` to clamp scroll over wrapped rows.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 # Matrix only — render into ratatui cells ourselves (no `image` crate).
 qrcode = { version = "0.14.1", default-features = false }

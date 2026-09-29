@@ -31,3 +31,7 @@ push_server_url = "https://mostro-push-server.fly.dev"
 # new trade messages and chat messages. Only fires while the terminal is not
 # focused. Also toggled from Settings -> Background Alerts.
 notifications_enabled = true
+
+# Admin mode: assistants (e.g. Serbero) whose messages to your admin key are shown
+# per dispute, as npub or hex. Only listed authors are read.
+# trusted_dm_senders = ["npub1..."]

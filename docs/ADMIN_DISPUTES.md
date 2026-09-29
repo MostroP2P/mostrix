@@ -84,13 +84,13 @@ The interface is divided into three main sections:
 #### Keyboard Navigation
 
 - **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible)
-- **Tab**: Switch between buyer and seller chat
+- **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only)
 - **Type**: Start composing message (when input enabled)
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
 - **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
-- **PageUp/PageDown**: Scroll chat history
-- **End**: Jump to bottom of chat (latest messages)
+- **PageUp/PageDown**: Scroll chat history (or the SERBERO pane)
+- **End**: Jump to bottom of chat (latest messages); in SERBERO, back to the newest message
 - **Shift+I**: Toggle chat input enabled/disabled
 - **Backspace**: Delete characters (when input enabled)
 - **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
@@ -326,6 +326,16 @@ sequenceDiagram
 - On success, Mostrix persists `SolverDisputeInfo` into local `admin_disputes` (In Progress list)
 - The admin becomes responsible for resolving the dispute
 - Upon taking a dispute, the admin receives a `SolverDisputeInfo` struct with all dispute details
+
+#### Assistant messages (Serbero)
+
+[Serbero](https://github.com/MostroP2P/serbero) mediates disputes as a `read` solver and writes to solvers with Mostro protocol v2 `send-dm` messages (kind 14, NIP-44) authored by its own key: new disputes, handoffs with a **brief** and **transcript**, updates, and final reports. Anyone can send a kind 14 to a solver, so Mostrix only reads authors listed in `trusted_dm_senders` (npub or hex) in `settings.toml`; with the list empty nothing is fetched.
+
+- **Listener** (`src/util/solver_dms/listener.rs`): a separate kind-14 subscription `authors = trusted_dm_senders`, `#p = admin pubkey`, apart from the Mostro DM router. It subscribes first, then backfills from just before the newest stored message (7 days on first run). It restarts with the chat router on reconnect and key reload, and only runs in admin mode with an admin key.
+- **Filtering** (`parse_solver_dm`): opened with the admin key (`unwrap_message_nip44`, signature checked); only action `send-dm` with a `TextMessage` payload is kept. These texts are never treated as protocol actions.
+- **Linking**: the dispute is the message `id` (`MessageKind.id`); older Serbero messages fall back to the first UUID in their first two lines. The subject is what follows `Dispute <id> · ` on the first line.
+- **Storage**: rows in `solver_dms`, scoped to the admin key they were written to (see [DATABASE.md](DATABASE.md)); the last 30 days for the current key are loaded at startup and on key reload. A session wipe deletes them.
+- **UI**: the SERBERO pane (third tab next to BUYER/SELLER, with the message count) lists the dispute's messages newest first. Handoffs and failed openings are marked `⚠` because a person has to act. Narrow panes drop timestamps so subjects stay readable. The input is locked while the pane is shown.
 
 #### Recovering a missing taken dispute (Shift+R)
 

@@ -234,8 +234,8 @@ fn spawn_orders_info(
 pub use async_tasks::{
     apply_pending_fetch_scheduler_reload, apply_pending_key_reload, apply_pending_runtime_reloads,
     create_app_channels, reload_runtime_session_after_reconnect, respawn_chat_listener,
-    respawn_trade_dm_listener, spawn_refresh_mostro_info_task, AppChannels,
-    RuntimeReconnectContext,
+    respawn_solver_dm_listener, respawn_trade_dm_listener, spawn_refresh_mostro_info_task,
+    AppChannels, RuntimeReconnectContext,
 };
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;
@@ -254,6 +254,7 @@ fn admin_dispute_chat_input_active(app: &AppState) -> bool {
     matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
         && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
         && app.admin_chat_input_enabled
+        && !app.admin_show_solver_dms
 }
 
 /// True when My Trades chat input should accept typing / paste (INSERT layer).
@@ -2258,7 +2259,8 @@ pub fn handle_key_event(
             // Handle chat message navigation when input is disabled (Disputes in Progress)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    if !app.admin_chat_input_enabled {
+                    // In the SERBERO pane Up/Down keep selecting disputes.
+                    if !app.admin_chat_input_enabled && !app.admin_show_solver_dms {
                         let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                         if let Some(dispute_id_key) = dispute_id_key {
                             if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
@@ -2291,6 +2293,9 @@ pub fn handle_key_event(
             // Handle chat scrolling in ManagingDispute mode using ListState
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    if crate::ui::tabs::solver_dms_view::scroll_solver_dms(app, code) {
+                        return Some(true);
+                    }
                     let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                     if let Some(dispute_id_key) = dispute_id_key {
                         if chat_helpers::scroll_chat_messages(app, &dispute_id_key, code) {
@@ -2358,6 +2363,9 @@ pub fn handle_key_event(
             // Jump to bottom of chat (latest messages)
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
+                    if crate::ui::tabs::solver_dms_view::scroll_solver_dms(app, code) {
+                        return Some(true);
+                    }
                     let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                     if let Some(dispute_id_key) = dispute_id_key {
                         if chat_helpers::jump_to_chat_bottom(app, &dispute_id_key) {
@@ -3557,5 +3565,24 @@ mod key_handler_tests {
             ),
             other => panic!("expected ConversationDisclosure, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod solver_dms_input_tests {
+    use super::*;
+    use crate::ui::UserRole;
+
+    #[test]
+    fn the_serbero_pane_takes_no_chat_input() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = true;
+        assert!(admin_dispute_chat_input_active(&app));
+
+        app.admin_show_solver_dms = true;
+
+        assert!(!admin_dispute_chat_input_active(&app));
     }
 }

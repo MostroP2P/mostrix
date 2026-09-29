@@ -280,6 +280,14 @@ pub struct AppState {
     pub admin_chat_scroll_tracker: Option<(String, ChatParty, usize)>,
     /// Cached last-seen timestamps per (dispute_id, party) for admin chat.
     pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
+    /// Messages from trusted assistants (Serbero), by dispute id.
+    pub solver_dms: crate::util::solver_dms::SolverDmsByDispute,
+    /// Disputes In Progress shows the assistant's messages instead of a party chat.
+    pub admin_show_solver_dms: bool,
+    /// Line offset of the assistant messages view.
+    pub solver_dm_scroll: u16,
+    /// Dispute the scroll offset belongs to; another dispute starts at the top.
+    pub solver_dm_scroll_dispute: Option<String>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -423,6 +431,10 @@ impl AppState {
             admin_chat_line_starts: Vec::new(),
             admin_chat_scroll_tracker: None,
             admin_chat_last_seen: HashMap::new(),
+            solver_dms: HashMap::new(),
+            admin_show_solver_dms: false,
+            solver_dm_scroll: 0,
+            solver_dm_scroll_dispute: None,
             selected_settings_option: 0,
             mode: UiMode::default_for_role(user_role),
             messages: Arc::new(Mutex::new(Vec::new())),

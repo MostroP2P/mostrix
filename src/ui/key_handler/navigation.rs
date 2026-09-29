@@ -622,6 +622,8 @@ pub(crate) fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
         if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
             app.mode = UiMode::AdminMode(AdminMode::Normal);
         }
+        // Come back on a party chat, not on the read-only SERBERO pane.
+        app.admin_show_solver_dms = false;
     }
 
     // Clear transient observer state when leaving Observer tab
@@ -630,18 +632,28 @@ pub(crate) fn handle_tab_switch(app: &mut AppState, prev_tab: Tab) {
     }
 }
 
+/// Moves Disputes In Progress to the next (or previous) pane: BUYER, SELLER,
+/// SERBERO. Chat selection and the assistant scroll restart in the new pane.
+fn switch_dispute_pane(app: &mut AppState, forward: bool) {
+    let (party, serbero) = crate::ui::tabs::solver_dms_view::next_dispute_pane(
+        app.active_chat_party,
+        app.admin_show_solver_dms,
+        forward,
+    );
+    app.active_chat_party = party;
+    app.admin_show_solver_dms = serbero;
+    app.solver_dm_scroll = 0;
+    // Reset scroll/selection when switching parties (will be set in render)
+    app.admin_chat_selected_message_idx = None;
+    app.admin_chat_scroll_tracker = None;
+}
+
 /// Handle Tab and BackTab keys
 pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
     match code {
         KeyCode::Tab => {
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                app.active_chat_party = match app.active_chat_party {
-                    crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
-                    crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
-                };
-                // Reset scroll/selection when switching parties (will be set in render)
-                app.admin_chat_selected_message_idx = None;
-                app.admin_chat_scroll_tracker = None;
+                switch_dispute_pane(app, true);
             } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
                 let rows = active_order_chat_list_snapshot(app);
                 let solver_available = rows
@@ -669,13 +681,7 @@ pub fn handle_tab_navigation(code: KeyCode, app: &mut AppState) {
         }
         KeyCode::BackTab => {
             if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                app.active_chat_party = match app.active_chat_party {
-                    crate::ui::ChatParty::Buyer => crate::ui::ChatParty::Seller,
-                    crate::ui::ChatParty::Seller => crate::ui::ChatParty::Buyer,
-                };
-                // Reset scroll/selection when switching parties (will be set in render)
-                app.admin_chat_selected_message_idx = None;
-                app.admin_chat_scroll_tracker = None;
+                switch_dispute_pane(app, false);
             } else if matches!(app.active_tab, Tab::User(UserTab::MyTrades)) {
                 handle_tab_navigation(KeyCode::Tab, app);
             } else if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
@@ -726,5 +732,64 @@ mod confirm_toggle_tests {
         let mut app = app_in(UiMode::ConfirmRestoreSession(true));
         handle_right_key(&mut app, &orders);
         assert!(!selected(&app));
+    }
+}
+
+#[cfg(test)]
+mod dispute_pane_tab_tests {
+    use super::*;
+    use crate::ui::{ChatParty, UserRole};
+
+    fn app_on_disputes_in_progress() -> AppState {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app
+    }
+
+    #[test]
+    fn tab_goes_buyer_seller_serbero_and_back() {
+        let mut app = app_on_disputes_in_progress();
+
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.active_chat_party, ChatParty::Seller);
+        assert!(!app.admin_show_solver_dms);
+
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert!(app.admin_show_solver_dms);
+
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+        assert_eq!(app.active_chat_party, ChatParty::Buyer);
+        assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn leaving_the_tab_returns_to_a_party_chat() {
+        let mut app = app_on_disputes_in_progress();
+        app.admin_show_solver_dms = true;
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+
+        handle_tab_switch(&mut app, Tab::Admin(AdminTab::DisputesInProgress));
+
+        assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn back_tab_reaches_serbero_from_buyer() {
+        let mut app = app_on_disputes_in_progress();
+
+        handle_tab_navigation(KeyCode::BackTab, &mut app);
+
+        assert!(app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn entering_serbero_starts_at_the_newest_message() {
+        let mut app = app_on_disputes_in_progress();
+        app.active_chat_party = ChatParty::Seller;
+        app.solver_dm_scroll = 30;
+
+        handle_tab_navigation(KeyCode::Tab, &mut app);
+
+        assert_eq!(app.solver_dm_scroll, 0);
     }
 }

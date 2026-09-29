@@ -133,6 +133,8 @@ pub async fn init_db() -> Result<SqlitePool> {
         migrate_db(&pool).await?;
     }
 
+    crate::util::solver_dms::store::ensure_table(&pool).await?;
+
     Ok(pool)
 }
 

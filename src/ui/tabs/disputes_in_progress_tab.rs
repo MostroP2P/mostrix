@@ -14,6 +14,7 @@ use crate::ui::helpers::{
     format_local_timestamp, format_user_rating, get_filtered_disputes, get_selected_chat_message,
     render_table_list_scrollbar,
 };
+use crate::ui::tabs::solver_dms_view::{render_solver_dms, solver_dms_tab_label};
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -480,9 +481,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         f.render_widget(header, main_chunks[0]);
 
         // Only show party tabs, chat, and input for in-progress disputes
-        if !is_finalized {
+        if is_finalized {
+            // No panes here: keep keys on the dispute list and chats.
+            app.admin_show_solver_dms = false;
+        } else {
             // Party Tabs
-            let buyer_style = if app.active_chat_party == ChatParty::Buyer {
+            let serbero_active = app.admin_show_solver_dms;
+            let buyer_style = if !serbero_active && app.active_chat_party == ChatParty::Buyer {
                 Style::default()
                     .bg(Color::Green)
                     .fg(Color::Black)
@@ -490,7 +495,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             } else {
                 Style::default().fg(Color::Green)
             };
-            let seller_style = if app.active_chat_party == ChatParty::Seller {
+            let seller_style = if !serbero_active && app.active_chat_party == ChatParty::Seller {
                 Style::default()
                     .bg(Color::Red)
                     .fg(Color::Black)
@@ -502,7 +507,11 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             let party_tabs_area = main_chunks[1];
             let party_chunks = Layout::new(
                 Direction::Horizontal,
-                [Constraint::Percentage(50), Constraint::Percentage(50)],
+                [
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                ],
             )
             .split(party_tabs_area);
 
@@ -512,7 +521,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     "BUYER",
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
-                Line::from(Span::styled(&buyer_pubkey_display, Style::default())),
+                Line::from(Span::styled(
+                    fit_party_pubkey(&buyer_pubkey_display, party_chunks[0].width),
+                    Style::default(),
+                )),
             ];
 
             let seller_text = vec![
@@ -520,7 +532,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     "SELLER",
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
-                Line::from(Span::styled(&seller_pubkey_display, Style::default())),
+                Line::from(Span::styled(
+                    fit_party_pubkey(&seller_pubkey_display, party_chunks[1].width),
+                    Style::default(),
+                )),
             ];
 
             f.render_widget(
@@ -545,140 +560,191 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     .alignment(ratatui::layout::Alignment::Center),
                 party_chunks[1],
             );
-
-            // Chat History - Display chat messages using ScrollView
-            let dispute_id_key = &selected_dispute.dispute_id;
-            let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
-            let chat_area = main_chunks[2];
-
-            // Full inner width (minus borders and scrollbar) so counterpart messages align to the right edge
-            let inner_width = Block::default()
-                .borders(Borders::ALL)
-                .inner(chat_area)
-                .width;
-            let content_width = inner_width.saturating_sub(1).max(1); // reserve 1 col for scrollbar
-            let max_content_width = (content_width / 2).max(1); // wrap long lines at half width for readability
-
-            let file_count = chat_messages
-                .map(|msgs| count_visible_attachments(msgs, app.active_chat_party))
-                .unwrap_or(0);
-
-            let messages_slice = chat_messages.map(|m| m.as_slice()).unwrap_or(&[]);
-            let content = build_chat_scrollview_content(
-                messages_slice,
-                app.active_chat_party,
-                content_width,
-                Some(max_content_width),
-            );
-
-            let visible_count = content.line_start_per_message.len();
-            app.admin_chat_line_starts = content.line_start_per_message.clone();
-
-            if visible_count > 0 {
-                let should_scroll = should_auto_scroll_chat(
-                    app.admin_chat_scroll_tracker.as_ref(),
-                    dispute_id_key,
-                    app.active_chat_party,
-                    visible_count,
-                );
-                if should_scroll {
-                    app.admin_chat_scrollview_state = Default::default();
-                    app.admin_chat_scrollview_state.scroll_to_bottom();
-                    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
-                }
-                app.admin_chat_scroll_tracker =
-                    Some((dispute_id_key.clone(), app.active_chat_party, visible_count));
-
-                let sel = app.admin_chat_selected_message_idx;
-                if sel.is_none_or(|idx| idx >= visible_count.saturating_sub(1)) {
-                    app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
-                }
-            } else {
-                app.admin_chat_selected_message_idx = None;
-                app.admin_chat_scroll_tracker =
-                    Some((dispute_id_key.clone(), app.active_chat_party, 0));
-            }
-
-            let chat_title = if visible_count > 0 {
-                if file_count > 0 {
-                    format!(
-                        "Chat with {} ({} messages, {} file(s))",
-                        app.active_chat_party, visible_count, file_count
-                    )
-                } else {
-                    format!(
-                        "Chat with {} ({} messages)",
-                        app.active_chat_party, visible_count
-                    )
-                }
-            } else {
-                format!("Chat with {} (no messages)", app.active_chat_party)
-            };
-
-            let chat_block = Block::default()
-                .title(chat_title)
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(PRIMARY_COLOR))
-                .style(Style::default().bg(BACKGROUND_COLOR));
-            let inner_area = chat_block.inner(chat_area);
-            f.render_widget(chat_block, chat_area);
-
-            let display_height = content.content_height.saturating_sub(1).max(1);
-            let mut scroll_view = ScrollView::new(Size::new(content.content_width, display_height))
-                .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
-            let content_rect = Rect::new(0, 0, content.content_width, display_height);
-            scroll_view.render_widget(
-                Paragraph::new(content.lines).wrap(ratatui::widgets::Wrap { trim: true }),
-                content_rect,
-            );
-            f.render_stateful_widget(
-                scroll_view,
-                inner_area,
-                &mut app.admin_chat_scrollview_state,
-            );
-
-            // Input Area
-            // Check if we're in ManagingDispute mode (input is active)
-            let is_input_focused =
-                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-            let is_input_enabled = app.admin_chat_input_enabled;
-
-            let input_style = if is_input_focused && is_input_enabled {
+            let serbero_count = app
+                .solver_dms
+                .get(&selected_dispute.dispute_id)
+                .map_or(0, Vec::len);
+            let serbero_style = if serbero_active {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .bg(Color::Magenta)
+                    .fg(Color::Black)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(Color::Magenta)
             };
-
-            let input_title = if is_input_focused && is_input_enabled {
-                "💬 Message (typing enabled)"
-            } else if is_input_focused && !is_input_enabled {
-                "💬 Message (disabled - Shift+I to enable)"
-            } else {
-                "Message"
-            };
-
-            let input_border_style = if is_input_focused && is_input_enabled {
-                Style::default()
-                    .fg(PRIMARY_COLOR)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-
-            let input = Paragraph::new(app.admin_chat_input.as_str())
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        fit_party_pubkey(
+                            &solver_dms_tab_label(serbero_count),
+                            party_chunks[2].width,
+                        ),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(fit_party_pubkey("assistant", party_chunks[2].width)),
+                ])
                 .block(
                     Block::default()
-                        .title(input_title)
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .border_style(input_border_style)
-                        .style(input_style),
+                        .style(serbero_style),
                 )
-                .wrap(ratatui::widgets::Wrap { trim: true }); // Enable text wrapping with trimmed spaces
-            f.render_widget(input, main_chunks[3]);
+                .alignment(ratatui::layout::Alignment::Center),
+                party_chunks[2],
+            );
+
+            if serbero_active {
+                let dispute_id = selected_dispute.dispute_id.clone();
+                render_solver_dms(f, main_chunks[2], app, &dispute_id);
+                f.render_widget(
+                    Paragraph::new(SOLVER_DMS_READ_ONLY)
+                        .style(Style::default().fg(Color::Gray))
+                        .block(
+                            Block::default()
+                                .title("Message")
+                                .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
+                                .border_style(Style::default().fg(Color::Gray)),
+                        )
+                        .wrap(ratatui::widgets::Wrap { trim: true }),
+                    main_chunks[3],
+                );
+            } else {
+                // Chat History - Display chat messages using ScrollView
+                let dispute_id_key = &selected_dispute.dispute_id;
+                let chat_messages = app.admin_dispute_chats.get(dispute_id_key);
+                let chat_area = main_chunks[2];
+
+                // Full inner width (minus borders and scrollbar) so counterpart messages align to the right edge
+                let inner_width = Block::default()
+                    .borders(Borders::ALL)
+                    .inner(chat_area)
+                    .width;
+                let content_width = inner_width.saturating_sub(1).max(1); // reserve 1 col for scrollbar
+                let max_content_width = (content_width / 2).max(1); // wrap long lines at half width for readability
+
+                let file_count = chat_messages
+                    .map(|msgs| count_visible_attachments(msgs, app.active_chat_party))
+                    .unwrap_or(0);
+
+                let messages_slice = chat_messages.map(|m| m.as_slice()).unwrap_or(&[]);
+                let content = build_chat_scrollview_content(
+                    messages_slice,
+                    app.active_chat_party,
+                    content_width,
+                    Some(max_content_width),
+                );
+
+                let visible_count = content.line_start_per_message.len();
+                app.admin_chat_line_starts = content.line_start_per_message.clone();
+
+                if visible_count > 0 {
+                    let should_scroll = should_auto_scroll_chat(
+                        app.admin_chat_scroll_tracker.as_ref(),
+                        dispute_id_key,
+                        app.active_chat_party,
+                        visible_count,
+                    );
+                    if should_scroll {
+                        app.admin_chat_scrollview_state = Default::default();
+                        app.admin_chat_scrollview_state.scroll_to_bottom();
+                        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                    }
+                    app.admin_chat_scroll_tracker =
+                        Some((dispute_id_key.clone(), app.active_chat_party, visible_count));
+
+                    let sel = app.admin_chat_selected_message_idx;
+                    if sel.is_none_or(|idx| idx >= visible_count.saturating_sub(1)) {
+                        app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
+                    }
+                } else {
+                    app.admin_chat_selected_message_idx = None;
+                    app.admin_chat_scroll_tracker =
+                        Some((dispute_id_key.clone(), app.active_chat_party, 0));
+                }
+
+                let chat_title = if visible_count > 0 {
+                    if file_count > 0 {
+                        format!(
+                            "Chat with {} ({} messages, {} file(s))",
+                            app.active_chat_party, visible_count, file_count
+                        )
+                    } else {
+                        format!(
+                            "Chat with {} ({} messages)",
+                            app.active_chat_party, visible_count
+                        )
+                    }
+                } else {
+                    format!("Chat with {} (no messages)", app.active_chat_party)
+                };
+
+                let chat_block = Block::default()
+                    .title(chat_title)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(PRIMARY_COLOR))
+                    .style(Style::default().bg(BACKGROUND_COLOR));
+                let inner_area = chat_block.inner(chat_area);
+                f.render_widget(chat_block, chat_area);
+
+                let display_height = content.content_height.saturating_sub(1).max(1);
+                let mut scroll_view =
+                    ScrollView::new(Size::new(content.content_width, display_height))
+                        .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
+                let content_rect = Rect::new(0, 0, content.content_width, display_height);
+                scroll_view.render_widget(
+                    Paragraph::new(content.lines).wrap(ratatui::widgets::Wrap { trim: true }),
+                    content_rect,
+                );
+                f.render_stateful_widget(
+                    scroll_view,
+                    inner_area,
+                    &mut app.admin_chat_scrollview_state,
+                );
+
+                // Input Area
+                // Check if we're in ManagingDispute mode (input is active)
+                let is_input_focused =
+                    matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+                let is_input_enabled = app.admin_chat_input_enabled;
+
+                let input_style = if is_input_focused && is_input_enabled {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                let input_title = if is_input_focused && is_input_enabled {
+                    "💬 Message (typing enabled)"
+                } else if is_input_focused && !is_input_enabled {
+                    "💬 Message (disabled - Shift+I to enable)"
+                } else {
+                    "Message"
+                };
+
+                let input_border_style = if is_input_focused && is_input_enabled {
+                    Style::default()
+                        .fg(PRIMARY_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                let input = Paragraph::new(app.admin_chat_input.as_str())
+                    .block(
+                        Block::default()
+                            .title(input_title)
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(input_border_style)
+                            .style(input_style),
+                    )
+                    .wrap(ratatui::widgets::Wrap { trim: true }); // Enable text wrapping with trimmed spaces
+                f.render_widget(input, main_chunks[3]);
+            }
         }
 
         // Footer (width-aware: minimal on narrow, 1 or 2 lines when wide; always include Ctrl+H)
@@ -1133,5 +1199,129 @@ mod tests {
             buffer_contains(buf, FOOTER_TAB_PARTY),
             "Tab party hint must remain visible with toast + two hint lines"
         );
+    }
+}
+
+/// Shortens a party-tab line (pubkey or label) to fit a tab of `tab_width`
+/// columns: three tabs share the row, so narrow panels cut it with `…`.
+fn fit_party_pubkey(display: &str, tab_width: u16) -> String {
+    let inner = usize::from(tab_width.saturating_sub(2));
+    if display.chars().count() <= inner {
+        return display.to_string();
+    }
+    let keep = inner.saturating_sub(1);
+    format!("{}…", display.chars().take(keep).collect::<String>())
+}
+
+#[cfg(test)]
+mod solver_dms_pane_tests {
+    use super::*;
+    use crate::models::AdminDispute;
+    use crate::ui::UserRole;
+    use crate::util::solver_dms::SolverDm;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        flat.contains(needle)
+    }
+
+    fn app_with_handoff() -> AppState {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![AdminDispute {
+            dispute_id: "dip-1".to_string(),
+            status: Some("in-progress".to_string()),
+            ..Default::default()
+        }];
+        app.selected_dispute_id = Some("dip-1".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.solver_dms.insert(
+            "dip-1".to_string(),
+            vec![SolverDm {
+                event_id: "e1".into(),
+                sender_pubkey: String::new(),
+                recipient_pubkey: String::new(),
+                dispute_id: Some("dip-1".into()),
+                subject: "handed off: conflicting_claims".into(),
+                text:
+                    "Dispute dip-1 · handed off: conflicting_claims\nTopic: payment_not_confirmed"
+                        .into(),
+                created_at: 100,
+            }],
+        );
+        app
+    }
+
+    fn draw(app: &mut AppState) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), app))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn party_pubkeys_are_shortened_to_fit_narrow_tabs() {
+        assert_eq!(
+            fit_party_pubkey("abcd1234...wxyz9876", 40),
+            "abcd1234...wxyz9876"
+        );
+        assert_eq!(fit_party_pubkey("abcd1234...wxyz9876", 12), "abcd1234.…");
+        assert_eq!(fit_party_pubkey("abcd", 2), "…");
+    }
+
+    #[test]
+    fn a_narrow_panel_keeps_all_three_tab_names_readable() {
+        let mut app = app_with_handoff();
+        let mut terminal = Terminal::new(TestBackend::new(60, 32)).expect("terminal");
+
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "BUYER"));
+        assert!(buffer_contains(buf, "SELLER"));
+        assert!(buffer_contains(buf, "SERBERO"));
+    }
+
+    #[test]
+    fn a_finalized_dispute_turns_the_serbero_pane_off() {
+        let mut app = app_with_handoff();
+        app.admin_disputes_in_progress[0].status = Some("settled".to_string());
+        app.admin_show_solver_dms = true;
+
+        draw(&mut app);
+
+        assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn the_party_row_offers_a_serbero_tab_with_its_count() {
+        let mut app = app_with_handoff();
+
+        let buf = draw(&mut app);
+
+        assert!(buffer_contains(&buf, "SERBERO (1)"));
+        assert!(!buffer_contains(&buf, "Topic: payment_not_confirmed"));
+    }
+
+    #[test]
+    fn the_serbero_tab_shows_the_assistant_messages_and_locks_the_input() {
+        let mut app = app_with_handoff();
+        app.admin_show_solver_dms = true;
+
+        let buf = draw(&mut app);
+
+        assert!(buffer_contains(&buf, "handed off: conflicting_claims"));
+        assert!(buffer_contains(&buf, "Topic: payment_not_confirmed"));
+        assert!(buffer_contains(&buf, SOLVER_DMS_READ_ONLY));
     }
 }

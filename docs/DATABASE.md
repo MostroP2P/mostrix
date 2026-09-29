@@ -373,6 +373,26 @@ When saving a dispute to the database, the following fields are validated:
         }
 ```
 
+
+#### 4. `solver_dms` Table
+
+Messages from trusted assistants (Serbero) to the admin key, created by `solver_dms::store::ensure_table` on every start (new and existing databases).
+
+```sql
+CREATE TABLE IF NOT EXISTS solver_dms (
+    event_id TEXT PRIMARY KEY,      -- kind-14 event id; re-delivered events are ignored
+    sender_pubkey TEXT NOT NULL,    -- trusted author (hex)
+    recipient_pubkey TEXT NOT NULL DEFAULT '', -- admin key it was written to; each key has its own inbox
+    dispute_id TEXT,                -- linked dispute, NULL when the message names none
+    subject TEXT NOT NULL,          -- first-line subject, e.g. "handed off: conflicting_claims"
+    text TEXT NOT NULL,             -- full message text
+    created_at INTEGER NOT NULL     -- event created_at (unix seconds)
+);
+CREATE INDEX IF NOT EXISTS idx_solver_dms_recipient_created ON solver_dms (recipient_pubkey, created_at);
+```
+
+Reads are scoped to the current admin key: the newest `created_at` for that key is where the relay backfill resumes (sender timestamps are capped at the local time), and a key change loads that key's messages only. A session wipe deletes every row. See [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#assistant-messages-serbero).
+
 ## Key Data Relationships
 
 ### User Mode: Trade Index and Keys

@@ -6,6 +6,7 @@ pub mod observer_tab;
 pub mod order_in_progress_tab;
 pub mod orders_tab;
 pub mod settings_tab;
+pub mod solver_dms_view;
 pub mod tab_bar;
 pub mod tab_content;
 

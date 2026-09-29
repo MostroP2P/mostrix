@@ -205,6 +205,8 @@ pub const FOOTER_SENDING_ATTACHMENT: &str = " | Sending attachment…";
 pub const FOOTER_UP_DOWN_SELECT: &str = "↑↓: Select";
 pub const FOOTER_UP_DOWN_SELECT_DISPUTE: &str = "↑↓: Select Dispute";
 pub const FOOTER_TAB_PARTY: &str = "Tab: Party";
+/// Input placeholder while Disputes In Progress shows the SERBERO pane.
+pub const SOLVER_DMS_READ_ONLY: &str = "Serbero messages are read-only · Tab: Buyer";
 pub const FOOTER_TAB_SWITCH_PARTY: &str = "Tab: Switch Party";
 pub const FOOTER_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve";
