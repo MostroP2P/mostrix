@@ -28,6 +28,9 @@ pub const TAKEOVER_WINDOW_SECS: i64 = 12 * 3600;
 /// (36-char id + subject + age ≈ 86 columns with the highlight symbol).
 const WIDE_PICKER_WIDTH: u16 = 86;
 
+/// Narrower rows put the subject above the short id so it is never pushed out.
+const STACKED_PICKER_WIDTH: u16 = 32;
+
 pub const TAKEOVER_PICKER_HINT: &str = "↑↓ Navigate  Enter Take over  Esc Cancel";
 
 /// A dispute the solver may take over, with the assistant's latest word on it.
@@ -101,7 +104,30 @@ fn age(at: i64, now: i64) -> String {
     }
 }
 
-/// One picker row; narrow rows keep the short id and subject only.
+/// One picker row: full id, subject and age when wide; short id and subject
+/// when narrow; subject over the short id when there is no room for both.
+fn candidate_item(candidate: &TakeoverCandidate, now: i64, width: u16) -> ListItem<'static> {
+    if width >= STACKED_PICKER_WIDTH {
+        return ListItem::new(candidate_line(candidate, now, width >= WIDE_PICKER_WIDTH));
+    }
+    let (marker, style) = subject_marker_style(candidate);
+    ListItem::new(vec![
+        Line::styled(format!("{marker}{}", candidate.subject), style),
+        Line::styled(
+            candidate.dispute_id.to_string()[..8].to_string(),
+            Style::default().fg(Color::Gray),
+        ),
+    ])
+}
+
+fn subject_marker_style(candidate: &TakeoverCandidate) -> (&'static str, Style) {
+    if candidate.needs_action {
+        ("⚠ ", Style::default().fg(Color::Yellow))
+    } else {
+        ("", Style::default().fg(Color::White))
+    }
+}
+
 fn candidate_line(candidate: &TakeoverCandidate, now: i64, wide: bool) -> Line<'static> {
     let full_id = candidate.dispute_id.to_string();
     let id = if wide {
@@ -109,11 +135,7 @@ fn candidate_line(candidate: &TakeoverCandidate, now: i64, wide: bool) -> Line<'
     } else {
         full_id[..8].to_string()
     };
-    let (marker, subject_style) = if candidate.needs_action {
-        ("⚠ ", Style::default().fg(Color::Yellow))
-    } else {
-        ("", Style::default().fg(Color::White))
-    };
+    let (marker, subject_style) = subject_marker_style(candidate);
     let mut spans = vec![
         Span::styled(format!("{id}  "), Style::default().fg(PRIMARY_COLOR)),
         Span::styled(format!("{marker}{}", candidate.subject), subject_style),
@@ -171,10 +193,9 @@ pub fn render_takeover_picker(
         chunks[0],
     );
 
-    let wide = chunks[1].width >= WIDE_PICKER_WIDTH;
     let items: Vec<ListItem> = candidates
         .iter()
-        .map(|c| ListItem::new(candidate_line(c, now, wide)))
+        .map(|c| candidate_item(c, now, chunks[1].width))
         .collect();
     let list = List::new(items)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD))
@@ -334,6 +355,28 @@ mod tests {
             terminal.backend().buffer(),
             "handed off: conflicting_claims"
         ));
+    }
+
+    #[test]
+    fn a_very_narrow_picker_still_shows_the_subject() {
+        let candidates = vec![TakeoverCandidate {
+            dispute_id: id(7),
+            subject: "handed off: x".to_string(),
+            last_message_at: NOW - 60,
+            needs_action: true,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+
+        terminal
+            .draw(|f| render_takeover_picker(f, &candidates, 0, NOW))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "handed off"),
+            "subject must stay visible"
+        );
+        assert!(buffer_contains(buf, "00000000"), "short id on its own line");
     }
 
     #[test]

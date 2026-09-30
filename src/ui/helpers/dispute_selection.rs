@@ -185,7 +185,10 @@ pub fn retain_closed_displayed_dispute(
 
 /// After taking a dispute over: show it in Disputes in Progress, selected,
 /// on the buyer chat, so the solver can write to the parties right away.
+/// An unsent draft belonged to the previously selected dispute: drop it so
+/// Enter cannot send it to the new buyer.
 pub fn open_taken_dispute(app: &mut AppState, dispute_id: &str) {
+    app.admin_chat_input.clear();
     app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
     app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
     app.dispute_filter = DisputeFilter::InProgress;
@@ -221,6 +224,17 @@ mod tests {
         assert_eq!(app.selected_dispute_id.as_deref(), Some("d-new"));
         assert_eq!(app.active_chat_party, ChatParty::Buyer);
         assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn a_draft_for_the_previous_dispute_is_not_carried_over() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_dispute_id = Some("d-old".to_string());
+        app.admin_chat_input = "for the old seller".to_string();
+
+        open_taken_dispute(&mut app, "d-new");
+
+        assert!(app.admin_chat_input.is_empty());
     }
 
     fn dispute(id: &str, status: &str) -> AdminDispute {
