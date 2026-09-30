@@ -381,7 +381,10 @@ fn spawn_bulk_history_cleanup_task(
 
 fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     let mode_after_send = UiMode::AdminMode(AdminMode::ManagingDispute);
-    if !matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+    // Serbero's pane is read-only: nothing to send.
+    if !matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
+        || app.admin_show_solver_dms
+    {
         app.mode = mode_after_send;
         return;
     }

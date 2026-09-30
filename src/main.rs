@@ -21,7 +21,8 @@ use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, append_paste_to_order_chat,
     apply_paste_to_focused_key_input, apply_pending_runtime_reloads, create_app_channels,
     handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
-    respawn_chat_listener, respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
+    respawn_chat_listener, respawn_solver_dm_listener, respawn_trade_dm_listener, AppChannels,
+    RuntimeReconnectContext,
 };
 use crate::ui::{
     terminal, LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
@@ -348,6 +349,8 @@ async fn main() -> Result<(), anyhow::Error> {
         mut fatal_error_rx,
         ln_address_result_tx,
         mut ln_address_result_rx,
+        solver_dm_tx,
+        mut solver_dm_rx,
     } = create_app_channels();
 
     // Set fatal error tx for the app channels
@@ -405,6 +408,17 @@ async fn main() -> Result<(), anyhow::Error> {
     )
     .await?;
 
+    // Trusted-assistant (Serbero) DMs: show what is stored, then listen for more.
+    let mut solver_dm_listener_handle = None;
+    respawn_solver_dm_listener(
+        &mut app,
+        &client,
+        &pool,
+        &mut solver_dm_listener_handle,
+        &solver_dm_tx,
+    )
+    .await;
+
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
     let mut refresh_interval = interval(Duration::from_millis(150));
@@ -435,6 +449,9 @@ async fn main() -> Result<(), anyhow::Error> {
                             dispute_task.abort();
                             message_listener_handle.abort();
                             chat_listener_handle.abort();
+                            if let Some(handle) = solver_dm_listener_handle.take() {
+                                handle.abort();
+                            }
                             app.fatal_exit_on_close = true;
                             app.background_task_alarms.clear();
                             app.mode = UiMode::operation_result(OperationResult::Error(msg));
@@ -478,6 +495,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             {
                                 Ok(()) => {
                                     // Reconnect ran `unsubscribe_all`; rebuild the chat subscription.
+                                    respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -564,6 +582,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 )
                                 .await;
                                 if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
+                                    respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -673,6 +692,15 @@ async fn main() -> Result<(), anyhow::Error> {
                             log::warn!("Failed to fetch admin chat updates: {}", e);
                         }
                     }
+                }
+            }
+            solver_dm = solver_dm_rx.recv() => {
+                if let Some(dm) = solver_dm {
+                    crate::util::solver_dms::add_live_dm(
+                        &mut app.solver_dms,
+                        dm,
+                        app.solver_dm_scope.as_ref(),
+                    );
                 }
             }
             user_order_chat_result = user_order_chat_updates_rx.recv() => {
@@ -855,6 +883,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 // Reloads replace the client / run `unsubscribe_all`, dropping the
                                 // chat subscription; respawn once the reload actually completed.
                                 if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
+                                    respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -875,6 +904,16 @@ async fn main() -> Result<(), anyhow::Error> {
                             if app.pending_admin_disputes_reload {
                                 app.pending_admin_disputes_reload = false;
                                 load_admin_disputes_at_startup(&pool, &mut app).await;
+                                // Admin key or role changed: start the Serbero listener for
+                                // the new key's inbox, or stop it outside admin mode.
+                                respawn_solver_dm_listener(
+                                    &mut app,
+                                    &client,
+                                    &pool,
+                                    &mut solver_dm_listener_handle,
+                                    &solver_dm_tx,
+                                )
+                                .await;
                             }
                         }
                         Some(false) => break,   // Exit requested (q key)
@@ -911,6 +950,9 @@ async fn main() -> Result<(), anyhow::Error> {
                     dispute_task.abort();
                     message_listener_handle.abort();
                     chat_listener_handle.abort();
+                    if let Some(handle) = solver_dm_listener_handle.take() {
+                        handle.abort();
+                    }
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     true
@@ -933,6 +975,9 @@ async fn main() -> Result<(), anyhow::Error> {
                     dispute_task.abort();
                     message_listener_handle.abort();
                     chat_listener_handle.abort();
+                    if let Some(handle) = solver_dm_listener_handle.take() {
+                        handle.abort();
+                    }
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     continue;

@@ -10,10 +10,12 @@ use crate::ui::FormState;
 use crate::ui::{
     AdminChatUpdate, AppState, ChatAttachment, LnAddressVerifyResult, MessageNotification,
     MostroInfoFetchResult, NetworkStatus, OperationResult, OrderChatUpdate, TakeOrderState, UiMode,
+    UserRole,
 };
 use crate::util::fatal::request_fatal_restart;
 use crate::util::fetch_mostro_instance_info;
 use crate::util::order_utils::spawn_fetch_scheduler_loops;
+use crate::util::solver_dms::SolverDm;
 use crate::util::{
     any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
     hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
@@ -975,6 +977,11 @@ pub struct AppChannels {
     pub fatal_error_rx: UnboundedReceiver<FatalNotify>,
     pub ln_address_result_tx: UnboundedSender<LnAddressVerifyResult>,
     pub ln_address_result_rx: UnboundedReceiver<LnAddressVerifyResult>,
+    /// New messages from trusted assistants, already persisted by the listener.
+    /// Unbounded like the other UI result channels: volume is bounded by the
+    /// few trusted authors, and a full channel must not stall the listener.
+    pub solver_dm_tx: UnboundedSender<SolverDm>,
+    pub solver_dm_rx: UnboundedReceiver<SolverDm>,
 }
 
 pub fn create_app_channels() -> AppChannels {
@@ -1009,6 +1016,7 @@ pub fn create_app_channels() -> AppChannels {
     let (fatal_error_tx, fatal_error_rx) = tokio::sync::mpsc::unbounded_channel::<FatalNotify>();
     let (ln_address_result_tx, ln_address_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<LnAddressVerifyResult>();
+    let (solver_dm_tx, solver_dm_rx) = tokio::sync::mpsc::unbounded_channel::<SolverDm>();
 
     AppChannels {
         order_result_tx,
@@ -1039,7 +1047,58 @@ pub fn create_app_channels() -> AppChannels {
         fatal_error_rx,
         ln_address_result_tx,
         ln_address_result_rx,
+        solver_dm_tx,
+        solver_dm_rx,
     }
+}
+
+/// (Re)start the trusted-assistant DM listener for the current admin key.
+///
+/// Aborts the previous task, drops its relay subscription, and reloads the
+/// stored messages of the current admin key (a key change starts a new inbox).
+/// A new task starts only in admin mode with an admin key and at least one
+/// `trusted_dm_senders` entry (read from disk so settings edits apply on the
+/// next reload).
+pub async fn respawn_solver_dm_listener(
+    app: &mut AppState,
+    client: &Client,
+    pool: &SqlitePool,
+    handle: &mut Option<JoinHandle<()>>,
+    solver_dm_tx: &UnboundedSender<SolverDm>,
+) {
+    if let Some(old) = handle.take() {
+        old.abort();
+        // Wait for the old task to stop so it cannot re-subscribe afterwards;
+        // abort skips its own cleanup, so free the relay subscription here.
+        let _ = old.await;
+        crate::util::solver_dms::listener::unsubscribe(client).await;
+    }
+    let admin_keys = match (&app.user_role, &app.admin_keys) {
+        (UserRole::Admin, Some(keys)) => keys.clone(),
+        _ => {
+            app.solver_dms.clear();
+            app.solver_dm_scope = None;
+            return;
+        }
+    };
+    let configured = load_settings_from_disk()
+        .map(|s| s.trusted_dm_senders)
+        .unwrap_or_default();
+    let trusted = crate::util::solver_dms::parse_trusted_senders(&configured);
+    app.solver_dm_scope = Some(crate::util::solver_dms::InboxScope {
+        recipient: admin_keys.public_key().to_hex(),
+        senders: trusted.iter().map(PublicKey::to_hex).collect(),
+    });
+    app.solver_dms =
+        crate::util::solver_dms::load_recent_solver_dms(pool, &admin_keys.public_key(), &trusted)
+            .await;
+    *handle = crate::util::solver_dms::listener::spawn_solver_dm_listener(
+        client.clone(),
+        admin_keys,
+        trusted,
+        pool.clone(),
+        solver_dm_tx.clone(),
+    );
 }
 
 pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {

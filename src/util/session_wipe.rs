@@ -299,6 +299,7 @@ pub async fn clear_session_tables_in_tx(
 ) -> Result<()> {
     AdminDispute::delete_all_in_tx(tx).await?;
     Order::delete_all_in_tx(tx).await?;
+    crate::util::solver_dms::store::delete_all_in_tx(tx).await?;
     sqlx::query(r#"DELETE FROM users"#)
         .execute(&mut **tx)
         .await?;
@@ -530,6 +531,16 @@ mod tests {
         .execute(&pool)
         .await
         .expect("dispute");
+        crate::util::solver_dms::store::ensure_table(&pool)
+            .await
+            .expect("solver_dms table");
+        sqlx::query(
+            r#"INSERT INTO solver_dms (event_id, sender_pubkey, recipient_pubkey, subject, text, created_at)
+            VALUES ('e1', 'serbero', 'admin', 'taken', 'Dispute d · taken', 1)"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("solver dm");
 
         pool
     }
@@ -647,6 +658,7 @@ ln_address = "user@domain.com"
         assert_eq!(count_rows(&pool, "users").await, 0);
         assert_eq!(count_rows(&pool, "orders").await, 0);
         assert_eq!(count_rows(&pool, "admin_disputes").await, 0);
+        assert_eq!(count_rows(&pool, "solver_dms").await, 0);
     }
 
     #[test]
@@ -708,6 +720,7 @@ ln_address = "user@domain.com"
             blossom_servers: vec![],
             push_server_url: String::new(),
             notifications_enabled: true,
+            trusted_dm_senders: vec![],
         };
 
         clear_ln_address(&mut settings);

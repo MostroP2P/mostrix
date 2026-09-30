@@ -43,6 +43,11 @@ pub struct Settings {
     /// Toggled from Settings → Background Alerts.
     #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,
+    /// Assistants (e.g. Serbero), as npub or hex, whose `send-dm` messages to the
+    /// admin key are shown per dispute. Empty disables them: anyone can send a
+    /// kind 14 to a solver, so only listed authors are read.
+    #[serde(default)]
+    pub trusted_dm_senders: Vec<String>,
 }
 
 fn default_notifications_enabled() -> bool {
@@ -86,6 +91,7 @@ impl Default for Settings {
             blossom_servers: Vec::new(),
             push_server_url: default_push_server_url(),
             notifications_enabled: default_notifications_enabled(),
+            trusted_dm_senders: Vec::new(),
         }
     }
 }
@@ -489,6 +495,31 @@ currencies_filter = []
 "#;
         let parsed: Settings = toml::from_str(toml_missing_key).expect("toml parse");
         assert!(parsed.notifications_enabled);
+    }
+
+    #[test]
+    fn legacy_settings_without_trusted_dm_senders_trust_nobody() {
+        let toml_missing_key = r#"
+mostro_pubkey = "npub1test"
+nsec_privkey = "nsec1test"
+admin_privkey = ""
+relays = ["wss://relay.example.com"]
+log_level = "info"
+currencies_filter = []
+"#;
+        let parsed: Settings = toml::from_str(toml_missing_key).expect("toml parse");
+        assert!(parsed.trusted_dm_senders.is_empty());
+    }
+
+    #[test]
+    fn trusted_dm_senders_round_trip_through_save_format() {
+        let settings = Settings {
+            trusted_dm_senders: vec!["npub1serbero".to_string()],
+            ..Settings::default()
+        };
+        let serialized = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: Settings = toml::from_str(&serialized).expect("reparse");
+        assert_eq!(parsed.trusted_dm_senders, ["npub1serbero"]);
     }
 
     #[test]
