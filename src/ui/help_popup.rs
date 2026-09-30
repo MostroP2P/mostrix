@@ -90,11 +90,13 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
             lines.push(help_my_trades_intro());
         }
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
-            // Close hint takes the last row; fit the rest (AGENTS.md short terminals).
+            // Close hint takes the last rows; fit the rest (AGENTS.md short terminals).
+            let close_rows = wrapped_rows(&Line::raw(HELP_CLOSE_HINT), inner.width);
             lines = fit_disputes_in_progress_help(
                 lines,
                 plain_lines,
-                usize::from(inner.height.saturating_sub(1)),
+                inner.width,
+                usize::from(inner.height).saturating_sub(close_rows),
             );
         } else if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
             for s in plain_lines {
@@ -193,33 +195,47 @@ fn settings_instruction_block_style() -> (Style, Style) {
     (title, body)
 }
 
-/// Disputes in Progress help within `rows`: the intro goes first when space
-/// is short, then trailing shortcuts, replaced by a "…" line so the user
-/// knows a taller terminal shows the rest.
+/// Rows `line` takes once wrapped to `width` (same wrap as the popup body).
+fn wrapped_rows(line: &Line<'static>, width: u16) -> usize {
+    Paragraph::new(line.clone())
+        .wrap(Wrap { trim: true })
+        .line_count(width)
+}
+
+/// Disputes in Progress help within `rows` rendered rows at `width`: the
+/// intro goes first when space is short, then trailing shortcuts, replaced by
+/// a "…" line so the user knows a taller terminal shows the rest.
 fn fit_disputes_in_progress_help(
     intro: Vec<Line<'static>>,
     shortcuts: Vec<String>,
+    width: u16,
     rows: usize,
 ) -> Vec<Line<'static>> {
-    if intro.len() + shortcuts.len() <= rows {
-        return intro
-            .into_iter()
-            .chain(shortcuts.iter().map(|s| help_shortcut_line(s)))
-            .collect();
+    let height =
+        |lines: &[Line<'static>]| -> usize { lines.iter().map(|l| wrapped_rows(l, width)).sum() };
+    let shortcut_lines: Vec<Line<'static>> =
+        shortcuts.iter().map(|s| help_shortcut_line(s)).collect();
+    if height(&intro) + height(&shortcut_lines) <= rows {
+        return intro.into_iter().chain(shortcut_lines).collect();
     }
-    if shortcuts.len() <= rows {
-        return shortcuts.iter().map(|s| help_shortcut_line(s)).collect();
+    if height(&shortcut_lines) <= rows {
+        return shortcut_lines;
     }
-    let keep = rows.saturating_sub(1);
-    let mut lines: Vec<Line<'static>> = shortcuts[..keep]
-        .iter()
-        .map(|s| help_shortcut_line(s))
+    let more = Line::from(Span::styled(
+        HELP_MORE_ON_TALLER_TERMINAL,
+        Style::default().fg(Color::DarkGray),
+    ));
+    let budget = rows.saturating_sub(wrapped_rows(&more, width));
+    let mut used = 0;
+    let mut lines: Vec<Line<'static>> = shortcut_lines
+        .into_iter()
+        .take_while(|l| {
+            used += wrapped_rows(l, width);
+            used <= budget
+        })
         .collect();
-    if rows > 0 {
-        lines.push(Line::from(Span::styled(
-            HELP_MORE_ON_TALLER_TERMINAL,
-            Style::default().fg(Color::DarkGray),
-        )));
+    if height(&lines) + wrapped_rows(&more, width) <= rows {
+        lines.push(more);
     }
     lines
 }
@@ -726,7 +742,7 @@ mod help_content_tests {
     #[test]
     fn short_disputes_in_progress_help_keeps_the_close_hint() {
         use crate::models::AdminDispute;
-        for height in [18, 17, 12] {
+        for (width, height) in [(80, 18), (80, 17), (80, 12), (40, 12)] {
             let mut app = AppState::new(UserRole::Admin);
             app.admin_disputes_in_progress = vec![AdminDispute {
                 dispute_id: "d1".into(),
@@ -734,7 +750,7 @@ mod help_content_tests {
                 ..Default::default()
             }];
             app.selected_dispute_id = Some("d1".into());
-            let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
 
             terminal
                 .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesInProgress)))
@@ -743,12 +759,12 @@ mod help_content_tests {
             let buf = terminal.backend().buffer();
             assert!(
                 buffer_contains(buf, HELP_CLOSE_HINT),
-                "close hint clipped at 80x{height}:\n{}",
+                "close hint clipped at {width}x{height}:\n{}",
                 buffer_text(buf)
             );
             assert!(
                 buffer_contains(buf, "Tab:"),
-                "first shortcut missing at 80x{height}"
+                "first shortcut missing at {width}x{height}"
             );
         }
     }

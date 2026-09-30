@@ -33,6 +33,9 @@ const STACKED_PICKER_WIDTH: u16 = 32;
 
 pub const TAKEOVER_PICKER_HINT: &str = "↑↓ Navigate  Enter Take over  Esc Cancel";
 
+/// Keys-only hint for rows too narrow for [`TAKEOVER_PICKER_HINT`].
+const TAKEOVER_PICKER_HINT_COMPACT: &str = "↑↓  Enter  Esc";
+
 /// A dispute the solver may take over, with the assistant's latest word on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TakeoverCandidate {
@@ -204,11 +207,14 @@ pub fn render_takeover_picker(
         ListState::default().with_selected(Some(cursor.min(candidates.len().saturating_sub(1))));
     f.render_stateful_widget(list, chunks[1], &mut state);
 
+    let full_hint = Line::raw(TAKEOVER_PICKER_HINT);
+    let hint = if usize::from(chunks[2].width) >= full_hint.width() {
+        TAKEOVER_PICKER_HINT
+    } else {
+        TAKEOVER_PICKER_HINT_COMPACT
+    };
     f.render_widget(
-        Paragraph::new(Span::styled(
-            TAKEOVER_PICKER_HINT,
-            Style::default().fg(Color::Gray),
-        )),
+        Paragraph::new(Span::styled(hint, Style::default().fg(Color::Gray))),
         chunks[2],
     );
 }
@@ -377,6 +383,9 @@ mod tests {
             "subject must stay visible"
         );
         assert!(buffer_contains(buf, "00000000"), "short id on its own line");
+        for key in ["↑↓", "Enter", "Esc"] {
+            assert!(buffer_contains(buf, key), "control {key} clipped");
+        }
     }
 
     #[test]
