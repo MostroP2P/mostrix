@@ -88,12 +88,28 @@ async fn listen_once(
     tx: &UnboundedSender<SolverDm>,
 ) -> anyhow::Result<()> {
     let filter = solver_dm_filter(trusted, admin_keys.public_key());
-    let mut notifications = client.notifications();
+    let notifications = client.notifications();
     client
         .subscribe(filter.clone().limit(0))
         .with_id(subscription_id())
         .await?;
+    // Whatever happens after subscribing, drop the subscription before
+    // returning so a retry never leaves it behind.
+    let result =
+        backfill_then_follow(client, filter, notifications, admin_keys, trusted, pool, tx).await;
+    unsubscribe(client).await;
+    result
+}
 
+async fn backfill_then_follow(
+    client: &Client,
+    filter: Filter,
+    mut notifications: impl futures::Stream<Item = ClientNotification> + Unpin,
+    admin_keys: &Keys,
+    trusted: &[PublicKey],
+    pool: &SqlitePool,
+    tx: &UnboundedSender<SolverDm>,
+) -> anyhow::Result<()> {
     let since = history_since(
         store::latest_created_at(pool, &admin_keys.public_key().to_hex()).await?,
         Timestamp::now().as_secs() as i64,
@@ -119,7 +135,6 @@ async fn listen_once(
             break;
         }
     }
-    unsubscribe(client).await;
     Ok(())
 }
 
