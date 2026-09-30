@@ -20,7 +20,13 @@ pub enum AdminMode {
     WaitingAddSolver, // Waiting for Mostro response after admin-add-solver
     SetupAdminKey(KeyInputState),
     ConfirmAdminKey(String, bool), // (key_string, selected_button: true=Yes, false=No)
-    ConfirmTakeDispute(uuid::Uuid, bool), // (dispute_id, selected_button: true=Yes, false=No)
+    /// Yes/No before `AdminTakeDispute`. `takeover` is fixed where the take
+    /// started (Ctrl+T picker) rather than re-read from the live relay list.
+    ConfirmTakeDispute {
+        dispute_id: uuid::Uuid,
+        takeover: bool,
+        selected_button: bool, // true=Yes, false=No
+    },
     WaitingTakeDispute(uuid::Uuid), // (dispute_id)
     /// Pick which relay in-progress orphans to recover (↑↓ / Space / Enter).
     SelectRecoverTakenDisputes {

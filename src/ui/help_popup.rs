@@ -89,7 +89,14 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         } else {
             lines.push(help_my_trades_intro());
         }
-        if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
+        if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+            // Close hint takes the last row; fit the rest (AGENTS.md short terminals).
+            lines = fit_disputes_in_progress_help(
+                lines,
+                plain_lines,
+                usize::from(inner.height.saturating_sub(1)),
+            );
+        } else if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
             for s in plain_lines {
                 lines.push(help_shortcut_line(&s));
             }
@@ -184,6 +191,37 @@ fn settings_instruction_block_style() -> (Style, Style) {
         .add_modifier(Modifier::BOLD);
     let body = Style::default().fg(Color::Gray);
     (title, body)
+}
+
+/// Disputes in Progress help within `rows`: the intro goes first when space
+/// is short, then trailing shortcuts, replaced by a "…" line so the user
+/// knows a taller terminal shows the rest.
+fn fit_disputes_in_progress_help(
+    intro: Vec<Line<'static>>,
+    shortcuts: Vec<String>,
+    rows: usize,
+) -> Vec<Line<'static>> {
+    if intro.len() + shortcuts.len() <= rows {
+        return intro
+            .into_iter()
+            .chain(shortcuts.iter().map(|s| help_shortcut_line(s)))
+            .collect();
+    }
+    if shortcuts.len() <= rows {
+        return shortcuts.iter().map(|s| help_shortcut_line(s)).collect();
+    }
+    let keep = rows.saturating_sub(1);
+    let mut lines: Vec<Line<'static>> = shortcuts[..keep]
+        .iter()
+        .map(|s| help_shortcut_line(s))
+        .collect();
+    if rows > 0 {
+        lines.push(Line::from(Span::styled(
+            HELP_MORE_ON_TALLER_TERMINAL,
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines
 }
 
 fn help_disputes_in_progress_intro() -> Line<'static> {
@@ -681,6 +719,36 @@ mod help_content_tests {
             assert!(
                 buffer_contains(terminal.backend().buffer(), "Ctrl+T"),
                 "missing Ctrl+T in {tab:?} help"
+            );
+        }
+    }
+
+    #[test]
+    fn short_disputes_in_progress_help_keeps_the_close_hint() {
+        use crate::models::AdminDispute;
+        for height in [18, 17, 12] {
+            let mut app = AppState::new(UserRole::Admin);
+            app.admin_disputes_in_progress = vec![AdminDispute {
+                dispute_id: "d1".into(),
+                status: Some("in-progress".into()),
+                ..Default::default()
+            }];
+            app.selected_dispute_id = Some("d1".into());
+            let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesInProgress)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            assert!(
+                buffer_contains(buf, HELP_CLOSE_HINT),
+                "close hint clipped at 80x{height}:\n{}",
+                buffer_text(buf)
+            );
+            assert!(
+                buffer_contains(buf, "Tab:"),
+                "first shortcut missing at 80x{height}"
             );
         }
     }

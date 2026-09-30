@@ -862,10 +862,14 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 true
             }
         }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+            dispute_id,
+            takeover,
+            selected_button,
+        }) => {
             if selected_button {
                 // YES selected - take the dispute
-                execute_take_dispute_action(app, dispute_id, ctx);
+                execute_take_dispute_action(app, dispute_id, takeover, ctx);
             } else {
                 // NO selected - back to the dispute tab's resting mode
                 app.mode = admin_dispute_home_mode(app);
@@ -1506,7 +1510,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         };
         if let Some(dispute) = selected_pending_dispute(app, &disputes_lock) {
-            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
+            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+                dispute_id: dispute.id,
+                takeover: false,
+                selected_button: true,
+            });
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {

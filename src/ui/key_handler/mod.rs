@@ -2172,7 +2172,10 @@ pub fn handle_key_event(
                     ..
                 })
                 | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
-                | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+                | UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+                    ref mut selected_button,
+                    ..
+                })
                 | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
                     ref mut selected_button,
                     ..
@@ -3608,7 +3611,11 @@ mod solver_dms_input_tests {
         app.admin_chat_input_enabled = true;
         assert!(takeover_shortcut_available(&app));
 
-        app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(uuid::Uuid::nil(), true));
+        app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+            dispute_id: uuid::Uuid::nil(),
+            takeover: true,
+            selected_button: true,
+        });
         assert!(!takeover_shortcut_available(&app));
 
         app.active_tab = Tab::Admin(AdminTab::Observer);

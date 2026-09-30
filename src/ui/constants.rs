@@ -26,6 +26,8 @@ pub const HELP_TITLE_CREATE_NEW_ORDER: &str = "Create New Order — Shortcuts";
 
 // Help popup lines (Disputes in Progress)
 pub const HELP_DIP_TAB_PARTY: &str = "Tab: Switch pane (Buyer/Seller/Serbero)";
+/// Help popups trimmed on short terminals end with this line.
+pub const HELP_MORE_ON_TALLER_TERMINAL: &str = "… more shortcuts on a taller terminal";
 /// Disputes Pending and In Progress: open the take-over picker.
 pub const HELP_CTRL_T_TAKEOVER: &str = "Ctrl+T: Take over a dispute Serbero is mediating";
 pub const HELP_DIP_SELECT_DISPUTE: &str = "↑↓: Select dispute (sidebar)";

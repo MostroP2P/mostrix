@@ -248,7 +248,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute { .. })
         | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. }) => {
             app.mode = crate::ui::key_handler::admin_handlers::admin_dispute_home_mode(app);
             true
@@ -388,7 +388,11 @@ mod tests {
                 candidates: vec![],
                 cursor: 0,
             },
-            AdminMode::ConfirmTakeDispute(uuid::Uuid::nil(), true),
+            AdminMode::ConfirmTakeDispute {
+                dispute_id: uuid::Uuid::nil(),
+                takeover: true,
+                selected_button: true,
+            },
         ] {
             let mut app = AppState::new(UserRole::Admin);
             app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
