@@ -94,15 +94,29 @@ pub fn add_to_index(index: &mut SolverDmsByDispute, dm: SolverDm) -> bool {
     true
 }
 
-/// Adds a message the live listener forwarded, unless it was written to
-/// another admin key than `active_recipient` (hex): a listener replaced on a
-/// key reload may still have queued messages for the previous key.
+/// Which messages the current inbox shows: written to this admin key (hex)
+/// by one of these senders (hex). Set whenever the listener is respawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxScope {
+    pub recipient: String,
+    pub senders: Vec<String>,
+}
+
+impl InboxScope {
+    pub fn accepts(&self, dm: &SolverDm) -> bool {
+        dm.recipient_pubkey == self.recipient && self.senders.contains(&dm.sender_pubkey)
+    }
+}
+
+/// Adds a message the live listener forwarded, unless it falls outside
+/// `scope`: a listener replaced on a reload may still have queued messages
+/// for a previous admin key or a sender that is no longer trusted.
 pub fn add_live_dm(
     index: &mut SolverDmsByDispute,
     dm: SolverDm,
-    active_recipient: Option<&str>,
+    scope: Option<&InboxScope>,
 ) -> bool {
-    if active_recipient != Some(dm.recipient_pubkey.as_str()) {
+    if !scope.is_some_and(|s| s.accepts(&dm)) {
         return false;
     }
     add_to_index(index, dm)
@@ -387,16 +401,34 @@ mod tests {
     }
 
     #[test]
-    fn a_live_message_for_another_admin_key_is_dropped() {
+    fn a_live_message_outside_the_current_inbox_is_dropped() {
+        let scope = InboxScope {
+            recipient: "admin".into(),
+            senders: vec!["serbero".into()],
+        };
+        let msg = |event_id: &str, recipient: &str, sender: &str| SolverDm {
+            recipient_pubkey: recipient.into(),
+            sender_pubkey: sender.into(),
+            ..stored(event_id, Some("d1"), 10)
+        };
         let mut index = SolverDmsByDispute::new();
-        let mut old_key = stored("old", Some("d1"), 10);
-        old_key.recipient_pubkey = "old-admin".into();
-        let mut mine = stored("mine", Some("d1"), 20);
-        mine.recipient_pubkey = "admin".into();
 
-        assert!(!add_live_dm(&mut index, old_key, Some("admin")));
-        assert!(!add_live_dm(&mut index, mine.clone(), None));
-        assert!(add_live_dm(&mut index, mine, Some("admin")));
+        assert!(!add_live_dm(
+            &mut index,
+            msg("a", "old-admin", "serbero"),
+            Some(&scope)
+        ));
+        assert!(!add_live_dm(
+            &mut index,
+            msg("b", "admin", "revoked"),
+            Some(&scope)
+        ));
+        assert!(!add_live_dm(&mut index, msg("c", "admin", "serbero"), None));
+        assert!(add_live_dm(
+            &mut index,
+            msg("d", "admin", "serbero"),
+            Some(&scope)
+        ));
 
         assert_eq!(index["d1"].len(), 1);
     }

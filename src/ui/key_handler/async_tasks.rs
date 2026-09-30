@@ -1077,6 +1077,7 @@ pub async fn respawn_solver_dm_listener(
         (UserRole::Admin, Some(keys)) => keys.clone(),
         _ => {
             app.solver_dms.clear();
+            app.solver_dm_scope = None;
             return;
         }
     };
@@ -1084,6 +1085,10 @@ pub async fn respawn_solver_dm_listener(
         .map(|s| s.trusted_dm_senders)
         .unwrap_or_default();
     let trusted = crate::util::solver_dms::parse_trusted_senders(&configured);
+    app.solver_dm_scope = Some(crate::util::solver_dms::InboxScope {
+        recipient: admin_keys.public_key().to_hex(),
+        senders: trusted.iter().map(PublicKey::to_hex).collect(),
+    });
     app.solver_dms =
         crate::util::solver_dms::load_recent_solver_dms(pool, &admin_keys.public_key(), &trusted)
             .await;
