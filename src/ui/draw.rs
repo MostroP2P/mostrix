@@ -541,17 +541,37 @@ No: paste BOLT11 or Lightning address manually."
     }
 
     // Admin confirmation popups
-    if let UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) = &app.mode
+    if let UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+        dispute_id,
+        takeover,
+        selected_button,
+    }) = &app.mode
     {
+        let (title, question) = if *takeover {
+            (
+                "🛟 Take Over Dispute",
+                format!("Take over dispute {dispute_id} from the solver holding it?"),
+            )
+        } else {
+            (
+                "👑 Take Dispute",
+                format!("Do you want to take the dispute with id: {dispute_id}?"),
+            )
+        };
         admin_key_confirm::render_admin_key_confirm_with_message(
             f,
-            "👑 Take Dispute",
+            title,
             &dispute_id.to_string(),
             *selected_button,
-            Some(&format!(
-                "Do you want to take the dispute with id: {}?",
-                dispute_id
-            )),
+            Some(&question),
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) = &app.mode {
+        crate::ui::takeover_picker::render_takeover_picker(
+            f,
+            candidates,
+            *cursor,
+            chrono::Utc::now().timestamp(),
         );
     }
     if let UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes {

@@ -31,7 +31,7 @@ pub use execute_finalize_dispute::execute_finalize_dispute;
 pub use execute_orders_info::{execute_orders_info, OrdersInfoSummary};
 pub use execute_restore::{execute_restore_session, restore_completion_result, RestoreSummary};
 pub use execute_send_msg::{execute_dispute, execute_rate_user, execute_send_msg};
-pub use execute_take_dispute::execute_take_dispute;
+pub use execute_take_dispute::{execute_take_dispute, take_error_message, TakeDisputeRejected};
 pub use fetch_scheduler::{
     spawn_fetch_scheduler_loops, start_fetch_scheduler, FetchSchedulerResult,
 };

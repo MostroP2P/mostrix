@@ -41,6 +41,7 @@ pub mod startup_splash;
 pub mod state;
 pub mod status;
 pub mod tabs;
+pub mod takeover_picker;
 pub mod task_alarm_overlay;
 pub mod terminal;
 pub mod terminal_alert;

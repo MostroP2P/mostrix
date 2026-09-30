@@ -39,10 +39,20 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let (popup_width, popup_height) = if compact_chrome {
         (78u16.min(area.width), area.height.saturating_sub(2).max(6))
     } else {
-        let line_count = plain_lines.len().max(1);
+        // Size from wrapped rows so narrow terminals keep the close hint (AGENTS.md).
+        let width = 64u16.min(area.width);
+        let inner_width = width.saturating_sub(2);
+        let rows: usize = plain_lines
+            .iter()
+            .map(|s| wrapped_rows(&Line::raw(s.clone()), inner_width))
+            .sum::<usize>()
+            .max(1)
+            + 1
+            + wrapped_rows(&Line::raw(HELP_CLOSE_HINT), inner_width);
+        let rows = u16::try_from(rows).unwrap_or(u16::MAX);
         (
-            64u16,
-            (line_count as u16 + 4).min(area.height.saturating_sub(2)),
+            width,
+            rows.saturating_add(2).min(area.height.saturating_sub(2)),
         )
     };
 
@@ -89,7 +99,16 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         } else {
             lines.push(help_my_trades_intro());
         }
-        if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
+        if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+            // Close hint takes the last rows; fit the rest (AGENTS.md short terminals).
+            let close_rows = wrapped_rows(&Line::raw(HELP_CLOSE_HINT), inner.width);
+            lines = fit_disputes_in_progress_help(
+                lines,
+                plain_lines,
+                inner.width,
+                usize::from(inner.height).saturating_sub(close_rows),
+            );
+        } else if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
             for s in plain_lines {
                 lines.push(help_shortcut_line(&s));
             }
@@ -184,6 +203,51 @@ fn settings_instruction_block_style() -> (Style, Style) {
         .add_modifier(Modifier::BOLD);
     let body = Style::default().fg(Color::Gray);
     (title, body)
+}
+
+/// Rows `line` takes once wrapped to `width` (same wrap as the popup body).
+fn wrapped_rows(line: &Line<'static>, width: u16) -> usize {
+    Paragraph::new(line.clone())
+        .wrap(Wrap { trim: true })
+        .line_count(width)
+}
+
+/// Disputes in Progress help within `rows` rendered rows at `width`: the
+/// intro goes first when space is short, then trailing shortcuts, replaced by
+/// a "…" line so the user knows a taller terminal shows the rest.
+fn fit_disputes_in_progress_help(
+    intro: Vec<Line<'static>>,
+    shortcuts: Vec<String>,
+    width: u16,
+    rows: usize,
+) -> Vec<Line<'static>> {
+    let height =
+        |lines: &[Line<'static>]| -> usize { lines.iter().map(|l| wrapped_rows(l, width)).sum() };
+    let shortcut_lines: Vec<Line<'static>> =
+        shortcuts.iter().map(|s| help_shortcut_line(s)).collect();
+    if height(&intro) + height(&shortcut_lines) <= rows {
+        return intro.into_iter().chain(shortcut_lines).collect();
+    }
+    if height(&shortcut_lines) <= rows {
+        return shortcut_lines;
+    }
+    let more = Line::from(Span::styled(
+        HELP_MORE_ON_TALLER_TERMINAL,
+        Style::default().fg(Color::DarkGray),
+    ));
+    let budget = rows.saturating_sub(wrapped_rows(&more, width));
+    let mut used = 0;
+    let mut lines: Vec<Line<'static>> = shortcut_lines
+        .into_iter()
+        .take_while(|l| {
+            used += wrapped_rows(l, width);
+            used <= budget
+        })
+        .collect();
+    if height(&lines) + wrapped_rows(&more, width) <= rows {
+        lines.push(more);
+    }
+    lines
 }
 
 fn help_disputes_in_progress_intro() -> Line<'static> {
@@ -473,6 +537,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_END_BOTTOM.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
+                HELP_CTRL_T_TAKEOVER.to_string(),
             ];
             if !is_finalized {
                 lines.push(HELP_DIP_SHIFT_I_INPUT.to_string());
@@ -490,6 +555,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             vec![
                 HELP_DP_ENTER_TAKE.to_string(),
                 HELP_DP_SELECT_DISPUTE.to_string(),
+                HELP_CTRL_T_TAKEOVER.to_string(),
             ],
         ),
         Tab::Admin(AdminTab::Observer) => (
@@ -661,6 +727,78 @@ mod help_content_tests {
             assert!(
                 buffer_contains(buf, expected),
                 "missing {expected:?} from compact My Trades help"
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_tabs_help_lists_the_takeover_shortcut() {
+        for tab in [
+            Tab::Admin(AdminTab::DisputesPending),
+            Tab::Admin(AdminTab::DisputesInProgress),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            let app = AppState::new(UserRole::Admin);
+
+            terminal.draw(|f| render_help_popup(f, &app, tab)).unwrap();
+
+            assert!(
+                buffer_contains(terminal.backend().buffer(), "Ctrl+T"),
+                "missing Ctrl+T in {tab:?} help"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_pending_disputes_help_keeps_the_close_hint() {
+        for (width, height) in [(40, 12), (30, 12), (80, 12)] {
+            let app = AppState::new(UserRole::Admin);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesPending)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            // The hint may wrap, so check its head and tail separately.
+            assert!(
+                buffer_contains(buf, "Esc, Enter") && buffer_contains(buf, "close"),
+                "close hint clipped at {width}x{height}:\n{}",
+                buffer_text(buf)
+            );
+            assert!(
+                buffer_contains(buf, "Ctrl+T"),
+                "Ctrl+T shortcut missing at {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_disputes_in_progress_help_keeps_the_close_hint() {
+        use crate::models::AdminDispute;
+        for (width, height) in [(80, 18), (80, 17), (80, 12), (40, 12)] {
+            let mut app = AppState::new(UserRole::Admin);
+            app.admin_disputes_in_progress = vec![AdminDispute {
+                dispute_id: "d1".into(),
+                status: Some("in-progress".into()),
+                ..Default::default()
+            }];
+            app.selected_dispute_id = Some("d1".into());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesInProgress)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            assert!(
+                buffer_contains(buf, HELP_CLOSE_HINT),
+                "close hint clipped at {width}x{height}:\n{}",
+                buffer_text(buf)
+            );
+            assert!(
+                buffer_contains(buf, "Tab:"),
+                "first shortcut missing at {width}x{height}"
             );
         }
     }

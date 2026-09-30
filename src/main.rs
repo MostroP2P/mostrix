@@ -83,7 +83,7 @@ async fn apply_order_result(
     }
 
     let is_dispute_related = match &result {
-        OperationResult::AdminDisputeDeleted { .. } => true,
+        OperationResult::AdminDisputeDeleted { .. } | OperationResult::DisputeTaken { .. } => true,
         OperationResult::Info(msg) => {
             (msg.contains("Dispute") && msg.contains("taken successfully"))
                 || msg.contains("Dispute finalized")

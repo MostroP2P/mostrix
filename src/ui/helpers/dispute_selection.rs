@@ -12,7 +12,7 @@ use mostro_core::prelude::{Dispute, DisputeStatus};
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
-use crate::ui::{AppState, DisputeFilter};
+use crate::ui::{AdminMode, AdminTab, AppState, ChatParty, DisputeFilter, Tab, UiMode};
 
 /// Pending (initiated) disputes as `(original_index, dispute)` pairs.
 pub fn get_initiated_disputes(disputes: &[Dispute]) -> Vec<(usize, Dispute)> {
@@ -183,10 +183,59 @@ pub fn retain_closed_displayed_dispute(
     }
 }
 
+/// After taking a dispute over: show it in Disputes in Progress, selected,
+/// on the buyer chat, so the solver can write to the parties right away.
+/// An unsent draft belonged to the previously selected dispute: drop it so
+/// Enter cannot send it to the new buyer.
+pub fn open_taken_dispute(app: &mut AppState, dispute_id: &str) {
+    app.admin_chat_input.clear();
+    app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+    app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+    app.dispute_filter = DisputeFilter::InProgress;
+    app.selected_dispute_id = Some(dispute_id.to_string());
+    app.active_chat_party = ChatParty::Buyer;
+    app.admin_show_solver_dms = false;
+    app.admin_chat_selected_message_idx = None;
+    app.admin_chat_scroll_tracker = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::UserRole;
+
+    #[test]
+    fn a_taken_over_dispute_opens_selected_on_the_buyer_chat() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty, Tab, UiMode};
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesPending);
+        app.dispute_filter = DisputeFilter::Finalized;
+        app.admin_show_solver_dms = true;
+        app.active_chat_party = ChatParty::Seller;
+
+        open_taken_dispute(&mut app, "d-new");
+
+        assert_eq!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+        assert_eq!(app.dispute_filter, DisputeFilter::InProgress);
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("d-new"));
+        assert_eq!(app.active_chat_party, ChatParty::Buyer);
+        assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn a_draft_for_the_previous_dispute_is_not_carried_over() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_dispute_id = Some("d-old".to_string());
+        app.admin_chat_input = "for the old seller".to_string();
+
+        open_taken_dispute(&mut app, "d-new");
+
+        assert!(app.admin_chat_input.is_empty());
+    }
 
     fn dispute(id: &str, status: &str) -> AdminDispute {
         AdminDispute {

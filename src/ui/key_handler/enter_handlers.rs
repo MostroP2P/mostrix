@@ -45,9 +45,9 @@ use zeroize::Zeroizing;
 
 use crate::settings::load_settings_from_disk;
 use crate::ui::key_handler::admin_handlers::{
-    begin_confirm_recover_selection, execute_delete_admin_dispute_action,
-    execute_finalize_dispute_action, execute_recover_taken_disputes_action,
-    execute_take_dispute_action, handle_enter_admin_mode,
+    admin_dispute_home_mode, begin_confirm_recover_selection, choose_takeover_candidate,
+    execute_delete_admin_dispute_action, execute_finalize_dispute_action,
+    execute_recover_taken_disputes_action, execute_take_dispute_action, handle_enter_admin_mode,
 };
 use crate::ui::key_handler::confirmation::{
     create_key_input_state, handle_confirmation_enter, handle_input_to_confirmation,
@@ -862,13 +862,17 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 true
             }
         }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute_id, selected_button)) => {
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+            dispute_id,
+            takeover,
+            selected_button,
+        }) => {
             if selected_button {
                 // YES selected - take the dispute
-                execute_take_dispute_action(app, dispute_id, ctx);
+                execute_take_dispute_action(app, dispute_id, takeover, ctx);
             } else {
-                // NO selected - go back to normal mode
-                app.mode = default_mode;
+                // NO selected - back to the dispute tab's resting mode
+                app.mode = admin_dispute_home_mode(app);
             }
             true
         }
@@ -878,6 +882,10 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             checked,
         }) => {
             begin_confirm_recover_selection(app, candidates, cursor, checked);
+            true
+        }
+        UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) => {
+            choose_takeover_candidate(app, &candidates, cursor);
             true
         }
         UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
@@ -1502,7 +1510,11 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
         };
         if let Some(dispute) = selected_pending_dispute(app, &disputes_lock) {
-            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute(dispute.id, true));
+            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+                dispute_id: dispute.id,
+                takeover: false,
+                selected_button: true,
+            });
             // Default to YES
         }
     } else if let Tab::User(UserTab::Messages) = app.active_tab {

@@ -14,6 +14,47 @@ use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
 
+/// Mostro answered `CantDo` to `AdminTakeDispute`.
+#[derive(Debug)]
+pub struct TakeDisputeRejected {
+    pub dispute_id: Uuid,
+    pub reason: Option<CantDoReason>,
+}
+
+impl std::fmt::Display for TakeDisputeRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match &self.reason {
+            Some(r) => crate::util::types::get_cant_do_description(r),
+            None => "rejected (no reason)".to_string(),
+        };
+        write!(
+            f,
+            "Mostro rejected take dispute {}: {}",
+            self.dispute_id, reason
+        )
+    }
+}
+
+impl std::error::Error for TakeDisputeRejected {}
+
+/// What to tell the solver when taking `dispute_id` failed. mostrod refuses a
+/// take-over from a solver that can write with `InvalidPubkey`, which alone
+/// reads like a key problem, so take-overs get an explanation.
+pub fn take_error_message(err: &anyhow::Error, takeover: bool) -> String {
+    match err.downcast_ref::<TakeDisputeRejected>() {
+        Some(TakeDisputeRejected {
+            dispute_id,
+            reason: Some(CantDoReason::InvalidPubkey),
+        }) if takeover => format!(
+            "Mostro refused to let you take over dispute {dispute_id}. A take-over only works \
+             on a dispute held by a read-only solver (such as Serbero), by a solver with write \
+             permission; the current holder may be able to write, or this key may lack write \
+             permission."
+        ),
+        _ => err.to_string(),
+    }
+}
+
 /// Take a dispute as an admin.
 ///
 /// This function sends an `AdminTakeDispute` message to the Mostro daemon
@@ -193,15 +234,13 @@ pub async fn execute_take_dispute(
             }
         } else if inner_message.action == Action::CantDo {
             let reason = match &inner_message.payload {
-                Some(Payload::CantDo(Some(r))) => crate::util::types::get_cant_do_description(r),
-                Some(Payload::CantDo(None)) => "rejected (no reason)".to_string(),
-                _ => "rejected".to_string(),
+                Some(Payload::CantDo(reason)) => reason.clone(),
+                _ => None,
             };
-            Err(anyhow::anyhow!(
-                "Mostro rejected take dispute {}: {}",
-                dispute_id,
-                reason
-            ))
+            Err(anyhow::Error::new(TakeDisputeRejected {
+                dispute_id: *dispute_id,
+                reason,
+            }))
         } else {
             Err(anyhow::anyhow!(
                 "Received response with mismatched action. Expected: {:?}, Got: {:?}",
@@ -211,5 +250,53 @@ pub async fn execute_take_dispute(
         }
     } else {
         Err(anyhow::anyhow!("No response received from Mostro"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejected(reason: Option<CantDoReason>) -> anyhow::Error {
+        anyhow::Error::new(TakeDisputeRejected {
+            dispute_id: Uuid::from_u128(9),
+            reason,
+        })
+    }
+
+    #[test]
+    fn a_refused_takeover_explains_who_can_be_taken_over() {
+        let msg = take_error_message(&rejected(Some(CantDoReason::InvalidPubkey)), true);
+
+        assert!(msg.contains("take over"), "{msg}");
+        assert!(msg.contains("read-only"), "{msg}");
+        assert!(msg.contains(&Uuid::from_u128(9).to_string()), "{msg}");
+    }
+
+    #[test]
+    fn a_refused_pending_take_keeps_mostros_reason() {
+        let msg = take_error_message(&rejected(Some(CantDoReason::InvalidPubkey)), false);
+
+        assert_eq!(
+            msg,
+            format!(
+                "Mostro rejected take dispute {}: Invalid public key",
+                Uuid::from_u128(9)
+            )
+        );
+    }
+
+    #[test]
+    fn other_takeover_refusals_show_their_reason() {
+        let msg = take_error_message(&rejected(Some(CantDoReason::NotFound)), true);
+
+        assert!(msg.contains("Resource not found"), "{msg}");
+    }
+
+    #[test]
+    fn transport_errors_are_shown_as_they_are() {
+        let msg = take_error_message(&anyhow::anyhow!("No response received from Mostro"), true);
+
+        assert_eq!(msg, "No response received from Mostro");
     }
 }

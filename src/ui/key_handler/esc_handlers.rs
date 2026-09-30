@@ -248,8 +248,9 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             app.mode = default_mode.clone();
             true
         }
-        UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _)) => {
-            app.mode = default_mode.clone();
+        UiMode::AdminMode(AdminMode::ConfirmTakeDispute { .. })
+        | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. }) => {
+            app.mode = crate::ui::key_handler::admin_handlers::admin_dispute_home_mode(app);
             true
         }
         UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. }) => {
@@ -378,6 +379,46 @@ mod tests {
             app.mode,
             UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
         ));
+    }
+
+    #[test]
+    fn esc_on_takeover_popups_keeps_the_in_progress_chat_usable() {
+        for mode in [
+            AdminMode::SelectTakeoverDispute {
+                candidates: vec![],
+                cursor: 0,
+            },
+            AdminMode::ConfirmTakeDispute {
+                dispute_id: uuid::Uuid::nil(),
+                takeover: true,
+                selected_button: true,
+            },
+        ] {
+            let mut app = AppState::new(UserRole::Admin);
+            app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+            app.mode = UiMode::AdminMode(mode);
+
+            assert!(handle_esc_key(&mut app));
+
+            assert!(matches!(
+                app.mode,
+                UiMode::AdminMode(AdminMode::ManagingDispute)
+            ));
+        }
+    }
+
+    #[test]
+    fn esc_on_the_takeover_picker_from_pending_returns_to_normal() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesPending);
+        app.mode = UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+            candidates: vec![],
+            cursor: 0,
+        });
+
+        assert!(handle_esc_key(&mut app));
+
+        assert!(matches!(app.mode, UiMode::AdminMode(AdminMode::Normal)));
     }
 
     #[test]

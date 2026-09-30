@@ -74,7 +74,10 @@ fn handle_left_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
-        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
             ref mut selected_button,
             ..
@@ -163,7 +166,10 @@ fn handle_right_key(app: &mut AppState, _orders: &Arc<Mutex<Vec<SmallOrder>>>) {
             ..
         })
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, ref mut selected_button))
-        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, ref mut selected_button))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+            ref mut selected_button,
+            ..
+        })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes {
             ref mut selected_button,
             ..
@@ -217,6 +223,14 @@ fn handle_up_key(
     }) = &mut app.mode
     {
         crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), false);
+        return;
+    }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+        candidates,
+        ref mut cursor,
+    }) = &mut app.mode
+    {
+        crate::ui::takeover_picker::move_takeover_cursor(cursor, candidates.len(), false);
         return;
     }
     match &mut app.mode {
@@ -323,9 +337,10 @@ fn handle_up_key(
         | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
-        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)
@@ -382,6 +397,14 @@ fn handle_down_key(
     }) = &mut app.mode
     {
         crate::ui::recover_disputes_picker::move_recover_cursor(cursor, candidates.len(), true);
+        return;
+    }
+    if let UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+        candidates,
+        ref mut cursor,
+    }) = &mut app.mode
+    {
+        crate::ui::takeover_picker::move_takeover_cursor(cursor, candidates.len(), true);
         return;
     }
     match &mut app.mode {
@@ -500,9 +523,10 @@ fn handle_down_key(
         | UiMode::AdminMode(AdminMode::ConfirmAddSolver { .. })
         | UiMode::AdminMode(AdminMode::SetupAdminKey(_))
         | UiMode::AdminMode(AdminMode::ConfirmAdminKey(_, _))
-        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute(_, _))
+        | UiMode::AdminMode(AdminMode::ConfirmTakeDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingTakeDispute(_))
         | UiMode::AdminMode(AdminMode::SelectRecoverTakenDisputes { .. })
+        | UiMode::AdminMode(AdminMode::SelectTakeoverDispute { .. })
         | UiMode::AdminMode(AdminMode::ConfirmRecoverTakenDisputes { .. })
         | UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute { .. })
         | UiMode::AdminMode(AdminMode::WaitingRecoverTakenDisputes)

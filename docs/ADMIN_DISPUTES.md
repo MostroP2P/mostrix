@@ -27,6 +27,7 @@ Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `
 
 - **View dispute details**: Dispute ID, status, and **Created** time — the kind-38386 open-time **tag** from Mostro's SQLite (`disputes.created_at`). Prefer `published_at` (current name; [mostro#1001](https://github.com/MostroP2P/mostro/pull/1001)), then the legacy `created_at` tag ([mostro#878](https://github.com/MostroP2P/mostro/pull/878), v0.18.5–rename), then Nostr `event.created_at` (last publish) when neither tag is usable. The Created column drops on narrow terminals.
 - **Take a dispute**: Select a dispute and press Enter to take ownership
+- **Take over from Serbero**: **Ctrl+T** lists `in-progress` disputes Serbero wrote about (see [Taking over a dispute from Serbero](#taking-over-a-dispute-from-serbero-ctrlt))
 - **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
 - **Scrolling**: persistent `disputes_table_state` + `render_table_list_scrollbar` (same offset/track pattern as the Orders tab)
 
@@ -89,6 +90,7 @@ The interface is divided into three main sections:
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
 - **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
+- **Ctrl+T**: Take over a dispute Serbero is mediating (also on Disputes Pending); see below
 - **PageUp/PageDown**: Scroll chat history (or the SERBERO pane)
 - **End**: Jump to bottom of chat (latest messages); in SERBERO, back to the newest message
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -336,6 +338,19 @@ sequenceDiagram
 - **Linking**: the dispute is the message `id` (`MessageKind.id`); older Serbero messages fall back to the first UUID in their first two lines. The subject is what follows `Dispute <id> · ` on the first line.
 - **Storage**: rows in `solver_dms`, scoped to the admin key they were written to (see [DATABASE.md](DATABASE.md)); the last 30 days for the current key, from senders still in `trusted_dm_senders`, are loaded at startup and whenever the admin key changes. Live messages queued for a previous key or a no-longer-trusted sender are dropped. On short terminals the pane also takes the read-only input's rows. A session wipe deletes them.
 - **UI**: the SERBERO pane (third tab next to BUYER/SELLER, with the message count) lists the dispute's messages newest first. Handoffs and failed openings are marked `⚠` because a person has to act. Narrow panes drop timestamps so subjects stay readable. The input is locked while the pane is shown.
+
+#### Taking over a dispute from Serbero (Ctrl+T)
+
+Serbero is a `read` solver: it takes disputes to mediate them, so they leave **Pending** (relay status `in-progress`). mostrod lets a solver with `write` permission take over an `in-progress` dispute held by a read-only solver (`admin_take_dispute.rs`, takeover path).
+
+Press **Ctrl+T** on **Disputes Pending** or **Disputes in Progress** (a Ctrl chord, so it works while the chat input is on):
+
+1. The picker lists disputes with a Serbero message in the last **12 h** (see [Assistant messages](#assistant-messages-serbero)) that the relay shows `in-progress` and that are not in local `admin_disputes`. Disputes with a handoff or failed opening (`⚠`) come first, then the most recent. Each row shows the id, the latest subject and its age; narrow popups keep the short id and subject.
+2. **↑↓** to move, **Enter** opens the usual take confirmation, **Esc** cancels.
+3. On Yes, Mostrix sends `AdminTakeDispute` (`execute_take_dispute`). On `AdminTookDispute` the `SolverDisputeInfo` is saved, both party chats are tracked, and Mostrix switches to **Disputes in Progress** with the dispute selected on the buyer chat. Serbero stops writing when it sees the new `in-progress` revision.
+4. If the holder has `write` permission (or this key is not a write solver), mostrod answers `CantDo(InvalidPubkey)`; Mostrix explains that only a dispute held by a read-only solver can be taken over, by a write solver. Other refusals show Mostro's reason.
+
+With no candidates, an info popup explains that the list comes from Serbero's messages (`trusted_dm_senders`). **Shift+R** remains the manual path for in-progress disputes without a Serbero message.
 
 #### Recovering a missing taken dispute (Shift+R)
 

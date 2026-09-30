@@ -9,11 +9,12 @@ use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::orders::OperationResult;
-use crate::ui::{AddSolverState, AdminMode, AppState, UiMode, UserRole};
+use crate::ui::takeover_picker::{takeover_candidates, TakeoverCandidate};
+use crate::ui::{AddSolverState, AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
     execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
-    orphan_in_progress_dispute_ids, AdminFinalizeAck, BondSlashChoice,
+    orphan_in_progress_dispute_ids, take_error_message, AdminFinalizeAck, BondSlashChoice,
 };
 use mostro_core::prelude::Dispute;
 use std::collections::HashSet;
@@ -23,10 +24,13 @@ use uuid::Uuid;
 /// Helper function to execute taking a dispute.
 ///
 /// Shared by the Enter-key confirmation handler to avoid code duplication.
+/// `takeover` comes from where the take started (Ctrl+T picker) and picks
+/// the post-take navigation and the refusal wording.
 /// Sets the UI mode to waiting and spawns an async task to take the dispute.
 pub(crate) fn execute_take_dispute_action(
     app: &mut AppState,
     dispute_id: Uuid,
+    takeover: bool,
     ctx: &EnterKeyContext<'_>,
 ) {
     app.mode = UiMode::AdminMode(AdminMode::WaitingTakeDispute(dispute_id));
@@ -63,14 +67,15 @@ pub(crate) fn execute_take_dispute_action(
         .await
         {
             Ok(_) => {
-                let _ = result_tx.send(OperationResult::Info(format!(
-                    "✅ Dispute {} taken successfully!",
-                    dispute_id
-                )));
+                let _ = result_tx.send(OperationResult::DisputeTaken {
+                    dispute_id,
+                    message: format!("✅ Dispute {} taken successfully!", dispute_id),
+                    takeover,
+                });
             }
             Err(e) => {
                 log::error!("Failed to take dispute {}: {}", dispute_id, e);
-                let _ = result_tx.send(OperationResult::Error(e.to_string()));
+                let _ = result_tx.send(OperationResult::Error(take_error_message(&e, takeover)));
             }
         }
     });
@@ -109,6 +114,70 @@ pub(crate) fn begin_recover_taken_disputes(
         cursor: 0,
         checked,
     });
+}
+
+/// Open the Ctrl+T take-over picker, or explain why it is empty.
+pub(crate) fn begin_takeover_picker(app: &mut AppState, disputes: &Arc<Mutex<Vec<Dispute>>>) {
+    let Ok(relay) = disputes.lock() else {
+        app.mode = UiMode::operation_result(OperationResult::Error(
+            "Failed to read live disputes list".to_string(),
+        ));
+        return;
+    };
+    let local_ids: HashSet<String> = app
+        .admin_disputes_in_progress
+        .iter()
+        .map(|d| d.dispute_id.clone())
+        .collect();
+    let candidates = takeover_candidates(
+        &app.solver_dms,
+        &relay,
+        &local_ids,
+        chrono::Utc::now().timestamp(),
+    );
+    drop(relay);
+
+    if candidates.is_empty() {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "Nothing to take over: no in-progress dispute that Serbero wrote to you about \
+             in the last 12 h is missing from your In Progress list. Serbero's messages are \
+             read from trusted_dm_senders in settings.toml."
+                .to_string(),
+        ));
+        return;
+    }
+    app.mode = UiMode::AdminMode(AdminMode::SelectTakeoverDispute {
+        candidates,
+        cursor: 0,
+    });
+}
+
+/// Mode to return to after a take popup is dismissed: Disputes in Progress
+/// keeps managing its dispute (chat, scroll, Shift shortcuts), others go Normal.
+pub(crate) fn admin_dispute_home_mode(app: &AppState) -> UiMode {
+    if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress)) {
+        UiMode::AdminMode(AdminMode::ManagingDispute)
+    } else {
+        UiMode::AdminMode(AdminMode::Normal)
+    }
+}
+
+/// Enter on the take-over picker: confirm taking the highlighted dispute.
+pub(crate) fn choose_takeover_candidate(
+    app: &mut AppState,
+    candidates: &[TakeoverCandidate],
+    cursor: usize,
+) {
+    match candidates.get(cursor) {
+        Some(candidate) => {
+            app.mode = UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+                dispute_id: candidate.dispute_id,
+                takeover: true,
+                selected_button: true,
+            });
+        }
+        None => app.mode = admin_dispute_home_mode(app),
+    }
 }
 
 /// Advance from the orphan picker into a Yes/No confirm for the selected IDs.
@@ -315,6 +384,8 @@ pub(crate) fn execute_recover_taken_disputes_action(
 /// Helper function to execute adding a solver.
 ///
 /// Shared by the Enter-key confirmation handler to avoid code duplication.
+/// `takeover` comes from where the take started (Ctrl+T picker) and picks
+/// the post-take navigation and the refusal wording.
 /// Sets the UI mode to waiting and spawns an async task to add the solver.
 pub(crate) fn execute_add_solver_action(
     app: &mut AppState,
@@ -555,6 +626,86 @@ mod tests {
             }
             other => panic!("expected confirm mode, got {other:?}"),
         }
+    }
+
+    fn serbero_app(dispute: Uuid) -> (AppState, Arc<Mutex<Vec<Dispute>>>) {
+        use crate::util::solver_dms::{index_by_dispute, SolverDm};
+        let mut app = AppState::new(UserRole::Admin);
+        app.solver_dms = index_by_dispute(vec![SolverDm {
+            event_id: "e1".into(),
+            sender_pubkey: String::new(),
+            recipient_pubkey: String::new(),
+            dispute_id: Some(dispute.to_string()),
+            subject: "handed off: conflicting_claims".into(),
+            text: String::new(),
+            created_at: chrono::Utc::now().timestamp() - 60,
+        }]);
+        let relay = vec![Dispute {
+            id: dispute,
+            status: "in-progress".into(),
+            ..Default::default()
+        }];
+        (app, Arc::new(Mutex::new(relay)))
+    }
+
+    #[test]
+    fn ctrl_t_lists_in_progress_disputes_serbero_wrote_about() {
+        let dispute = Uuid::from_u128(42);
+        let (mut app, relay) = serbero_app(dispute);
+
+        begin_takeover_picker(&mut app, &relay);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) => {
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(candidates[0].dispute_id, dispute);
+                assert_eq!(*cursor, 0);
+            }
+            other => panic!("expected take-over picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_t_skips_disputes_already_taken_locally() {
+        let dispute = Uuid::from_u128(42);
+        let (mut app, relay) = serbero_app(dispute);
+        app.admin_disputes_in_progress = vec![AdminDispute {
+            dispute_id: dispute.to_string(),
+            ..Default::default()
+        }];
+
+        begin_takeover_picker(&mut app, &relay);
+
+        match &app.mode {
+            UiMode::OperationResult(result) => match result.as_ref() {
+                OperationResult::Info(msg) => assert!(msg.contains("trusted_dm_senders"), "{msg}"),
+                other => panic!("expected info, got {other:?}"),
+            },
+            other => panic!("expected info popup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choosing_a_candidate_asks_to_confirm_the_take() {
+        let dispute = Uuid::from_u128(42);
+        let (mut app, relay) = serbero_app(dispute);
+        begin_takeover_picker(&mut app, &relay);
+        let UiMode::AdminMode(AdminMode::SelectTakeoverDispute { candidates, cursor }) =
+            app.mode.clone()
+        else {
+            panic!("picker not open");
+        };
+
+        choose_takeover_candidate(&mut app, &candidates, cursor);
+
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ConfirmTakeDispute {
+                dispute_id,
+                takeover: true,
+                selected_button: true,
+            }) if dispute_id == dispute
+        ));
     }
 
     #[test]
