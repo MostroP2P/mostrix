@@ -1068,7 +1068,9 @@ pub async fn respawn_solver_dm_listener(
 ) {
     if let Some(old) = handle.take() {
         old.abort();
-        // Abort skips the task's own cleanup; free its relay subscription here.
+        // Wait for the old task to stop so it cannot re-subscribe afterwards;
+        // abort skips its own cleanup, so free the relay subscription here.
+        let _ = old.await;
         crate::util::solver_dms::listener::unsubscribe(client).await;
     }
     let admin_keys = match (&app.user_role, &app.admin_keys) {
@@ -1078,12 +1080,13 @@ pub async fn respawn_solver_dm_listener(
             return;
         }
     };
-    app.solver_dms =
-        crate::util::solver_dms::load_recent_solver_dms(pool, &admin_keys.public_key()).await;
     let configured = load_settings_from_disk()
         .map(|s| s.trusted_dm_senders)
         .unwrap_or_default();
     let trusted = crate::util::solver_dms::parse_trusted_senders(&configured);
+    app.solver_dms =
+        crate::util::solver_dms::load_recent_solver_dms(pool, &admin_keys.public_key(), &trusted)
+            .await;
     *handle = crate::util::solver_dms::listener::spawn_solver_dm_listener(
         client.clone(),
         admin_keys,

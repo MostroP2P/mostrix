@@ -44,15 +44,22 @@ impl SolverDm {
 /// Stored messages younger than this are loaded into memory at startup.
 pub const LOAD_WINDOW_SECS: i64 = 30 * 24 * 3600;
 
-/// Stored messages to `recipient` from the last [`LOAD_WINDOW_SECS`],
+/// Stored messages to `recipient` from the last [`LOAD_WINDOW_SECS`] written
+/// by a currently `trusted` sender (a removed sender's rows stay hidden),
 /// indexed by dispute.
 pub async fn load_recent_solver_dms(
     pool: &sqlx::SqlitePool,
     recipient: &PublicKey,
+    trusted: &[PublicKey],
 ) -> SolverDmsByDispute {
     let since = chrono::Utc::now().timestamp() - LOAD_WINDOW_SECS;
+    let trusted: Vec<String> = trusted.iter().map(PublicKey::to_hex).collect();
     match store::load_since(pool, &recipient.to_hex(), since).await {
-        Ok(dms) => index_by_dispute(dms),
+        Ok(dms) => index_by_dispute(
+            dms.into_iter()
+                .filter(|dm| trusted.contains(&dm.sender_pubkey))
+                .collect(),
+        ),
         Err(e) => {
             log::warn!("Failed to load stored solver DMs: {e}");
             SolverDmsByDispute::new()
@@ -85,6 +92,20 @@ pub fn add_to_index(index: &mut SolverDmsByDispute, dm: SolverDm) -> bool {
     let at = list.partition_point(|d| d.created_at <= dm.created_at);
     list.insert(at, dm);
     true
+}
+
+/// Adds a message the live listener forwarded, unless it was written to
+/// another admin key than `active_recipient` (hex): a listener replaced on a
+/// key reload may still have queued messages for the previous key.
+pub fn add_live_dm(
+    index: &mut SolverDmsByDispute,
+    dm: SolverDm,
+    active_recipient: Option<&str>,
+) -> bool {
+    if active_recipient != Some(dm.recipient_pubkey.as_str()) {
+        return false;
+    }
+    add_to_index(index, dm)
 }
 
 /// Opens `event` as a solver DM when it is a `send-dm` text written by one of
@@ -363,6 +384,43 @@ mod tests {
 
         let d1: Vec<&str> = index["d1"].iter().map(|d| d.event_id.as_str()).collect();
         assert_eq!(d1, ["b", "a"]);
+    }
+
+    #[test]
+    fn a_live_message_for_another_admin_key_is_dropped() {
+        let mut index = SolverDmsByDispute::new();
+        let mut old_key = stored("old", Some("d1"), 10);
+        old_key.recipient_pubkey = "old-admin".into();
+        let mut mine = stored("mine", Some("d1"), 20);
+        mine.recipient_pubkey = "admin".into();
+
+        assert!(!add_live_dm(&mut index, old_key, Some("admin")));
+        assert!(!add_live_dm(&mut index, mine.clone(), None));
+        assert!(add_live_dm(&mut index, mine, Some("admin")));
+
+        assert_eq!(index["d1"].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stored_messages_from_revoked_senders_are_not_loaded() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        store::ensure_table(&pool).await.unwrap();
+        let admin = Keys::generate().public_key();
+        let kept = Keys::generate().public_key();
+        let revoked = Keys::generate().public_key();
+        let now = chrono::Utc::now().timestamp();
+        for (event_id, sender) in [("a", kept), ("b", revoked)] {
+            let mut dm = stored(event_id, Some("d1"), now);
+            dm.sender_pubkey = sender.to_hex();
+            dm.recipient_pubkey = admin.to_hex();
+            store::insert(&pool, &dm).await.unwrap();
+        }
+
+        let index = load_recent_solver_dms(&pool, &admin, &[kept]).await;
+
+        let ids: Vec<&str> = index["d1"].iter().map(|d| d.event_id.as_str()).collect();
+        assert_eq!(ids, ["a"]);
+        assert!(load_recent_solver_dms(&pool, &admin, &[]).await.is_empty());
     }
 
     #[test]

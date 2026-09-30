@@ -595,20 +595,27 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             if serbero_active {
                 let dispute_id = selected_dispute.dispute_id.clone();
-                render_solver_dms(f, main_chunks[2], app, &dispute_id);
-                f.render_widget(
-                    Paragraph::new(SOLVER_DMS_READ_ONLY)
-                        .style(Style::default().fg(Color::Gray))
-                        .block(
-                            Block::default()
-                                .title("Message")
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .border_style(Style::default().fg(Color::Gray)),
-                        )
-                        .wrap(ratatui::widgets::Wrap { trim: true }),
-                    main_chunks[3],
-                );
+                if main_chunks[2].height < MIN_SERBERO_PANE_HEIGHT {
+                    // Short terminal: the messages matter more than the
+                    // read-only notice, so the pane takes the input's rows too.
+                    let pane = main_chunks[2].union(main_chunks[3]);
+                    render_solver_dms(f, pane, app, &dispute_id);
+                } else {
+                    render_solver_dms(f, main_chunks[2], app, &dispute_id);
+                    f.render_widget(
+                        Paragraph::new(SOLVER_DMS_READ_ONLY)
+                            .style(Style::default().fg(Color::Gray))
+                            .block(
+                                Block::default()
+                                    .title("Message")
+                                    .borders(Borders::ALL)
+                                    .border_type(BorderType::Rounded)
+                                    .border_style(Style::default().fg(Color::Gray)),
+                            )
+                            .wrap(ratatui::widgets::Wrap { trim: true }),
+                        main_chunks[3],
+                    );
+                }
             } else {
                 // Chat History - Display chat messages using ScrollView
                 let dispute_id_key = &selected_dispute.dispute_id;
@@ -1202,6 +1209,9 @@ mod tests {
     }
 }
 
+/// Below this many rows the SERBERO pane also takes the read-only input's rows.
+const MIN_SERBERO_PANE_HEIGHT: u16 = 4;
+
 /// Shortens a party-tab line (pubkey or label) to fit a tab of `tab_width`
 /// columns: three tabs share the row, so narrow panels cut it with `…`.
 fn fit_party_pubkey(display: &str, tab_width: u16) -> String {
@@ -1301,6 +1311,22 @@ mod solver_dms_pane_tests {
         draw(&mut app);
 
         assert!(!app.admin_show_solver_dms);
+    }
+
+    #[test]
+    fn a_short_terminal_still_shows_the_serbero_subject() {
+        let mut app = app_with_handoff();
+        app.admin_show_solver_dms = true;
+        let mut terminal = Terminal::new(TestBackend::new(120, 17)).expect("terminal");
+
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        assert!(buffer_contains(
+            terminal.backend().buffer(),
+            "handed off: conflicting_claims"
+        ));
     }
 
     #[test]

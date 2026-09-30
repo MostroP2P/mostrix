@@ -696,7 +696,8 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             solver_dm = solver_dm_rx.recv() => {
                 if let Some(dm) = solver_dm {
-                    crate::util::solver_dms::add_to_index(&mut app.solver_dms, dm);
+                    let active = app.admin_keys.as_ref().map(|k| k.public_key().to_hex());
+                    crate::util::solver_dms::add_live_dm(&mut app.solver_dms, dm, active.as_deref());
                 }
             }
             user_order_chat_result = user_order_chat_updates_rx.recv() => {
@@ -900,6 +901,15 @@ async fn main() -> Result<(), anyhow::Error> {
                             if app.pending_admin_disputes_reload {
                                 app.pending_admin_disputes_reload = false;
                                 load_admin_disputes_at_startup(&pool, &mut app).await;
+                                // A new admin key has its own Serbero inbox and listener.
+                                respawn_solver_dm_listener(
+                                    &mut app,
+                                    &client,
+                                    &pool,
+                                    &mut solver_dm_listener_handle,
+                                    &solver_dm_tx,
+                                )
+                                .await;
                             }
                         }
                         Some(false) => break,   // Exit requested (q key)
