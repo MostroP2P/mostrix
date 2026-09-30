@@ -39,10 +39,20 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let (popup_width, popup_height) = if compact_chrome {
         (78u16.min(area.width), area.height.saturating_sub(2).max(6))
     } else {
-        let line_count = plain_lines.len().max(1);
+        // Size from wrapped rows so narrow terminals keep the close hint (AGENTS.md).
+        let width = 64u16.min(area.width);
+        let inner_width = width.saturating_sub(2);
+        let rows: usize = plain_lines
+            .iter()
+            .map(|s| wrapped_rows(&Line::raw(s.clone()), inner_width))
+            .sum::<usize>()
+            .max(1)
+            + 1
+            + wrapped_rows(&Line::raw(HELP_CLOSE_HINT), inner_width);
+        let rows = u16::try_from(rows).unwrap_or(u16::MAX);
         (
-            64u16,
-            (line_count as u16 + 4).min(area.height.saturating_sub(2)),
+            width,
+            rows.saturating_add(2).min(area.height.saturating_sub(2)),
         )
     };
 
@@ -735,6 +745,30 @@ mod help_content_tests {
             assert!(
                 buffer_contains(terminal.backend().buffer(), "Ctrl+T"),
                 "missing Ctrl+T in {tab:?} help"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_pending_disputes_help_keeps_the_close_hint() {
+        for (width, height) in [(40, 12), (30, 12), (80, 12)] {
+            let app = AppState::new(UserRole::Admin);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
+            terminal
+                .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesPending)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            // The hint may wrap, so check its head and tail separately.
+            assert!(
+                buffer_contains(buf, "Esc, Enter") && buffer_contains(buf, "close"),
+                "close hint clipped at {width}x{height}:\n{}",
+                buffer_text(buf)
+            );
+            assert!(
+                buffer_contains(buf, "Ctrl+T"),
+                "Ctrl+T shortcut missing at {width}x{height}"
             );
         }
     }
