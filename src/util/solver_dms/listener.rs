@@ -111,7 +111,12 @@ async fn backfill_then_follow(
     tx: &UnboundedSender<SolverDm>,
 ) -> anyhow::Result<()> {
     let since = history_since(
-        store::latest_created_at(pool, &admin_keys.public_key().to_hex()).await?,
+        store::resume_cursor(
+            pool,
+            &admin_keys.public_key().to_hex(),
+            &trusted.iter().map(PublicKey::to_hex).collect::<Vec<_>>(),
+        )
+        .await?,
         Timestamp::now().as_secs() as i64,
     );
     let history = client

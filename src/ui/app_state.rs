@@ -282,6 +282,9 @@ pub struct AppState {
     pub admin_chat_last_seen: HashMap<(String, ChatParty), AdminChatLastSeen>,
     /// Messages from trusted assistants (Serbero), by dispute id.
     pub solver_dms: crate::util::solver_dms::SolverDmsByDispute,
+    /// Admin key and senders whose live messages the inbox accepts; `None`
+    /// outside admin mode or without an admin key.
+    pub solver_dm_scope: Option<crate::util::solver_dms::InboxScope>,
     /// Disputes In Progress shows the assistant's messages instead of a party chat.
     pub admin_show_solver_dms: bool,
     /// Line offset of the assistant messages view.
@@ -432,6 +435,7 @@ impl AppState {
             admin_chat_scroll_tracker: None,
             admin_chat_last_seen: HashMap::new(),
             solver_dms: HashMap::new(),
+            solver_dm_scope: None,
             admin_show_solver_dms: false,
             solver_dm_scroll: 0,
             solver_dm_scroll_dispute: None,

@@ -104,14 +104,30 @@ pub async fn load_since(pool: &SqlitePool, recipient: &str, since: i64) -> Resul
         .collect())
 }
 
-/// Newest stored `created_at` for `recipient`, used to resume the relay fetch.
-pub async fn latest_created_at(pool: &SqlitePool, recipient: &str) -> Result<Option<i64>> {
-    let (latest,): (Option<i64>,) =
-        sqlx::query_as("SELECT MAX(created_at) FROM solver_dms WHERE recipient_pubkey = ?")
-            .bind(recipient)
-            .fetch_one(pool)
-            .await?;
-    Ok(latest)
+/// Where the relay fetch for `recipient` resumes: the oldest of each trusted
+/// sender's newest stored message, so every sender is caught up. `None`
+/// (fetch the whole history window) when a trusted sender has nothing stored
+/// yet, e.g. one just added to `trusted_dm_senders`, or nobody is trusted.
+pub async fn resume_cursor(
+    pool: &SqlitePool,
+    recipient: &str,
+    trusted: &[String],
+) -> Result<Option<i64>> {
+    let newest: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT sender_pubkey, MAX(created_at) FROM solver_dms \
+         WHERE recipient_pubkey = ? GROUP BY sender_pubkey",
+    )
+    .bind(recipient)
+    .fetch_all(pool)
+    .await?;
+    let mut cursor: Option<i64> = None;
+    for sender in trusted {
+        let Some((_, at)) = newest.iter().find(|(s, _)| s == sender) else {
+            return Ok(None);
+        };
+        cursor = Some(cursor.map_or(*at, |c| c.min(*at)));
+    }
+    Ok(cursor)
 }
 
 #[cfg(test)]
@@ -176,14 +192,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn latest_created_at_tracks_the_newest_message() {
+    async fn the_resume_cursor_tracks_the_newest_message() {
         let pool = pool().await;
-        assert_eq!(latest_created_at(&pool, ME).await.unwrap(), None);
+        assert_eq!(
+            resume_cursor(&pool, ME, &["ab".repeat(32)]).await.unwrap(),
+            None
+        );
 
         insert(&pool, &dm("a", None, 10)).await.unwrap();
         insert(&pool, &dm("b", None, 30)).await.unwrap();
 
-        assert_eq!(latest_created_at(&pool, ME).await.unwrap(), Some(30));
+        assert_eq!(
+            resume_cursor(&pool, ME, &["ab".repeat(32)]).await.unwrap(),
+            Some(30)
+        );
     }
 
     #[tokio::test]
@@ -214,7 +236,38 @@ mod tests {
             .collect();
 
         assert_eq!(ids, ["mine"]);
-        assert_eq!(latest_created_at(&pool, ME).await.unwrap(), Some(100));
+        assert_eq!(
+            resume_cursor(&pool, ME, &["ab".repeat(32)]).await.unwrap(),
+            Some(100)
+        );
+    }
+
+    fn from(sender: &str, event_id: &str, created_at: i64) -> SolverDm {
+        SolverDm {
+            sender_pubkey: sender.to_string(),
+            ..dm(event_id, None, created_at)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_resume_cursor_waits_for_the_least_recent_trusted_sender() {
+        let pool = pool().await;
+        insert(&pool, &from("a", "a1", 500)).await.unwrap();
+        insert(&pool, &from("b", "b1", 200)).await.unwrap();
+        insert(&pool, &from("gone", "g1", 900)).await.unwrap();
+
+        let trusted = ["a".to_string(), "b".to_string()];
+        assert_eq!(resume_cursor(&pool, ME, &trusted).await.unwrap(), Some(200));
+    }
+
+    #[tokio::test]
+    async fn a_newly_trusted_sender_gets_the_full_history() {
+        let pool = pool().await;
+        insert(&pool, &from("a", "a1", 500)).await.unwrap();
+
+        let trusted = ["a".to_string(), "new".to_string()];
+        assert_eq!(resume_cursor(&pool, ME, &trusted).await.unwrap(), None);
+        assert_eq!(resume_cursor(&pool, ME, &[]).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -298,6 +298,14 @@ pub fn toggle_notifications(app: &mut AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Switch the in-memory role and flag the admin reload either way: entering
+/// admin loads disputes and starts the Serbero listener; leaving it stops
+/// the listener (the dispute load is a no-op in user mode).
+fn apply_role_switch(app: &mut AppState, new_role: UserRole) {
+    app.switch_role(new_role);
+    app.pending_admin_disputes_reload = true;
+}
+
 /// Toggle User/Admin from Settings (Enter on "Switch Mode").
 pub fn handle_mode_switch(app: &mut AppState) {
     let new_role = match app.user_role {
@@ -305,11 +313,7 @@ pub fn handle_mode_switch(app: &mut AppState) {
         UserRole::Admin => UserRole::User,
     };
 
-    app.switch_role(new_role);
-
-    if new_role == UserRole::Admin {
-        app.pending_admin_disputes_reload = true;
-    }
+    apply_role_switch(app, new_role);
 
     let role_string = new_role.to_string();
     save_settings_with(
@@ -445,5 +449,25 @@ mod tests {
         let mut expected = default_blossom_servers();
         expected.remove(0);
         assert_eq!(servers, expected);
+    }
+}
+
+#[cfg(test)]
+mod role_switch_tests {
+    use super::*;
+
+    #[test]
+    fn switching_role_either_way_reloads_admin_services() {
+        let mut app = AppState::new(UserRole::Admin);
+
+        apply_role_switch(&mut app, UserRole::User);
+        assert!(app.pending_admin_disputes_reload, "admin → user stops them");
+
+        app.pending_admin_disputes_reload = false;
+        apply_role_switch(&mut app, UserRole::Admin);
+        assert!(
+            app.pending_admin_disputes_reload,
+            "user → admin starts them"
+        );
     }
 }
