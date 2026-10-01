@@ -16,8 +16,12 @@ use mostro_core::transport::unwrap_message_nip44;
 use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
+use crate::ui::AppState;
+
 /// Separates `Dispute <id>` from the subject on a solver message's first line.
 const HEADER_SEPARATOR: &str = " · ";
+/// Starts a handoff subject, followed by its reason (`handed off: flood`).
+const HANDOFF_PREFIX: &str = "handed off:";
 
 /// One `send-dm` text from a trusted sender, as persisted and shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +193,30 @@ pub fn needs_action(subject: &str) -> bool {
     subject.starts_with("handed off") || subject.starts_with("mediation could not start")
 }
 
+/// Human-readable reason of a subject that needs action:
+/// `handed off: conflicting_claims` reads `conflicting claims`; a subject
+/// without a reason (`mediation could not start`) reads as written.
+pub fn handoff_reason(subject: &str) -> String {
+    subject
+        .strip_prefix(HANDOFF_PREFIX)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or(subject)
+        .replace('_', " ")
+}
+
+/// Handles a message from the live listener: adds it to the inbox (see
+/// [`add_live_dm`]) and, when it is new and asks a person to act, records an
+/// out-of-focus alert (bell, sound, title badge) as a new chat message does.
+/// The Disputes Pending banner and tab badge show it on the next frame.
+pub fn apply_live_dm(app: &mut AppState, dm: SolverDm) {
+    let needs_action = dm.needs_action();
+    let created_at = dm.created_at;
+    if add_live_dm(&mut app.solver_dms, dm, app.solver_dm_scope.as_ref()) && needs_action {
+        app.terminal_alert.record_event(created_at);
+    }
+}
+
 /// Parses configured senders (npub or hex), skipping and logging bad entries.
 pub fn parse_trusted_senders(raw: &[String]) -> Vec<PublicKey> {
     raw.iter()
@@ -207,6 +235,7 @@ pub fn parse_trusted_senders(raw: &[String]) -> Vec<PublicKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::UserRole;
     use mostro_core::nip59::WrapOptions;
     use mostro_core::transport::wrap_message_nip44;
 
@@ -348,6 +377,24 @@ mod tests {
     }
 
     #[test]
+    fn handoff_reasons_read_as_words() {
+        assert_eq!(
+            handoff_reason("handed off: conflicting_claims"),
+            "conflicting claims"
+        );
+        assert_eq!(
+            handoff_reason("handed off: self_resolution_stalled"),
+            "self resolution stalled"
+        );
+        assert_eq!(handoff_reason("handed off: flood"), "flood");
+        assert_eq!(
+            handoff_reason("mediation could not start"),
+            "mediation could not start"
+        );
+        assert_eq!(handoff_reason("handed off:"), "handed off:");
+    }
+
+    #[test]
     fn dispute_ids_are_found_in_the_first_two_lines_only() {
         let id = Uuid::parse_str(DISPUTE).unwrap();
         assert_eq!(
@@ -431,6 +478,73 @@ mod tests {
         ));
 
         assert_eq!(index["d1"].len(), 1);
+    }
+
+    /// Admin away from the terminal, inbox scoped to `admin` / `serbero`.
+    fn unfocused_admin() -> AppState {
+        let mut app = AppState::new(UserRole::Admin);
+        app.solver_dm_scope = Some(InboxScope {
+            recipient: "admin".into(),
+            senders: vec!["serbero".into()],
+        });
+        app.terminal_alert.set_focus(false);
+        app
+    }
+
+    fn live(event_id: &str, recipient: &str, subject: &str) -> SolverDm {
+        SolverDm {
+            recipient_pubkey: recipient.into(),
+            sender_pubkey: "serbero".into(),
+            subject: subject.into(),
+            ..stored(event_id, Some("d1"), chrono::Utc::now().timestamp())
+        }
+    }
+
+    #[test]
+    fn a_new_live_handoff_alerts_once() {
+        let mut app = unfocused_admin();
+
+        apply_live_dm(&mut app, live("a", "admin", "handed off: fraud_signal"));
+        apply_live_dm(&mut app, live("a", "admin", "handed off: fraud_signal"));
+
+        assert_eq!(app.solver_dms["d1"].len(), 1);
+        assert_eq!(app.terminal_alert.unread(), 1);
+    }
+
+    #[test]
+    fn a_failed_opening_alerts_like_a_handoff() {
+        let mut app = unfocused_admin();
+
+        apply_live_dm(&mut app, live("a", "admin", "mediation could not start"));
+
+        assert_eq!(app.terminal_alert.unread(), 1);
+    }
+
+    #[test]
+    fn live_messages_that_need_nobody_do_not_alert() {
+        let mut app = unfocused_admin();
+
+        apply_live_dm(&mut app, live("a", "admin", "mediating"));
+        apply_live_dm(
+            &mut app,
+            live("b", "admin", "transcript (18 messages, times UTC)"),
+        );
+
+        assert_eq!(app.solver_dms["d1"].len(), 2);
+        assert_eq!(app.terminal_alert.unread(), 0);
+    }
+
+    #[test]
+    fn a_live_handoff_outside_the_inbox_does_not_alert() {
+        let mut app = unfocused_admin();
+
+        apply_live_dm(
+            &mut app,
+            live("a", "old-admin", "handed off: conflicting_claims"),
+        );
+
+        assert!(app.solver_dms.is_empty());
+        assert_eq!(app.terminal_alert.unread(), 0);
     }
 
     #[tokio::test]

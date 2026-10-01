@@ -28,6 +28,7 @@ Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `
 - **View dispute details**: Dispute ID, status, and **Created** time — the kind-38386 open-time **tag** from Mostro's SQLite (`disputes.created_at`). Prefer `published_at` (current name; [mostro#1001](https://github.com/MostroP2P/mostro/pull/1001)), then the legacy `created_at` tag ([mostro#878](https://github.com/MostroP2P/mostro/pull/878), v0.18.5–rename), then Nostr `event.created_at` (last publish) when neither tag is usable. The Created column drops on narrow terminals.
 - **Take a dispute**: Select a dispute and press Enter to take ownership
 - **Take over from Serbero**: **Ctrl+T** lists `in-progress` disputes Serbero wrote about (see [Taking over a dispute from Serbero](#taking-over-a-dispute-from-serbero-ctrlt))
+- **See Serbero handoffs**: when Serbero handed a dispute to a person, a yellow line above the table says so (see [Serbero handoffs at a glance](#serbero-handoffs-at-a-glance)) and the tab label reads `Disputes Pending 🙋 N` from any tab
 - **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
 - **Scrolling**: persistent `disputes_table_state` + `render_table_list_scrollbar` (same offset/track pattern as the Orders tab)
 
@@ -90,7 +91,7 @@ The interface is divided into three main sections:
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
 - **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
-- **Ctrl+T**: Take over a dispute Serbero is mediating (also on Disputes Pending); see below
+- **Ctrl+T**: Take over a dispute Serbero handed off or is mediating (also on Disputes Pending); see below
 - **PageUp/PageDown**: Scroll chat history (or the SERBERO pane)
 - **End**: Jump to bottom of chat (latest messages); in SERBERO, back to the newest message
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -337,7 +338,7 @@ sequenceDiagram
 - **Filtering** (`parse_solver_dm`): opened with the admin key (`unwrap_message_nip44`, signature checked); only action `send-dm` with a `TextMessage` payload is kept. These texts are never treated as protocol actions.
 - **Linking**: the dispute is the message `id` (`MessageKind.id`); older Serbero messages fall back to the first UUID in their first two lines. The subject is what follows `Dispute <id> · ` on the first line.
 - **Storage**: rows in `solver_dms`, scoped to the admin key they were written to (see [DATABASE.md](DATABASE.md)); the last 30 days for the current key, from senders still in `trusted_dm_senders`, are loaded at startup and whenever the admin key changes. Live messages queued for a previous key or a no-longer-trusted sender are dropped. On short terminals the pane also takes the read-only input's rows. A session wipe deletes them.
-- **UI**: the SERBERO pane (third tab next to BUYER/SELLER, with the message count) lists the dispute's messages newest first. Handoffs and failed openings are marked `⚠` because a person has to act. Narrow panes drop timestamps so subjects stay readable. The input is locked while the pane is shown.
+- **UI**: the SERBERO pane (third tab next to BUYER/SELLER, with the message count) lists the dispute's messages newest first. Handoffs and failed openings are marked `⚠` because a person has to act. Narrow panes drop timestamps so subjects stay readable. The input is locked while the pane is shown. Handoffs of disputes not yet taken also show on **Disputes Pending** and its tab label (see [Serbero handoffs at a glance](#serbero-handoffs-at-a-glance)).
 
 #### Taking over a dispute from Serbero (Ctrl+T)
 
@@ -351,6 +352,16 @@ Press **Ctrl+T** on **Disputes Pending** or **Disputes in Progress** (a Ctrl cho
 4. If the holder has `write` permission (or this key is not a write solver), mostrod answers `CantDo(InvalidPubkey)`; Mostrix explains that only a dispute held by a read-only solver can be taken over, by a write solver. Other refusals show Mostro's reason.
 
 With no candidates, an info popup explains that the list comes from Serbero's messages (`trusted_dm_senders`). **Shift+R** remains the manual path for in-progress disputes without a Serbero message.
+
+#### Serbero handoffs at a glance
+
+A dispute Serbero handed off (`handed off: <reason>`) or could not start mediating (`mediation could not start`) waits for a person, so Mostrix shows it without opening the picker. Both cues show `handoff_candidates` (`src/ui/takeover_picker.rs`): the take-over candidates that need action, worked out once per frame from the same inputs as **Ctrl+T**, so they always list exactly the `⚠` rows the picker shows first.
+
+- **Banner** (`src/ui/tabs/handoff_banner.rs`): a highlighted line above the **Disputes Pending** table, also above an empty list (handed-off disputes are `in-progress`, not table rows). With one dispute it names the short id and the reason, e.g. `🙋 Serbero handed off dispute 4f1c2a9e (conflicting claims) · Ctrl+T to take over`; with several it counts them: `🙋 Serbero handed off 2 disputes · Ctrl+T to take over`. Narrower lines drop `to take over`, then the reason (`🙋 Serbero handed off 4f1c2a9e · Ctrl+T`, `🙋 2 handed off · Ctrl+T`), down to `🙋 Ctrl+T`. The banner only takes a row when the table below keeps its borders and one dispute row; on shorter areas it is left out and the tab badge carries the news.
+- **Tab badge**: the **Disputes Pending** label reads `Disputes Pending 🙋 N` on every admin tab, in yellow while another tab is active (the active tab's highlight shows it in green). It is the first tab, so narrow terminals that clip the last tabs keep it with its count; at 80 columns the wider label clips `Settings` as well as `Exit`.
+- **Background alert**: a new handoff or failed opening from the live listener records an out-of-focus alert (bell, sound, title badge; see `notifications_enabled` in [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)) once, like a new chat message (`apply_live_dm` in `src/util/solver_dms/mod.rs`). Messages published before launch only show in the banner and badge.
+
+Both cues clear once the dispute is taken (it is then in local `admin_disputes`), when the relay no longer shows it `in-progress`, or after the 12 h window. Kind 38386 does not publish the solver holding a dispute, so a dispute another write solver took over keeps showing until one of those happens (the picker has the same limit; mostrod refuses that take).
 
 #### Recovering a missing taken dispute (Shift+R)
 

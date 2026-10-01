@@ -5,7 +5,8 @@
 //! can take such a dispute over; mostrod decides, refusing when the current
 //! holder can write. The picker lists disputes with an assistant message in
 //! the last [`TAKEOVER_WINDOW_SECS`] that the relay shows `in-progress` and
-//! that are not already in the local DB, handoffs first.
+//! that are not already in the local DB, handoffs first. The handoffs alone
+//! ([`handoff_candidates`]) feed the Disputes Pending banner and tab badge.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -18,7 +19,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use uuid::Uuid;
 
 use super::helpers;
-use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
+use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::util::solver_dms::SolverDmsByDispute;
 
 /// How recent an assistant message must be for its dispute to be offered.
@@ -43,8 +44,17 @@ pub struct TakeoverCandidate {
     /// Subject of the newest assistant message, e.g. `handed off: …`.
     pub subject: String,
     pub last_message_at: i64,
-    /// Some message in the window asks a person to act (handoff, failed start).
-    pub needs_action: bool,
+    /// Subject of the newest message in the window that asks a person to act
+    /// (a handoff or failed opening), e.g. `handed off: fraud_signal`. Later
+    /// messages such as the transcript do not hide it.
+    pub action_subject: Option<String>,
+}
+
+impl TakeoverCandidate {
+    /// Serbero asked a person to take this dispute over.
+    pub fn needs_action(&self) -> bool {
+        self.action_subject.is_some()
+    }
 }
 
 /// Disputes with an assistant message since `now - TAKEOVER_WINDOW_SECS`,
@@ -74,15 +84,43 @@ pub fn takeover_candidates(
                 dispute_id: d.id,
                 subject: newest.subject.clone(),
                 last_message_at: newest.created_at,
-                needs_action: recent.iter().any(|m| m.needs_action()),
+                action_subject: recent
+                    .iter()
+                    .rev()
+                    .find(|m| m.needs_action())
+                    .map(|m| m.subject.clone()),
             })
         })
         .collect();
     candidates.sort_by(|a, b| {
-        b.needs_action
-            .cmp(&a.needs_action)
+        b.needs_action()
+            .cmp(&a.needs_action())
             .then(b.last_message_at.cmp(&a.last_message_at))
     });
+    candidates
+}
+
+/// [`takeover_candidates`] for this solver: its assistant messages, leaving
+/// out the disputes already in its local DB (`admin_disputes_in_progress`).
+pub fn solver_takeover_candidates(
+    app: &AppState,
+    relay: &[Dispute],
+    now: i64,
+) -> Vec<TakeoverCandidate> {
+    let local_ids: HashSet<String> = app
+        .admin_disputes_in_progress
+        .iter()
+        .map(|d| d.dispute_id.clone())
+        .collect();
+    takeover_candidates(&app.solver_dms, relay, &local_ids, now)
+}
+
+/// Disputes Serbero handed to a person: the candidates that need action, in
+/// picker order. The Disputes Pending banner and tab badge show these, so
+/// they always match the `⚠` rows Ctrl+T lists first.
+pub fn handoff_candidates(app: &AppState, relay: &[Dispute], now: i64) -> Vec<TakeoverCandidate> {
+    let mut candidates = solver_takeover_candidates(app, relay, now);
+    candidates.retain(TakeoverCandidate::needs_action);
     candidates
 }
 
@@ -124,7 +162,7 @@ fn candidate_item(candidate: &TakeoverCandidate, now: i64, width: u16) -> ListIt
 }
 
 fn subject_marker_style(candidate: &TakeoverCandidate) -> (&'static str, Style) {
-    if candidate.needs_action {
+    if candidate.needs_action() {
         ("⚠ ", Style::default().fg(Color::Yellow))
     } else {
         ("", Style::default().fg(Color::White))
@@ -222,11 +260,23 @@ pub fn render_takeover_picker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::AdminDispute;
+    use crate::ui::UserRole;
     use crate::util::solver_dms::{index_by_dispute, SolverDm};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     const NOW: i64 = 1_000_000;
+
+    /// A candidate whose newest message is a handoff with `subject`.
+    fn handed_off(dispute: Uuid, subject: &str, at: i64) -> TakeoverCandidate {
+        TakeoverCandidate {
+            dispute_id: dispute,
+            subject: subject.to_string(),
+            last_message_at: at,
+            action_subject: Some(subject.to_string()),
+        }
+    }
 
     fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
         let mut flat = String::new();
@@ -305,9 +355,119 @@ mod tests {
 
         let ids: Vec<Uuid> = candidates.iter().map(|c| c.dispute_id).collect();
         assert_eq!(ids, [id(2), id(1), id(3)]);
-        assert!(candidates[0].needs_action);
+        assert!(candidates[0].needs_action());
+        assert!(!candidates[1].needs_action());
         assert_eq!(candidates[0].subject, "transcript (4 messages, times UTC)");
         assert_eq!(candidates[0].last_message_at, NOW - 499);
+    }
+
+    #[test]
+    fn the_newest_handoff_is_kept_past_later_messages() {
+        let dms = index_by_dispute(vec![
+            msg(id(1), "mediation could not start", NOW - 900),
+            msg(id(1), "handed off: fraud_signal", NOW - 500),
+            msg(id(1), "transcript (4 messages, times UTC)", NOW - 499),
+            msg(id(1), "new messages since handoff (2)", NOW - 100),
+        ]);
+
+        let candidates =
+            takeover_candidates(&dms, &[relay(id(1), "in-progress")], &HashSet::new(), NOW);
+
+        assert_eq!(
+            candidates[0].action_subject.as_deref(),
+            Some("handed off: fraud_signal")
+        );
+        assert_eq!(candidates[0].subject, "new messages since handoff (2)");
+    }
+
+    fn solver(dms: Vec<SolverDm>, local: &[Uuid]) -> AppState {
+        let mut app = AppState::new(UserRole::Admin);
+        app.solver_dms = index_by_dispute(dms);
+        app.admin_disputes_in_progress = local
+            .iter()
+            .map(|d| AdminDispute {
+                dispute_id: d.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn handoffs_are_the_candidates_a_person_has_to_act_on() {
+        let app = solver(
+            vec![
+                msg(id(1), "handed off: conflicting_claims", NOW - 300),
+                msg(id(1), "transcript (18 messages, times UTC)", NOW - 299),
+                msg(id(2), "mediating", NOW - 60),
+                msg(id(3), "handed off: fraud_signal", NOW - 60),
+                msg(id(4), "handed off: unresponsive", NOW - 60),
+                msg(id(5), "mediation could not start", NOW - 100),
+                msg(
+                    id(6),
+                    "handed off: round_limit",
+                    NOW - TAKEOVER_WINDOW_SECS - 1,
+                ),
+            ],
+            &[id(3)],
+        );
+        let relay = [
+            relay(id(1), "in-progress"),
+            relay(id(2), "in-progress"),
+            relay(id(3), "in-progress"),
+            relay(id(4), "settled"),
+            relay(id(5), "in-progress"),
+            relay(id(6), "in-progress"),
+        ];
+
+        let handoffs = handoff_candidates(&app, &relay, NOW);
+
+        let ids: Vec<Uuid> = handoffs.iter().map(|c| c.dispute_id).collect();
+        assert_eq!(ids, [id(5), id(1)], "newest first");
+        assert_eq!(
+            handoffs[1].action_subject.as_deref(),
+            Some("handed off: conflicting_claims")
+        );
+    }
+
+    #[test]
+    fn handoffs_are_exactly_the_marked_rows_ctrl_t_lists_first() {
+        let app = solver(
+            vec![
+                msg(id(1), "handed off: conflicting_claims", NOW - 300),
+                msg(id(2), "mediating", NOW - 10),
+                msg(id(3), "mediation could not start", NOW - 100),
+            ],
+            &[],
+        );
+        let relay = [
+            relay(id(1), "in-progress"),
+            relay(id(2), "in-progress"),
+            relay(id(3), "in-progress"),
+        ];
+
+        let picker = solver_takeover_candidates(&app, &relay, NOW);
+        let marked: Vec<TakeoverCandidate> = picker
+            .iter()
+            .take_while(|c| c.needs_action())
+            .cloned()
+            .collect();
+
+        assert_eq!(handoff_candidates(&app, &relay, NOW), marked);
+        assert_eq!(marked.len(), 2);
+    }
+
+    #[test]
+    fn a_dispute_taken_locally_is_no_longer_offered() {
+        let app = solver(
+            vec![msg(id(1), "handed off: conflicting_claims", NOW - 300)],
+            &[id(1)],
+        );
+
+        let relay = [relay(id(1), "in-progress")];
+
+        assert!(solver_takeover_candidates(&app, &relay, NOW).is_empty());
+        assert!(handoff_candidates(&app, &relay, NOW).is_empty());
     }
 
     #[test]
@@ -324,12 +484,11 @@ mod tests {
 
     #[test]
     fn the_picker_shows_ids_subjects_and_the_action_marker() {
-        let candidates = vec![TakeoverCandidate {
-            dispute_id: id(7),
-            subject: "handed off: conflicting_claims".to_string(),
-            last_message_at: NOW - 25 * 60,
-            needs_action: true,
-        }];
+        let candidates = vec![handed_off(
+            id(7),
+            "handed off: conflicting_claims",
+            NOW - 25 * 60,
+        )];
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
 
         terminal
@@ -345,12 +504,11 @@ mod tests {
 
     #[test]
     fn a_mid_width_picker_keeps_the_whole_subject() {
-        let candidates = vec![TakeoverCandidate {
-            dispute_id: id(7),
-            subject: "handed off: conflicting_claims".to_string(),
-            last_message_at: NOW - 60,
-            needs_action: true,
-        }];
+        let candidates = vec![handed_off(
+            id(7),
+            "handed off: conflicting_claims",
+            NOW - 60,
+        )];
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
 
         terminal
@@ -365,12 +523,7 @@ mod tests {
 
     #[test]
     fn a_very_narrow_picker_still_shows_the_subject() {
-        let candidates = vec![TakeoverCandidate {
-            dispute_id: id(7),
-            subject: "handed off: x".to_string(),
-            last_message_at: NOW - 60,
-            needs_action: true,
-        }];
+        let candidates = vec![handed_off(id(7), "handed off: x", NOW - 60)];
         let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
 
         terminal
@@ -390,12 +543,7 @@ mod tests {
 
     #[test]
     fn a_narrow_picker_keeps_the_short_id_and_subject() {
-        let candidates = vec![TakeoverCandidate {
-            dispute_id: id(7),
-            subject: "handed off: x".to_string(),
-            last_message_at: NOW - 60,
-            needs_action: true,
-        }];
+        let candidates = vec![handed_off(id(7), "handed off: x", NOW - 60)];
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
 
         terminal

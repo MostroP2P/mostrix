@@ -27,6 +27,7 @@ use crate::ui::key_handler::{
 use crate::ui::{
     terminal, LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
 };
+use crate::util::solver_dms::apply_live_dm;
 use crate::util::{
     blossom_servers_from_settings, execute_restore_session, handle_message_notification,
     handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
@@ -696,11 +697,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             solver_dm = solver_dm_rx.recv() => {
                 if let Some(dm) = solver_dm {
-                    crate::util::solver_dms::add_live_dm(
-                        &mut app.solver_dms,
-                        dm,
-                        app.solver_dm_scope.as_ref(),
-                    );
+                    apply_live_dm(&mut app, dm);
                 }
             }
             user_order_chat_result = user_order_chat_updates_rx.recv() => {

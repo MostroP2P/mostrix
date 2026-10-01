@@ -9,7 +9,7 @@ use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::key_handler::EnterKeyContext;
 use crate::ui::orders::OperationResult;
-use crate::ui::takeover_picker::{takeover_candidates, TakeoverCandidate};
+use crate::ui::takeover_picker::{solver_takeover_candidates, TakeoverCandidate};
 use crate::ui::{AddSolverState, AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
 use crate::util::fatal::request_fatal_restart;
 use crate::util::order_utils::{
@@ -124,17 +124,7 @@ pub(crate) fn begin_takeover_picker(app: &mut AppState, disputes: &Arc<Mutex<Vec
         ));
         return;
     };
-    let local_ids: HashSet<String> = app
-        .admin_disputes_in_progress
-        .iter()
-        .map(|d| d.dispute_id.clone())
-        .collect();
-    let candidates = takeover_candidates(
-        &app.solver_dms,
-        &relay,
-        &local_ids,
-        chrono::Utc::now().timestamp(),
-    );
+    let candidates = solver_takeover_candidates(app, &relay, chrono::Utc::now().timestamp());
     drop(relay);
 
     if candidates.is_empty() {

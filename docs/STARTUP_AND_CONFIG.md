@@ -144,7 +144,7 @@ pub struct Settings {
 
   Focus comes from focus reporting (`FocusGained` / `FocusLost`); until the terminal reports focus (or if it never does), Mostrix alerts only after 30 s without keyboard / mouse input. tmux needs `set -g focus-events on`. Bell and sound share a 3 s cooldown.
 
-  Triggers: new trade DMs from Mostro (`handle_message_notification`) and new chat messages from the counterparty, solver, or dispute parties. Events older than process launch, or at/below an order's startup hydration floor, never alert. Implementation: [`src/ui/terminal_alert.rs`](../src/ui/terminal_alert.rs) — state is mutated by events and written only after `terminal.draw`. Nothing is sent off-device.
+  Triggers: new trade DMs from Mostro (`handle_message_notification`), new chat messages from the counterparty, solver, or dispute parties, and (admin mode) new Serbero handoffs or failed openings from `trusted_dm_senders` (`apply_live_dm`). Events older than process launch, or at/below an order's startup hydration floor, never alert. Implementation: [`src/ui/terminal_alert.rs`](../src/ui/terminal_alert.rs) — state is mutated by events and written only after `terminal.draw`. Nothing is sent off-device.
 
 Proof-of-work for published events is taken from the Mostro instance status event (kind 38385, tag `pow`), not from `settings.toml`.
 

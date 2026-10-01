@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::shared::permissions::SolverPermission;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
+use crate::ui::takeover_picker::{handoff_candidates, TakeoverCandidate};
 use crate::ui::*;
 use crate::util::blossom::default_blossom_servers;
 use crate::util::fatal::request_fatal_restart;
@@ -53,6 +54,24 @@ fn shell_chrome_heights(total_height: u16, show_status: bool) -> (u16, u16) {
     (tabs, status)
 }
 
+/// Disputes Serbero handed to a person, worked out once per frame for the tab
+/// badge and the Disputes Pending banner. Empty outside admin mode, and while
+/// the fatal restart prompt is up (it takes no further locks).
+fn frame_handoffs(app: &AppState, disputes: &Arc<Mutex<Vec<Dispute>>>) -> Vec<TakeoverCandidate> {
+    if app.fatal_exit_on_close || app.user_role != UserRole::Admin || app.solver_dms.is_empty() {
+        return Vec::new();
+    }
+    match disputes.lock() {
+        Ok(relay) => handoff_candidates(app, &relay, chrono::Utc::now().timestamp()),
+        Err(e) => {
+            request_fatal_restart(format!(
+                "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
+            ));
+            Vec::new()
+        }
+    }
+}
+
 /// Main UI draw function, extracted from `ui::mod`.
 pub fn ui_draw(
     f: &mut ratatui::Frame,
@@ -72,8 +91,9 @@ pub fn ui_draw(
     )
     .split(f.area());
 
+    let handoffs = frame_handoffs(app, disputes);
     if tab_h > 0 {
-        tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role);
+        tabs::render_tabs(f, chunks[0], app.active_tab, app.user_role, handoffs.len());
     }
 
     // Fatal restart prompt: render only the popup overlay (no additional locks).
@@ -147,7 +167,7 @@ pub fn ui_draw(
             }
         }
         (Tab::Admin(AdminTab::DisputesPending), UserRole::Admin) => {
-            tabs::disputes_tab::render_disputes_tab(f, content_area, disputes, app)
+            tabs::disputes_tab::render_disputes_tab(f, content_area, disputes, app, &handoffs)
         }
         (Tab::Admin(AdminTab::DisputesInProgress), UserRole::Admin) => {
             tabs::disputes_in_progress_tab::render_disputes_in_progress(f, content_area, app)
