@@ -26,7 +26,8 @@ const BANNER_STYLE: Style = Style::new()
     .bg(Color::Yellow)
     .add_modifier(Modifier::BOLD);
 
-/// The yellow the SERBERO pane uses for handoff subjects.
+/// Same yellow and bold as the SERBERO pane's handoff subjects. The tab bar
+/// highlight turns it green while Disputes Pending itself is the active tab.
 pub const BADGE_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 /// Splits `area` into the banner row and the rest. The banner shows only
@@ -48,7 +49,7 @@ pub fn split_handoff_banner(area: Rect, handoffs: usize) -> (Option<Rect>, Rect)
 /// margin; the last resort keeps only the marker and Ctrl+T. `None` without
 /// handoffs.
 pub fn handoff_banner_text(handoffs: &[TakeoverCandidate], width: u16) -> Option<String> {
-    let room = usize::from(width).saturating_sub(BANNER_MARGIN.len());
+    let room = usize::from(width).saturating_sub(Span::raw(BANNER_MARGIN).width());
     let texts = banner_texts(handoffs);
     texts
         .iter()
@@ -293,6 +294,24 @@ mod tests {
         assert_eq!(buf[(5, 0)].fg, Color::Black);
     }
 
+    /// Below the shortest text the line is clipped, never a panic.
+    #[test]
+    fn a_tiny_banner_clips_the_last_resort_text() {
+        for width in [1, 3, 6] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+
+            terminal
+                .draw(|f| render_handoff_banner(f, f.area(), &one()))
+                .unwrap();
+
+            let text = rendered_text(terminal.backend().buffer());
+            assert!(
+                width < 3 || text.contains('🙋'),
+                "marker at {width} cols: {text:?}"
+            );
+        }
+    }
+
     // --- Whole screen (`ui_draw`): tab badge and banner from app state ---
 
     fn serbero_dm(dispute: &str, event_id: &str, subject: &str) -> SolverDm {
@@ -413,6 +432,18 @@ mod tests {
 
         assert!(!screen.contains('🙋'), "{screen}");
         assert!(!screen.contains("handed off"), "{screen}");
+    }
+
+    /// The fatal restart prompt reads no lock, so it shows no handoffs either.
+    #[test]
+    fn the_fatal_restart_prompt_shows_no_badge() {
+        let (mut app, disputes) = solver_with_handoff("in-progress");
+        app.fatal_exit_on_close = true;
+
+        let screen = draw(&mut app, &disputes, 120, 20);
+
+        assert!(screen.contains("Disputes Pending"), "{screen}");
+        assert!(!screen.contains('🙋'), "{screen}");
     }
 
     #[test]

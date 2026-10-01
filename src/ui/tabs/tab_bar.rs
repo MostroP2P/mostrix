@@ -101,4 +101,42 @@ mod tests {
         assert_eq!(buf[(badge, 1)].fg, Color::Yellow);
         assert!(buf[(badge, 1)].modifier.contains(Modifier::BOLD));
     }
+
+    /// Admin title row at `width` as a terminal shows it: the cell hidden
+    /// behind a wide symbol such as an emoji is skipped.
+    fn title_row(width: u16, handoffs: usize) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
+        terminal
+            .draw(|f| {
+                render_tabs(
+                    f,
+                    f.area(),
+                    Tab::Admin(AdminTab::Observer),
+                    UserRole::Admin,
+                    handoffs,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut row = String::new();
+        let mut x = 0;
+        while x < width {
+            let symbol = buf[(x, 1)].symbol();
+            row.push_str(symbol);
+            x += u16::try_from(Span::raw(symbol).width()).unwrap_or(1).max(1);
+        }
+        row
+    }
+
+    /// Disputes Pending is the first tab: narrow terminals clip the last
+    /// tabs, never the badge or its count.
+    #[test]
+    fn narrow_terminals_keep_the_badge_and_its_count() {
+        let row = title_row(80, 1);
+        assert!(row.contains("Disputes Pending 🙋 1"), "{row}");
+        assert!(row.contains("Mostro Info"), "{row}");
+
+        let row = title_row(30, 12);
+        assert!(row.contains("Disputes Pending 🙋 12"), "{row}");
+    }
 }

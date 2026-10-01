@@ -9,7 +9,9 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
 // 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
 // 80×24 terminals take the compact layout instead of clipping the full list.
-const NOTIFICATIONS_HELP: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats and Serbero handoffs. Saves notifications_enabled in settings.toml.";
+const NOTIFICATIONS_HELP_USER: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages and chats. Saves notifications_enabled in settings.toml.";
+/// Admins are also alerted when Serbero hands a dispute to a person.
+const NOTIFICATIONS_HELP_ADMIN: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats and Serbero handoffs. Saves notifications_enabled in settings.toml.";
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
@@ -421,7 +423,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Background Alerts",
-            NOTIFICATIONS_HELP,
+            NOTIFICATIONS_HELP_ADMIN,
         ),
         (
             "View Seed Words",
@@ -488,7 +490,7 @@ fn settings_instruction_lines(user_role: UserRole) -> (String, Vec<Line<'static>
         ),
         (
             "Background Alerts",
-            NOTIFICATIONS_HELP,
+            NOTIFICATIONS_HELP_USER,
         ),
         (
             "View Seed Words",
@@ -885,6 +887,26 @@ mod help_content_tests {
         assert!(buffer_contains(buf, "Add Blossom Server"));
         assert!(buffer_contains(buf, "Remove Blossom Server"));
         assert!(buffer_contains(buf, "Restore Default Blossom Servers"));
+    }
+
+    /// Serbero handoffs only reach admins, so only their alerts help names them.
+    #[test]
+    fn background_alerts_help_names_serbero_handoffs_for_admins_only() {
+        for (role, mentioned) in [(UserRole::Admin, true), (UserRole::User, false)] {
+            let mut terminal = Terminal::new(TestBackend::new(100, 60)).unwrap();
+
+            terminal
+                .draw(|f| render_settings_instructions_popup(f, role))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            assert!(buffer_contains(buf, "Background Alerts"), "{role:?}");
+            assert_eq!(
+                buffer_contains(buf, "Serbero handoffs"),
+                mentioned,
+                "{role:?}"
+            );
+        }
     }
 
     #[test]

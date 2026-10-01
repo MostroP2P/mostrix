@@ -91,7 +91,7 @@ The interface is divided into three main sections:
 - **Enter**: Send message (when input has text)
 - **Shift+F**: Open finalization popup for the selected dispute
 - **Shift+R**: Pick relay `in-progress` disputes missing locally, then re-send `AdminTakeDispute` only for the selected IDs
-- **Ctrl+T**: Take over a dispute Serbero is mediating (also on Disputes Pending); see below
+- **Ctrl+T**: Take over a dispute Serbero handed off or is mediating (also on Disputes Pending); see below
 - **PageUp/PageDown**: Scroll chat history (or the SERBERO pane)
 - **End**: Jump to bottom of chat (latest messages); in SERBERO, back to the newest message
 - **Shift+I**: Toggle chat input enabled/disabled
@@ -358,7 +358,7 @@ With no candidates, an info popup explains that the list comes from Serbero's me
 A dispute Serbero handed off (`handed off: <reason>`) or could not start mediating (`mediation could not start`) waits for a person, so Mostrix shows it without opening the picker. Both cues show `handoff_candidates` (`src/ui/takeover_picker.rs`): the take-over candidates that need action, worked out once per frame from the same inputs as **Ctrl+T**, so they always list exactly the `⚠` rows the picker shows first.
 
 - **Banner** (`src/ui/tabs/handoff_banner.rs`): a highlighted line above the **Disputes Pending** table, also above an empty list (handed-off disputes are `in-progress`, not table rows). With one dispute it names the short id and the reason, e.g. `🙋 Serbero handed off dispute 4f1c2a9e (conflicting claims) · Ctrl+T to take over`; with several it counts them: `🙋 Serbero handed off 2 disputes · Ctrl+T to take over`. Narrower lines drop `to take over`, then the reason (`🙋 Serbero handed off 4f1c2a9e · Ctrl+T`, `🙋 2 handed off · Ctrl+T`), down to `🙋 Ctrl+T`. The banner only takes a row when the table below keeps its borders and one dispute row; on shorter areas it is left out and the tab badge carries the news.
-- **Tab badge**: the **Disputes Pending** label reads `Disputes Pending 🙋 N` in yellow on every admin tab. It is the first tab, so narrow terminals that clip the last tabs keep it.
+- **Tab badge**: the **Disputes Pending** label reads `Disputes Pending 🙋 N` on every admin tab, in yellow while another tab is active (the active tab's highlight shows it in green). It is the first tab, so narrow terminals that clip the last tabs keep it with its count; at 80 columns the wider label clips `Settings` as well as `Exit`.
 - **Background alert**: a new handoff or failed opening from the live listener records an out-of-focus alert (bell, sound, title badge; see `notifications_enabled` in [STARTUP_AND_CONFIG.md](STARTUP_AND_CONFIG.md)) once, like a new chat message (`apply_live_dm` in `src/util/solver_dms/mod.rs`). Messages published before launch only show in the banner and badge.
 
 Both cues clear once the dispute is taken (it is then in local `admin_disputes`), when the relay no longer shows it `in-progress`, or after the 12 h window. Kind 38386 does not publish the solver holding a dispute, so a dispute another write solver took over keeps showing until one of those happens (the picker has the same limit; mostrod refuses that take).

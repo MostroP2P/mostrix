@@ -119,10 +119,9 @@ pub fn solver_takeover_candidates(
 /// picker order. The Disputes Pending banner and tab badge show these, so
 /// they always match the `⚠` rows Ctrl+T lists first.
 pub fn handoff_candidates(app: &AppState, relay: &[Dispute], now: i64) -> Vec<TakeoverCandidate> {
-    solver_takeover_candidates(app, relay, now)
-        .into_iter()
-        .filter(TakeoverCandidate::needs_action)
-        .collect()
+    let mut candidates = solver_takeover_candidates(app, relay, now);
+    candidates.retain(TakeoverCandidate::needs_action);
+    candidates
 }
 
 /// Moves the picker cursor one row, clamped to the list.

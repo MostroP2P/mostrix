@@ -55,9 +55,10 @@ fn shell_chrome_heights(total_height: u16, show_status: bool) -> (u16, u16) {
 }
 
 /// Disputes Serbero handed to a person, worked out once per frame for the tab
-/// badge and the Disputes Pending banner. Empty outside admin mode.
+/// badge and the Disputes Pending banner. Empty outside admin mode, and while
+/// the fatal restart prompt is up (it takes no further locks).
 fn frame_handoffs(app: &AppState, disputes: &Arc<Mutex<Vec<Dispute>>>) -> Vec<TakeoverCandidate> {
-    if app.user_role != UserRole::Admin || app.solver_dms.is_empty() {
+    if app.fatal_exit_on_close || app.user_role != UserRole::Admin || app.solver_dms.is_empty() {
         return Vec::new();
     }
     match disputes.lock() {
