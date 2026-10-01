@@ -10,8 +10,9 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 // 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
 // 80×24 terminals take the compact layout instead of clipping the full list.
 const NOTIFICATIONS_HELP_USER: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages and chats. Saves notifications_enabled in settings.toml.";
-/// Admins are also alerted when Serbero hands a dispute to a person.
-const NOTIFICATIONS_HELP_ADMIN: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats and Serbero handoffs. Saves notifications_enabled in settings.toml.";
+/// Admins are also alerted when Serbero hands a dispute to a person or
+/// could not start mediating it.
+const NOTIFICATIONS_HELP_ADMIN: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats, Serbero handoffs and failed openings. Saves notifications_enabled in settings.toml.";
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
@@ -906,6 +907,8 @@ mod help_content_tests {
                 mentioned,
                 "{role:?}"
             );
+            // The popup wraps the line, so match one word of the phrase.
+            assert_eq!(buffer_contains(buf, "openings"), mentioned, "{role:?}");
         }
     }
 
