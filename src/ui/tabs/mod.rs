@@ -1,5 +1,6 @@
 pub mod disputes_in_progress_tab;
 pub mod disputes_tab;
+pub mod handoff_banner;
 pub mod message_flow_tab;
 pub mod mostro_info_tab;
 pub mod observer_tab;

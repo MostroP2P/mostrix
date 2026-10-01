@@ -9,7 +9,7 @@ use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
 // 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
 // 80×24 terminals take the compact layout instead of clipping the full list.
-const NOTIFICATIONS_HELP: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages and chats. Saves notifications_enabled in settings.toml.";
+const NOTIFICATIONS_HELP: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats and Serbero handoffs. Saves notifications_enabled in settings.toml.";
 const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
@@ -742,9 +742,14 @@ mod help_content_tests {
 
             terminal.draw(|f| render_help_popup(f, &app, tab)).unwrap();
 
+            let buf = terminal.backend().buffer();
             assert!(
-                buffer_contains(terminal.backend().buffer(), "Ctrl+T"),
+                buffer_contains(buf, "Ctrl+T"),
                 "missing Ctrl+T in {tab:?} help"
+            );
+            assert!(
+                buffer_contains(buf, "handed off"),
+                "Ctrl+T help in {tab:?} must cover Serbero handoffs"
             );
         }
     }

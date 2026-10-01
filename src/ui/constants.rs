@@ -29,7 +29,8 @@ pub const HELP_DIP_TAB_PARTY: &str = "Tab: Switch pane (Buyer/Seller/Serbero)";
 /// Help popups trimmed on short terminals end with this line.
 pub const HELP_MORE_ON_TALLER_TERMINAL: &str = "… more shortcuts on a taller terminal";
 /// Disputes Pending and In Progress: open the take-over picker.
-pub const HELP_CTRL_T_TAKEOVER: &str = "Ctrl+T: Take over a dispute Serbero is mediating";
+pub const HELP_CTRL_T_TAKEOVER: &str =
+    "Ctrl+T: Take over a dispute Serbero handed off (🙋) or is mediating";
 pub const HELP_DIP_SELECT_DISPUTE: &str = "↑↓: Select dispute (sidebar)";
 pub const HELP_DIP_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
 pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
@@ -67,6 +68,15 @@ pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from l
 // Help popup lines (Disputes Pending)
 pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
 pub const HELP_DP_SELECT_DISPUTE: &str = "↑↓: Select dispute";
+
+// --- Serbero handoffs (Disputes Pending banner and tab badge) ---
+
+/// Marks disputes Serbero handed to a person, who has to take them over.
+pub const HANDOFF_MARKER: &str = "🙋";
+/// Banner hint when the line has room for it.
+pub const HANDOFF_TAKE_OVER_HINT: &str = "Ctrl+T to take over";
+/// Banner hint on narrow terminals.
+pub const HANDOFF_TAKE_OVER_KEY: &str = "Ctrl+T";
 
 // Help popup lines (Observer)
 pub const HELP_OBS_ENTER_LOAD: &str = "Enter: Load chat for Shared key";

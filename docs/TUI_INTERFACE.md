@@ -92,7 +92,7 @@ Focused on trading and order management.
 
 Focused on dispute resolution and protocol management.
 
-- **Disputes Pending**: List of disputes waiting to be taken (`Initiated` only via `get_initiated_disputes`). Selection by dispute UUID (`selected_pending_dispute_id` + `dispute_selection.rs`); persistent `disputes_table_state` + shared scrollbar (same pattern as Orders). Admins take ownership with Enter.
+- **Disputes Pending**: List of disputes waiting to be taken (`Initiated` only via `get_initiated_disputes`). Selection by dispute UUID (`selected_pending_dispute_id` + `dispute_selection.rs`); persistent `disputes_table_state` + shared scrollbar (same pattern as Orders). Admins take ownership with Enter. Disputes Serbero handed to a person show in a yellow line above the table (`🙋 Serbero handed off … · Ctrl+T to take over`, shortened on narrow terminals, left out when the table would lose its last dispute row) and as a `🙋 N` badge on the tab label, visible from every tab (`src/ui/tabs/handoff_banner.rs`; see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#serbero-handoffs-at-a-glance)).
 - **Disputes in Progress**: Complete workspace for managing taken disputes (state: `InProgress`), featuring:
   - Integrated chat system with buyer and seller
   - Comprehensive dispute information header

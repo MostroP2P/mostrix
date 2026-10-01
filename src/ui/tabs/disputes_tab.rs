@@ -10,9 +10,13 @@ use crate::ui::helpers::{
     format_local_timestamp, get_initiated_disputes, render_table_list_scrollbar,
     selected_pending_display_idx,
 };
+use crate::ui::tabs::handoff_banner::{render_handoff_banner, split_handoff_banner};
+use crate::ui::takeover_picker::TakeoverCandidate;
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-/// Render the Disputes Pending table (admin mode only).
+/// Render the Disputes Pending table (admin mode only), below a highlighted
+/// line for the disputes Serbero handed to a person (`handoffs`) when there
+/// is room for it.
 ///
 /// Uses a persistent [`TableState`] (`app.disputes_table_state`) so ↑↓ keeps the
 /// selected row in view without resetting the viewport each frame. Selection is
@@ -23,7 +27,15 @@ pub fn render_disputes_tab(
     area: ratatui::layout::Rect,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
     app: &mut AppState,
+    handoffs: &[TakeoverCandidate],
 ) {
+    // Handed-off disputes are in progress, not in this table, so the line
+    // shows above an empty list too.
+    let (banner, area) = split_handoff_banner(area, handoffs.len());
+    if let Some(banner) = banner {
+        render_handoff_banner(f, banner, handoffs);
+    }
+
     let disputes_lock = match disputes.lock() {
         Ok(g) => g,
         Err(e) => {
@@ -168,9 +180,11 @@ pub fn render_disputes_tab(
 #[cfg(test)]
 mod tests {
     use super::render_disputes_tab;
+    use crate::ui::takeover_picker::TakeoverCandidate;
     use crate::ui::{AppState, UserRole};
     use mostro_core::prelude::*;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::Terminal;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -209,7 +223,7 @@ mod tests {
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -237,7 +251,7 @@ mod tests {
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -271,7 +285,7 @@ mod tests {
         let backend = TestBackend::new(42, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -307,7 +321,7 @@ mod tests {
         let backend = TestBackend::new(100, 3);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -335,7 +349,7 @@ mod tests {
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -371,7 +385,7 @@ mod tests {
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -403,7 +417,7 @@ mod tests {
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
@@ -432,7 +446,7 @@ mod tests {
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw bottom");
 
         let offset_at_bottom = app.disputes_table_state.offset();
@@ -440,7 +454,7 @@ mod tests {
 
         app.selected_pending_dispute_id = Some(eighth_uuid);
         terminal
-            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app))
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, &mut app, &[]))
             .expect("draw up one");
 
         assert_eq!(
@@ -453,5 +467,140 @@ mod tests {
             !buffer_contains(buf, &first_id[..8]),
             "first row must stay scrolled off after ↑ from bottom"
         );
+    }
+
+    // --- Serbero handoff banner above the table ---
+
+    /// Serbero handed off dispute `aaaaaaaa-…` (an in-progress dispute, so it
+    /// is not one of the table rows).
+    fn handoff() -> TakeoverCandidate {
+        TakeoverCandidate {
+            dispute_id: Uuid::from_bytes([0xaa; 16]),
+            subject: "transcript (18 messages, times UTC)".to_string(),
+            last_message_at: 0,
+            action_subject: Some("handed off: conflicting_claims".to_string()),
+        }
+    }
+
+    fn render_with_handoff(
+        app: &mut AppState,
+        disputes: Vec<Dispute>,
+        width: u16,
+        height: u16,
+    ) -> Buffer {
+        let disputes = Arc::new(Mutex::new(disputes));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_tab(f, f.area(), &disputes, app, &[handoff()]))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn the_handoff_banner_sits_above_the_table() {
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let mut app = AppState::new(UserRole::Admin);
+
+        let buf = render_with_handoff(&mut app, disputes, 100, 10);
+
+        assert!(
+            row(&buf, 0).contains("Serbero handed off dispute aaaaaaaa (conflicting claims)"),
+            "{}",
+            row(&buf, 0)
+        );
+        assert!(row(&buf, 0).contains("Ctrl+T to take over"));
+        assert!(
+            row(&buf, 1).starts_with('╭'),
+            "table border below the banner"
+        );
+        assert!(buffer_contains(&buf, "Dispute ID"), "header kept");
+        assert!(buffer_contains(&buf, &first_id[..8]), "rows kept");
+    }
+
+    #[test]
+    fn the_banner_shows_above_an_empty_pending_list() {
+        let mut app = AppState::new(UserRole::Admin);
+
+        let buf = render_with_handoff(&mut app, Vec::new(), 100, 6);
+
+        assert!(row(&buf, 0).contains("Serbero handed off dispute aaaaaaaa"));
+        assert!(buffer_contains(&buf, "No disputes found"));
+    }
+
+    /// The table needs 3 rows (borders + one dispute): a 3-row area drops the
+    /// banner, a 4-row area drops the header for it.
+    #[test]
+    fn a_short_area_keeps_a_dispute_row_before_the_banner() {
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+
+        for (height, banner) in [(3, false), (4, true)] {
+            let mut app = AppState::new(UserRole::Admin);
+            let buf = render_with_handoff(&mut app, disputes.clone(), 100, height);
+
+            assert_eq!(
+                buffer_contains(&buf, "Serbero handed off"),
+                banner,
+                "banner at height {height}"
+            );
+            assert!(
+                buffer_contains(&buf, &first_id[..8]),
+                "dispute row kept at height {height}"
+            );
+            assert!(buffer_contains(&buf, "initiated"));
+        }
+    }
+
+    #[test]
+    fn narrow_areas_shorten_the_banner_but_keep_ctrl_t() {
+        let disputes: Vec<Dispute> = (0..3).map(initiated_dispute).collect();
+        let short_id = disputes[0].id.to_string()[..8].to_string();
+
+        for (width, banner) in [
+            (60, "Serbero handed off aaaaaaaa · Ctrl+T"),
+            (42, "Serbero handed off aaaaaaaa · Ctrl+T"),
+            (30, "Handed off · Ctrl+T"),
+        ] {
+            let mut app = AppState::new(UserRole::Admin);
+            let buf = render_with_handoff(&mut app, disputes.clone(), width, 8);
+
+            assert!(
+                row(&buf, 0).contains(banner),
+                "{width} cols: {:?}",
+                row(&buf, 0)
+            );
+            assert!(buffer_contains(&buf, &short_id), "id kept at {width} cols");
+            assert!(buffer_contains(&buf, "initiated"), "status kept at {width}");
+        }
+    }
+
+    /// With the banner on, ↑↓ still scrolls the table and the scrollbar stays
+    /// inside the table frame, which now starts one row lower.
+    #[test]
+    fn the_banner_keeps_scrolling_and_the_scrollbar_inside_the_table() {
+        let disputes: Vec<Dispute> = (0..10).map(initiated_dispute).collect();
+        let first_id = disputes[0].id.to_string();
+        let last_id = disputes[9].id.to_string();
+        let mut app = AppState::new(UserRole::Admin);
+        app.selected_pending_dispute_id = Some(disputes[9].id);
+
+        // 9 rows: banner + table of 8 (borders and header leave 5 rows).
+        let buf = render_with_handoff(&mut app, disputes, 100, 9);
+
+        assert!(buffer_contains(&buf, &last_id[..8]), "selected row visible");
+        assert!(
+            !buffer_contains(&buf, &first_id[..8]),
+            "first row scrolled off"
+        );
+        let right = buf.area.width - 1;
+        assert_eq!(buf[(right, 1)].symbol(), "╮", "top-right corner intact");
+        assert_eq!(buf[(right, 2)].symbol(), "│", "header row border intact");
+        assert_eq!(buf[(right, 7)].symbol(), "▼", "scrollbar end cap");
+        assert_eq!(buf[(right, 8)].symbol(), "╯", "bottom-right corner intact");
     }
 }
