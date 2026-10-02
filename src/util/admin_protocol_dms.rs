@@ -6,6 +6,7 @@
 //! mnemonic trade keys, so this listener keeps a durable Mostro→admin
 //! subscription and routes those closures into the admin dispute UI.
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -17,9 +18,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::models::AdminDispute;
-use crate::ui::OperationResult;
+use crate::ui::{AppState, OperationResult};
 use crate::util::chat_listener::untrack_dispute_chat_parties;
-use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
+use crate::util::dm_utils::{handle_operation_result, FETCH_EVENTS_TIMEOUT};
 use crate::util::filters::filter_protocol_dm_from_mostro;
 
 /// How far back the first fetch looks when nothing is stored yet.
@@ -64,16 +65,66 @@ impl UserResolvedDispute {
 
     /// Short info popup for the admin.
     pub fn info_message(&self) -> String {
-        let short: String = self.dispute_id.to_string().chars().take(8).collect();
-        match self.kind {
-            UserResolutionKind::CoopCancel => format!(
-                "Dispute {short} was closed by the users: cooperative cancel (seller refunded). No action needed."
-            ),
-            UserResolutionKind::Released => format!(
-                "Dispute {short} was closed by the users: seller released. No action needed."
-            ),
-        }
+        user_closed_dispute_info_message(self.dispute_id, &self.dispute_status())
+            .expect("UserResolvedDispute maps only to user-closed statuses")
     }
+}
+
+/// Info popup text when users closed a taken dispute (DM path or relay fallback).
+///
+/// Returns `None` for admin-attributed terminals (`Settled` / `SellerRefunded`).
+pub fn user_closed_dispute_info_message(
+    dispute_id: Uuid,
+    status: &DisputeStatus,
+) -> Option<String> {
+    let short: String = dispute_id.to_string().chars().take(8).collect();
+    match status {
+        DisputeStatus::CooperativelyCanceled => Some(format!(
+            "Dispute {short} was closed by the users: cooperative cancel (seller refunded). No action needed."
+        )),
+        DisputeStatus::Released => Some(format!(
+            "Dispute {short} was closed by the users: seller released. No action needed."
+        )),
+        _ => None,
+    }
+}
+
+/// When kind-38386 advances a taken row to a user-closed terminal status and the
+/// Mostro→solver DM was missed, show the same once-per-dispute Info popup.
+pub fn notify_admin_if_users_closed_dispute(app: &mut AppState, dispute_id: &str) {
+    let Some(local) = app
+        .admin_disputes_in_progress
+        .iter()
+        .find(|d| d.dispute_id == dispute_id)
+    else {
+        return;
+    };
+    if !local.closed_by_users() {
+        return;
+    }
+    if app.notified_user_closed_dispute_ids.contains(dispute_id) {
+        return;
+    }
+    let Ok(dispute_uuid) = Uuid::parse_str(dispute_id) else {
+        return;
+    };
+    let Some(status_str) = local.status.as_deref() else {
+        return;
+    };
+    let Ok(status) = DisputeStatus::from_str(status_str) else {
+        return;
+    };
+    let Some(message) = user_closed_dispute_info_message(dispute_uuid, &status) else {
+        return;
+    };
+    handle_operation_result(
+        OperationResult::DisputeClosedByUsers {
+            dispute_id: dispute_uuid,
+            status,
+            message,
+        },
+        app,
+    );
 }
 
 /// Match a solver-bound user-resolution DM from Mostro.
@@ -387,6 +438,19 @@ mod tests {
             history_since(1_000_000),
             1_000_000 - HISTORY_WINDOW_SECS - RESUME_OVERLAP_SECS
         );
+    }
+
+    #[test]
+    fn info_message_helper_covers_user_closed_statuses_only() {
+        let id = Uuid::from_u128(9);
+        let coop = user_closed_dispute_info_message(id, &DisputeStatus::CooperativelyCanceled)
+            .expect("coop");
+        assert!(coop.contains("cooperative cancel"));
+        let released =
+            user_closed_dispute_info_message(id, &DisputeStatus::Released).expect("released");
+        assert!(released.contains("seller released"));
+        assert!(user_closed_dispute_info_message(id, &DisputeStatus::Settled).is_none());
+        assert!(user_closed_dispute_info_message(id, &DisputeStatus::SellerRefunded).is_none());
     }
 
     #[tokio::test]

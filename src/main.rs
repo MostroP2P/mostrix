@@ -1055,6 +1055,11 @@ async fn main() -> Result<(), anyhow::Error> {
                 );
                 for dispute_id in closed {
                     untrack_dispute_chat_parties(&dispute_id);
+                    // Kind-38386 fallback when the Mostro→solver DM was missed.
+                    crate::util::admin_protocol_dms::notify_admin_if_users_closed_dispute(
+                        &mut app,
+                        &dispute_id,
+                    );
                 }
             }
         }
