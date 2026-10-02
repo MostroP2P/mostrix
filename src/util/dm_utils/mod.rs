@@ -2724,8 +2724,9 @@ mod tests {
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
         new_order_would_regress_messages_row, resolve_take_sell_add_invoice_trusted_sats,
-        satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
-        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        satisfy_pending_waiters_for_event,
+        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
+        trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
         TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };

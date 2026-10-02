@@ -12,7 +12,8 @@ use crate::util::chat_listener::track_dispute_chat;
 use crate::util::chat_utils::{derive_shared_key_hex, dispute_chat_allowed_signers};
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::order_utils::helper::fetch_order_fiat_from_relay;
+use crate::util::order_utils::helper::{fetch_order_fiat_from_relay, handle_mostro_response};
+use crate::util::types::MostroCantDoError;
 
 /// Mostro answered `CantDo` to `AdminTakeDispute`.
 #[derive(Debug)]
@@ -51,39 +52,35 @@ pub fn take_error_message(err: &anyhow::Error, takeover: bool) -> String {
              permission; the current holder may be able to write, or this key may lack write \
              permission."
         ),
-        _ => err.to_string(),
+        _ => match err.downcast_ref::<MostroCantDoError>() {
+            Some(MostroCantDoError {
+                reason: CantDoReason::InvalidPubkey,
+            }) if takeover => {
+                "Mostro refused to let you take over this dispute. A take-over only works \
+                 on a dispute held by a read-only solver (such as Serbero), by a solver with write \
+                 permission; the current holder may be able to write, or this key may lack write \
+                 permission."
+                    .to_string()
+            }
+            _ => err.to_string(),
+        },
     }
 }
 
 /// Take a dispute as an admin.
 ///
-/// This function sends an `AdminTakeDispute` message to the Mostro daemon
-/// and waits for a confirmation response. The admin must have a valid
-/// `admin_privkey` configured in settings.
-///
-/// # Arguments
-///
-/// * `dispute_id` - The UUID of the dispute to take
-/// * `client` - The Nostr client for sending messages
-/// * `mostro_pubkey` - The public key of the Mostro daemon
-/// * `pool` - The database connection pool for saving dispute information
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the dispute was successfully taken and saved, or an error
-/// if the operation failed (e.g., admin key not configured, wrong sender,
-/// timeout, or database save failure).
+/// Sends `AdminTakeDispute` with a fresh `request_id` and waits for the
+/// correlated `AdminTookDispute` (or `CantDo`) reply — same pattern as
+/// admin settle/cancel. Unsolicited user-resolution DMs (`request_id: None`)
+/// do not satisfy this waiter.
 ///
 /// # Errors
 ///
 /// This function will return an error if:
-/// - Settings are not initialized
-/// - Admin private key is not configured
 /// - Failed to serialize the message
 /// - Failed to send or receive the DM
 /// - Received response from wrong sender
-/// - Received response with mismatched action
-/// - No response received from Mostro
+/// - `request_id` / action mismatch, or `CantDo`
 /// - SolverDisputeInfo not found in response payload
 /// - Failed to save dispute to database
 pub async fn execute_take_dispute(
@@ -94,10 +91,10 @@ pub async fn execute_take_dispute(
     pool: &SqlitePool,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<()> {
-    // Create take dispute message
+    let request_id = Uuid::new_v4().as_u128() as u64;
     let take_dispute_message = Message::new_dispute(
         Some(*dispute_id),
-        None,
+        Some(request_id),
         None,
         Action::AdminTakeDispute,
         None,
@@ -105,7 +102,6 @@ pub async fn execute_take_dispute(
     .as_json()
     .map_err(|_| anyhow::anyhow!("Failed to serialize message"))?;
 
-    // Send the DM using admin keys (identity + trade)
     let sent_message = send_dm(
         client,
         Some(admin_keys),
@@ -116,141 +112,128 @@ pub async fn execute_take_dispute(
         mostro_instance,
     );
 
-    // Wait for incoming DM response
-    let recv_event = wait_for_dm(admin_keys, FETCH_EVENTS_TIMEOUT, None, sent_message).await?;
+    let recv_event = wait_for_dm(
+        admin_keys,
+        FETCH_EVENTS_TIMEOUT,
+        Some(request_id),
+        sent_message,
+    )
+    .await?;
 
-    // Parse the incoming DM
     let messages = parse_dm_events(recv_event, admin_keys, None).await;
-    if let Some((response_message, _, sender_pubkey)) = messages.first() {
-        if *sender_pubkey != mostro_pubkey {
-            return Err(anyhow::anyhow!("Received response from wrong sender"));
-        }
-        let inner_message = response_message.get_inner_message_kind();
-        if inner_message.action == Action::AdminTookDispute {
-            // Extract SolverDisputeInfo from payload
-            if let Some(Payload::Dispute(id, Some(dispute_info))) = &inner_message.payload {
-                // Verify the dispute ID matches
-                if *id != *dispute_id {
-                    return Err(anyhow::anyhow!(
-                        "Dispute ID mismatch: expected {}, got {}",
-                        dispute_id,
-                        id
-                    ));
-                }
-
-                if let Some(existing) =
-                    AdminDispute::try_get_by_id(pool, &dispute_info.id.to_string()).await?
-                {
-                    if existing.is_finalized() {
-                        return Err(anyhow::anyhow!(
-                            "Cannot take dispute {}: order {} already has a finalized dispute (status: {})",
-                            dispute_id,
-                            dispute_info.id,
-                            existing.status.as_deref().unwrap_or("unknown")
-                        ));
-                    }
-                }
-
-                // Clone and override status to InProgress before saving - this admin is now resolving it
-                let mut dispute_info_clone = dispute_info.clone();
-                dispute_info_clone.status = DisputeStatus::InProgress.to_string();
-
-                // Fetch fiat_code from relay (order may not be in local DB); log errors, fallback in AdminDispute::new
-                let fiat_code_from_relay = match fetch_order_fiat_from_relay(
-                    client,
-                    mostro_pubkey,
-                    dispute_info.id,
-                )
-                .await
-                {
-                    Ok(opt) => opt,
-                    Err(e) => {
-                        log::warn!(
-                                "Failed to fetch order fiat from relay for dispute {} (mostro_pubkey: {}): {}",
-                                dispute_info.id,
-                                mostro_pubkey,
-                                e
-                            );
-                        None
-                    }
-                };
-
-                // Save dispute info to database with InProgress status
-                // Pass the dispute_id (from the function parameter) to distinguish it from order_id
-                // Pass admin_keys so shared keys are eagerly derived for chat
-                if let Err(e) = AdminDispute::new(
-                    pool,
-                    dispute_info_clone,
-                    dispute_id.to_string(),
-                    fiat_code_from_relay,
-                    Some(admin_keys),
-                )
-                .await
-                {
-                    log::error!("Failed to save dispute to database: {}", e);
-                    return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));
-                }
-
-                log::info!(
-                    "✅ Dispute {} taken successfully and saved to database with InProgress status!",
-                    dispute_info.id
-                );
-
-                // Start live shared-key chat subscriptions for both parties of this dispute.
-                // Prefer on-disk transcript cursors when present (e.g. retake / restart edge cases).
-                // Each channel is tracked with an inner-signer allow-list (party trade key + admin).
-                let (buyer_since, seller_since) =
-                    dispute_chat_since_from_file(&dispute_id.to_string());
-                for (party, cp_pubkey, since) in [
-                    (
-                        ChatParty::Buyer,
-                        dispute_info.buyer_pubkey.as_deref(),
-                        buyer_since,
-                    ),
-                    (
-                        ChatParty::Seller,
-                        dispute_info.seller_pubkey.as_deref(),
-                        seller_since,
-                    ),
-                ] {
-                    if let Some(hex) = derive_shared_key_hex(Some(admin_keys), cp_pubkey) {
-                        let Some(allowed) =
-                            dispute_chat_allowed_signers(Some(&admin_keys.public_key()), cp_pubkey)
-                        else {
-                            log::warn!(
-                                "dispute {dispute_id} {party}: missing party pubkey; not tracking chat"
-                            );
-                            continue;
-                        };
-                        track_dispute_chat(dispute_id.to_string(), party, hex, allowed, since);
-                    }
-                }
-
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!(
-                    "Received AdminTookDispute response but SolverDisputeInfo not found in payload"
-                ))
-            }
-        } else if inner_message.action == Action::CantDo {
-            let reason = match &inner_message.payload {
-                Some(Payload::CantDo(reason)) => reason.clone(),
-                _ => None,
-            };
-            Err(anyhow::Error::new(TakeDisputeRejected {
-                dispute_id: *dispute_id,
-                reason,
-            }))
-        } else {
-            Err(anyhow::anyhow!(
-                "Received response with mismatched action. Expected: {:?}, Got: {:?}",
-                Action::AdminTookDispute,
-                inner_message.action
-            ))
-        }
-    } else {
-        Err(anyhow::anyhow!("No response received from Mostro"))
+    let Some((response_message, _, sender_pubkey)) = messages.first() else {
+        return Err(anyhow::anyhow!("No response received from Mostro"));
+    };
+    if *sender_pubkey != mostro_pubkey {
+        return Err(anyhow::anyhow!("Received response from wrong sender"));
     }
+
+    let inner_message = match handle_mostro_response(response_message, request_id) {
+        Ok(inner) => inner,
+        Err(e) => {
+            if let Some(cant) = e.downcast_ref::<MostroCantDoError>() {
+                return Err(anyhow::Error::new(TakeDisputeRejected {
+                    dispute_id: *dispute_id,
+                    reason: Some(cant.reason.clone()),
+                }));
+            }
+            return Err(e);
+        }
+    };
+
+    if inner_message.action != Action::AdminTookDispute {
+        return Err(anyhow::anyhow!(
+            "Received response with mismatched action. Expected: {:?}, Got: {:?}",
+            Action::AdminTookDispute,
+            inner_message.action
+        ));
+    }
+
+    let Some(Payload::Dispute(id, Some(dispute_info))) = &inner_message.payload else {
+        return Err(anyhow::anyhow!(
+            "Received AdminTookDispute response but SolverDisputeInfo not found in payload"
+        ));
+    };
+
+    if *id != *dispute_id {
+        return Err(anyhow::anyhow!(
+            "Dispute ID mismatch: expected {}, got {}",
+            dispute_id,
+            id
+        ));
+    }
+
+    if let Some(existing) = AdminDispute::try_get_by_id(pool, &dispute_info.id.to_string()).await? {
+        if existing.is_finalized() {
+            return Err(anyhow::anyhow!(
+                "Cannot take dispute {}: order {} already has a finalized dispute (status: {})",
+                dispute_id,
+                dispute_info.id,
+                existing.status.as_deref().unwrap_or("unknown")
+            ));
+        }
+    }
+
+    let mut dispute_info_clone = dispute_info.clone();
+    dispute_info_clone.status = DisputeStatus::InProgress.to_string();
+
+    let fiat_code_from_relay =
+        match fetch_order_fiat_from_relay(client, mostro_pubkey, dispute_info.id).await {
+            Ok(opt) => opt,
+            Err(e) => {
+                log::warn!(
+                    "Failed to fetch order fiat from relay for dispute {} (mostro_pubkey: {}): {}",
+                    dispute_info.id,
+                    mostro_pubkey,
+                    e
+                );
+                None
+            }
+        };
+
+    if let Err(e) = AdminDispute::new(
+        pool,
+        dispute_info_clone,
+        dispute_id.to_string(),
+        fiat_code_from_relay,
+        Some(admin_keys),
+    )
+    .await
+    {
+        log::error!("Failed to save dispute to database: {}", e);
+        return Err(anyhow::anyhow!("Failed to save dispute to database: {}", e));
+    }
+
+    log::info!(
+        "✅ Dispute {} taken successfully and saved to database with InProgress status!",
+        dispute_info.id
+    );
+
+    let (buyer_since, seller_since) = dispute_chat_since_from_file(&dispute_id.to_string());
+    for (party, cp_pubkey, since) in [
+        (
+            ChatParty::Buyer,
+            dispute_info.buyer_pubkey.as_deref(),
+            buyer_since,
+        ),
+        (
+            ChatParty::Seller,
+            dispute_info.seller_pubkey.as_deref(),
+            seller_since,
+        ),
+    ] {
+        if let Some(hex) = derive_shared_key_hex(Some(admin_keys), cp_pubkey) {
+            let Some(allowed) =
+                dispute_chat_allowed_signers(Some(&admin_keys.public_key()), cp_pubkey)
+            else {
+                log::warn!("dispute {dispute_id} {party}: missing party pubkey; not tracking chat");
+                continue;
+            };
+            track_dispute_chat(dispute_id.to_string(), party, hex, allowed, since);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -298,5 +281,15 @@ mod tests {
         let msg = take_error_message(&anyhow::anyhow!("No response received from Mostro"), true);
 
         assert_eq!(msg, "No response received from Mostro");
+    }
+
+    #[test]
+    fn mostro_cant_do_invalid_pubkey_on_takeover_gets_takeover_copy() {
+        let err = anyhow::Error::new(MostroCantDoError {
+            reason: CantDoReason::InvalidPubkey,
+        });
+        let msg = take_error_message(&err, true);
+        assert!(msg.contains("take over"), "{msg}");
+        assert!(msg.contains("read-only"), "{msg}");
     }
 }
