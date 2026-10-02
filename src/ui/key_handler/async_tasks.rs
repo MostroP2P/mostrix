@@ -1101,6 +1101,39 @@ pub async fn respawn_solver_dm_listener(
     );
 }
 
+/// (Re)start the Mostro→admin protocol DM listener for user-resolved disputes.
+///
+/// Aborts the previous task and drops its relay subscription. A new task starts
+/// only in admin mode with an admin key configured.
+pub async fn respawn_admin_protocol_dm_listener(
+    app: &mut AppState,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+    pool: &SqlitePool,
+    handle: &mut Option<JoinHandle<()>>,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    if let Some(old) = handle.take() {
+        old.abort();
+        let _ = old.await;
+        crate::util::admin_protocol_dms::unsubscribe(client).await;
+    }
+    let admin_keys = match (&app.user_role, &app.admin_keys) {
+        (UserRole::Admin, Some(keys)) => keys.clone(),
+        _ => return,
+    };
+    *handle = Some(
+        crate::util::admin_protocol_dms::spawn_admin_protocol_dm_listener(
+            client.clone(),
+            admin_keys,
+            mostro_pubkey,
+            app.transport,
+            pool.clone(),
+            order_result_tx.clone(),
+        ),
+    );
+}
+
 pub fn spawn_send_new_order_task(ctx: &EnterKeyContext<'_>, form: FormState) {
     let pool = ctx.pool.clone();
     let client = ctx.client.clone();

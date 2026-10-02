@@ -278,6 +278,32 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         }
         result = OperationResult::Info(message);
     }
+    if let OperationResult::DisputeClosedByUsers {
+        dispute_id,
+        status,
+        message,
+    } = result
+    {
+        let dispute_id_str = dispute_id.to_string();
+        let status_str = status.to_string();
+        let displayed_before =
+            crate::ui::helpers::selected_filtered_dispute(app).map(|d| d.dispute_id);
+        if let Some(local) = app
+            .admin_disputes_in_progress
+            .iter_mut()
+            .find(|d| d.dispute_id == dispute_id_str)
+        {
+            if !local.is_finalized() {
+                local.status = Some(status_str);
+            }
+        }
+        crate::ui::helpers::retain_closed_displayed_dispute(
+            app,
+            displayed_before.as_deref(),
+            &[dispute_id_str],
+        );
+        result = OperationResult::Info(message);
+    }
     if let OperationResult::SessionRestored { message } = result {
         result = OperationResult::Info(message);
     }
@@ -600,6 +626,44 @@ mod tests {
 
         assert_eq!(app.active_tab, Tab::Admin(AdminTab::DisputesPending));
     }
+
+    #[test]
+    fn user_closed_dispute_advances_local_row_and_shows_info() {
+        use crate::models::AdminDispute;
+        use mostro_core::prelude::DisputeStatus;
+
+        let mut app = AppState::new(UserRole::Admin);
+        let dispute_id = Uuid::from_u128(7);
+        app.admin_disputes_in_progress.push(AdminDispute {
+            dispute_id: dispute_id.to_string(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        });
+        app.selected_dispute_id = Some(dispute_id.to_string());
+
+        handle_operation_result(
+            OperationResult::DisputeClosedByUsers {
+                dispute_id,
+                status: DisputeStatus::CooperativelyCanceled,
+                message: "closed by users".into(),
+            },
+            &mut app,
+        );
+
+        assert_eq!(
+            app.admin_disputes_in_progress[0].status.as_deref(),
+            Some("cooperatively-canceled")
+        );
+        assert!(app.admin_disputes_in_progress[0].closed_by_users());
+        assert_eq!(app.selected_dispute_id, Some(dispute_id.to_string()));
+        match &app.mode {
+            UiMode::OperationResult(r) => {
+                assert!(matches!(r.as_ref(), OperationResult::Info(m) if m == "closed by users"))
+            }
+            other => panic!("expected info popup, got {other:?}"),
+        }
+    }
+
     use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
 

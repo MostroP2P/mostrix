@@ -1,0 +1,421 @@
+//! Mostro protocol DMs addressed to the admin (solver) identity key.
+//!
+//! Mostro notifies an assigned solver when users close a dispute themselves
+//! (cooperative cancel or seller release) with a kind-14 message that has no
+//! `request_id` and a [`Payload::Dispute`]. The trade-DM router only tracks
+//! mnemonic trade keys, so this listener keeps a durable Mostro→admin
+//! subscription and routes those closures into the admin dispute UI.
+
+use std::time::Duration;
+
+use futures::StreamExt;
+use mostro_core::prelude::*;
+use nostr_sdk::prelude::*;
+use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+use crate::models::AdminDispute;
+use crate::ui::OperationResult;
+use crate::util::chat_listener::untrack_dispute_chat_parties;
+use crate::util::dm_utils::FETCH_EVENTS_TIMEOUT;
+use crate::util::filters::filter_protocol_dm_from_mostro;
+
+/// How far back the first fetch looks when nothing is stored yet.
+pub const HISTORY_WINDOW_SECS: i64 = 7 * 24 * 3600;
+/// Re-read this much before "now" on each listen cycle for late relay delivery.
+const RESUME_OVERLAP_SECS: i64 = 3600;
+/// Pause before resubscribing after the notification stream ends or fails.
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Fixed relay subscription id, so a respawn replaces the previous one and
+/// [`unsubscribe`] can drop it after an abort.
+const SUBSCRIPTION_ID: &str = "mostrix-admin-protocol-dms";
+
+fn subscription_id() -> SubscriptionId {
+    SubscriptionId::new(SUBSCRIPTION_ID)
+}
+
+/// How the users closed the dispute (maps to Mostro's notify action).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserResolutionKind {
+    /// Cooperative cancel → [`DisputeStatus::CooperativelyCanceled`].
+    CoopCancel,
+    /// Seller release → [`DisputeStatus::Released`].
+    Released,
+}
+
+/// A Mostro DM telling the assigned solver that users resolved the dispute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserResolvedDispute {
+    pub dispute_id: Uuid,
+    pub order_id: Uuid,
+    pub kind: UserResolutionKind,
+}
+
+impl UserResolvedDispute {
+    /// Local status to persist for this resolution.
+    pub fn dispute_status(&self) -> DisputeStatus {
+        match self.kind {
+            UserResolutionKind::CoopCancel => DisputeStatus::CooperativelyCanceled,
+            UserResolutionKind::Released => DisputeStatus::Released,
+        }
+    }
+
+    /// Short info popup for the admin.
+    pub fn info_message(&self) -> String {
+        let short: String = self.dispute_id.to_string().chars().take(8).collect();
+        match self.kind {
+            UserResolutionKind::CoopCancel => format!(
+                "Dispute {short} was closed by the users: cooperative cancel (seller refunded). No action needed."
+            ),
+            UserResolutionKind::Released => format!(
+                "Dispute {short} was closed by the users: seller released. No action needed."
+            ),
+        }
+    }
+}
+
+/// Match a solver-bound user-resolution DM from Mostro.
+///
+/// Requires `request_id == None` (admin finalize acks echo a request id),
+/// `Payload::Dispute(dispute_id, _)`, order `id`, and action
+/// [`Action::CooperativeCancelAccepted`] or [`Action::Released`].
+pub fn classify_user_resolution(message: &Message) -> Option<UserResolvedDispute> {
+    let inner = message.get_inner_message_kind();
+    if inner.request_id.is_some() {
+        return None;
+    }
+    let order_id = inner.id?;
+    let Payload::Dispute(dispute_id, _) = inner.payload.as_ref()? else {
+        return None;
+    };
+    let kind = match inner.action {
+        Action::CooperativeCancelAccepted => UserResolutionKind::CoopCancel,
+        Action::Released => UserResolutionKind::Released,
+        _ => return None,
+    };
+    Some(UserResolvedDispute {
+        dispute_id: *dispute_id,
+        order_id,
+        kind,
+    })
+}
+
+/// Own outbound v2 protocol DMs are signed kind-14 events authored by the admin key.
+///
+/// When admin == Mostro, the broader self-addressed filter also matches those
+/// outbound events; skip them so a take/finalize request is not treated as a
+/// user-resolution notice.
+fn is_own_signed_v2_outbound(
+    event: &Event,
+    admin_keys: &Keys,
+    unwrapped: &UnwrappedMessage,
+) -> bool {
+    event.kind == nostr_sdk::prelude::Kind::PrivateDirectMessage
+        && event.pubkey == admin_keys.public_key()
+        && unwrapped.signature.is_some()
+}
+
+/// Drops the listener's relay subscription (after aborting its task).
+pub async fn unsubscribe(client: &Client) {
+    if let Err(e) = client.unsubscribe(&subscription_id()).await {
+        log::debug!("[admin_protocol_dms] unsubscribe failed: {e}");
+    }
+}
+
+/// Start of the backfill window: [`HISTORY_WINDOW_SECS`] ago, with overlap.
+pub fn history_since(now: i64) -> i64 {
+    now.saturating_sub(HISTORY_WINDOW_SECS)
+        .saturating_sub(RESUME_OVERLAP_SECS)
+}
+
+/// Runs the listener until aborted, resubscribing after failures.
+pub fn spawn_admin_protocol_dm_listener(
+    client: Client,
+    admin_keys: Keys,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: SqlitePool,
+    order_result_tx: UnboundedSender<OperationResult>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = listen_once(
+                &client,
+                &admin_keys,
+                mostro_pubkey,
+                transport,
+                &pool,
+                &order_result_tx,
+            )
+            .await
+            {
+                log::warn!("[admin_protocol_dms] listener stopped: {e}; retrying");
+            }
+            if order_result_tx.is_closed() {
+                return;
+            }
+            tokio::time::sleep(RETRY_DELAY).await;
+        }
+    })
+}
+
+async fn listen_once(
+    client: &Client,
+    admin_keys: &Keys,
+    mostro_pubkey: PublicKey,
+    transport: Transport,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) -> anyhow::Result<()> {
+    let filter = filter_protocol_dm_from_mostro(transport, mostro_pubkey, admin_keys.public_key());
+    let notifications = client.notifications();
+    client
+        .subscribe(filter.clone().limit(0))
+        .with_id(subscription_id())
+        .await?;
+    let result = backfill_then_follow(
+        client,
+        filter,
+        notifications,
+        admin_keys,
+        mostro_pubkey,
+        pool,
+        order_result_tx,
+    )
+    .await;
+    unsubscribe(client).await;
+    result
+}
+
+async fn backfill_then_follow(
+    client: &Client,
+    filter: Filter,
+    mut notifications: impl futures::Stream<Item = ClientNotification> + Unpin,
+    admin_keys: &Keys,
+    mostro_pubkey: PublicKey,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) -> anyhow::Result<()> {
+    let since = history_since(Timestamp::now().as_secs() as i64);
+    let history = client
+        .fetch_events(filter.since(Timestamp::from_secs(since.max(0) as u64)))
+        .timeout(FETCH_EVENTS_TIMEOUT)
+        .await;
+    match history {
+        Ok(events) => {
+            for event in events.into_iter() {
+                accept(&event, admin_keys, mostro_pubkey, pool, order_result_tx).await;
+            }
+        }
+        Err(e) => log::warn!("[admin_protocol_dms] history fetch failed: {e}"),
+    }
+
+    while let Some(notification) = notifications.next().await {
+        if let ClientNotification::Event { event, .. } = notification {
+            accept(&event, admin_keys, mostro_pubkey, pool, order_result_tx).await;
+        }
+        if order_result_tx.is_closed() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Decrypt, classify, advance SQLite, and notify the UI when the local row moves.
+async fn accept(
+    event: &Event,
+    admin_keys: &Keys,
+    mostro_pubkey: PublicKey,
+    pool: &SqlitePool,
+    order_result_tx: &UnboundedSender<OperationResult>,
+) {
+    // Author must be Mostro unless admin == Mostro (self-addressed filter).
+    if event.pubkey != mostro_pubkey && admin_keys.public_key() != mostro_pubkey {
+        return;
+    }
+
+    let unwrapped = match unwrap_incoming(event, admin_keys).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return,
+        Err(e) => {
+            log::debug!(
+                "[admin_protocol_dms] unwrap failed (event {}): {e}",
+                event.id
+            );
+            return;
+        }
+    };
+
+    if is_own_signed_v2_outbound(event, admin_keys, &unwrapped) {
+        return;
+    }
+
+    let Some(resolved) = classify_user_resolution(&unwrapped.message) else {
+        return;
+    };
+
+    let dispute_id = resolved.dispute_id.to_string();
+    let status = resolved.dispute_status();
+    match AdminDispute::set_status_by_dispute_id(pool, &dispute_id, status.clone()).await {
+        Ok(true) => {
+            log::info!(
+                "[admin_protocol_dms] dispute {} advanced to {} (order {})",
+                dispute_id,
+                status,
+                resolved.order_id
+            );
+            untrack_dispute_chat_parties(&dispute_id);
+            let _ = order_result_tx.send(OperationResult::DisputeClosedByUsers {
+                dispute_id: resolved.dispute_id,
+                status,
+                message: resolved.info_message(),
+            });
+        }
+        Ok(false) => {
+            log::debug!(
+                "[admin_protocol_dms] dispute {} already terminal or unknown; skip notify",
+                dispute_id
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "[admin_protocol_dms] failed to update dispute {} to {}: {e}",
+                dispute_id,
+                status
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mostro_core::transport::wrap_message_nip44;
+
+    fn resolution_message(
+        action: Action,
+        order_id: Option<Uuid>,
+        request_id: Option<u64>,
+        payload: Option<Payload>,
+    ) -> Message {
+        Message::new_dispute(order_id, request_id, None, action, payload)
+    }
+
+    #[test]
+    fn classify_accepts_cooperative_cancel_without_request_id() {
+        let dispute_id = Uuid::new_v4();
+        let order_id = Uuid::new_v4();
+        let msg = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(order_id),
+            None,
+            Some(Payload::Dispute(dispute_id, None)),
+        );
+
+        let resolved = classify_user_resolution(&msg).expect("match");
+        assert_eq!(resolved.dispute_id, dispute_id);
+        assert_eq!(resolved.order_id, order_id);
+        assert_eq!(resolved.kind, UserResolutionKind::CoopCancel);
+        assert_eq!(
+            resolved.dispute_status(),
+            DisputeStatus::CooperativelyCanceled
+        );
+        assert!(resolved.info_message().contains("cooperative cancel"));
+    }
+
+    #[test]
+    fn classify_accepts_released_without_request_id() {
+        let dispute_id = Uuid::new_v4();
+        let order_id = Uuid::new_v4();
+        let msg = resolution_message(
+            Action::Released,
+            Some(order_id),
+            None,
+            Some(Payload::Dispute(dispute_id, None)),
+        );
+
+        let resolved = classify_user_resolution(&msg).expect("match");
+        assert_eq!(resolved.kind, UserResolutionKind::Released);
+        assert_eq!(resolved.dispute_status(), DisputeStatus::Released);
+        assert!(resolved.info_message().contains("seller released"));
+    }
+
+    #[test]
+    fn classify_rejects_when_request_id_is_set() {
+        let msg = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(Uuid::new_v4()),
+            Some(42),
+            Some(Payload::Dispute(Uuid::new_v4(), None)),
+        );
+        assert!(classify_user_resolution(&msg).is_none());
+    }
+
+    #[test]
+    fn classify_rejects_wrong_payload_or_action() {
+        let order_id = Uuid::new_v4();
+        let text = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(order_id),
+            None,
+            Some(Payload::TextMessage("nope".into())),
+        );
+        assert!(classify_user_resolution(&text).is_none());
+
+        let wrong_action = resolution_message(
+            Action::AdminTookDispute,
+            Some(order_id),
+            None,
+            Some(Payload::Dispute(Uuid::new_v4(), None)),
+        );
+        assert!(classify_user_resolution(&wrong_action).is_none());
+
+        let missing_order = resolution_message(
+            Action::Released,
+            None,
+            None,
+            Some(Payload::Dispute(Uuid::new_v4(), None)),
+        );
+        assert!(classify_user_resolution(&missing_order).is_none());
+    }
+
+    #[test]
+    fn history_since_looks_back_the_window_plus_overlap() {
+        assert_eq!(
+            history_since(1_000_000),
+            1_000_000 - HISTORY_WINDOW_SECS - RESUME_OVERLAP_SECS
+        );
+    }
+
+    #[tokio::test]
+    async fn classify_works_on_unwrapped_nip44_event() {
+        let mostro = Keys::generate();
+        let admin = Keys::generate();
+        let dispute_id = Uuid::new_v4();
+        let order_id = Uuid::new_v4();
+        let message = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(order_id),
+            None,
+            Some(Payload::Dispute(dispute_id, None)),
+        );
+        let event = wrap_message_nip44(
+            &message,
+            &mostro,
+            &mostro,
+            admin.public_key(),
+            WrapOptions::default(),
+        )
+        .expect("wrap");
+
+        let unwrapped = unwrap_incoming(&event, &admin)
+            .await
+            .expect("unwrap ok")
+            .expect("decryptable");
+        let resolved = classify_user_resolution(&unwrapped.message).expect("classified");
+        assert_eq!(resolved.dispute_id, dispute_id);
+        assert_eq!(resolved.order_id, order_id);
+    }
+}

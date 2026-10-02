@@ -472,6 +472,13 @@ pub enum OperationResult {
         message: String,
         takeover: bool,
     },
+    /// Users closed a taken dispute themselves (cooperative cancel or release).
+    /// Mostro DMs the assigned solver; advance local status and show `message`.
+    DisputeClosedByUsers {
+        dispute_id: uuid::Uuid,
+        status: mostro_core::prelude::DisputeStatus,
+        message: String,
+    },
     /// Local-only admin dispute removal; drop from In Progress list / chat maps.
     AdminDisputeDeleted {
         dispute_id: String,
