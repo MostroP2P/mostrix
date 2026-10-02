@@ -2780,6 +2780,7 @@ mod tests {
                 rating: 3.9,
                 reviews: 5,
                 operating_days: 9,
+                since: None,
             }),
         });
         assert!(is_taker_reputation_peer_dm(
@@ -2852,6 +2853,7 @@ mod tests {
                     rating: 3.9,
                     reviews: 5,
                     operating_days: 9,
+                    since: None,
                 }),
             })),
         );
@@ -2890,6 +2892,7 @@ mod tests {
                 rating: 3.9,
                 reviews: 5,
                 operating_days: 9,
+                since: None,
             }),
         })
     }

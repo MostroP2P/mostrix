@@ -725,6 +725,7 @@ mod tests {
             rating: 3.9,
             reviews: 5,
             operating_days: 9,
+            since: None,
         };
         app.messages.lock().unwrap().push(OrderMessage {
             message: Message::new_order(

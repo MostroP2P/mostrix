@@ -13,7 +13,7 @@ ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 # Matrix only — render into ratatui cells ourselves (no `image` crate).
 qrcode = { version = "0.14.1", default-features = false }
-mostro-core = "0.14.6"
+mostro-core = "0.16.0"
 nostr-sdk = { version = "0.45.3" }
 # Enable NIP features on `nostr` (re-exported via nostr-sdk::prelude). nip06 is
 # required for Keys::from_mnemonic_*; nip44 for protocol DMs and kind-14 chat.

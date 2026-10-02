@@ -236,7 +236,7 @@ pub fn parse_trusted_senders(raw: &[String]) -> Vec<PublicKey> {
 mod tests {
     use super::*;
     use crate::ui::UserRole;
-    use mostro_core::nip59::WrapOptions;
+    use mostro_core::prelude::WrapOptions;
     use mostro_core::transport::wrap_message_nip44;
 
     const DISPUTE: &str = "58511141-6e3f-4b87-9c4a-1f2e3d4c5b6a";
