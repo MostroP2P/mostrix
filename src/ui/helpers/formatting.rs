@@ -31,7 +31,7 @@ pub fn format_user_rating_compact(info: &UserInfo) -> String {
     )
 }
 
-/// Check if a dispute is finalized (Settled, SellerRefunded, or Released).
+/// Check if a dispute is finalized (any terminal dispute status).
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
     Some(selected_dispute.is_finalized())
 }

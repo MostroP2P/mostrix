@@ -263,6 +263,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconcile_updates_in_progress_row_when_relay_cooperatively_canceled() {
+        let pool = test_pool().await;
+        create_admin_disputes_table(&pool).await;
+        let id = Uuid::new_v4();
+        insert_admin_dispute(&pool, &id.to_string(), "in-progress").await;
+
+        reconcile_one_admin_dispute_if_terminal(
+            &pool,
+            &relay_dispute(id, "cooperatively-canceled"),
+        )
+        .await;
+
+        let row = AdminDispute::get_by_dispute_id(&pool, &id.to_string())
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.status.as_deref(), Some("cooperatively-canceled"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_does_not_overwrite_cooperatively_canceled() {
+        let pool = test_pool().await;
+        create_admin_disputes_table(&pool).await;
+        let id = Uuid::new_v4();
+        insert_admin_dispute(&pool, &id.to_string(), "cooperatively-canceled").await;
+
+        reconcile_one_admin_dispute_if_terminal(&pool, &relay_dispute(id, "seller-refunded")).await;
+
+        let row = AdminDispute::get_by_dispute_id(&pool, &id.to_string())
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.status.as_deref(), Some("cooperatively-canceled"));
+    }
+
+    #[tokio::test]
     async fn reconcile_updates_in_progress_row_when_relay_seller_refunded() {
         let pool = test_pool().await;
         create_admin_disputes_table(&pool).await;
@@ -350,6 +386,19 @@ mod tests {
 
         assert_eq!(closed, vec![id.to_string()]);
         assert_eq!(admin[0].status.as_deref(), Some("seller-refunded"));
+    }
+
+    #[test]
+    fn in_memory_sync_copies_cooperatively_canceled_onto_in_progress_row() {
+        let id = Uuid::new_v4();
+        let mut admin = vec![admin_row(&id.to_string(), "in-progress")];
+        let relay = vec![relay_dispute(id, "cooperatively-canceled")];
+
+        let closed = apply_terminal_relay_statuses_to_admin_disputes(&mut admin, &relay);
+
+        assert_eq!(closed, vec![id.to_string()]);
+        assert_eq!(admin[0].status.as_deref(), Some("cooperatively-canceled"));
+        assert!(admin[0].closed_by_users());
     }
 
     #[test]

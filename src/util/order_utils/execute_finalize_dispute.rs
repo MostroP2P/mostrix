@@ -39,7 +39,8 @@ use crate::util::order_utils::helper::AdminFinalizeAck;
 /// # Errors
 ///
 /// This function will return an error if:
-/// - Dispute is already finalized (Settled, SellerRefunded, or Released)
+/// - Dispute is already finalized (Settled, SellerRefunded, Released, or
+///   CooperativelyCanceled)
 /// - Dispute not found in database
 /// - Settings are not initialized
 /// - Admin private key is not configured

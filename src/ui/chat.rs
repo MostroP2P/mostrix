@@ -12,7 +12,7 @@ pub enum ChatParty {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisputeFilter {
     InProgress, // Show only InProgress disputes
-    Finalized,  // Show only finalized disputes (Settled, SellerRefunded, Released)
+    Finalized,  // Settled, SellerRefunded, Released, CooperativelyCanceled
 }
 
 impl Display for ChatParty {
