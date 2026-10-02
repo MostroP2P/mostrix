@@ -1,8 +1,10 @@
 //! Align local `admin_disputes` rows with terminal statuses seen on kind-38386 events.
 //!
-//! Mostro auto-closes a dispute on cooperative cancel (`seller-refunded`) or seller
-//! release (`settled`) by publishing a NIP-33 replacement. It does not DM the solver,
-//! so taken rows must be advanced from that event.
+//! When users close a taken dispute themselves, Mostro publishes a NIP-33 replacement
+//! (`cooperatively-canceled` or `released`) and also DMs the assigned solver (see
+//! [`crate::util::admin_protocol_dms`]). Kind-38386 is the offline / missed-DM fallback:
+//! this module advances SQLite and in-memory taken rows from that event so the admin
+//! UI does not stay stuck on `in-progress`.
 
 use anyhow::Result;
 use mostro_core::prelude::*;

@@ -1075,6 +1075,18 @@ mod tests {
     }
 
     #[test]
+    fn dispute_from_tags_accepts_cooperatively_canceled_status() {
+        let id = Uuid::new_v4();
+        let tags = Tags::from_list(vec![
+            Tag::identifier(id.to_string()),
+            Tag::custom("s", vec!["cooperatively-canceled".to_string()]),
+        ]);
+        let dispute = dispute_from_tags(tags).expect("parse");
+        assert_eq!(dispute.id, id);
+        assert_eq!(dispute.status, "cooperatively-canceled");
+    }
+
+    #[test]
     fn dispute_from_tags_reads_published_at_open_time() {
         let id = Uuid::new_v4();
         let tags = open_time_tags(id, &[("published_at", "1700000200")]);
