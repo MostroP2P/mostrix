@@ -24,9 +24,7 @@ use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PR
 /// Dispute Info line after Status when users closed the dispute themselves.
 fn user_closed_resolution_label(status: Option<&str>) -> Option<&'static str> {
     match status.and_then(|s| DisputeStatus::from_str(s).ok()) {
-        Some(DisputeStatus::CooperativelyCanceled) => {
-            Some("Closed by users (cooperative cancel)")
-        }
+        Some(DisputeStatus::CooperativelyCanceled) => Some("Closed by users (cooperative cancel)"),
         Some(DisputeStatus::Released) => Some("Closed by users (seller released)"),
         _ => None,
     }
@@ -1065,8 +1063,7 @@ mod tests {
     fn finalized_header_shows_closed_by_users_resolution() {
         let mut app = AppState::new(UserRole::Admin);
         app.dispute_filter = DisputeFilter::Finalized;
-        app.admin_disputes_in_progress =
-            vec![dispute("dip-coop", "cooperatively-canceled")];
+        app.admin_disputes_in_progress = vec![dispute("dip-coop", "cooperatively-canceled")];
         app.selected_dispute_id = Some("dip-coop".to_string());
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
 

@@ -303,10 +303,7 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             std::slice::from_ref(&dispute_id_str),
         );
         // Once per dispute per session (DM + relay fallback share this set).
-        if !app
-            .notified_user_closed_dispute_ids
-            .insert(dispute_id_str)
-        {
+        if !app.notified_user_closed_dispute_ids.insert(dispute_id_str) {
             return;
         }
         result = OperationResult::Info(message);
