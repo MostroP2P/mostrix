@@ -274,6 +274,15 @@ async fn backfill_then_follow(
     Ok(())
 }
 
+/// Outer event author must be Mostro.
+///
+/// `client.notifications()` carries every client subscription, so a relay
+/// filter is not enough. Keep this even when the admin key equals the Mostro
+/// key — a real Mostro event still has `event.pubkey == mostro_pubkey`.
+fn is_mostro_authored(event: &Event, mostro_pubkey: PublicKey) -> bool {
+    event.pubkey == mostro_pubkey
+}
+
 /// Decrypt, classify, advance SQLite, and notify the UI when the local row moves.
 async fn accept(
     event: &Event,
@@ -282,8 +291,7 @@ async fn accept(
     pool: &SqlitePool,
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
-    // Author must be Mostro unless admin == Mostro (self-addressed filter).
-    if event.pubkey != mostro_pubkey && admin_keys.public_key() != mostro_pubkey {
+    if !is_mostro_authored(event, mostro_pubkey) {
         return;
     }
 
@@ -451,6 +459,131 @@ mod tests {
         assert!(released.contains("seller released"));
         assert!(user_closed_dispute_info_message(id, &DisputeStatus::Settled).is_none());
         assert!(user_closed_dispute_info_message(id, &DisputeStatus::SellerRefunded).is_none());
+    }
+
+    async fn create_admin_disputes_table(pool: &SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE admin_disputes (
+                id TEXT PRIMARY KEY,
+                dispute_id TEXT NOT NULL,
+                kind TEXT,
+                status TEXT,
+                hash TEXT,
+                preimage TEXT,
+                order_previous_status TEXT,
+                initiator_pubkey TEXT NOT NULL,
+                buyer_pubkey TEXT,
+                seller_pubkey TEXT,
+                initiator_full_privacy INTEGER NOT NULL,
+                counterpart_full_privacy INTEGER NOT NULL,
+                initiator_info TEXT,
+                counterpart_info TEXT,
+                premium INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                fiat_amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL,
+                fee INTEGER NOT NULL,
+                routing_fee INTEGER NOT NULL,
+                buyer_invoice TEXT,
+                invoice_held_at INTEGER,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                buyer_chat_last_seen INTEGER,
+                seller_chat_last_seen INTEGER,
+                buyer_shared_key_hex TEXT,
+                seller_shared_key_hex TEXT
+            );
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("admin_disputes table");
+    }
+
+    async fn insert_in_progress(pool: &SqlitePool, dispute_id: &str) {
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, taken_at, created_at, status
+            ) VALUES (?, ?, 'npub1initiator', 0, 0, 0, 'sepa', 0, 0, 'USD', 0, 0, 1, 1, 'in-progress')"#,
+        )
+        .bind(format!("order-{dispute_id}"))
+        .bind(dispute_id)
+        .execute(pool)
+        .await
+        .expect("insert in-progress row");
+    }
+
+    #[test]
+    fn foreign_author_is_rejected_even_when_admin_equals_mostro() {
+        let mostro = Keys::generate();
+        let attacker = Keys::generate();
+        let message = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(Uuid::new_v4()),
+            None,
+            Some(Payload::Dispute(Uuid::new_v4(), None)),
+        );
+        let mostro_event = wrap_message_nip44(
+            &message,
+            &mostro,
+            &mostro,
+            mostro.public_key(),
+            WrapOptions::default(),
+        )
+        .expect("wrap mostro");
+        let attacker_event = wrap_message_nip44(
+            &message,
+            &attacker,
+            &attacker,
+            mostro.public_key(),
+            WrapOptions::default(),
+        )
+        .expect("wrap attacker");
+
+        assert!(is_mostro_authored(&mostro_event, mostro.public_key()));
+        assert!(!is_mostro_authored(&attacker_event, mostro.public_key()));
+    }
+
+    #[tokio::test]
+    async fn accept_ignores_foreign_author_when_admin_equals_mostro() {
+        let mostro = Keys::generate();
+        let admin = mostro.clone();
+        let attacker = Keys::generate();
+        let dispute_id = Uuid::new_v4();
+        let order_id = Uuid::new_v4();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+        insert_in_progress(&pool, &dispute_id.to_string()).await;
+
+        let message = resolution_message(
+            Action::CooperativeCancelAccepted,
+            Some(order_id),
+            None,
+            Some(Payload::Dispute(dispute_id, None)),
+        );
+        let event = wrap_message_nip44(
+            &message,
+            &attacker,
+            &attacker,
+            admin.public_key(),
+            WrapOptions::default(),
+        )
+        .expect("wrap");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        accept(&event, &admin, mostro.public_key(), &pool, &tx).await;
+
+        assert!(rx.try_recv().is_err(), "foreign author must not notify");
+        let row = AdminDispute::get_by_dispute_id(&pool, &dispute_id.to_string())
+            .await
+            .expect("query")
+            .expect("row");
+        assert_eq!(row.status.as_deref(), Some("in-progress"));
     }
 
     #[tokio::test]
