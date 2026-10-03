@@ -21,65 +21,78 @@ gpg: Good signature from "Arkanoider <github.913zc@simplelogin.com>" [ultimate]
 That will verify the signature of the manifest file, which ensures integrity and authenticity of the archive you've downloaded locally containing the binaries. Next, depending on your operating system, you should then re-compute the sha256 hash of the archive with `shasum -a 256 <filename>`, compare it with the corresponding one in the manifest file, and ensure they match exactly.
 
 
-## What's Changed in 0.3.4
+## What's Changed in 0.3.5
 
 ### 🚀 Features
 
 
-* add trusted Mostro instance picker and fix info on switch by [@arkanoider](https://github.com/arkanoider)
-* adaptive order book filters with Kind, Fiat, and stepped Premium by [@arkanoider](https://github.com/arkanoider)
-* add currency-aware payment method picker on new orders by [@arkanoider](https://github.com/arkanoider)
-* expose order filter shortcuts by [@ca-ruz](https://github.com/ca-ruz)
-* render orders filter UI by [@ca-ruz](https://github.com/ca-ruz)
-* add orders filter controls by [@ca-ruz](https://github.com/ca-ruz)
-* add order book filter state by [@ca-ruz](https://github.com/ca-ruz)
-* manage Blossom servers like relays by [@arkanoider](https://github.com/arkanoider)
-* recover the anti-abuse bond QR after Esc and restart by [@arkanoider](https://github.com/arkanoider)
-* added shadowbip and mostro-p2p relay as default at first launch by [@arkanoider](https://github.com/arkanoider)
+* show user-closed resolution in dispute header by [@arkanoider](https://github.com/arkanoider)
+* dedupe user-closed dispute admin popup by [@arkanoider](https://github.com/arkanoider)
+* listen for admin user-resolved dispute DMs by [@arkanoider](https://github.com/arkanoider)
+* treat cooperatively-canceled as terminal by [@arkanoider](https://github.com/arkanoider)
+* show Serbero handoffs on Disputes Pending by [@grunch](https://github.com/grunch)
+* take over a dispute Serbero holds (Ctrl+T) by [@grunch](https://github.com/grunch)
+* show Serbero's messages to the solver per dispute by [@grunch](https://github.com/grunch)
+* read the open time from published_at by [@grunch](https://github.com/grunch)
+* single Background Alerts toggle in settings by [@arkanoider](https://github.com/arkanoider)
+* alert on new events while terminal unfocused by [@arkanoider](https://github.com/arkanoider)
 
 ### 🐛 Bug Fixes
 
 
-* gate Mostro pubkey switch on a successful save by [@arkanoider](https://github.com/arkanoider)
-* address Hermeme and CodeRabbit order-filter review by [@arkanoider](https://github.com/arkanoider)
-* handle order filter review edge cases by [@ca-ruz](https://github.com/ca-ruz)
-* handle constrained order filter help shortcuts by [@ca-ruz](https://github.com/ca-ruz)
-* handle caps lock order filter input by [@ca-ruz](https://github.com/ca-ruz)
-* handle caps lock order filter shortcuts by [@ca-ruz](https://github.com/ca-ruz)
-* address order filter review edge cases by [@ca-ruz](https://github.com/ca-ruz)
-* make relay revision selection deterministic by [@ca-ruz](https://github.com/ca-ruz)
-* address order filter review feedback by [@ca-ruz](https://github.com/ca-ruz)
-* address order filter review feedback by [@ca-ruz](https://github.com/ca-ruz)
-* make stale-reply snapshot guard an atomic compare-and-write by [@arkanoider](https://github.com/arkanoider)
-* ignore stale AddBondInvoice replies that would regress order state by [@arkanoider](https://github.com/arkanoider)
-* treat PayBondInvoice rows at Pending status as bond-pending by [@arkanoider](https://github.com/arkanoider)
-* harden expired-invoice UX and persistence error reporting by [@arkanoider](https://github.com/arkanoider)
-* keep relay confirm identity and YES/NO on short terminals by [@arkanoider](https://github.com/arkanoider)
-* persist before client updates, reconcile by parsed URL by [@arkanoider](https://github.com/arkanoider)
-* connect relays added at runtime via and_connect by [@arkanoider](https://github.com/arkanoider)
-* robust URL validation and short-terminal remove popup by [@arkanoider](https://github.com/arkanoider)
-* read instance name from y tag third element by [@arkanoider](https://github.com/arkanoider)
+* harden user-closed dispute status writes by [@arkanoider](https://github.com/arkanoider)
+* name failed openings in the admin alerts help by [@grunch](https://github.com/grunch)
+* address review of the handoff banner by [@grunch](https://github.com/grunch)
+* size non-compact help popups by wrapped rows by [@grunch](https://github.com/grunch)
+* keep dispute help and take-over hints visible on narrow terminals by [@grunch](https://github.com/grunch)
+* keep the take-over origin through confirmation by [@grunch](https://github.com/grunch)
+* address review of the take-over picker by [@grunch](https://github.com/grunch)
+* scope the Serbero inbox to current key and senders by [@grunch](https://github.com/grunch)
+* address review of Serbero solver DMs by [@grunch](https://github.com/grunch)
+* ignore an unusable duplicate open-time tag by [@grunch](https://github.com/grunch)
 
 ### 💼 Other
 
 
-* feat(settings): manage Blossom servers like relays by [@arkanoider](https://github.com/arkanoider) in [#194](https://github.com/MostroP2P/mostrix/pull/194)
-* origin/main into feat/settings-blossom-servers by [@arkanoider](https://github.com/arkanoider)
-* feat(ui): adaptive order book filters (Kind / Fiat / Premium) by [@arkanoider](https://github.com/arkanoider) in [#193](https://github.com/MostroP2P/mostrix/pull/193)
-* feat(ui): currency-aware payment method picker on new orders by [@arkanoider](https://github.com/arkanoider) in [#192](https://github.com/MostroP2P/mostrix/pull/192)
-* feat(bond): recover the anti-abuse bond QR after Esc and restart by [@arkanoider](https://github.com/arkanoider) in [#191](https://github.com/MostroP2P/mostrix/pull/191)
-* Add relay remove/restore and bare-URL add in Settings by [@arkanoider](https://github.com/arkanoider) in [#190](https://github.com/MostroP2P/mostrix/pull/190)
-* Add relay remove/restore and bare-URL add in Settings by [@arkanoider](https://github.com/arkanoider)
+* feat: notify admin when users close a dispute by [@arkanoider](https://github.com/arkanoider) in [#204](https://github.com/MostroP2P/mostrix/pull/204)
+* feat(ui): show Serbero handoffs on Disputes Pending by [@grunch](https://github.com/grunch) in [#203](https://github.com/MostroP2P/mostrix/pull/203)
+* feat(disputes): take over a dispute Serbero holds (Ctrl+T) by [@grunch](https://github.com/grunch) in [#202](https://github.com/MostroP2P/mostrix/pull/202)
+* Merge branch 'feat/serbero-solver-dms' into feat/takeover-serbero-dispute by [@grunch](https://github.com/grunch)
+* Merge branch 'feat/serbero-solver-dms' into feat/takeover-serbero-dispute by [@grunch](https://github.com/grunch)
+* feat(disputes): show Serbero's messages to the solver per dispute by [@grunch](https://github.com/grunch) in [#201](https://github.com/MostroP2P/mostrix/pull/201)
+* feat(disputes): read the open time from published_at by [@arkanoider](https://github.com/arkanoider) in [#196](https://github.com/MostroP2P/mostrix/pull/196)
+* feat(ui): alert on new events while terminal is unfocused by [@arkanoider](https://github.com/arkanoider) in [#197](https://github.com/MostroP2P/mostrix/pull/197)
 
-### 🎨 Styling
+### 🚜 Refactor
 
 
-* improve order filter popup usability by [@ca-ruz](https://github.com/ca-ruz)
+* correlate admin take with request_id by [@arkanoider](https://github.com/arkanoider)
+* clarify open-time vs event stamp by [@arkanoider](https://github.com/arkanoider)
+
+### 📚 Documentation
+
+
+* describe tested mostro-core/mostrod pair by [@arkanoider](https://github.com/arkanoider)
+* align mostro-core pin notes with 0.16.0 by [@arkanoider](https://github.com/arkanoider)
+* refresh relay dispute reconcile module note by [@arkanoider](https://github.com/arkanoider)
+
+### 🧪 Testing
+
+
+* keep a valid open time over a bad duplicate by [@grunch](https://github.com/grunch)
+* read the dispute open time from published_at by [@grunch](https://github.com/grunch)
+
+### ⚙️ Miscellaneous Tasks
+
+
+* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
+* bump mostro-core to 0.16.0 by [@arkanoider](https://github.com/arkanoider)
+* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
 
 ## Contributors
-* [@arkanoider](https://github.com/arkanoider) made their contribution in [#194](https://github.com/MostroP2P/mostrix/pull/194)
-* [@ca-ruz](https://github.com/ca-ruz) made their contribution
+* [@arkanoider](https://github.com/arkanoider) made their contribution in [#204](https://github.com/MostroP2P/mostrix/pull/204)
+* [@grunch](https://github.com/grunch) made their contribution in [#203](https://github.com/MostroP2P/mostrix/pull/203)
 
-**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.3...0.3.4
+**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.4...0.3.5
 
 <!-- generated by git-cliff -->
