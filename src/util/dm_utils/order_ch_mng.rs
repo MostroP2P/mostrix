@@ -278,6 +278,36 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         }
         result = OperationResult::Info(message);
     }
+    if let OperationResult::DisputeClosedByUsers {
+        dispute_id,
+        status,
+        message,
+    } = result
+    {
+        let dispute_id_str = dispute_id.to_string();
+        let status_str = status.to_string();
+        let displayed_before =
+            crate::ui::helpers::selected_filtered_dispute(app).map(|d| d.dispute_id);
+        if let Some(local) = app
+            .admin_disputes_in_progress
+            .iter_mut()
+            .find(|d| d.dispute_id == dispute_id_str)
+        {
+            if !local.is_finalized() {
+                local.status = Some(status_str);
+            }
+        }
+        crate::ui::helpers::retain_closed_displayed_dispute(
+            app,
+            displayed_before.as_deref(),
+            std::slice::from_ref(&dispute_id_str),
+        );
+        // Once per dispute per session (DM + relay fallback share this set).
+        if !app.notified_user_closed_dispute_ids.insert(dispute_id_str) {
+            return;
+        }
+        result = OperationResult::Info(message);
+    }
     if let OperationResult::SessionRestored { message } = result {
         result = OperationResult::Info(message);
     }
@@ -600,6 +630,91 @@ mod tests {
 
         assert_eq!(app.active_tab, Tab::Admin(AdminTab::DisputesPending));
     }
+
+    #[test]
+    fn user_closed_dispute_advances_local_row_and_shows_info() {
+        use crate::models::AdminDispute;
+        use mostro_core::prelude::DisputeStatus;
+
+        let mut app = AppState::new(UserRole::Admin);
+        let dispute_id = Uuid::from_u128(7);
+        app.admin_disputes_in_progress.push(AdminDispute {
+            dispute_id: dispute_id.to_string(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        });
+        app.selected_dispute_id = Some(dispute_id.to_string());
+
+        handle_operation_result(
+            OperationResult::DisputeClosedByUsers {
+                dispute_id,
+                status: DisputeStatus::CooperativelyCanceled,
+                message: "closed by users".into(),
+            },
+            &mut app,
+        );
+
+        assert_eq!(
+            app.admin_disputes_in_progress[0].status.as_deref(),
+            Some("cooperatively-canceled")
+        );
+        assert!(app.admin_disputes_in_progress[0].closed_by_users());
+        assert_eq!(app.selected_dispute_id, Some(dispute_id.to_string()));
+        assert!(app
+            .notified_user_closed_dispute_ids
+            .contains(&dispute_id.to_string()));
+        match &app.mode {
+            UiMode::OperationResult(r) => {
+                assert!(matches!(r.as_ref(), OperationResult::Info(m) if m == "closed by users"))
+            }
+            other => panic!("expected info popup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_closed_dispute_popup_only_once_per_dispute() {
+        use crate::models::AdminDispute;
+        use mostro_core::prelude::DisputeStatus;
+
+        let mut app = AppState::new(UserRole::Admin);
+        let dispute_id = Uuid::from_u128(8);
+        app.admin_disputes_in_progress.push(AdminDispute {
+            dispute_id: dispute_id.to_string(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        });
+
+        handle_operation_result(
+            OperationResult::DisputeClosedByUsers {
+                dispute_id,
+                status: DisputeStatus::CooperativelyCanceled,
+                message: "first notice".into(),
+            },
+            &mut app,
+        );
+        assert!(matches!(
+            &app.mode,
+            UiMode::OperationResult(r) if matches!(r.as_ref(), OperationResult::Info(m) if m == "first notice")
+        ));
+
+        // Dismiss popup, then a duplicate DM/relay notice must not reopen it.
+        app.mode = UiMode::Normal;
+        handle_operation_result(
+            OperationResult::DisputeClosedByUsers {
+                dispute_id,
+                status: DisputeStatus::CooperativelyCanceled,
+                message: "second notice".into(),
+            },
+            &mut app,
+        );
+        assert!(
+            matches!(app.mode, UiMode::Normal),
+            "duplicate must not reopen popup, got {:?}",
+            app.mode
+        );
+        assert_eq!(app.notified_user_closed_dispute_ids.len(), 1);
+    }
+
     use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
 
@@ -725,6 +840,7 @@ mod tests {
             rating: 3.9,
             reviews: 5,
             operating_days: 9,
+            since: None,
         };
         app.messages.lock().unwrap().push(OrderMessage {
             message: Message::new_order(

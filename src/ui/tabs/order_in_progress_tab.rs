@@ -1332,11 +1332,13 @@ mod tests {
                 rating: 4.5,
                 reviews: 12,
                 operating_days: 30,
+                since: None,
             }),
             seller_reputation: Some(UserInfo {
                 rating: 3.0,
                 reviews: 4,
                 operating_days: 10,
+                since: None,
             }),
             solver_pubkey: None,
             dispute_id: None,
@@ -1391,11 +1393,13 @@ mod tests {
                 rating: 4.5,
                 reviews: 12,
                 operating_days: 30,
+                since: None,
             }),
             seller_reputation: Some(UserInfo {
                 rating: 3.0,
                 reviews: 4,
                 operating_days: 10,
+                since: None,
             }),
             solver_pubkey: None,
             dispute_id: None,
@@ -1447,6 +1451,7 @@ mod tests {
             rating: 4.5,
             reviews: 12,
             operating_days: 30,
+            since: None,
         };
         let lines = super::order_info_economics_and_ratings(
             40,

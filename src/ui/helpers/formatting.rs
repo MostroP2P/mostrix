@@ -31,7 +31,7 @@ pub fn format_user_rating_compact(info: &UserInfo) -> String {
     )
 }
 
-/// Check if a dispute is finalized (Settled, SellerRefunded, or Released).
+/// Check if a dispute is finalized (any terminal dispute status).
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
     Some(selected_dispute.is_finalized())
 }
@@ -42,7 +42,9 @@ pub fn dispute_status_color(status: Option<&str>) -> Color {
         Some(DisputeStatus::Initiated) => Color::Yellow,
         Some(DisputeStatus::InProgress) => Color::Green,
         Some(DisputeStatus::Settled) | Some(DisputeStatus::Released) => Color::Green,
-        Some(DisputeStatus::SellerRefunded) => Color::Red,
+        Some(DisputeStatus::SellerRefunded) | Some(DisputeStatus::CooperativelyCanceled) => {
+            Color::Red
+        }
         None => Color::White,
     }
 }
@@ -141,6 +143,7 @@ mod rating_format_tests {
             rating: 3.9,
             reviews: 5,
             operating_days: 9,
+            since: None,
         };
         assert_eq!(format_user_rating_compact(&info), "3.9/5 (5 · 9d)");
         assert!(!format_user_rating_compact(&info).contains('⭐'));
@@ -228,6 +231,10 @@ mod premium_tests {
     fn dispute_status_color_matches_lifecycle() {
         assert_eq!(dispute_status_color(Some("in-progress")), Color::Green);
         assert_eq!(dispute_status_color(Some("seller-refunded")), Color::Red);
+        assert_eq!(
+            dispute_status_color(Some("cooperatively-canceled")),
+            Color::Red
+        );
         assert_eq!(dispute_status_color(Some("settled")), Color::Green);
         assert_eq!(dispute_status_color(Some("initiated")), Color::Yellow);
         assert_eq!(dispute_status_color(None), Color::White);

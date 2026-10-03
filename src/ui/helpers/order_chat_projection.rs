@@ -548,6 +548,7 @@ mod tests {
             rating: 4.5,
             reviews: 12,
             operating_days: 30,
+            since: None,
         };
         let mut msg = sample_order_message(
             order_id,
@@ -577,6 +578,7 @@ mod tests {
             rating: 3.9,
             reviews: 5,
             operating_days: 9,
+            since: None,
         };
         let mut msg = sample_order_message(
             order_id,
@@ -606,6 +608,7 @@ mod tests {
             rating: 3.0,
             reviews: 4,
             operating_days: 10,
+            since: None,
         });
 
         let rows = build_active_order_chat_list(&[msg], &[]);

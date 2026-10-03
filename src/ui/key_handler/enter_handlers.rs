@@ -958,22 +958,11 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
                 return true;
             }
 
-            use std::str::FromStr;
             let dispute_is_finalized = app
                 .admin_disputes_in_progress
                 .iter()
                 .find(|d| d.dispute_id == dispute_id.to_string() || d.id == dispute_id.to_string())
-                .and_then(|d| d.status.as_deref())
-                .and_then(|s| DisputeStatus::from_str(s).ok())
-                .map(|s| {
-                    matches!(
-                        s,
-                        DisputeStatus::Settled
-                            | DisputeStatus::SellerRefunded
-                            | DisputeStatus::Released
-                    )
-                })
-                .unwrap_or(false);
+                .is_some_and(|d| d.is_finalized());
 
             let bond_ui_enabled =
                 crate::util::mostro_info::instance_bonds_enabled(ctx.mostro_info.as_ref());

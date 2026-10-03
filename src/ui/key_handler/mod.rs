@@ -233,9 +233,10 @@ fn spawn_orders_info(
 // Re-export public functions
 pub use async_tasks::{
     apply_pending_fetch_scheduler_reload, apply_pending_key_reload, apply_pending_runtime_reloads,
-    create_app_channels, reload_runtime_session_after_reconnect, respawn_chat_listener,
-    respawn_solver_dm_listener, respawn_trade_dm_listener, spawn_refresh_mostro_info_task,
-    AppChannels, RuntimeReconnectContext,
+    create_app_channels, reload_runtime_session_after_reconnect,
+    respawn_admin_protocol_dm_listener, respawn_chat_listener, respawn_solver_dm_listener,
+    respawn_trade_dm_listener, spawn_refresh_mostro_info_task, AppChannels,
+    RuntimeReconnectContext,
 };
 pub use enter_handlers::handle_enter_key;
 pub use esc_handlers::handle_esc_key;

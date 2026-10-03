@@ -21,8 +21,8 @@ use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, append_paste_to_order_chat,
     apply_paste_to_focused_key_input, apply_pending_runtime_reloads, create_app_channels,
     handle_key_event, handle_mouse_invoice_paste_fallback, reload_runtime_session_after_reconnect,
-    respawn_chat_listener, respawn_solver_dm_listener, respawn_trade_dm_listener, AppChannels,
-    RuntimeReconnectContext,
+    respawn_admin_protocol_dm_listener, respawn_chat_listener, respawn_solver_dm_listener,
+    respawn_trade_dm_listener, AppChannels, RuntimeReconnectContext,
 };
 use crate::ui::{
     terminal, LnAddressVerifyResult, MessageNotification, MostroInfoFetchResult, OperationResult,
@@ -84,10 +84,13 @@ async fn apply_order_result(
     }
 
     let is_dispute_related = match &result {
-        OperationResult::AdminDisputeDeleted { .. } | OperationResult::DisputeTaken { .. } => true,
+        OperationResult::AdminDisputeDeleted { .. }
+        | OperationResult::DisputeTaken { .. }
+        | OperationResult::DisputeClosedByUsers { .. } => true,
         OperationResult::Info(msg) => {
             (msg.contains("Dispute") && msg.contains("taken successfully"))
                 || msg.contains("Dispute finalized")
+                || msg.contains("closed by the users")
         }
         _ => false,
     };
@@ -419,6 +422,17 @@ async fn main() -> Result<(), anyhow::Error> {
         &solver_dm_tx,
     )
     .await;
+    // Mostro → admin protocol DMs (user-resolved dispute notices).
+    let mut admin_protocol_dm_listener_handle = None;
+    respawn_admin_protocol_dm_listener(
+        &mut app,
+        &client,
+        mostro_pubkey,
+        &pool,
+        &mut admin_protocol_dm_listener_handle,
+        &order_result_tx,
+    )
+    .await;
 
     // Event handling: keyboard input and periodic UI refresh.
     let mut events = EventStream::new();
@@ -451,6 +465,9 @@ async fn main() -> Result<(), anyhow::Error> {
                             message_listener_handle.abort();
                             chat_listener_handle.abort();
                             if let Some(handle) = solver_dm_listener_handle.take() {
+                                handle.abort();
+                            }
+                            if let Some(handle) = admin_protocol_dm_listener_handle.take() {
                                 handle.abort();
                             }
                             app.fatal_exit_on_close = true;
@@ -497,6 +514,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                 Ok(()) => {
                                     // Reconnect ran `unsubscribe_all`; rebuild the chat subscription.
                                     respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
+                                    respawn_admin_protocol_dm_listener(
+                                        &mut app,
+                                        &client,
+                                        mostro_pubkey,
+                                        &pool,
+                                        &mut admin_protocol_dm_listener_handle,
+                                        &order_result_tx,
+                                    )
+                                    .await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -584,6 +610,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                 .await;
                                 if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
                                     respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
+                                    respawn_admin_protocol_dm_listener(
+                                        &mut app,
+                                        &client,
+                                        mostro_pubkey,
+                                        &pool,
+                                        &mut admin_protocol_dm_listener_handle,
+                                        &order_result_tx,
+                                    )
+                                    .await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -881,6 +916,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                 // chat subscription; respawn once the reload actually completed.
                                 if !app.pending_key_reload && !app.pending_fetch_scheduler_reload {
                                     respawn_solver_dm_listener(&mut app, &client, &pool, &mut solver_dm_listener_handle, &solver_dm_tx).await;
+                                    respawn_admin_protocol_dm_listener(
+                                        &mut app,
+                                        &client,
+                                        mostro_pubkey,
+                                        &pool,
+                                        &mut admin_protocol_dm_listener_handle,
+                                        &order_result_tx,
+                                    )
+                                    .await;
                                     if let Err(e) = respawn_chat_listener(
                                         &app,
                                         &client,
@@ -909,6 +953,15 @@ async fn main() -> Result<(), anyhow::Error> {
                                     &pool,
                                     &mut solver_dm_listener_handle,
                                     &solver_dm_tx,
+                                )
+                                .await;
+                                respawn_admin_protocol_dm_listener(
+                                    &mut app,
+                                    &client,
+                                    mostro_pubkey,
+                                    &pool,
+                                    &mut admin_protocol_dm_listener_handle,
+                                    &order_result_tx,
                                 )
                                 .await;
                             }
@@ -950,6 +1003,9 @@ async fn main() -> Result<(), anyhow::Error> {
                     if let Some(handle) = solver_dm_listener_handle.take() {
                         handle.abort();
                     }
+                    if let Some(handle) = admin_protocol_dm_listener_handle.take() {
+                        handle.abort();
+                    }
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     true
@@ -975,6 +1031,9 @@ async fn main() -> Result<(), anyhow::Error> {
                     if let Some(handle) = solver_dm_listener_handle.take() {
                         handle.abort();
                     }
+                    if let Some(handle) = admin_protocol_dm_listener_handle.take() {
+                        handle.abort();
+                    }
                     app.fatal_exit_on_close = true;
                     app.mode = UiMode::operation_result(OperationResult::Error(msg));
                     continue;
@@ -996,6 +1055,11 @@ async fn main() -> Result<(), anyhow::Error> {
                 );
                 for dispute_id in closed {
                     untrack_dispute_chat_parties(&dispute_id);
+                    // Kind-38386 fallback when the Mostro→solver DM was missed.
+                    crate::util::admin_protocol_dms::notify_admin_if_users_closed_dispute(
+                        &mut app,
+                        &dispute_id,
+                    );
                 }
             }
         }

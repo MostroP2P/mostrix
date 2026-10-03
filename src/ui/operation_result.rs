@@ -301,6 +301,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::OrderHistoryDeleted { .. }
         | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::DisputeTaken { .. }
+        | OperationResult::DisputeClosedByUsers { .. }
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
@@ -437,7 +438,8 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::TradeClosed { message, .. }
         | OperationResult::OrderHistoryDeleted { message, .. }
         | OperationResult::AdminDisputeDeleted { message, .. }
-        | OperationResult::DisputeTaken { message, .. } => {
+        | OperationResult::DisputeTaken { message, .. }
+        | OperationResult::DisputeClosedByUsers { message, .. } => {
             render_info_message_block(
                 f,
                 popup,

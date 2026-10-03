@@ -226,7 +226,7 @@ mod tests {
             &serbero,
             &serbero,
             admin.public_key(),
-            mostro_core::nip59::WrapOptions::default(),
+            mostro_core::prelude::WrapOptions::default(),
         )
         .unwrap();
 

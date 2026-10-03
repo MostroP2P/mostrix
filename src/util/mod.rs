@@ -1,3 +1,4 @@
+pub mod admin_protocol_dms;
 pub mod alert_sound;
 pub mod blossom;
 pub mod chat_listener;

@@ -1,5 +1,8 @@
 //! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
+use std::str::FromStr;
+
+use mostro_core::prelude::DisputeStatus;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -17,6 +20,15 @@ use crate::ui::helpers::{
 use crate::ui::tabs::solver_dms_view::{render_solver_dms, solver_dms_tab_label};
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
+
+/// Dispute Info line after Status when users closed the dispute themselves.
+fn user_closed_resolution_label(status: Option<&str>) -> Option<&'static str> {
+    match status.and_then(|s| DisputeStatus::from_str(s).ok()) {
+        Some(DisputeStatus::CooperativelyCanceled) => Some("Closed by users (cooperative cancel)"),
+        Some(DisputeStatus::Released) => Some("Closed by users (seller released)"),
+        _ => None,
+    }
+}
 
 fn should_auto_scroll_chat(
     tracker: Option<&(String, ChatParty, usize)>,
@@ -395,6 +407,26 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 Span::styled(&seller_rating, Style::default().fg(Color::Yellow)),
             ]),
         ];
+
+        // Keep this near the top (right after Status) so short terminals still show it.
+        if is_finalized {
+            if let Some(resolution) =
+                user_closed_resolution_label(selected_dispute.status.as_deref())
+            {
+                header_lines.insert(
+                    1,
+                    Line::from(vec![
+                        Span::styled("Resolution: ", Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            resolution,
+                            Style::default()
+                                .fg(dispute_status_color(selected_dispute.status.as_deref()))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                );
+            }
+        }
 
         // Add additional information for finalized disputes
         if is_finalized {
@@ -970,11 +1002,12 @@ mod tests {
     use super::render_disputes_in_progress;
     use super::should_auto_scroll_chat;
     use super::truncate_dispute_id_label;
+    use super::user_closed_resolution_label;
     use crate::models::AdminDispute;
     use crate::ui::constants::{
         FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY,
     };
-    use crate::ui::{AdminMode, AppState, ChatParty, UiMode, UserRole};
+    use crate::ui::{AdminMode, AppState, ChatParty, DisputeFilter, UiMode, UserRole};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1007,6 +1040,74 @@ mod tests {
         assert_eq!(
             truncate_dispute_id_label("12345678901234567890", 20),
             "12345678901234567890"
+        );
+    }
+
+    #[test]
+    fn user_closed_resolution_label_matches_user_closed_statuses() {
+        assert_eq!(
+            user_closed_resolution_label(Some("cooperatively-canceled")),
+            Some("Closed by users (cooperative cancel)")
+        );
+        assert_eq!(
+            user_closed_resolution_label(Some("released")),
+            Some("Closed by users (seller released)")
+        );
+        assert_eq!(user_closed_resolution_label(Some("settled")), None);
+        assert_eq!(user_closed_resolution_label(Some("seller-refunded")), None);
+        assert_eq!(user_closed_resolution_label(Some("in-progress")), None);
+        assert_eq!(user_closed_resolution_label(None), None);
+    }
+
+    #[test]
+    fn finalized_header_shows_closed_by_users_resolution() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.dispute_filter = DisputeFilter::Finalized;
+        app.admin_disputes_in_progress = vec![dispute("dip-coop", "cooperatively-canceled")];
+        app.selected_dispute_id = Some("dip-coop".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Closed by users"),
+            "finalized header must explain user resolution"
+        );
+        assert!(
+            buffer_contains(buf, "Resolution:"),
+            "Resolution label must appear after Status"
+        );
+        assert!(
+            buffer_contains(buf, "cooperative cancel"),
+            "cooperative cancel wording must be visible"
+        );
+    }
+
+    #[test]
+    fn short_narrow_finalized_header_keeps_closed_by_users_visible() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.dispute_filter = DisputeFilter::Finalized;
+        app.admin_disputes_in_progress = vec![dispute("dip-rel", "released")];
+        app.selected_dispute_id = Some("dip-rel".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+
+        // Short + narrow: Resolution sits on line 2 of the header so it stays
+        // above FINALIZATION DETAILS that may clip.
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Closed by users"),
+            "short/narrow terminal must still show user resolution"
         );
     }
 

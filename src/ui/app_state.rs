@@ -337,6 +337,9 @@ pub struct AppState {
     pub user_dispute_chat_last_seen: HashMap<String, OrderChatLastSeen>,
     pub pending_notifications: Arc<Mutex<usize>>, // Count of pending notifications (non-critical)
     pub admin_disputes_in_progress: Vec<AdminDispute>, // Taken disputes
+    /// Dispute ids for which the "closed by users" Info popup was already shown
+    /// this session (DM listener and/or kind-38386 relay fallback).
+    pub notified_user_closed_dispute_ids: HashSet<String>,
     pub dispute_filter: DisputeFilter, // Filter for viewing InProgress or Finalized disputes
     /// Transient toast when a new attachment is received (message text, expiry time). Cleared when expired or on key press.
     pub attachment_toast: Option<(String, Instant)>,
@@ -465,6 +468,7 @@ impl AppState {
             user_dispute_chat_last_seen: HashMap::new(),
             pending_notifications: Arc::new(Mutex::new(0)),
             admin_disputes_in_progress: Vec::new(),
+            notified_user_closed_dispute_ids: HashSet::new(),
             dispute_filter: DisputeFilter::InProgress, // Default to InProgress view
             attachment_toast: None,
             pending_order_attachment_sends: HashMap::new(),

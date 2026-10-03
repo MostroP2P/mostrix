@@ -1994,6 +1994,7 @@ mod history_action_for_db_order_tests {
             rating: 3.9,
             reviews: 5,
             operating_days: 9,
+            since: None,
         };
         let msg = super::db_order_to_history_message(
             &order,

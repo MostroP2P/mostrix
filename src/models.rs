@@ -1589,7 +1589,8 @@ impl AdminDispute {
     /// Advance a taken dispute to `status` by Mostro dispute UUID.
     ///
     /// No-op (returns `false`) when the row is missing or already finalized, so a
-    /// later `seller-refunded` event cannot overwrite `settled`.
+    /// later `seller-refunded` event cannot overwrite `settled` (or a
+    /// user-closed terminal status).
     pub async fn set_status_by_dispute_id(
         pool: &SqlitePool,
         dispute_id: &str,
@@ -1598,19 +1599,22 @@ impl AdminDispute {
         let result = sqlx::query(
             r#"UPDATE admin_disputes SET status = ?
                WHERE dispute_id = ?
-                 AND (status IS NULL OR status NOT IN (?, ?, ?))"#,
+                 AND (status IS NULL OR status NOT IN (?, ?, ?, ?))"#,
         )
         .bind(status.to_string())
         .bind(dispute_id)
         .bind(DisputeStatus::Settled.to_string())
         .bind(DisputeStatus::SellerRefunded.to_string())
         .bind(DisputeStatus::Released.to_string())
+        .bind(DisputeStatus::CooperativelyCanceled.to_string())
         .execute(pool)
         .await?;
         Ok(result.rows_affected() > 0)
     }
 
-    /// Whether a kebab-case dispute status is terminal (Settled, SellerRefunded, Released).
+    /// Whether a kebab-case dispute status is terminal.
+    ///
+    /// Terminal statuses: Settled, SellerRefunded, Released, CooperativelyCanceled.
     pub fn is_terminal_status(status: &str) -> bool {
         use std::str::FromStr;
         DisputeStatus::from_str(status)
@@ -1620,16 +1624,36 @@ impl AdminDispute {
                     DisputeStatus::Settled
                         | DisputeStatus::SellerRefunded
                         | DisputeStatus::Released
+                        | DisputeStatus::CooperativelyCanceled
                 )
             })
             .unwrap_or(false)
     }
 
-    /// Check if the dispute is finalized (Settled, SellerRefunded, or Released)
+    /// Check if the dispute is finalized (any terminal status).
     ///
     /// A finalized dispute cannot have further actions taken on it.
     pub fn is_finalized(&self) -> bool {
         self.status.as_deref().is_some_and(Self::is_terminal_status)
+    }
+
+    /// Whether users closed this dispute themselves (cooperative cancel or
+    /// seller release), as opposed to a solver `admin-settle` / `admin-cancel`.
+    ///
+    /// Mostro writes [`DisputeStatus::CooperativelyCanceled`] or
+    /// [`DisputeStatus::Released`] for those paths; [`DisputeStatus::Settled`]
+    /// and [`DisputeStatus::SellerRefunded`] remain admin-attributed.
+    pub fn closed_by_users(&self) -> bool {
+        use std::str::FromStr;
+        self.status
+            .as_deref()
+            .and_then(|s| DisputeStatus::from_str(s).ok())
+            .is_some_and(|s| {
+                matches!(
+                    s,
+                    DisputeStatus::CooperativelyCanceled | DisputeStatus::Released
+                )
+            })
     }
 
     /// Check if AdminSettle action can be performed on this dispute
@@ -2410,5 +2434,134 @@ mod admin_dispute_new_tests {
                 .expect("idempotent"),
             0
         );
+    }
+
+    #[test]
+    fn cooperatively_canceled_is_terminal_and_closed_by_users() {
+        assert!(AdminDispute::is_terminal_status("cooperatively-canceled"));
+        assert!(AdminDispute::is_terminal_status("released"));
+        assert!(AdminDispute::is_terminal_status("settled"));
+        assert!(AdminDispute::is_terminal_status("seller-refunded"));
+        assert!(!AdminDispute::is_terminal_status("in-progress"));
+        assert!(!AdminDispute::is_terminal_status("initiated"));
+        assert!(!AdminDispute::is_terminal_status("not-a-status"));
+
+        let coop = AdminDispute {
+            status: Some("cooperatively-canceled".into()),
+            ..Default::default()
+        };
+        assert!(coop.is_finalized());
+        assert!(coop.closed_by_users());
+        assert!(!coop.can_settle());
+        assert!(!coop.can_cancel());
+
+        let released = AdminDispute {
+            status: Some("released".into()),
+            ..Default::default()
+        };
+        assert!(released.is_finalized());
+        assert!(released.closed_by_users());
+
+        let settled = AdminDispute {
+            status: Some("settled".into()),
+            ..Default::default()
+        };
+        assert!(settled.is_finalized());
+        assert!(!settled.closed_by_users());
+
+        let refunded = AdminDispute {
+            status: Some("seller-refunded".into()),
+            ..Default::default()
+        };
+        assert!(refunded.is_finalized());
+        assert!(!refunded.closed_by_users());
+
+        let open = AdminDispute {
+            status: Some("in-progress".into()),
+            ..Default::default()
+        };
+        assert!(!open.is_finalized());
+        assert!(!open.closed_by_users());
+    }
+
+    #[tokio::test]
+    async fn set_status_by_dispute_id_refuses_to_overwrite_cooperatively_canceled() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+
+        let order_id = Uuid::new_v4();
+        let dispute_id = "dispute-coop-1";
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, kind, status, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, taken_at, created_at
+            ) VALUES (?, ?, 'sell', 'cooperatively-canceled', ?, 0, 0, 1,
+                'pm', 50000, 75, 'USD', 250, 3, 1700000100, 1700000000)"#,
+        )
+        .bind(order_id.to_string())
+        .bind(dispute_id)
+        .bind("02".repeat(32))
+        .execute(&pool)
+        .await
+        .expect("insert cooperatively-canceled row");
+
+        let updated = AdminDispute::set_status_by_dispute_id(
+            &pool,
+            dispute_id,
+            DisputeStatus::SellerRefunded,
+        )
+        .await
+        .expect("update");
+        assert!(!updated);
+
+        let row = AdminDispute::get_by_dispute_id(&pool, dispute_id)
+            .await
+            .expect("query")
+            .expect("row exists");
+        assert_eq!(row.status.as_deref(), Some("cooperatively-canceled"));
+    }
+
+    #[tokio::test]
+    async fn set_status_by_dispute_id_advances_in_progress_to_cooperatively_canceled() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        create_admin_disputes_table(&pool).await;
+
+        let order_id = Uuid::new_v4();
+        let dispute_id = "dispute-coop-2";
+        sqlx::query(
+            r#"INSERT INTO admin_disputes (
+                id, dispute_id, kind, status, initiator_pubkey, initiator_full_privacy,
+                counterpart_full_privacy, premium, payment_method, amount, fiat_amount,
+                fiat_code, fee, routing_fee, taken_at, created_at
+            ) VALUES (?, ?, 'sell', 'in-progress', ?, 0, 0, 1,
+                'pm', 50000, 75, 'USD', 250, 3, 1700000100, 1700000000)"#,
+        )
+        .bind(order_id.to_string())
+        .bind(dispute_id)
+        .bind("02".repeat(32))
+        .execute(&pool)
+        .await
+        .expect("insert in-progress row");
+
+        let updated = AdminDispute::set_status_by_dispute_id(
+            &pool,
+            dispute_id,
+            DisputeStatus::CooperativelyCanceled,
+        )
+        .await
+        .expect("update");
+        assert!(updated);
+
+        let row = AdminDispute::get_by_dispute_id(&pool, dispute_id)
+            .await
+            .expect("query")
+            .expect("row exists");
+        assert_eq!(row.status.as_deref(), Some("cooperatively-canceled"));
+        assert!(row.closed_by_users());
     }
 }

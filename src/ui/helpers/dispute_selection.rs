@@ -113,12 +113,10 @@ pub fn get_filtered_disputes(app: &AppState) -> Vec<(usize, AdminDispute)> {
                             .as_deref()
                             .is_some_and(|id| d.dispute_id == id)
                 }
-                DisputeFilter::Finalized => matches!(
-                    status,
-                    Some(DisputeStatus::Settled)
-                        | Some(DisputeStatus::SellerRefunded)
-                        | Some(DisputeStatus::Released)
-                ),
+                DisputeFilter::Finalized => d
+                    .status
+                    .as_deref()
+                    .is_some_and(AdminDispute::is_terminal_status),
             }
         })
         .map(|(i, d)| (i, d.clone()))
