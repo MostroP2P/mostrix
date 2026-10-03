@@ -236,7 +236,7 @@ Render/popup logic should be covered with **deterministic** `ratatui::backend::T
 
 ## Dependencies
 
-- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the same minor line as the Mostro daemon you test against (currently **0.16.0**, matching mostrod **0.19.1** — protocol v2 NIP-44 only; includes `DisputeStatus::CooperativelyCanceled`). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, `Transport`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix. Re-export transport helpers from [`src/util/mod.rs`](../src/util/mod.rs) when used across the crate.
+- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the version tested with the Mostro daemon you run against (currently **mostro-core 0.16.0** with **mostrod 0.19.1** — protocol v2 NIP-44 only; includes `DisputeStatus::CooperativelyCanceled`). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, `Transport`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix. Re-export transport helpers from [`src/util/mod.rs`](../src/util/mod.rs) when used across the crate.
 - **Bond invoice replies**: shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) for `take_order` and `send_new_order` — returns `PaymentRequestRequired`, not `Success`.
 - **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) — TUI labels via `label()` (emoji + text); `#[derive(Default)]` with `#[default]` on `None`; state on `ReviewingDisputeForFinalization.bond`; pass through `execute_finalize_dispute(dispute_id, bond, …)` and `bond.to_optional_payload()` on the wire (`None` → `null`); see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 

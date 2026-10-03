@@ -8,7 +8,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 
 | Layer | Status | Notes |
 |-------|--------|--------|
-| **`mostro-core` 0.16.0** | Done | Same minor as mostrod 0.19.1; `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond`, `Transport`, `DisputeStatus::CooperativelyCanceled` |
+| **`mostro-core` 0.16.0** | Done | Tested with mostrod 0.19.1; `BondResolution`, `Payload::BondResolution`, `CantDoReason::InvalidPayload`, `Status::WaitingMakerBond`, `Transport`, `DisputeStatus::CooperativelyCanceled` |
 | **`BondSlashChoice`** | Done | [`src/util/order_utils/bond_resolution.rs`](../src/util/order_utils/bond_resolution.rs) — wire mapping + unit tests |
 | **Bond submenu overlay** | Done | [`src/ui/dispute_bond_slash_popup.rs`](../src/ui/dispute_bond_slash_popup.rs) — `render_bond_slash_overlay`; **TestBackend** unit tests for selection chrome |
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`, or `CooperativeCancelAccepted` when users already canceled; `CantDo` before DB update |
