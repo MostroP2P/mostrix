@@ -527,19 +527,16 @@ mod tests {
             .await
             .expect("Failed to query user count");
         assert_eq!(user_count.0, 1, "Expected one user to be created");
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    async fn init_db_creates_orders_full_privacy_column() {
-        let pool = init_db().await.expect("init db");
-        let (count,): (i64,) = sqlx::query_as(
+        let (fp_col,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'full_privacy'",
         )
         .fetch_one(&pool)
         .await
         .expect("pragma_table_info");
-        assert_eq!(count, 1);
+        assert_eq!(
+            fp_col, 1,
+            "orders.full_privacy column must exist after init_db"
+        );
         pool.close().await;
     }
 
