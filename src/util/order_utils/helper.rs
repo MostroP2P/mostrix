@@ -767,6 +767,7 @@ pub(super) async fn payment_request_operation_result(
     pool: &SqlitePool,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
     log_prefix: &str,
     trade_amount_to_persist: Option<i64>,
@@ -815,6 +816,7 @@ pub(super) async fn payment_request_operation_result(
         next_idx,
         pool,
         is_mine,
+        full_privacy,
     )
     .await
     {

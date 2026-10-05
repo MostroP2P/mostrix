@@ -9,7 +9,7 @@ use crate::ui::currencies;
 pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_button: bool) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
-    let popup_height = 20;
+    let popup_height = 21;
     // Center the popup using Flex::Center
     let popup = {
         let [popup] = Layout::horizontal([Constraint::Length(popup_width)])
@@ -38,6 +38,7 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
             Constraint::Length(1), // premium
             Constraint::Length(1), // invoice (if present)
             Constraint::Length(1), // expiration
+            Constraint::Length(1), // privacy
             Constraint::Length(3), // buttons
             Constraint::Length(1), // help text
         ],
@@ -178,13 +179,32 @@ pub fn render_order_confirm(f: &mut ratatui::Frame, form: &FormState, selected_b
         inner_chunks[10],
     );
 
+    let privacy_str = if form.full_privacy {
+        "Full privacy (no reputation)"
+    } else {
+        "Reputation"
+    };
+    let privacy_color = if form.full_privacy {
+        Color::Yellow
+    } else {
+        PRIMARY_COLOR
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("Privacy: "),
+            Span::styled(privacy_str, Style::default().fg(privacy_color)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        inner_chunks[11],
+    );
+
     // YES/NO buttons
-    helpers::render_yes_no_buttons(f, inner_chunks[11], selected_button, "✓ YES", "✗ NO");
+    helpers::render_yes_no_buttons(f, inner_chunks[12], selected_button, "✓ YES", "✗ NO");
 
     // Help text: use Enter/Esc for confirmation
     helpers::render_help_text(
         f,
-        inner_chunks[12],
+        inner_chunks[13],
         "Press ",
         "Enter",
         " to confirm, Esc to cancel",
@@ -225,6 +245,7 @@ mod tests {
         assert!(buffer_contains(buf, "Buy"));
         assert!(buffer_contains(buf, "USD"));
         assert!(buffer_contains(buf, "market"));
+        assert!(buffer_contains(buf, "Reputation"));
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
     }
@@ -254,5 +275,21 @@ mod tests {
         assert!(buffer_contains(buf, "lnbc1testinvoice"));
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
+    }
+
+    #[test]
+    fn render_full_privacy_on_confirmation() {
+        let mut form = FormState::new_default_form();
+        form.payment_method = "SEPA".to_string();
+        form.fiat_amount = "100".to_string();
+        form.full_privacy = true;
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_confirm(f, &form, true))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Full privacy"));
     }
 }

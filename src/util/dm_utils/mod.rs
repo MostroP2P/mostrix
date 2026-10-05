@@ -293,6 +293,14 @@ fn trade_message_is_terminal(message: &Message) -> bool {
     message_has_terminal_order_status(message)
 }
 
+/// Identity keys to pass into [`send_dm`] for a trade protocol message.
+///
+/// When `full_privacy` is true, returns `None` so the wrap omits the identity
+/// proof and Mostro treats the trade key as the identity.
+pub fn protocol_identity_keys(identity: &Keys, full_privacy: bool) -> Option<&Keys> {
+    (!full_privacy).then_some(identity)
+}
+
 /// Send a direct message to a receiver.
 ///
 /// Key roles (mostro-core `wrap_message_nip44`):
@@ -747,6 +755,7 @@ async fn persist_range_child_listing_from_new_order(
         trade_index,
         pool,
         true,
+        false,
     )
     .await
     {
@@ -2723,9 +2732,10 @@ mod tests {
         default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
         is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
         is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
-        new_order_would_regress_messages_row, resolve_take_sell_add_invoice_trusted_sats,
-        satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
-        trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
+        new_order_would_regress_messages_row, protocol_identity_keys,
+        resolve_take_sell_add_invoice_trusted_sats, satisfy_pending_waiters_for_event,
+        small_order_pending_from_new_order_payload, trade_dm_replay_dispatch_mode,
+        trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
         TradeDmReplayDispatchMode, STARTUP_TRADE_DM_FETCH_LIMIT,
     };
@@ -2760,6 +2770,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3239,6 +3250,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3318,6 +3330,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3453,6 +3466,18 @@ mod tests {
     }
 
     #[test]
+    fn protocol_identity_keys_omitted_only_in_full_privacy() {
+        let identity = Keys::generate();
+        assert!(protocol_identity_keys(&identity, false).is_some());
+        assert!(protocol_identity_keys(&identity, true).is_none());
+        assert_eq!(
+            protocol_identity_keys(&identity, false)
+                .map(|k| k.public_key()),
+            Some(identity.public_key())
+        );
+    }
+
+    #[test]
     fn effective_is_mine_uses_post_upsert_db_when_row_existed() {
         assert_eq!(
             effective_is_mine_for_trade_dm_message(true, Some(true), None),
@@ -3500,6 +3525,7 @@ mod tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine,
+            full_privacy: false,
             buyer_invoice: None,
             request_id: Some(1),
             trade_index: Some(1),
@@ -3622,6 +3648,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3681,6 +3708,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3759,6 +3787,7 @@ mod tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: false,
+            full_privacy: false,
             buyer_invoice: None,
             request_id: None,
             trade_index: Some(3),
@@ -3802,6 +3831,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3866,6 +3896,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT

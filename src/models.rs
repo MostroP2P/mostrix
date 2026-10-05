@@ -242,6 +242,8 @@ pub struct Order {
     pub dispute_chat_shared_key_hex: Option<String>,
     /// Maker (`true`) vs taker (`false`). Matches `orders.is_mine` INTEGER NOT NULL (0/1).
     pub is_mine: bool,
+    /// Local user omitted identity proof for this trade (`orders.full_privacy`).
+    pub full_privacy: bool,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
     pub trade_index: Option<i64>,
@@ -303,6 +305,8 @@ impl Order {
     ///
     /// `is_maker`: `true` if the local user **created** the order (maker); `false` if they **took**
     /// an existing order from the book (taker). Stored as `is_mine`.
+    ///
+    /// `full_privacy`: when `true`, protocol DMs for this trade omit the identity proof.
     pub async fn new(
         pool: &SqlitePool,
         order: mostro_core::prelude::SmallOrder,
@@ -310,6 +314,7 @@ impl Order {
         _request_id: Option<i64>,
         trade_index: i64,
         is_maker: bool,
+        full_privacy: bool,
     ) -> Result<Self> {
         if trade_index <= 0 {
             anyhow::bail!(
@@ -341,6 +346,7 @@ impl Order {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
+            full_privacy,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             trade_index: Some(trade_index),
@@ -418,6 +424,8 @@ impl Order {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
+            // Restore Session is identity-scoped; rows from restore are reputation-mode.
+            full_privacy: false,
             buyer_invoice: order.buyer_invoice,
             request_id: None,
             trade_index: Some(trade_index),
@@ -459,6 +467,8 @@ impl Order {
             .dispute_chat_shared_key_hex
             .or_else(|| existing.dispute_chat_shared_key_hex.clone());
         self.last_seen_dm_ts = self.last_seen_dm_ts.or(existing.last_seen_dm_ts);
+        // Privacy mode is chosen at create/take and must survive restore refresh.
+        self.full_privacy = existing.full_privacy;
         self
     }
 
@@ -466,11 +476,11 @@ impl Order {
         sqlx::query(
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
-            fiat_code, fiat_amount, payment_method, premium, is_mine,
+            fiat_code, fiat_amount, payment_method, premium, is_mine, full_privacy,
             trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex,
             buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -484,6 +494,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -507,7 +518,8 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                is_mine = ?, full_privacy = ?, trade_keys = ?, counterparty_pubkey = ?,
+                order_chat_shared_key_hex = ?,
                 dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ?
@@ -523,6 +535,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -558,7 +571,8 @@ impl Order {
             UPDATE orders
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                is_mine = ?, full_privacy = ?, trade_keys = ?, counterparty_pubkey = ?,
+                order_chat_shared_key_hex = ?,
                 dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ? AND (last_seen_dm_ts IS NULL OR last_seen_dm_ts <= ?)
@@ -574,6 +588,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -634,6 +649,7 @@ impl Order {
             dispute_chat_shared_key_hex: existing
                 .and_then(|e| e.dispute_chat_shared_key_hex.clone()),
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
+            full_privacy: existing.map(|e| e.full_privacy).unwrap_or(false),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
             trade_index: existing.and_then(|e| e.trade_index),
@@ -1801,6 +1817,7 @@ mod upsert_from_small_order_dm_tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
             )
@@ -1900,6 +1917,57 @@ mod upsert_from_small_order_dm_tests {
         assert_eq!(
             updated.trade_keys.as_deref(),
             Some(stored_keys.secret_key().to_secret_hex().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn order_new_persists_full_privacy_flag() {
+        let pool = create_test_pool().await;
+        let trade_keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let small_order = sample_small_order(id, 1000);
+
+        Order::new(&pool, small_order, &trade_keys, Some(1), 1, true, true)
+            .await
+            .expect("insert full-privacy order");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("stored row");
+        assert!(stored.full_privacy);
+        assert!(stored.is_mine);
+    }
+
+    #[tokio::test]
+    async fn dm_upsert_preserves_existing_full_privacy() {
+        let pool = create_test_pool().await;
+        let trade_keys = Keys::generate();
+        let id = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(id, 1000),
+            &trade_keys,
+            Some(1),
+            1,
+            true,
+            true,
+        )
+        .await
+        .expect("seed private order");
+
+        let mut updated = sample_small_order(id, 2000);
+        updated.status = Some(Status::Active);
+        Order::upsert_from_small_order_dm(&pool, id, updated, &trade_keys, Some(2))
+            .await
+            .expect("dm upsert");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("row after upsert");
+        assert_eq!(stored.amount, 2000);
+        assert!(
+            stored.full_privacy,
+            "DM upsert must not clear create/take privacy mode"
         );
     }
 

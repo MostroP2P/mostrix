@@ -9,7 +9,8 @@ use crate::models::User;
 use crate::ui::FormState;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{
-    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, protocol_identity_keys, send_dm, send_track_order_cmd, wait_for_dm,
+    FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
@@ -132,9 +133,10 @@ pub async fn send_new_order(
     );
 
     let identity_keys = User::get_identity_keys(pool).await?;
+    let full_privacy = form.full_privacy;
     let new_order_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, full_privacy),
         &trade_keys,
         &mostro_pubkey,
         message_json,
@@ -177,6 +179,7 @@ pub async fn send_new_order(
                                     next_idx,
                                     pool,
                                     true,
+                                    full_privacy,
                                 )
                                 .await
                                 {
@@ -224,6 +227,7 @@ pub async fn send_new_order(
                                     pool,
                                     &trade_keys,
                                     true,
+                                    full_privacy,
                                     dm_subscription_tx,
                                     "send_new_order",
                                     Some(amount),

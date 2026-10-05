@@ -346,6 +346,7 @@ mod db_order_row_tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: true,
+            full_privacy: false,
             buyer_invoice: None,
             request_id: None,
             trade_index: Some(4),

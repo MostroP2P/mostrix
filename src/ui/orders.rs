@@ -573,6 +573,8 @@ pub enum FormField {
     Premium,
     Invoice,
     ExpirationDays,
+    /// Reputation (default) vs full privacy (omit identity proof).
+    FullPrivacy,
 }
 
 impl FormField {
@@ -593,14 +595,15 @@ impl FormField {
             PaymentMethod => Premium,
             Premium => Invoice,
             Invoice => ExpirationDays,
-            ExpirationDays => OrderType,
+            ExpirationDays => FullPrivacy,
+            FullPrivacy => OrderType,
         }
     }
 
     pub fn prev(self, use_range: bool) -> Self {
         use FormField::*;
         match self {
-            OrderType => ExpirationDays,
+            OrderType => FullPrivacy,
             Currency => OrderType,
             AmountSats => Currency,
             FiatAmount => AmountSats,
@@ -615,6 +618,7 @@ impl FormField {
             Premium => PaymentMethod,
             Invoice => Premium,
             ExpirationDays => Invoice,
+            FullPrivacy => ExpirationDays,
         }
     }
 }
@@ -646,6 +650,8 @@ pub struct FormState {
     pub premium: String,                            // premium percentage
     pub invoice: String,                            // optional invoice
     pub expiration_days: String,                    // expiration days (minimum 1)
+    /// Omit identity proof on create (default `false` = reputation mode).
+    pub full_privacy: bool,
     pub focused: FormField,                         // which field is focused
     pub use_range: bool,                            // whether to use fiat range
     pub currency_picker: CurrencyPicker,            // searchable currency dropdown state

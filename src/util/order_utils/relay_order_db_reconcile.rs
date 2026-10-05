@@ -186,6 +186,7 @@ mod tests {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -213,7 +214,7 @@ mod tests {
             ..Default::default()
         };
 
-        Order::new(&pool, small_pending, &trade_keys, None, 1, true)
+        Order::new(&pool, small_pending, &trade_keys, None, 1, true, false)
             .await
             .unwrap();
 
@@ -266,6 +267,7 @@ mod tests {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -330,6 +332,7 @@ mod tests {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -365,6 +368,7 @@ mod tests {
             None,
             1,
             true,
+            false,
         )
         .await
         .unwrap();
@@ -386,6 +390,7 @@ mod tests {
             None,
             2,
             true,
+            false,
         )
         .await
         .unwrap();

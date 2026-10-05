@@ -277,6 +277,7 @@ async fn process_take_order_reply(
                 pool,
                 trade_keys,
                 false,
+                false,
                 dm_subscription_tx,
                 "take_order",
                 trade_amount_to_persist,
@@ -359,6 +360,7 @@ async fn persist_taken_order(
         request_id,
         next_idx,
         pool,
+        false,
         false,
     )
     .await

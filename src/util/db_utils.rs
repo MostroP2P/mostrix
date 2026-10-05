@@ -25,6 +25,7 @@ pub async fn delete_order_by_id(pool: &SqlitePool, order_id: &str) -> Result<()>
 /// Save an order to the database (ported from mostro-cli).
 ///
 /// `is_maker`: `true` when the user published the order (maker), `false` when they took an order (taker).
+/// `full_privacy`: omit identity proof on protocol DMs for this trade.
 pub async fn save_order(
     order: SmallOrder,
     trade_keys: &Keys,
@@ -32,6 +33,7 @@ pub async fn save_order(
     trade_index: i64,
     pool: &SqlitePool,
     is_maker: bool,
+    full_privacy: bool,
 ) -> Result<()> {
     if let Ok(order) = Order::new(
         pool,
@@ -40,6 +42,7 @@ pub async fn save_order(
         Some(request_id as i64),
         trade_index,
         is_maker,
+        full_privacy,
     )
     .await
     {

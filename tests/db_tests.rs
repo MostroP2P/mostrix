@@ -164,7 +164,7 @@ async fn test_order_new() {
         None,
     );
 
-    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), 1, true)
+    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), 1, true, false)
         .await
         .unwrap();
 
@@ -190,7 +190,7 @@ async fn test_order_get_by_id() {
     small_order.payment_method = "paypal".to_string();
     small_order.premium = 3;
 
-    let created_order = Order::new(&pool, small_order, &trade_keys, None, 2, true)
+    let created_order = Order::new(&pool, small_order, &trade_keys, None, 2, true, false)
         .await
         .unwrap();
     let order_id_str = created_order.id.as_ref().unwrap();
@@ -232,7 +232,7 @@ async fn test_order_persists_user_solver_chat_metadata() {
         payment_method: "cash".to_string(),
         ..Default::default()
     };
-    Order::new(&pool, small_order, &trade_keys, None, 1, true)
+    Order::new(&pool, small_order, &trade_keys, None, 1, true, false)
         .await
         .unwrap();
 
@@ -280,14 +280,14 @@ async fn test_order_update_existing() {
     small_order.premium = 5;
 
     // Create order
-    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, 3, true)
+    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, 3, true, false)
         .await
         .unwrap();
 
     // Update with same ID but different data
     small_order.amount = 200000;
     small_order.fiat_amount = 200;
-    let order2 = Order::new(&pool, small_order, &trade_keys, None, 3, true)
+    let order2 = Order::new(&pool, small_order, &trade_keys, None, 3, true, false)
         .await
         .unwrap();
 
@@ -319,7 +319,7 @@ async fn test_order_new_requires_positive_trade_index() {
         None,
     );
 
-    let result = Order::new(&pool, small_order, &trade_keys, Some(123), 0, true).await;
+    let result = Order::new(&pool, small_order, &trade_keys, Some(123), 0, true, false).await;
     assert!(result.is_err());
 }
 
@@ -336,7 +336,7 @@ async fn test_bond_invoice_persist_and_load() {
     small_order.fiat_code = "USD".to_string();
     small_order.payment_method = "ln".to_string();
 
-    let order = Order::new(&pool, small_order, &trade_keys, None, 1, false)
+    let order = Order::new(&pool, small_order, &trade_keys, None, 1, false, false)
         .await
         .unwrap();
     let id = order.id.as_deref().unwrap();

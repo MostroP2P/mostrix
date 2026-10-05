@@ -65,6 +65,7 @@ pub async fn init_db() -> Result<SqlitePool> {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -197,6 +198,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_buyer_reputation = check_column_exists(pool, "orders", "buyer_reputation").await?;
     let has_seller_reputation = check_column_exists(pool, "orders", "seller_reputation").await?;
     let has_bond_invoice = check_column_exists(pool, "orders", "bond_invoice").await?;
+    let has_full_privacy = check_column_exists(pool, "orders", "full_privacy").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -217,6 +219,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_buyer_reputation
         || !has_seller_reputation
         || !has_bond_invoice
+        || !has_full_privacy
     {
         log::info!("Running migration: adding missing database columns");
 
@@ -389,6 +392,14 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
                 .await?;
         }
 
+        if !has_full_privacy {
+            sqlx::query(
+                "ALTER TABLE orders ADD COLUMN full_privacy INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
     }
@@ -453,6 +464,7 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             solver_pubkey TEXT,
             dispute_chat_shared_key_hex TEXT,
             is_mine INTEGER NOT NULL,
+            full_privacy INTEGER NOT NULL DEFAULT 0,
             buyer_invoice TEXT,
             request_id INTEGER,
             trade_index INTEGER,
@@ -472,15 +484,15 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
         INSERT INTO orders_new (
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
-            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
-            request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         )
         SELECT
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
-            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
-            request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         FROM orders;
         "#,
@@ -517,6 +529,111 @@ mod tests {
             .await
             .expect("Failed to query user count");
         assert_eq!(user_count.0, 1, "Expected one user to be created");
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn init_db_creates_orders_full_privacy_column() {
+        let pool = init_db().await.expect("init db");
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'full_privacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma_table_info");
+        assert_eq!(count, 1);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn migrate_adds_full_privacy_to_legacy_orders_table() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("memory db");
+        // Minimal legacy schema: orders without full_privacy, plus empty admin_disputes
+        // with the columns migrate_db probes so only the orders column is missing.
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY,
+                kind TEXT,
+                status TEXT,
+                amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL,
+                min_amount INTEGER,
+                max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL,
+                trade_keys TEXT,
+                counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT,
+                dispute_id TEXT,
+                solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT,
+                is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT,
+                request_id INTEGER,
+                trade_index INTEGER,
+                created_at INTEGER,
+                expires_at INTEGER,
+                last_seen_dm_ts INTEGER,
+                buyer_reputation TEXT,
+                seller_reputation TEXT,
+                bond_invoice TEXT
+            );
+            CREATE TABLE admin_disputes (
+                id TEXT PRIMARY KEY,
+                dispute_id TEXT NOT NULL DEFAULT '',
+                initiator_pubkey TEXT NOT NULL,
+                initiator_full_privacy INTEGER NOT NULL,
+                counterpart_full_privacy INTEGER NOT NULL,
+                premium INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                fiat_amount INTEGER NOT NULL,
+                fee INTEGER NOT NULL,
+                routing_fee INTEGER NOT NULL,
+                invoice_held_at INTEGER NOT NULL,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                initiator_info TEXT,
+                counterpart_info TEXT,
+                fiat_code TEXT DEFAULT 'USD',
+                buyer_chat_last_seen INTEGER,
+                seller_chat_last_seen INTEGER,
+                buyer_shared_key_hex TEXT,
+                seller_shared_key_hex TEXT
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy tables");
+
+        migrate_db(&pool).await.expect("migrate");
+
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'full_privacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma");
+        assert_eq!(count, 1);
+
+        sqlx::query(
+            r#"INSERT INTO orders (
+                id, amount, fiat_code, fiat_amount, payment_method, premium, is_mine
+            ) VALUES ('o1', 1, 'USD', 1, 'ln', 0, 1)"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert uses default full_privacy=0");
+        let (fp,): (i64,) = sqlx::query_as("SELECT full_privacy FROM orders WHERE id = 'o1'")
+            .fetch_one(&pool)
+            .await
+            .expect("read default");
+        assert_eq!(fp, 0);
         pool.close().await;
     }
 }
