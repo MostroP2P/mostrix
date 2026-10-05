@@ -310,6 +310,7 @@ async fn operation_result_from_bond_invoice_reply(
                 trade_index,
                 ctx.order_trade_keys,
                 ctx.db_order.is_mine,
+                ctx.db_order.full_privacy,
             )
             .ok_or_else(|| anyhow::anyhow!("failed to build static header"))?;
             let sat_amount = opt_amount.or(Some(order_to_save.amount));

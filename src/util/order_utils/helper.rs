@@ -736,6 +736,7 @@ pub(super) fn build_order_chat_static_header(
     trade_index: i64,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
 ) -> Option<OrderChatStaticHeader> {
     let order_id = order.id?;
     Some(OrderChatStaticHeader {
@@ -745,6 +746,7 @@ pub(super) fn build_order_chat_static_header(
         trade_index,
         initiator_trade_pubkey: trade_keys.public_key().to_string(),
         is_mine,
+        full_privacy,
         solver_pubkey: None,
         dispute_id: None,
     })
@@ -846,14 +848,13 @@ pub(super) async fn payment_request_operation_result(
     log::info!("Received {popup_action:?} for order {effective_order_id} with invoice");
 
     let static_header =
-        build_order_chat_static_header(&order_to_save, next_idx, trade_keys, is_mine).ok_or_else(
-            || {
+        build_order_chat_static_header(&order_to_save, next_idx, trade_keys, is_mine, full_privacy)
+            .ok_or_else(|| {
                 anyhow::anyhow!(
                     "failed to build static header for order id {:?}",
                     order_to_save.id
                 )
-            },
-        )?;
+            })?;
 
     let sat_amount = if matches!(popup_action, Action::PayBondInvoice) {
         popup_sat_amount
@@ -877,6 +878,7 @@ pub(super) fn create_order_result_success(
     trade_index: i64,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
 ) -> OperationResult {
     OperationResult::Success(OrderSuccess {
         order_id: order.id,
@@ -890,7 +892,13 @@ pub(super) fn create_order_result_success(
         premium: order.premium,
         status: order.status,
         trade_index: Some(trade_index),
-        static_header: build_order_chat_static_header(order, trade_index, trade_keys, is_mine),
+        static_header: build_order_chat_static_header(
+            order,
+            trade_index,
+            trade_keys,
+            is_mine,
+            full_privacy,
+        ),
     })
 }
 

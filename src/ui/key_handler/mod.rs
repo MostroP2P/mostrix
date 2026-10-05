@@ -842,6 +842,9 @@ fn apply_trade_action_selection(
             app.mode = UiMode::RatingOrder(crate::ui::RatingOrderState {
                 order_id,
                 selected_rating: 5,
+                counterpart_full_privacy: chat_helpers::counterpart_full_privacy_for_order(
+                    app, order_id,
+                ),
             });
         }
         5 => {
@@ -3150,6 +3153,8 @@ mod key_handler_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -3186,6 +3191,8 @@ mod key_handler_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -3274,6 +3281,8 @@ mod key_handler_tests {
                 seller_trade_pubkey: None,
                 buyer_reputation: None,
                 seller_reputation: None,
+                buyer_full_privacy: None,
+                seller_full_privacy: None,
                 solver_pubkey: Some("solver".to_string()),
                 dispute_id: Some("d".to_string()),
             });
@@ -3331,6 +3340,8 @@ mod key_handler_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -3346,6 +3357,8 @@ mod key_handler_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });

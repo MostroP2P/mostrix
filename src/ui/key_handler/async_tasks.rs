@@ -121,6 +121,7 @@ pub fn spawn_trade_index_sync_and_retry(ctx: &EnterKeyContext<'_>, retry: Pendin
                     &take_state.order,
                     amount,
                     invoice,
+                    take_state.full_privacy,
                     Some(&dm_subscription_tx),
                     mostro_info.as_ref(),
                 )
@@ -1255,6 +1256,7 @@ pub fn spawn_take_order_task(
             &take_state.order,
             amount,
             invoice,
+            take_state.full_privacy,
             Some(&dm_subscription_tx),
             mostro_info.as_ref(),
         )

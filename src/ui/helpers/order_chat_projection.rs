@@ -31,6 +31,10 @@ pub struct OrderChatListItem {
     /// status DM does not drop it.
     pub buyer_reputation: Option<UserInfo>,
     pub seller_reputation: Option<UserInfo>,
+    /// `Some(true)` when a Peer DM attributed full privacy to that side (`reputation: None`).
+    /// `Some(false)` when Peer carried a reputation snapshot. `None` until known.
+    pub buyer_full_privacy: Option<bool>,
+    pub seller_full_privacy: Option<bool>,
     /// Solver pubkey announced by `AdminTookDispute`.
     pub solver_pubkey: Option<String>,
     /// Dispute UUID announced by Mostro for this order.
@@ -71,6 +75,8 @@ pub fn order_chat_list_item_from_db_order(order: &Order) -> Option<OrderChatList
         seller_trade_pubkey: None,
         buyer_reputation: None,
         seller_reputation: None,
+        buyer_full_privacy: None,
+        seller_full_privacy: None,
         solver_pubkey: order.solver_pubkey.clone(),
         dispute_id: order.dispute_id.clone(),
     })
@@ -104,7 +110,7 @@ fn merge_order_fields(entry: &mut OrderChatListItem, order: &SmallOrder, msg: &O
 }
 
 /// Whether the **counterparty** is the buyer, from our maker/taker role and book side.
-fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<bool> {
+pub(crate) fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<bool> {
     match (is_mine, kind) {
         (Some(true), Some(Kind::Buy)) => Some(false),
         (Some(true), Some(Kind::Sell)) => Some(true),
@@ -114,10 +120,53 @@ fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<boo
     }
 }
 
+/// Buyer/seller full-privacy flags for My Trades header display.
+///
+/// Local choice comes from `orders.full_privacy` (static header). Counterparty
+/// comes from Peer DMs (`reputation: None` ⇒ full privacy) when known.
+pub fn buyer_seller_privacy_flags(
+    local_full_privacy: Option<bool>,
+    is_mine: Option<bool>,
+    kind: Option<Kind>,
+    buyer_full_privacy: Option<bool>,
+    seller_full_privacy: Option<bool>,
+) -> (Option<bool>, Option<bool>) {
+    let mut buyer = buyer_full_privacy;
+    let mut seller = seller_full_privacy;
+    if let (Some(local), Some(cp_is_buyer)) =
+        (local_full_privacy, counterpart_is_buyer(is_mine, kind))
+    {
+        // Local user is the opposite of the counterparty.
+        if cp_is_buyer {
+            seller = Some(local);
+        } else {
+            buyer = Some(local);
+        }
+    }
+    (buyer, seller)
+}
+
+/// Whether the counterparty is in full privacy (RateUser would be a no-op).
+pub fn counterpart_full_privacy_from_row(
+    row: &OrderChatListItem,
+    is_mine: Option<bool>,
+    kind: Option<Kind>,
+) -> Option<bool> {
+    match counterpart_is_buyer(is_mine, kind) {
+        Some(true) => row.buyer_full_privacy,
+        Some(false) => row.seller_full_privacy,
+        None => None,
+    }
+}
+
 /// Apply `Payload::Peer` reputation onto buyer/seller slots.
 ///
 /// Mostro's `notify_taker_reputation` sends an empty `peer.pubkey`; in that case attribute
 /// the snapshot to the counterparty from `is_mine` + order kind.
+///
+/// When `peer.reputation` is `None`, Mostro signals that side is in full privacy
+/// (no identity to rate) — record that on the matching buyer/seller privacy flag.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn assign_peer_reputation(
     buyer_trade_pubkey: Option<&str>,
     seller_trade_pubkey: Option<&str>,
@@ -126,23 +175,48 @@ pub(crate) fn assign_peer_reputation(
     peer: &Peer,
     buyer_reputation: &mut Option<UserInfo>,
     seller_reputation: &mut Option<UserInfo>,
+    buyer_full_privacy: &mut Option<bool>,
+    seller_full_privacy: &mut Option<bool>,
 ) {
     let Some(reputation) = peer.reputation.clone() else {
+        // Full-privacy peer: no reputation snapshot.
+        if peer.pubkey.is_empty() {
+            match counterpart_is_buyer(is_mine, kind) {
+                Some(true) => *buyer_full_privacy = Some(true),
+                Some(false) => *seller_full_privacy = Some(true),
+                None => {}
+            }
+            return;
+        }
+        if buyer_trade_pubkey == Some(peer.pubkey.as_str()) {
+            *buyer_full_privacy = Some(true);
+        }
+        if seller_trade_pubkey == Some(peer.pubkey.as_str()) {
+            *seller_full_privacy = Some(true);
+        }
         return;
     };
     if peer.pubkey.is_empty() {
         match counterpart_is_buyer(is_mine, kind) {
-            Some(true) => *buyer_reputation = Some(reputation),
-            Some(false) => *seller_reputation = Some(reputation),
+            Some(true) => {
+                *buyer_reputation = Some(reputation);
+                *buyer_full_privacy = Some(false);
+            }
+            Some(false) => {
+                *seller_reputation = Some(reputation);
+                *seller_full_privacy = Some(false);
+            }
             None => {}
         }
         return;
     }
     if buyer_trade_pubkey == Some(peer.pubkey.as_str()) {
         *buyer_reputation = Some(reputation.clone());
+        *buyer_full_privacy = Some(false);
     }
     if seller_trade_pubkey == Some(peer.pubkey.as_str()) {
         *seller_reputation = Some(reputation);
+        *seller_full_privacy = Some(false);
     }
 }
 
@@ -155,6 +229,8 @@ fn merge_peer_fields(entry: &mut OrderChatListItem, peer: &Peer, msg: &OrderMess
         peer,
         &mut entry.buyer_reputation,
         &mut entry.seller_reputation,
+        &mut entry.buyer_full_privacy,
+        &mut entry.seller_full_privacy,
     );
 }
 
@@ -235,6 +311,8 @@ fn build_order_chat_list_from_messages(messages: &[OrderMessage]) -> Vec<OrderCh
                     seller_trade_pubkey: None,
                     buyer_reputation: None,
                     seller_reputation: None,
+                    buyer_full_privacy: None,
+                    seller_full_privacy: None,
                     solver_pubkey: None,
                     dispute_id: None,
                 };
@@ -382,7 +460,10 @@ mod db_order_row_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{active_order_chat_list_snapshot, build_active_order_chat_list};
+    use super::{
+        active_order_chat_list_snapshot, build_active_order_chat_list, buyer_seller_privacy_flags,
+        counterpart_full_privacy_from_row, OrderChatListItem,
+    };
     use crate::ui::{AppState, OrderChatStaticHeader, OrderMessage, UserRole};
     use mostro_core::prelude::{
         Action, Kind, Message, Payload, Peer, SmallOrder, Status, UserInfo,
@@ -463,6 +544,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "initiator".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: Some("solver-pubkey".to_string()),
                 dispute_id: Some("dispute-id".to_string()),
             },
@@ -617,6 +699,66 @@ mod tests {
         assert_eq!(
             rows[0].seller_reputation.as_ref().map(|r| r.reviews),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn peer_without_reputation_marks_counterparty_full_privacy() {
+        let order_id = Uuid::new_v4();
+        let mut msg = sample_order_message(
+            order_id,
+            Action::PayInvoice,
+            Some(Payload::Peer(Peer {
+                pubkey: String::new(),
+                reputation: None,
+            })),
+        );
+        // Maker of a sell listing → counterparty is the buyer.
+        msg.order_kind = Some(Kind::Sell);
+        msg.is_mine = Some(true);
+
+        let rows = build_active_order_chat_list(&[msg], &[]);
+
+        assert_eq!(rows[0].buyer_full_privacy, Some(true));
+        assert!(rows[0].seller_full_privacy.is_none());
+        assert!(rows[0].buyer_reputation.is_none());
+    }
+
+    #[test]
+    fn buyer_seller_privacy_flags_prefer_local_full_privacy() {
+        // Local maker of a buy order is the buyer.
+        let (buyer, seller) = buyer_seller_privacy_flags(
+            Some(true),
+            Some(true),
+            Some(Kind::Buy),
+            None,
+            Some(true), // peer said seller is private
+        );
+        assert_eq!(buyer, Some(true));
+        assert_eq!(seller, Some(true));
+        assert_eq!(
+            counterpart_full_privacy_from_row(
+                &OrderChatListItem {
+                    order_id: "x".into(),
+                    status: None,
+                    amount: None,
+                    fiat: None,
+                    trade_index: None,
+                    payment_method: None,
+                    premium: None,
+                    buyer_trade_pubkey: None,
+                    seller_trade_pubkey: None,
+                    buyer_reputation: None,
+                    seller_reputation: None,
+                    buyer_full_privacy: None,
+                    seller_full_privacy: Some(true),
+                    solver_pubkey: None,
+                    dispute_id: None,
+                },
+                Some(true),
+                Some(Kind::Buy),
+            ),
+            Some(true)
         );
     }
 }

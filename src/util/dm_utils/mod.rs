@@ -1390,6 +1390,8 @@ async fn handle_trade_dm_for_order(
     if !matches!(action, Action::AdminTookDispute) {
         if let Some(Payload::Peer(peer)) = inner_kind.payload.as_ref() {
             let snap = effective_order_snapshot.as_ref();
+            let mut buyer_full_privacy = None;
+            let mut seller_full_privacy = None;
             crate::ui::helpers::assign_peer_reputation(
                 snap.and_then(|o| o.buyer_trade_pubkey.as_deref()),
                 snap.and_then(|o| o.seller_trade_pubkey.as_deref()),
@@ -1398,7 +1400,10 @@ async fn handle_trade_dm_for_order(
                 peer,
                 &mut buyer_reputation,
                 &mut seller_reputation,
+                &mut buyer_full_privacy,
+                &mut seller_full_privacy,
             );
+            let _ = (buyer_full_privacy, seller_full_privacy);
         }
     }
 
@@ -3482,8 +3487,7 @@ mod tests {
         assert!(protocol_identity_keys(&identity, false).is_some());
         assert!(protocol_identity_keys(&identity, true).is_none());
         assert_eq!(
-            protocol_identity_keys(&identity, false)
-                .map(|k| k.public_key()),
+            protocol_identity_keys(&identity, false).map(|k| k.public_key()),
             Some(identity.public_key())
         );
     }

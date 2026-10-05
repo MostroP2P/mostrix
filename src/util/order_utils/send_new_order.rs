@@ -196,6 +196,7 @@ pub async fn send_new_order(
                                     next_idx,
                                     &trade_keys,
                                     true,
+                                    full_privacy,
                                 ))
                             } else {
                                 log::error!(

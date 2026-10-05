@@ -480,6 +480,14 @@ pub fn handle_enter_rating_order(
     };
     app.mode = default_mode;
 
+    if state.counterpart_full_privacy {
+        let _ = ctx.order_result_tx.send(OperationResult::Info(
+            "Counterparty used full privacy — rating not sent (Mostro would ignore it)."
+                .to_string(),
+        ));
+        return;
+    }
+
     let order_id = state.order_id;
     let rating = state.selected_rating;
     let pool_clone = ctx.pool.clone();

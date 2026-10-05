@@ -7,7 +7,8 @@ use crate::models::User;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{
-    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, protocol_identity_keys, send_dm, send_track_order_cmd, wait_for_dm,
+    FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::add_invoice_validate::validate_take_sell_add_invoice_reply;
@@ -77,6 +78,7 @@ pub async fn take_order(
     order: &SmallOrder,
     amount: Option<i64>,
     invoice: Option<String>,
+    full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
     mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<OperationResult, anyhow::Error> {
@@ -151,7 +153,7 @@ pub async fn take_order(
     // Send the DM (this returns a future)
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, full_privacy),
         &trade_keys,
         &mostro_pubkey,
         message_json,
@@ -188,6 +190,7 @@ pub async fn take_order(
                     next_idx,
                     pool,
                     &trade_keys,
+                    full_privacy,
                     dm_subscription_tx,
                 )
                 .await
@@ -221,6 +224,7 @@ async fn process_take_order_reply(
     next_idx: i64,
     pool: &sqlx::sqlite::SqlitePool,
     trade_keys: &Keys,
+    full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
 ) -> Result<OperationResult> {
     let fallback_order_id = requested
@@ -244,6 +248,7 @@ async fn process_take_order_reply(
                 next_idx,
                 pool,
                 trade_keys,
+                full_privacy,
                 dm_subscription_tx,
             )
             .await;
@@ -277,7 +282,7 @@ async fn process_take_order_reply(
                 pool,
                 trade_keys,
                 false,
-                false,
+                full_privacy,
                 dm_subscription_tx,
                 "take_order",
                 trade_amount_to_persist,
@@ -337,6 +342,7 @@ fn normalize_taken_order(mut order: SmallOrder, fallback_order_id: uuid::Uuid) -
     order
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_taken_order(
     returned_order: SmallOrder,
     fallback_order_id: uuid::Uuid,
@@ -344,6 +350,7 @@ async fn persist_taken_order(
     next_idx: i64,
     pool: &sqlx::sqlite::SqlitePool,
     trade_keys: &Keys,
+    full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
 ) -> SmallOrder {
     let normalized = normalize_taken_order(returned_order, fallback_order_id);
@@ -361,7 +368,7 @@ async fn persist_taken_order(
         next_idx,
         pool,
         false,
-        false,
+        full_privacy,
     )
     .await
     {

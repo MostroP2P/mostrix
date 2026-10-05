@@ -1484,6 +1484,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                 is_range_order,
                 validation_error: None,
                 selected_button: true, // Default to YES
+                full_privacy: false,
             };
             app.mode = UiMode::UserMode(UserMode::TakingOrder(take_state));
         }
@@ -1638,6 +1639,10 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     app.mode = UiMode::RatingOrder(RatingOrderState {
                         order_id: oid,
                         selected_rating: 3,
+                        counterpart_full_privacy:
+                            crate::ui::key_handler::chat_helpers::counterpart_full_privacy_for_order(
+                                app, oid,
+                            ),
                     });
                 } else {
                     app.mode = UiMode::operation_result(OperationResult::Error(

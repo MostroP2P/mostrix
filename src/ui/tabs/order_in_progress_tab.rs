@@ -19,8 +19,8 @@ use crate::ui::constants::{
     FOOTER_MYTRADES_TAB_CHAT, FOOTER_SENDING_ATTACHMENT, HELP_KEY,
 };
 use crate::ui::helpers::{
-    active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
-    format_user_rating_compact,
+    active_order_chat_list_snapshot, buyer_seller_privacy_flags, count_order_attachments,
+    format_local_timestamp, format_user_rating_compact,
 };
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UserChatChannel, UserChatSender};
@@ -290,6 +290,34 @@ struct OrderInfoEconomics<'a> {
     premium_text: &'a str,
     buyer: Option<&'a UserInfo>,
     seller: Option<&'a UserInfo>,
+    buyer_privacy: Option<bool>,
+    seller_privacy: Option<bool>,
+}
+
+fn privacy_yes_no(flag: Option<bool>) -> &'static str {
+    match flag {
+        Some(true) => "Yes",
+        Some(false) => "No",
+        None => "Unknown",
+    }
+}
+
+fn order_info_privacy_line(
+    buyer_privacy: Option<bool>,
+    seller_privacy: Option<bool>,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Privacy: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("Buyer - {}", privacy_yes_no(buyer_privacy)),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("Seller - {}", privacy_yes_no(seller_privacy)),
+            Style::default().fg(Color::Cyan),
+        ),
+    ])
 }
 
 fn assemble_order_info_header(
@@ -307,9 +335,11 @@ fn assemble_order_info_header(
         economics.premium_text,
         true,
     );
+    let privacy = order_info_privacy_line(economics.buyer_privacy, economics.seller_privacy);
     let ratings = order_info_rating_lines(inner_width, economics.buyer, economics.seller);
     let mut full = vec![identity_id.clone(), context_line.clone()];
     full.extend(economics_stacked.iter().cloned());
+    full.push(privacy.clone());
     full.extend(ratings.iter().cloned());
     if full.len() <= max_body {
         return full;
@@ -330,6 +360,10 @@ fn assemble_order_info_header(
             economics.premium_text,
             false,
         ));
+    }
+    let room = max_body.saturating_sub(lines.len());
+    if room >= 1 {
+        lines.push(privacy);
     }
     let room = max_body.saturating_sub(lines.len());
     if ratings.len() <= room {
@@ -610,9 +644,19 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         _ => "amount N/A".to_string(),
     };
 
-    // TODO(My Trades header): Wire "Privacy:", "Buyer -", "Seller -" from trade privacy / full-privacy
-    // signals once available on DM payloads or local `orders` (see dispute UI + `Order::is_full_privacy_order`).
-    // Omit that row until then — avoid static "Unknown" placeholders.
+    // Privacy: local from `orders.full_privacy`; counterparty from Peer when known.
+    let (buyer_privacy, seller_privacy) = {
+        let local = static_h.map(|h| h.full_privacy);
+        let is_mine = static_h.map(|h| h.is_mine);
+        let kind = static_h.and_then(|h| h.kind);
+        buyer_seller_privacy_flags(
+            local,
+            is_mine,
+            kind,
+            selected.buyer_full_privacy,
+            selected.seller_full_privacy,
+        )
+    };
 
     let order_id_display = static_h
         .map(|h| h.order_id.to_string())
@@ -687,6 +731,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             premium_text: &premium_text,
             buyer: selected.buyer_reputation.as_ref(),
             seller: selected.seller_reputation.as_ref(),
+            buyer_privacy,
+            seller_privacy,
         },
     );
     let header_height = if max_header == 0 {
@@ -1084,6 +1130,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1121,6 +1169,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1218,6 +1268,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1257,6 +1309,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: Some("solver-pubkey".to_string()),
                 dispute_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
             },
@@ -1273,6 +1326,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: Some("solver-pubkey".to_string()),
             dispute_id: None,
         });
@@ -1314,6 +1369,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             },
@@ -1340,6 +1396,8 @@ mod tests {
                 operating_days: 10,
                 since: None,
             }),
+            buyer_full_privacy: Some(false),
+            seller_full_privacy: Some(false),
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1375,6 +1433,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             },
@@ -1401,6 +1460,8 @@ mod tests {
                 operating_days: 10,
                 since: None,
             }),
+            buyer_full_privacy: Some(false),
+            seller_full_privacy: Some(false),
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1496,6 +1557,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -1533,6 +1596,8 @@ mod tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
+            buyer_full_privacy: None,
+            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });

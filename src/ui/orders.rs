@@ -256,6 +256,8 @@ pub struct OrderChatStaticHeader {
     pub initiator_trade_pubkey: String,
     /// `true` = we are maker, `false` = taker.
     pub is_mine: bool,
+    /// Local user omitted identity proof for this trade.
+    pub full_privacy: bool,
     /// Assigned solver trade pubkey, when available.
     pub solver_pubkey: Option<String>,
     /// Dispute UUID persisted for this order, when available.
@@ -641,15 +643,15 @@ pub struct PaymentMethodPicker {
 
 #[derive(Clone, Debug, Default)]
 pub struct FormState {
-    pub kind: String,                               // buy | sell
-    pub fiat_code: String,                          // e.g. USD, EUR, ARS
-    pub fiat_amount: String,                        // numeric (single amount or min for range)
-    pub fiat_amount_max: String,                    // max amount for range (optional)
-    pub amount: String,                             // amount in sats (0 for market)
-    pub payment_method: String,                     // comma separated
-    pub premium: String,                            // premium percentage
-    pub invoice: String,                            // optional invoice
-    pub expiration_days: String,                    // expiration days (minimum 1)
+    pub kind: String,            // buy | sell
+    pub fiat_code: String,       // e.g. USD, EUR, ARS
+    pub fiat_amount: String,     // numeric (single amount or min for range)
+    pub fiat_amount_max: String, // max amount for range (optional)
+    pub amount: String,          // amount in sats (0 for market)
+    pub payment_method: String,  // comma separated
+    pub premium: String,         // premium percentage
+    pub invoice: String,         // optional invoice
+    pub expiration_days: String, // expiration days (minimum 1)
     /// Omit identity proof on create (default `false` = reputation mode).
     pub full_privacy: bool,
     pub focused: FormField,                         // which field is focused
@@ -680,6 +682,8 @@ pub struct TakeOrderState {
     pub is_range_order: bool, // Whether this is a range order (has min/max)
     pub validation_error: Option<String>, // Error message if amount is invalid
     pub selected_button: bool, // true for YES, false for NO
+    /// Omit identity proof when taking (default `false` = reputation mode).
+    pub full_privacy: bool,
 }
 
 /// Represents a message related to an order
@@ -1057,6 +1061,8 @@ pub struct RatingOrderState {
     pub order_id: uuid::Uuid,
     /// 1..=5 (`mostro_core::MIN_RATING`..=`MAX_RATING`).
     pub selected_rating: u8,
+    /// Peer has no reputation identity on Mostro (full privacy) — `RateUser` is a no-op.
+    pub counterpart_full_privacy: bool,
 }
 
 /// Build a `MessageNotification` from an `OrderMessage` for use in popups.
@@ -2666,6 +2672,7 @@ mod order_success_placeholder_tests {
                 trade_index: 1,
                 initiator_trade_pubkey: keys.public_key().to_string(),
                 is_mine,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             }),
@@ -3048,6 +3055,7 @@ mod placeholder_action_tests {
                 trade_index: 2,
                 initiator_trade_pubkey: keys.public_key().to_string(),
                 is_mine: true,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             }),

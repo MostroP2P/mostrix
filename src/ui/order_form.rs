@@ -1040,7 +1040,9 @@ fn privacy_line(full_privacy: bool) -> Line<'static> {
         Line::from(vec![
             Span::styled(
                 "Full privacy",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  (Space)", Style::default().fg(Color::DarkGray)),
         ])
@@ -1048,7 +1050,9 @@ fn privacy_line(full_privacy: bool) -> Line<'static> {
         Line::from(vec![
             Span::styled(
                 "Reputation",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  (Space)", Style::default().fg(Color::DarkGray)),
         ])

@@ -143,9 +143,11 @@ A `Message` is constructed with:
 ```
 
 The message is sent via `send_dm`, which:
-- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14; identity proof in ciphertext)
-- Uses the **Identity Key** for reputation binding and the **Trade Key** to sign the published event and inner message tuple
+- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14)
+- Passes identity keys through [`protocol_identity_keys`](../src/util/dm_utils/mod.rs): reputation mode includes the identity proof; **full privacy** (`FormState.full_privacy` / `orders.full_privacy`) passes `None` so the proof is omitted
+- Uses the **Trade Key** to sign the published event and inner message tuple
 - Adds a default NIP-40 expiration (30 days) when the caller passes `None`
+- Persists `orders.full_privacy` with the new row so FiatSent / Release / Cancel / Dispute / Rate / AddInvoice / NextTrade keep the same wrap
 
 ### 5. Waiting for Response
 **Source**: `src/util/order_utils/send_new_order.rs:141`
@@ -248,6 +250,8 @@ The message includes:
 - A `request_id` for tracking
 - The `trade_index` for this new trade
 - The appropriate action (`TakeBuy` or `TakeSell`)
+
+Take Order has the same **Space** privacy toggle as New Order (default reputation). `take_order` passes `protocol_identity_keys(..., full_privacy)` and persists `orders.full_privacy` on success.
 
 ### 4. Response Handling
 Similar to order creation, the client waits for Mostro's response, which may include:
@@ -443,10 +447,10 @@ pub async fn execute_send_msg(
 
 Key points:
 - The **trade keys are retrieved from the database** (they were stored when the order was created/taken)
-- The **identity proof lives in ciphertext** (identity keys sign that proof when they differ from the trade keys); the **kind-14 event is signed with the trade keys** before publication
+- Identity keys are passed through **`protocol_identity_keys(&identity, order.full_privacy)`**: reputation mode includes the identity proof in ciphertext; full-privacy trades omit it so follow-ups cannot leak index 0. The **kind-14 event is always signed with the trade keys** before publication
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
-- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism
+- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism (child rows inherit the parent's `full_privacy`)
 - For **`Action::Cancel`**, a successful response may be **`Canceled`** or **`CooperativeCancelAccepted`** (`execute_send_msg` in `src/util/order_utils/execute_send_msg.rs`).
 
 ### Cooperative cancel (peer request)

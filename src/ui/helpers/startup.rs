@@ -561,6 +561,7 @@ fn order_chat_static_from_db_order(row: &Order) -> Option<OrderChatStaticHeader>
         trade_index,
         initiator_trade_pubkey: trade_keys.public_key().to_string(),
         is_mine: row.is_mine,
+        full_privacy: row.full_privacy,
         solver_pubkey: row.solver_pubkey.clone(),
         dispute_id: row.dispute_id.clone(),
     })

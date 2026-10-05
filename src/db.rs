@@ -393,11 +393,9 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         }
 
         if !has_full_privacy {
-            sqlx::query(
-                "ALTER TABLE orders ADD COLUMN full_privacy INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("ALTER TABLE orders ADD COLUMN full_privacy INTEGER NOT NULL DEFAULT 0")
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;

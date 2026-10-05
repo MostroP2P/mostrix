@@ -59,6 +59,7 @@ pub use layout::{
 pub(crate) use order_chat_projection::assign_peer_reputation;
 pub use order_chat_projection::{
     active_order_chat_list_len, active_order_chat_list_snapshot, build_active_order_chat_list,
+    buyer_seller_privacy_flags, counterpart_full_privacy_from_row,
     order_chat_list_item_from_db_order, OrderChatListItem,
 };
 pub use order_selection::{

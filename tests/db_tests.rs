@@ -164,9 +164,17 @@ async fn test_order_new() {
         None,
     );
 
-    let order = Order::new(&pool, small_order.clone(), &trade_keys, Some(123), 1, true, false)
-        .await
-        .unwrap();
+    let order = Order::new(
+        &pool,
+        small_order.clone(),
+        &trade_keys,
+        Some(123),
+        1,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
 
     assert!(order.id.is_some());
     assert_eq!(order.fiat_code, "USD");
@@ -280,9 +288,17 @@ async fn test_order_update_existing() {
     small_order.premium = 5;
 
     // Create order
-    let order1 = Order::new(&pool, small_order.clone(), &trade_keys, None, 3, true, false)
-        .await
-        .unwrap();
+    let order1 = Order::new(
+        &pool,
+        small_order.clone(),
+        &trade_keys,
+        None,
+        3,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
 
     // Update with same ID but different data
     small_order.amount = 200000;
