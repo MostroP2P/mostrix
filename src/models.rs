@@ -244,6 +244,10 @@ pub struct Order {
     pub is_mine: bool,
     /// Local user omitted identity proof for this trade (`orders.full_privacy`).
     pub full_privacy: bool,
+    /// Reserved NextTrade child index bound to this range parent (cleared when
+    /// the child row is persisted). Not part of protocol; local bind only.
+    #[sqlx(default)]
+    pub pending_next_trade_index: Option<i64>,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
     pub trade_index: Option<i64>,
@@ -347,6 +351,7 @@ impl Order {
             dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
             full_privacy,
+            pending_next_trade_index: None,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             trade_index: Some(trade_index),
@@ -426,6 +431,7 @@ impl Order {
             is_mine: is_maker,
             // Restore Session is identity-scoped; rows from restore are reputation-mode.
             full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: order.buyer_invoice,
             request_id: None,
             trade_index: Some(trade_index),
@@ -469,6 +475,7 @@ impl Order {
         self.last_seen_dm_ts = self.last_seen_dm_ts.or(existing.last_seen_dm_ts);
         // Privacy mode is chosen at create/take and must survive restore refresh.
         self.full_privacy = existing.full_privacy;
+        self.pending_next_trade_index = existing.pending_next_trade_index;
         self
     }
 
@@ -650,6 +657,7 @@ impl Order {
                 .and_then(|e| e.dispute_chat_shared_key_hex.clone()),
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
             full_privacy: existing.map(|e| e.full_privacy).unwrap_or(false),
+            pending_next_trade_index: existing.and_then(|e| e.pending_next_trade_index),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
             trade_index: existing.and_then(|e| e.trade_index),
@@ -913,12 +921,19 @@ impl Order {
 
     /// Privacy mode for a new range-order child listing (`NextTrade` → `NewOrder`).
     ///
-    /// Inherits `full_privacy` from the maker's most recent prior trade index.
-    /// Returns `false` when no prior maker row exists (reputation default).
+    /// Prefers the parent row bound via [`Self::bind_pending_next_trade`] when
+    /// FiatSent/Release reserved the child index. Falls back to the maker row
+    /// with the greatest lower `trade_index` only when no bind exists (e.g. restart
+    /// mid-flight). Unbound + no prior maker → reputation (`false`).
     pub async fn inherit_full_privacy_for_range_child(
         pool: &SqlitePool,
         child_trade_index: i64,
     ) -> Result<bool> {
+        if let Some(fp) =
+            Self::take_bound_full_privacy_for_range_child(pool, child_trade_index).await?
+        {
+            return Ok(fp);
+        }
         let inherited: Option<(bool,)> = sqlx::query_as(
             r#"
             SELECT full_privacy FROM orders
@@ -933,6 +948,65 @@ impl Order {
         .fetch_optional(pool)
         .await?;
         Ok(inherited.map(|(fp,)| fp).unwrap_or(false))
+    }
+
+    /// Remember that `child_trade_index` was reserved as the NextTrade child of
+    /// this maker parent, so the later `NewOrder` DM inherits the correct
+    /// `full_privacy` even if another maker order used an intervening index.
+    pub async fn bind_pending_next_trade(
+        pool: &SqlitePool,
+        parent_order_id: &str,
+        child_trade_index: i64,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE orders
+            SET pending_next_trade_index = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .bind(parent_order_id)
+        .execute(pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!(
+                "Cannot bind NextTrade index {child_trade_index}: parent order {parent_order_id} not found"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Consume a NextTrade bind for `child_trade_index`, returning the parent's
+    /// `full_privacy` and clearing `pending_next_trade_index`.
+    pub async fn take_bound_full_privacy_for_range_child(
+        pool: &SqlitePool,
+        child_trade_index: i64,
+    ) -> Result<Option<bool>> {
+        let row: Option<(bool, String)> = sqlx::query_as(
+            r#"
+            SELECT full_privacy, id FROM orders
+            WHERE pending_next_trade_index = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(child_trade_index)
+        .fetch_optional(pool)
+        .await?;
+        let Some((full_privacy, parent_id)) = row else {
+            return Ok(None);
+        };
+        sqlx::query(
+            r#"
+            UPDATE orders
+            SET pending_next_trade_index = NULL
+            WHERE id = ?
+            "#,
+        )
+        .bind(&parent_id)
+        .execute(pool)
+        .await?;
+        Ok(Some(full_privacy))
     }
 
     /// Update only the status field of an existing order by id.
@@ -1842,6 +1916,7 @@ mod upsert_from_small_order_dm_tests {
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
                 full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
             )
@@ -2048,6 +2123,59 @@ mod upsert_from_small_order_dm_tests {
                 .expect("inherit"),
             "taker rows must not seed maker range-child privacy"
         );
+    }
+
+    #[tokio::test]
+    async fn bound_next_trade_survives_intervening_maker_order() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private range parent at index 10");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker at index 11");
+
+        // Without a bind, the heuristic would pick index 11 (false).
+        assert!(
+            !Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("heuristic"),
+            "unbound child would wrongly follow intervening reputation maker"
+        );
+
+        // Re-seed: the previous inherit consumed nothing; bind then inherit.
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("bind child 12 to private parent");
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("bound inherit"),
+            "bound NextTrade must follow the parent, not the intervening maker"
+        );
+        // Bind is consumed.
+        assert!(Order::take_bound_full_privacy_for_range_child(&pool, 12)
+            .await
+            .expect("second take")
+            .is_none());
     }
 
     #[tokio::test]

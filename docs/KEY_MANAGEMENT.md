@@ -76,6 +76,8 @@ In this mode, Mostro cannot link the trade to your identity key. You operate ano
 - **Outer event (kind 14)**: Signed by the **Trade Key (Index N)**.
 - **Ciphertext**: identity proof is omitted; the receiver treats the trade key as the identity.
 - **Client UX**: New Order and Take Order both default to **Reputation** mode. Press **Space** on the privacy control to switch to **Full privacy**. The choice is stored as `orders.full_privacy` and every later protocol DM for that trade (`FiatSent`, `Release`, `Cancel`, `Dispute`, `RateUser`, `AddInvoice`, range `NextTrade`) omits the identity proof the same way — sending a proof later would expose index 0 to Mostro.
+- **Range children**: When FiatSent/Release reserves a `NextTrade` child index, Mostrix binds that index on the parent (`orders.pending_next_trade_index`) so the child listing inherits the parent's privacy even if another maker order used an intervening trade index.
+- **My Trades refresh (Shift+U)**: skipped for full-privacy rows — `Action::Orders` is identity-scoped and must not associate a private order id with the long-lived identity key.
 - **Restore Session**: Full-privacy trades are **not** recovered via identity-scoped Restore / `LastTradeIndex` (Mostro has no master key for them). Local SQLite + trade keys remain the recovery path.
 - **Rating**: Rating a full-privacy counterparty is a silent no-op on Mostro. When Mostrix knows the peer used full privacy (`Payload::Peer` with `reputation: None`, or dispute flags), the rate popup explains this and does not send `RateUser`.
 - **My Trades header**: shows `Privacy: Buyer - Yes/No/Unknown  Seller - …` from the local `full_privacy` flag plus Peer / dispute signals when known.

@@ -61,7 +61,11 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct message (request_id, trade_index)
-    Client->>IdentityKey: Sign identity proof (ciphertext)
+    alt Reputation mode (default)
+        Client->>IdentityKey: Sign identity proof (ciphertext)
+    else Full privacy
+        Note over Client,IdentityKey: Omit identity proof (protocol_identity_keys → None)
+    end
     Client->>TradeKey: Sign kind-14 event
     Client->>Client: Register DM waiter in router
     Client->>NostrRelays: Publish signed kind 14 (NIP-44)
@@ -378,7 +382,11 @@ sequenceDiagram
     Client->>DB: Get identity keys
     DB-->>Client: identity_keys
     Client->>Client: Create payload & request_id
-    Client->>IdentityKey: Sign identity proof (ciphertext)
+    alt Reputation mode (orders.full_privacy = 0)
+        Client->>IdentityKey: Sign identity proof (ciphertext)
+    else Full privacy (orders.full_privacy = 1)
+        Note over Client,IdentityKey: Omit identity proof (protocol_identity_keys → None)
+    end
     Client->>TradeKey: Sign kind-14 event
     Client->>NostrRelays: Publish signed kind 14 (NIP-44)
     NostrRelays->>Mostro: Forward message

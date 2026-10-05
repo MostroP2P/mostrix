@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `order_chat_shared_key_hex` | `TEXT` | Hex-encoded ECDH IKM for user order chat. Used to derive `K_conv` / `K_sign` at runtime and for attachment decryption when no inline key is present in the attachment JSON. |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `full_privacy` | `INTEGER` | Boolean (0 or 1). When `1`, protocol DMs for this trade omit the identity proof (New Order / Take Order toggle). Default `0` = reputation mode. Follow-up actions read this flag so they never leak index 0 after a private create/take. |
+| `pending_next_trade_index` | `INTEGER` | Optional. When a range maker sends `NextTrade` (FiatSent/Release), the reserved child `trade_index` is stored here so the later child `NewOrder` inherits this parent's `full_privacy` even if another maker order used an intervening index. Cleared when the child row is persisted. |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
 | `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |

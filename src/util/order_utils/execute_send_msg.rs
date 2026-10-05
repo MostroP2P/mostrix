@@ -24,6 +24,10 @@ async fn create_msg_payload(
                     // This is a range order with remaining amount, create NextTrade payload
                     let (next_trade_index, next_trade_keys) =
                         User::reserve_next_trade_index(pool, 0).await?;
+                    let parent_id = order.id.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("Cannot bind NextTrade: parent order has no id")
+                    })?;
+                    Order::bind_pending_next_trade(pool, parent_id, next_trade_index).await?;
 
                     Ok(Some(Payload::NextTrade(
                         next_trade_keys.public_key().to_string(),

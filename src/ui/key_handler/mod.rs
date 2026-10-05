@@ -163,9 +163,13 @@ fn dispute_shortcut_next_mode(
 /// `user_my_trades_interactive()` a second Shift+U could fire another request
 /// before the first reply lands. Terminal orders stay eligible — a refresh is
 /// still useful after cancel/expire.
+///
+/// Full-privacy trades are refused: `Action::Orders` is identity-scoped and
+/// would associate the private order id with the long-lived identity key.
 fn refresh_shortcut_next_mode(
     mode: &UiMode,
     selected: Option<(uuid::Uuid, Option<Status>)>,
+    full_privacy: bool,
 ) -> Option<UiMode> {
     if !mode.user_my_trades_interactive() {
         return None;
@@ -175,6 +179,11 @@ fn refresh_shortcut_next_mode(
             "Select an order to refresh its details from Mostro.".to_string(),
         )));
     };
+    if full_privacy {
+        return Some(UiMode::operation_result(OperationResult::Info(
+            "This trade used full privacy — Mostro has no identity-linked record to refresh. Local state is the source of truth.".to_string(),
+        )));
+    }
     Some(UiMode::ViewingMessage(build_order_action_view_state(
         order_id,
         Action::Orders,
@@ -2056,7 +2065,13 @@ pub fn handle_key_event(
                 }
                 KeyCode::Char('u') | KeyCode::Char('U') => {
                     let selected = resolve_selected_mytrades_order_status(app);
-                    if let Some(next_mode) = refresh_shortcut_next_mode(&app.mode, selected) {
+                    let full_privacy = selected
+                        .map(|(id, _)| id)
+                        .and_then(|id| app.order_chat_static.get(&id))
+                        .is_some_and(|h| h.full_privacy);
+                    if let Some(next_mode) =
+                        refresh_shortcut_next_mode(&app.mode, selected, full_privacy)
+                    {
                         app.mode = next_mode;
                     }
                     return Some(true);
@@ -3045,6 +3060,7 @@ mod key_handler_tests {
         let next = refresh_shortcut_next_mode(
             &UiMode::UserMode(UserMode::Normal),
             Some((order_id, Some(Status::Active))),
+            false,
         );
         match next {
             Some(UiMode::ViewingMessage(view_state)) => {
@@ -3060,11 +3076,33 @@ mod key_handler_tests {
     }
 
     #[test]
+    fn refresh_shortcut_refuses_full_privacy_orders() {
+        let order_id = uuid::Uuid::new_v4();
+        match refresh_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Active))),
+            true,
+        ) {
+            Some(UiMode::OperationResult(result)) => match *result {
+                OperationResult::Info(msg) => {
+                    assert!(
+                        msg.contains("full privacy"),
+                        "expected full-privacy refusal, got {msg}"
+                    );
+                }
+                other => panic!("expected Info refusal, got {other:?}"),
+            },
+            other => panic!("expected Info refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn refresh_shortcut_is_ignored_while_a_request_is_pending() {
         let selected = Some((uuid::Uuid::new_v4(), Some(Status::Active)));
         assert!(refresh_shortcut_next_mode(
             &UiMode::UserMode(UserMode::WaitingAddInvoice),
             selected,
+            false,
         )
         .is_none());
 
@@ -3073,12 +3111,12 @@ mod key_handler_tests {
             Action::Orders,
             String::new(),
         ));
-        assert!(refresh_shortcut_next_mode(&popup, selected).is_none());
+        assert!(refresh_shortcut_next_mode(&popup, selected, false).is_none());
     }
 
     #[test]
     fn refresh_shortcut_asks_to_select_an_order_when_none_is_highlighted() {
-        match refresh_shortcut_next_mode(&UiMode::UserMode(UserMode::Normal), None) {
+        match refresh_shortcut_next_mode(&UiMode::UserMode(UserMode::Normal), None, false) {
             Some(UiMode::OperationResult(result)) => match *result {
                 OperationResult::Info(msg) => {
                     assert_eq!(msg, "Select an order to refresh its details from Mostro.")
@@ -3095,6 +3133,7 @@ mod key_handler_tests {
         match refresh_shortcut_next_mode(
             &UiMode::UserMode(UserMode::Normal),
             Some((order_id, Some(Status::Success))),
+            false,
         ) {
             Some(UiMode::ViewingMessage(view_state)) => {
                 assert_eq!(view_state.order_id, Some(order_id));

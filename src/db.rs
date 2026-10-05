@@ -66,6 +66,7 @@ pub async fn init_db() -> Result<SqlitePool> {
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
                 full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -199,6 +200,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_seller_reputation = check_column_exists(pool, "orders", "seller_reputation").await?;
     let has_bond_invoice = check_column_exists(pool, "orders", "bond_invoice").await?;
     let has_full_privacy = check_column_exists(pool, "orders", "full_privacy").await?;
+    let has_pending_next_trade_index =
+        check_column_exists(pool, "orders", "pending_next_trade_index").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -220,6 +223,7 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_seller_reputation
         || !has_bond_invoice
         || !has_full_privacy
+        || !has_pending_next_trade_index
     {
         log::info!("Running migration: adding missing database columns");
 
@@ -398,6 +402,12 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
                 .await?;
         }
 
+        if !has_pending_next_trade_index {
+            sqlx::query("ALTER TABLE orders ADD COLUMN pending_next_trade_index INTEGER")
+                .execute(&mut *tx)
+                .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
     }
@@ -463,6 +473,7 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             dispute_chat_shared_key_hex TEXT,
             is_mine INTEGER NOT NULL,
             full_privacy INTEGER NOT NULL DEFAULT 0,
+            pending_next_trade_index INTEGER,
             buyer_invoice TEXT,
             request_id INTEGER,
             trade_index INTEGER,
@@ -483,6 +494,7 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            pending_next_trade_index,
             buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         )
@@ -490,6 +502,7 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            pending_next_trade_index,
             buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         FROM orders;
@@ -536,6 +549,16 @@ mod tests {
         assert_eq!(
             fp_col, 1,
             "orders.full_privacy column must exist after init_db"
+        );
+        let (pending_col,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'pending_next_trade_index'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma_table_info");
+        assert_eq!(
+            pending_col, 1,
+            "orders.pending_next_trade_index column must exist after init_db"
         );
         pool.close().await;
     }
@@ -615,6 +638,14 @@ mod tests {
         .await
         .expect("pragma");
         assert_eq!(count, 1);
+
+        let (pending_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'pending_next_trade_index'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma pending");
+        assert_eq!(pending_count, 1);
 
         sqlx::query(
             r#"INSERT INTO orders (

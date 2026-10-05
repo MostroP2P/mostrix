@@ -412,6 +412,7 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
   - **Shift+F** mark fiat sent (YES/NO popup).
   - **Shift+R** release sats (YES/NO popup).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
+  - **Shift+U** refresh order details from Mostro (refused for full-privacy trades — identity-scoped `Action::Orders` must not link a private order id).
   - **Shift+K** reveal Shared key (read-only grant for solvers; never the signing key). Opens a popup where **C** copies the Shared key to the clipboard.
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
