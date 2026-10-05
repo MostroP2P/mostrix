@@ -37,6 +37,11 @@ pub async fn create_test_db() -> Result<SqlitePool> {
             last_seen_dm_ts INTEGER,
             bond_invoice TEXT
         );
+        CREATE TABLE IF NOT EXISTS pending_next_trades (
+            child_trade_index INTEGER PRIMARY KEY,
+            parent_order_id TEXT NOT NULL,
+            full_privacy INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS users (
             i0_pubkey char(64) PRIMARY KEY,
             mnemonic TEXT,

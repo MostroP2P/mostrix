@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS orders (
 | `order_chat_shared_key_hex` | `TEXT` | Hex-encoded ECDH IKM for user order chat. Used to derive `K_conv` / `K_sign` at runtime and for attachment decryption when no inline key is present in the attachment JSON. |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
 | `full_privacy` | `INTEGER` | Boolean (0 or 1). When `1`, protocol DMs for this trade omit the identity proof (New Order / Take Order toggle). Default `0` = reputation mode. Follow-up actions read this flag so they never leak index 0 after a private create/take. |
-| `pending_next_trade_index` | `INTEGER` | Optional. When a range maker sends `NextTrade` (FiatSent/Release), the reserved child `trade_index` is stored here so the later child `NewOrder` inherits this parent's `full_privacy` even if another maker order used an intervening index. Cleared when the child row is persisted. |
+| `pending_next_trade_index` | `INTEGER` | Legacy single-slot NextTrade bind (cleared on migrate). New binds live in `pending_next_trades`. |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
 | `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |
@@ -241,6 +241,16 @@ The `orders` table is essential for:
 - **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic. Status writes are guarded for monotonic progression where applicable (stale/out-of-order DMs should not move an order backward in the trade phase graph); see `should_apply_status_transition` in `src/util/order_utils/helper.rs` and **DM_LISTENER_FLOW.md**. The only intentional reopen of a terminal status is post-retry `Action::AddInvoice` (`Success` → `SettledHoldInvoice`); relay reconcile passes `action = None` and never applies that exception.
 - **Relay terminal reconcile**: `src/util/order_utils/relay_order_db_reconcile.rs` can set **`orders.status`** from the latest Mostro nostr order event when the relay reports a **terminal** status and the local row is still non-terminal. Runs on startup and on the periodic orders updater (`fetch_scheduler.rs`). Targeted mode (`Order::list_ids_for_targeted_relay_reconcile`) only considers rows with **`trade_keys`** set and status not in `TERMINAL_ORDER_HISTORY_STATUSES` (`helper.rs`). Does not replace trade-DM hydration for active phases; complements it when the client missed the final DM.
 - **Maker/Taker persistence**: `save_order(..., is_maker, full_privacy)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow) and stores the privacy toggle so later DMs use `protocol_identity_keys`.
+
+#### `pending_next_trades` Table
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `child_trade_index` | `INTEGER` | Primary key. Trade index reserved for a range-order child (`NextTrade`). |
+| `parent_order_id` | `TEXT` | Parent maker order UUID that reserved the child. |
+| `full_privacy` | `INTEGER` | Snapshot of the parent's privacy mode at bind time. |
+
+Written when FiatSent/Release builds a `NextTrade` payload; cleared only after the child `NewOrder` row is persisted. Keying by child index keeps a delayed first child and a retry child both recoverable.
 
 **Source**: `src/models.rs:154`
 

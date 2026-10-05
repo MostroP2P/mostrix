@@ -749,14 +749,23 @@ async fn persist_range_child_listing_from_new_order(
     trade_keys: &Keys,
 ) -> bool {
     let full_privacy = match Order::inherit_full_privacy_for_range_child(pool, trade_index).await {
-        Ok(fp) => fp,
+        Ok(Some(fp)) => fp,
+        Ok(None) => {
+            log::error!(
+                "No NextTrade bind for range child {} (trade_index={}); skipping persistence",
+                order_id,
+                trade_index
+            );
+            // Fail closed: do not let generic hydration invent a reputation-mode row.
+            return true;
+        }
         Err(e) => {
-            log::warn!(
-                "Failed to inherit full_privacy for range child {}: {}; defaulting to reputation",
+            log::error!(
+                "Failed to inherit full_privacy for range child {}: {}; skipping persistence",
                 order_id,
                 e
             );
-            false
+            return true;
         }
     };
     if let Err(e) = save_order(
@@ -775,7 +784,15 @@ async fn persist_range_child_listing_from_new_order(
             order_id,
             e
         );
-        return false;
+        // Keep the bind so a later replay can retry; skip generic hydrate.
+        return true;
+    }
+    if let Err(e) = Order::clear_pending_next_trade(pool, trade_index).await {
+        log::warn!(
+            "Persisted range child {} but failed to clear NextTrade bind: {}",
+            order_id,
+            e
+        );
     }
 
     try_send_track_order(order_id, trade_index);

@@ -31,7 +31,9 @@ pub struct OrderChatListItem {
     /// status DM does not drop it.
     pub buyer_reputation: Option<UserInfo>,
     pub seller_reputation: Option<UserInfo>,
-    /// `Some(true)` when a Peer DM attributed full privacy to that side (`reputation: None`).
+    /// `Some(true)` when a dispute (or other distinguishing daemon signal) marks
+    /// that side full-privacy. `Peer.reputation = None` alone is not enough —
+    /// FiatSentOk uses that shape for reputation-mode trades too.
     /// `Some(false)` when Peer carried a reputation snapshot. `None` until known.
     pub buyer_full_privacy: Option<bool>,
     pub seller_full_privacy: Option<bool>,
@@ -123,7 +125,8 @@ pub(crate) fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) ->
 /// Buyer/seller full-privacy flags for My Trades header display.
 ///
 /// Local choice comes from `orders.full_privacy` (static header). Counterparty
-/// comes from Peer DMs (`reputation: None` ⇒ full privacy) when known.
+/// privacy stays unknown unless dispute flags or an explicit reputation snapshot
+/// (`Peer.reputation = Some(...)` ⇒ not private) provide a signal.
 pub fn buyer_seller_privacy_flags(
     local_full_privacy: Option<bool>,
     is_mine: Option<bool>,
@@ -164,8 +167,10 @@ pub fn counterpart_full_privacy_from_row(
 /// Mostro's `notify_taker_reputation` sends an empty `peer.pubkey`; in that case attribute
 /// the snapshot to the counterparty from `is_mine` + order kind.
 ///
-/// When `peer.reputation` is `None`, Mostro signals that side is in full privacy
-/// (no identity to rate) — record that on the matching buyer/seller privacy flag.
+/// `peer.reputation == None` is **not** a full-privacy signal: FiatSentOk (and other
+/// notices) send `Peer { reputation: None }` for reputation-mode trades too. Only a
+/// present reputation snapshot updates these flags (`Some(false)`). Counterparty
+/// privacy otherwise stays unknown unless dispute flags say otherwise.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assign_peer_reputation(
     buyer_trade_pubkey: Option<&str>,
@@ -179,21 +184,7 @@ pub(crate) fn assign_peer_reputation(
     seller_full_privacy: &mut Option<bool>,
 ) {
     let Some(reputation) = peer.reputation.clone() else {
-        // Full-privacy peer: no reputation snapshot.
-        if peer.pubkey.is_empty() {
-            match counterpart_is_buyer(is_mine, kind) {
-                Some(true) => *buyer_full_privacy = Some(true),
-                Some(false) => *seller_full_privacy = Some(true),
-                None => {}
-            }
-            return;
-        }
-        if buyer_trade_pubkey == Some(peer.pubkey.as_str()) {
-            *buyer_full_privacy = Some(true);
-        }
-        if seller_trade_pubkey == Some(peer.pubkey.as_str()) {
-            *seller_full_privacy = Some(true);
-        }
+        // Missing reputation is ambiguous — leave privacy flags untouched.
         return;
     };
     if peer.pubkey.is_empty() {
@@ -704,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_without_reputation_marks_counterparty_full_privacy() {
+    fn peer_without_reputation_does_not_mark_full_privacy() {
         let order_id = Uuid::new_v4();
         let mut msg = sample_order_message(
             order_id,
@@ -720,7 +711,10 @@ mod tests {
 
         let rows = build_active_order_chat_list(&[msg], &[]);
 
-        assert_eq!(rows[0].buyer_full_privacy, Some(true));
+        assert!(
+            rows[0].buyer_full_privacy.is_none(),
+            "reputation-less Peer must not invent a full-privacy flag"
+        );
         assert!(rows[0].seller_full_privacy.is_none());
         assert!(rows[0].buyer_reputation.is_none());
     }

@@ -458,7 +458,7 @@ Key points:
 - Identity keys are passed through **`protocol_identity_keys(&identity, order.full_privacy)`**: reputation mode includes the identity proof in ciphertext; full-privacy trades omit it so follow-ups cannot leak index 0. The **kind-14 event is always signed with the trade keys** before publication
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
-- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism (child rows inherit the parent's `full_privacy`)
+- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism (child rows inherit the parent's `full_privacy` via `pending_next_trades`, keyed by child trade index)
 - For **`Action::Cancel`**, a successful response may be **`Canceled`** or **`CooperativeCancelAccepted`** (`execute_send_msg` in `src/util/order_utils/execute_send_msg.rs`).
 
 ### Cooperative cancel (peer request)

@@ -35,7 +35,7 @@ pub async fn save_order(
     is_maker: bool,
     full_privacy: bool,
 ) -> Result<()> {
-    if let Ok(order) = Order::new(
+    let order = Order::new(
         pool,
         order,
         trade_keys,
@@ -44,13 +44,11 @@ pub async fn save_order(
         is_maker,
         full_privacy,
     )
-    .await
-    {
-        if let Some(order_id) = order.id {
-            log::info!("Order {} created", order_id);
-        } else {
-            log::warn!("Warning: The newly created order has no ID.");
-        }
+    .await?;
+    if let Some(order_id) = order.id {
+        log::info!("Order {} created", order_id);
+    } else {
+        log::warn!("Warning: The newly created order has no ID.");
     }
     Ok(())
 }
@@ -114,6 +112,11 @@ mod tests {
                 pending_next_trade_index INTEGER,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            );
+            CREATE TABLE pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL
             )
             "#,
         )

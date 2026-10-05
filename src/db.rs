@@ -77,6 +77,11 @@ pub async fn init_db() -> Result<SqlitePool> {
                 seller_reputation TEXT,
                 bond_invoice TEXT
             );
+            CREATE TABLE IF NOT EXISTS pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS users (
                 i0_pubkey char(64) PRIMARY KEY,
                 mnemonic TEXT,
@@ -412,6 +417,37 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         log::info!("Migration completed successfully");
     }
 
+    // Range NextTrade binds are keyed by child trade_index so a FiatSent/Release
+    // retry cannot overwrite an earlier outstanding child binding.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_next_trades (
+            child_trade_index INTEGER PRIMARY KEY,
+            parent_order_id TEXT NOT NULL,
+            full_privacy INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // One-shot lift of any legacy single-slot binds still sitting on orders rows.
+    if check_column_exists(pool, "orders", "pending_next_trade_index").await? {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO pending_next_trades (child_trade_index, parent_order_id, full_privacy)
+            SELECT pending_next_trade_index, id, full_privacy
+            FROM orders
+            WHERE pending_next_trade_index IS NOT NULL
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("UPDATE orders SET pending_next_trade_index = NULL")
+            .execute(pool)
+            .await?;
+    }
+
     // Builds that added `suppress_next_new_order_dm` must drop it so `SELECT *` matches `Order`.
     // `ALTER TABLE ... DROP COLUMN` requires SQLite 3.35.0+; older runtimes need a table rebuild.
     if check_column_exists(pool, "orders", "suppress_next_new_order_dm").await? {
@@ -559,6 +595,16 @@ mod tests {
         assert_eq!(
             pending_col, 1,
             "orders.pending_next_trade_index column must exist after init_db"
+        );
+        let (pending_table,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pending_next_trades'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("sqlite_master");
+        assert_eq!(
+            pending_table, 1,
+            "pending_next_trades table must exist after init_db"
         );
         pool.close().await;
     }

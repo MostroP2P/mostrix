@@ -921,92 +921,73 @@ impl Order {
 
     /// Privacy mode for a new range-order child listing (`NextTrade` → `NewOrder`).
     ///
-    /// Prefers the parent row bound via [`Self::bind_pending_next_trade`] when
-    /// FiatSent/Release reserved the child index. Falls back to the maker row
-    /// with the greatest lower `trade_index` only when no bind exists (e.g. restart
-    /// mid-flight). Unbound + no prior maker → reputation (`false`).
+    /// Looks up the bind written by [`Self::bind_pending_next_trade`] when
+    /// FiatSent/Release reserved the child index. Does **not** clear the bind
+    /// (call [`Self::clear_pending_next_trade`] only after the child row is
+    /// persisted). Does **not** fall back to the preceding-maker heuristic —
+    /// that can pick an unrelated maker after an interleaved create. Unbound →
+    /// `Ok(None)` so the caller can fail closed.
     pub async fn inherit_full_privacy_for_range_child(
         pool: &SqlitePool,
         child_trade_index: i64,
-    ) -> Result<bool> {
-        if let Some(fp) =
-            Self::take_bound_full_privacy_for_range_child(pool, child_trade_index).await?
-        {
-            return Ok(fp);
-        }
-        let inherited: Option<(bool,)> = sqlx::query_as(
+    ) -> Result<Option<bool>> {
+        let row: Option<(bool,)> = sqlx::query_as(
             r#"
-            SELECT full_privacy FROM orders
-            WHERE is_mine = 1
-              AND trade_index IS NOT NULL
-              AND trade_index < ?
-            ORDER BY trade_index DESC
-            LIMIT 1
+            SELECT full_privacy FROM pending_next_trades
+            WHERE child_trade_index = ?
             "#,
         )
         .bind(child_trade_index)
         .fetch_optional(pool)
         .await?;
-        Ok(inherited.map(|(fp,)| fp).unwrap_or(false))
+        Ok(row.map(|(fp,)| fp))
     }
 
     /// Remember that `child_trade_index` was reserved as the NextTrade child of
-    /// this maker parent, so the later `NewOrder` DM inherits the correct
-    /// `full_privacy` even if another maker order used an intervening index.
+    /// this maker parent. Bindings are keyed by child index so a later retry
+    /// that reserves a new index cannot overwrite an earlier outstanding bind.
     pub async fn bind_pending_next_trade(
         pool: &SqlitePool,
         parent_order_id: &str,
         child_trade_index: i64,
     ) -> Result<()> {
-        let result = sqlx::query(
+        let parent: Option<(bool,)> =
+            sqlx::query_as(r#"SELECT full_privacy FROM orders WHERE id = ?"#)
+                .bind(parent_order_id)
+                .fetch_optional(pool)
+                .await?;
+        let Some((full_privacy,)) = parent else {
+            return Err(anyhow::anyhow!(
+                "Cannot bind NextTrade index {child_trade_index}: parent order {parent_order_id} not found"
+            ));
+        };
+        sqlx::query(
             r#"
-            UPDATE orders
-            SET pending_next_trade_index = ?
-            WHERE id = ?
+            INSERT INTO pending_next_trades (child_trade_index, parent_order_id, full_privacy)
+            VALUES (?, ?, ?)
+            ON CONFLICT(child_trade_index) DO NOTHING
             "#,
         )
         .bind(child_trade_index)
         .bind(parent_order_id)
+        .bind(full_privacy)
         .execute(pool)
         .await?;
-        if result.rows_affected() == 0 {
-            return Err(anyhow::anyhow!(
-                "Cannot bind NextTrade index {child_trade_index}: parent order {parent_order_id} not found"
-            ));
-        }
         Ok(())
     }
 
-    /// Consume a NextTrade bind for `child_trade_index`, returning the parent's
-    /// `full_privacy` and clearing `pending_next_trade_index`.
-    pub async fn take_bound_full_privacy_for_range_child(
-        pool: &SqlitePool,
-        child_trade_index: i64,
-    ) -> Result<Option<bool>> {
-        let row: Option<(bool, String)> = sqlx::query_as(
+    /// Drop a NextTrade bind after the child row has been persisted successfully.
+    pub async fn clear_pending_next_trade(pool: &SqlitePool, child_trade_index: i64) -> Result<()> {
+        sqlx::query(
             r#"
-            SELECT full_privacy, id FROM orders
-            WHERE pending_next_trade_index = ?
-            LIMIT 1
+            DELETE FROM pending_next_trades
+            WHERE child_trade_index = ?
             "#,
         )
         .bind(child_trade_index)
-        .fetch_optional(pool)
-        .await?;
-        let Some((full_privacy, parent_id)) = row else {
-            return Ok(None);
-        };
-        sqlx::query(
-            r#"
-            UPDATE orders
-            SET pending_next_trade_index = NULL
-            WHERE id = ?
-            "#,
-        )
-        .bind(&parent_id)
         .execute(pool)
         .await?;
-        Ok(Some(full_privacy))
+        Ok(())
     }
 
     /// Update only the status field of an existing order by id.
@@ -1919,7 +1900,12 @@ mod upsert_from_small_order_dm_tests {
                 pending_next_trade_index INTEGER,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
-            )
+            );
+            CREATE TABLE pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL
+            );
             "#,
         )
         .execute(&pool)
@@ -2071,7 +2057,7 @@ mod upsert_from_small_order_dm_tests {
     }
 
     #[tokio::test]
-    async fn inherit_full_privacy_for_range_child_from_prior_maker() {
+    async fn inherit_full_privacy_for_range_child_requires_bind() {
         let pool = create_test_pool().await;
         let parent_keys = Keys::generate();
         let parent_id = Uuid::new_v4();
@@ -2090,14 +2076,20 @@ mod upsert_from_small_order_dm_tests {
         assert!(
             Order::inherit_full_privacy_for_range_child(&pool, 4)
                 .await
-                .expect("inherit"),
-            "child should inherit parent full_privacy"
+                .expect("unbound")
+                .is_none(),
+            "unbound child must not infer privacy from a preceding maker"
         );
-        assert!(
-            !Order::inherit_full_privacy_for_range_child(&pool, 3)
+
+        Order::bind_pending_next_trade(&pool, &parent_id.to_string(), 4)
+            .await
+            .expect("bind");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 4)
                 .await
-                .expect("no prior"),
-            "no prior maker index → reputation default"
+                .expect("bound"),
+            Some(true),
+            "bound child inherits parent full_privacy"
         );
     }
 
@@ -2118,9 +2110,10 @@ mod upsert_from_small_order_dm_tests {
         .expect("taker private row");
 
         assert!(
-            !Order::inherit_full_privacy_for_range_child(&pool, 6)
+            Order::inherit_full_privacy_for_range_child(&pool, 6)
                 .await
-                .expect("inherit"),
+                .expect("inherit")
+                .is_none(),
             "taker rows must not seed maker range-child privacy"
         );
     }
@@ -2153,28 +2146,30 @@ mod upsert_from_small_order_dm_tests {
         .await
         .expect("intervening reputation maker at index 11");
 
-        // Without a bind, the heuristic would pick index 11 (false).
-        assert!(
-            !Order::inherit_full_privacy_for_range_child(&pool, 12)
-                .await
-                .expect("heuristic"),
-            "unbound child would wrongly follow intervening reputation maker"
-        );
-
-        // Re-seed: the previous inherit consumed nothing; bind then inherit.
-        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
-            .await
-            .expect("bind child 12 to private parent");
         assert!(
             Order::inherit_full_privacy_for_range_child(&pool, 12)
                 .await
+                .expect("unbound")
+                .is_none(),
+            "unbound child must not follow intervening reputation maker"
+        );
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("bind child 12 to private parent");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
                 .expect("bound inherit"),
+            Some(true),
             "bound NextTrade must follow the parent, not the intervening maker"
         );
-        // Bind is consumed.
-        assert!(Order::take_bound_full_privacy_for_range_child(&pool, 12)
+        Order::clear_pending_next_trade(&pool, 12)
             .await
-            .expect("second take")
+            .expect("clear after successful persist");
+        assert!(Order::inherit_full_privacy_for_range_child(&pool, 12)
+            .await
+            .expect("cleared")
             .is_none());
     }
 
@@ -2215,16 +2210,18 @@ mod upsert_from_small_order_dm_tests {
             .await
             .expect("retry NextTrade bind for child 13");
 
-        assert!(
+        assert_eq!(
             Order::inherit_full_privacy_for_range_child(&pool, 12)
                 .await
                 .expect("inherit 12"),
+            Some(true),
             "delayed child 12 must keep the private parent's mode after a retry bind"
         );
-        assert!(
+        assert_eq!(
             Order::inherit_full_privacy_for_range_child(&pool, 13)
                 .await
                 .expect("inherit 13"),
+            Some(true),
             "retry child 13 must also inherit the private parent"
         );
     }
@@ -2261,17 +2258,19 @@ mod upsert_from_small_order_dm_tests {
             .await
             .expect("bind");
 
-        assert!(
+        assert_eq!(
             Order::inherit_full_privacy_for_range_child(&pool, 12)
                 .await
                 .expect("first peek"),
+            Some(true),
             "first inherit must see the private parent"
         );
         // Simulate a failed child save: bind must still be available for replay.
-        assert!(
+        assert_eq!(
             Order::inherit_full_privacy_for_range_child(&pool, 12)
                 .await
                 .expect("replay peek"),
+            Some(true),
             "bind must survive until child persistence succeeds"
         );
     }
