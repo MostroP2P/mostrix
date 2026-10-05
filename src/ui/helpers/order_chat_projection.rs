@@ -726,6 +726,50 @@ mod tests {
     }
 
     #[test]
+    fn fiat_sent_ok_peer_without_reputation_does_not_mark_full_privacy() {
+        // Mostro's FiatSentOk always sends Peer { reputation: None } for both
+        // sides, including reputation-mode trades. That must not flip the
+        // counterparty privacy flag or suppress RateUser.
+        let order_id = Uuid::new_v4();
+        let peer_hex = "ab".repeat(32);
+        let mut msg = sample_order_message(
+            order_id,
+            Action::FiatSentOk,
+            Some(Payload::Peer(Peer {
+                pubkey: peer_hex.clone(),
+                reputation: None,
+            })),
+        );
+        msg.order_kind = Some(Kind::Sell);
+        msg.is_mine = Some(true);
+        msg.order_snapshot = Some(SmallOrder {
+            id: Some(order_id),
+            kind: Some(Kind::Sell),
+            status: Some(Status::FiatSent),
+            amount: 1000,
+            fiat_code: "USD".into(),
+            fiat_amount: 50,
+            payment_method: "sepa".into(),
+            buyer_trade_pubkey: Some(peer_hex),
+            seller_trade_pubkey: Some("cd".repeat(32)),
+            ..Default::default()
+        });
+
+        let rows = build_active_order_chat_list(&[msg], &[]);
+
+        assert!(
+            rows[0].buyer_full_privacy.is_none(),
+            "FiatSentOk Peer(None) must not mark the counterparty full-private"
+        );
+        assert!(rows[0].seller_full_privacy.is_none());
+        assert_ne!(
+            counterpart_full_privacy_from_row(&rows[0], Some(true), Some(Kind::Sell)),
+            Some(true),
+            "rating path must not treat FiatSentOk as full-privacy"
+        );
+    }
+
+    #[test]
     fn buyer_seller_privacy_flags_prefer_local_full_privacy() {
         // Local maker of a buy order is the buyer.
         let (buyer, seller) = buyer_seller_privacy_flags(

@@ -2179,6 +2179,104 @@ mod upsert_from_small_order_dm_tests {
     }
 
     #[tokio::test]
+    async fn retry_bind_keeps_earlier_child_index() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private range parent at index 10");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker at index 11");
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("first NextTrade bind for child 12");
+        // Timed-out FiatSent/Release retry reserves a fresh index and must not
+        // orphan the earlier binding — child 12's NewOrder may still arrive.
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 13)
+            .await
+            .expect("retry NextTrade bind for child 13");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("inherit 12"),
+            "delayed child 12 must keep the private parent's mode after a retry bind"
+        );
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 13)
+                .await
+                .expect("inherit 13"),
+            "retry child 13 must also inherit the private parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_leaves_bind_until_child_persisted() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private parent");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker");
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("bind");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("first peek"),
+            "first inherit must see the private parent"
+        );
+        // Simulate a failed child save: bind must still be available for replay.
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("replay peek"),
+            "bind must survive until child persistence succeeds"
+        );
+    }
+
+    #[tokio::test]
     async fn insert_from_restore_persists_peer_chat_fields_from_trade_pubkeys() {
         let pool = create_test_pool().await;
         let buyer = Keys::generate();

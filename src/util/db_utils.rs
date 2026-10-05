@@ -88,3 +88,62 @@ pub async fn refresh_order_status_from_small_order(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::save_order;
+    use mostro_core::prelude::{Kind, SmallOrder, Status};
+    use nostr_sdk::prelude::Keys;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn save_order_propagates_invalid_trade_index() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("memory db");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders");
+
+        let err = save_order(
+            SmallOrder {
+                id: Some(Uuid::new_v4()),
+                kind: Some(Kind::Buy),
+                status: Some(Status::Pending),
+                amount: 1000,
+                fiat_code: "USD".into(),
+                fiat_amount: 10,
+                payment_method: "ln".into(),
+                ..Default::default()
+            },
+            &Keys::generate(),
+            1,
+            0,
+            &pool,
+            true,
+            false,
+        )
+        .await
+        .expect_err("trade_index 0 must surface as Err, not Ok(())");
+        assert!(
+            err.to_string().contains("trade_index"),
+            "unexpected error: {err}"
+        );
+    }
+}
