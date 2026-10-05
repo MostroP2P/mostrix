@@ -911,6 +911,30 @@ impl Order {
         }
     }
 
+    /// Privacy mode for a new range-order child listing (`NextTrade` → `NewOrder`).
+    ///
+    /// Inherits `full_privacy` from the maker's most recent prior trade index.
+    /// Returns `false` when no prior maker row exists (reputation default).
+    pub async fn inherit_full_privacy_for_range_child(
+        pool: &SqlitePool,
+        child_trade_index: i64,
+    ) -> Result<bool> {
+        let inherited: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT full_privacy FROM orders
+            WHERE is_mine = 1
+              AND trade_index IS NOT NULL
+              AND trade_index < ?
+            ORDER BY trade_index DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(child_trade_index)
+        .fetch_optional(pool)
+        .await?;
+        Ok(inherited.map(|(fp,)| fp).unwrap_or(false))
+    }
+
     /// Update only the status field of an existing order by id.
     /// The caller is responsible for providing a valid Mostro `Status`.
     pub async fn update_status(
@@ -1968,6 +1992,61 @@ mod upsert_from_small_order_dm_tests {
         assert!(
             stored.full_privacy,
             "DM upsert must not clear create/take privacy mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_full_privacy_for_range_child_from_prior_maker() {
+        let pool = create_test_pool().await;
+        let parent_keys = Keys::generate();
+        let parent_id = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent_id, 1000),
+            &parent_keys,
+            Some(1),
+            3,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 4)
+                .await
+                .expect("inherit"),
+            "child should inherit parent full_privacy"
+        );
+        assert!(
+            !Order::inherit_full_privacy_for_range_child(&pool, 3)
+                .await
+                .expect("no prior"),
+            "no prior maker index → reputation default"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_full_privacy_ignores_taker_rows() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        Order::new(
+            &pool,
+            sample_small_order(Uuid::new_v4(), 1000),
+            &keys,
+            Some(1),
+            5,
+            false,
+            true,
+        )
+        .await
+        .expect("taker private row");
+
+        assert!(
+            !Order::inherit_full_privacy_for_range_child(&pool, 6)
+                .await
+                .expect("inherit"),
+            "taker rows must not seed maker range-child privacy"
         );
     }
 

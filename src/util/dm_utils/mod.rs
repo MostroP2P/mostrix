@@ -748,6 +748,17 @@ async fn persist_range_child_listing_from_new_order(
     request_id: u64,
     trade_keys: &Keys,
 ) -> bool {
+    let full_privacy = match Order::inherit_full_privacy_for_range_child(pool, trade_index).await {
+        Ok(fp) => fp,
+        Err(e) => {
+            log::warn!(
+                "Failed to inherit full_privacy for range child {}: {}; defaulting to reputation",
+                order_id,
+                e
+            );
+            false
+        }
+    };
     if let Err(e) = save_order(
         small_order.clone(),
         trade_keys,
@@ -755,7 +766,7 @@ async fn persist_range_child_listing_from_new_order(
         trade_index,
         pool,
         true,
-        false,
+        full_privacy,
     )
     .await
     {

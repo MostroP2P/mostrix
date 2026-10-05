@@ -5,7 +5,9 @@ use nostr_sdk::prelude::*;
 use uuid::Uuid;
 
 use crate::models::{Order, User};
-use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
+use crate::util::dm_utils::{
+    parse_dm_events, protocol_identity_keys, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;
 
@@ -84,7 +86,7 @@ pub async fn execute_send_msg(
     // Send the DM
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, order.full_privacy),
         &order_trade_keys,
         &mostro_pubkey,
         message_json,
@@ -181,7 +183,7 @@ pub async fn execute_dispute(
 
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, order.full_privacy),
         &order_trade_keys,
         &mostro_pubkey,
         message_json,
@@ -255,7 +257,7 @@ pub async fn execute_rate_user(
 
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, order.full_privacy),
         &order_trade_keys,
         &mostro_pubkey,
         message_json,
