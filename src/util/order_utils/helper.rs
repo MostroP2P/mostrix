@@ -822,7 +822,10 @@ pub(super) async fn payment_request_operation_result(
     )
     .await
     {
-        log::error!("Failed to save order to database: {e}");
+        return Err(anyhow::anyhow!(
+            "Mostro accepted the trade but local save failed: {e}. \
+             Trade keys/privacy may be unrecoverable — retry or check the database."
+        ));
     }
 
     // Persist the bond BOLT11 so the bond QR stays reopenable after a restart.
@@ -1807,7 +1810,6 @@ mod tests {
     #[tokio::test]
     async fn payment_request_surfaces_local_persist_failure() {
         use super::payment_request_operation_result;
-        use crate::ui::OperationResult;
 
         let pool = sqlx::SqlitePool::connect("sqlite::memory:")
             .await
@@ -1863,10 +1865,10 @@ mod tests {
         .await
         .expect_err("Must not return PaymentRequestRequired when local save fails");
         assert!(
-            err.to_string().contains("trade_index") || err.to_string().contains("persist"),
+            err.to_string().contains("trade_index")
+                || err.to_string().contains("local save failed")
+                || err.to_string().contains("persist"),
             "unexpected error: {err}"
         );
-        // And we must not have treated this as a successful payment UI path.
-        let _ = OperationResult::Info(String::new());
     }
 }

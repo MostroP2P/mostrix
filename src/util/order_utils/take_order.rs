@@ -251,7 +251,7 @@ async fn process_take_order_reply(
                 full_privacy,
                 dm_subscription_tx,
             )
-            .await;
+            .await?;
             Ok(take_add_invoice_operation_result(
                 response_message,
                 &normalized,
@@ -352,7 +352,7 @@ async fn persist_taken_order(
     trade_keys: &Keys,
     full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
-) -> SmallOrder {
+) -> Result<SmallOrder> {
     let normalized = normalize_taken_order(returned_order, fallback_order_id);
     let effective_order_id = normalized.id.unwrap_or(fallback_order_id);
     log::info!(
@@ -372,7 +372,10 @@ async fn persist_taken_order(
     )
     .await
     {
-        log::error!("Failed to save order to database: {}", e);
+        return Err(anyhow::anyhow!(
+            "Mostro accepted the take but local save failed: {e}. \
+             Trade keys/privacy may be unrecoverable — retry or check the database."
+        ));
     }
     if dm_subscription_tx.is_some() {
         log::info!(
@@ -382,7 +385,7 @@ async fn persist_taken_order(
         );
         send_track_order_cmd(effective_order_id, next_idx);
     }
-    normalized
+    Ok(normalized)
 }
 
 /// Open the Add Invoice UI for a take-sell reply (`AddInvoice` + `Payload::Order`).

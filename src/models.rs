@@ -90,6 +90,9 @@ impl User {
         let mut tx = pool.begin().await?;
         Self::replace_all_in_tx(&user, &mut tx).await?;
         Order::delete_all_in_tx(&mut tx).await?;
+        sqlx::query(r#"DELETE FROM pending_next_trades"#)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         Ok(user)
@@ -944,13 +947,17 @@ impl Order {
     }
 
     /// Remember that `child_trade_index` was reserved as the NextTrade child of
-    /// this maker parent. Bindings are keyed by child index so a later retry
-    /// that reserves a new index cannot overwrite an earlier outstanding bind.
+    /// this maker parent. Returns a provisional order id for early DM
+    /// `TrackOrder` (Mostro assigns the real child id later).
+    ///
+    /// Bindings are keyed by child index. Re-binding the same index under the
+    /// same parent is idempotent; a different parent is rejected so a wipe that
+    /// missed this table cannot silently keep another identity's privacy flag.
     pub async fn bind_pending_next_trade(
         pool: &SqlitePool,
         parent_order_id: &str,
         child_trade_index: i64,
-    ) -> Result<()> {
+    ) -> Result<uuid::Uuid> {
         let parent: Option<(bool,)> =
             sqlx::query_as(r#"SELECT full_privacy FROM orders WHERE id = ?"#)
                 .bind(parent_order_id)
@@ -961,19 +968,40 @@ impl Order {
                 "Cannot bind NextTrade index {child_trade_index}: parent order {parent_order_id} not found"
             ));
         };
+
+        let existing: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT parent_order_id, provisional_order_id FROM pending_next_trades
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((existing_parent, provisional)) = existing {
+            if existing_parent != parent_order_id {
+                return Err(anyhow::anyhow!(
+                    "Cannot bind NextTrade index {child_trade_index}: already bound to parent {existing_parent} (conflict with {parent_order_id})"
+                ));
+            }
+            return Ok(uuid::Uuid::parse_str(&provisional)?);
+        }
+
+        let provisional = uuid::Uuid::new_v4();
         sqlx::query(
             r#"
-            INSERT INTO pending_next_trades (child_trade_index, parent_order_id, full_privacy)
-            VALUES (?, ?, ?)
-            ON CONFLICT(child_trade_index) DO NOTHING
+            INSERT INTO pending_next_trades
+              (child_trade_index, parent_order_id, full_privacy, provisional_order_id)
+            VALUES (?, ?, ?, ?)
             "#,
         )
         .bind(child_trade_index)
         .bind(parent_order_id)
         .bind(full_privacy)
+        .bind(provisional.to_string())
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(provisional)
     }
 
     /// Drop a NextTrade bind after the child row has been persisted successfully.
@@ -988,6 +1016,30 @@ impl Order {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Provisional `(order_id, trade_index)` pairs for pending NextTrade children.
+    ///
+    /// Included in DM startup hydration so the listener can subscribe/replay the
+    /// reserved trade pubkey before the child `NewOrder` creates a real order row.
+    pub async fn list_pending_next_trade_tracks(
+        pool: &SqlitePool,
+    ) -> Result<Vec<(uuid::Uuid, i64)>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT provisional_order_id, child_trade_index FROM pending_next_trades
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id_str, trade_index) in rows {
+            let Ok(id) = uuid::Uuid::parse_str(&id_str) else {
+                continue;
+            };
+            out.push((id, trade_index));
+        }
+        Ok(out)
     }
 
     /// Update only the status field of an existing order by id.
@@ -1904,7 +1956,8 @@ mod upsert_from_small_order_dm_tests {
             CREATE TABLE pending_next_trades (
                 child_trade_index INTEGER PRIMARY KEY,
                 parent_order_id TEXT NOT NULL,
-                full_privacy INTEGER NOT NULL
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             );
             "#,
         )
@@ -2273,6 +2326,30 @@ mod upsert_from_small_order_dm_tests {
             Some(true),
             "bind must survive until child persistence succeeds"
         );
+    }
+
+    #[tokio::test]
+    async fn list_pending_next_trade_tracks_exposes_provisional_ids() {
+        let pool = create_test_pool().await;
+        let parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+        let provisional = Order::bind_pending_next_trade(&pool, &parent.to_string(), 12)
+            .await
+            .expect("bind");
+        let tracks = Order::list_pending_next_trade_tracks(&pool)
+            .await
+            .expect("list");
+        assert_eq!(tracks, vec![(provisional, 12)]);
     }
 
     #[tokio::test]

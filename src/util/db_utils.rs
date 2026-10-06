@@ -116,7 +116,8 @@ mod tests {
             CREATE TABLE pending_next_trades (
                 child_trade_index INTEGER PRIMARY KEY,
                 parent_order_id TEXT NOT NULL,
-                full_privacy INTEGER NOT NULL
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             )
             "#,
         )

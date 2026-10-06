@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::models::{Order, User};
 use crate::util::dm_utils::{
-    parse_dm_events, protocol_identity_keys, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, protocol_identity_keys, send_dm, send_track_order_cmd, wait_for_dm,
+    FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::handle_mostro_response;
@@ -27,7 +28,11 @@ async fn create_msg_payload(
                     let parent_id = order.id.as_deref().ok_or_else(|| {
                         anyhow::anyhow!("Cannot bind NextTrade: parent order has no id")
                     })?;
-                    Order::bind_pending_next_trade(pool, parent_id, next_trade_index).await?;
+                    let provisional_id =
+                        Order::bind_pending_next_trade(pool, parent_id, next_trade_index).await?;
+                    // Subscribe the reserved child trade pubkey before Mostro's
+                    // child NewOrder arrives (same early-TrackOrder pattern as take).
+                    send_track_order_cmd(provisional_id, next_trade_index);
 
                     Ok(Some(Payload::NextTrade(
                         next_trade_keys.public_key().to_string(),

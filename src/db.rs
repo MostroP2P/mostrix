@@ -80,7 +80,8 @@ pub async fn init_db() -> Result<SqlitePool> {
             CREATE TABLE IF NOT EXISTS pending_next_trades (
                 child_trade_index INTEGER PRIMARY KEY,
                 parent_order_id TEXT NOT NULL,
-                full_privacy INTEGER NOT NULL
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS users (
                 i0_pubkey char(64) PRIMARY KEY,
@@ -424,25 +425,83 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         CREATE TABLE IF NOT EXISTS pending_next_trades (
             child_trade_index INTEGER PRIMARY KEY,
             parent_order_id TEXT NOT NULL,
-            full_privacy INTEGER NOT NULL
+            full_privacy INTEGER NOT NULL,
+            provisional_order_id TEXT NOT NULL DEFAULT ''
         )
         "#,
     )
     .execute(pool)
     .await?;
 
+    // Builds that created the table before provisional_order_id existed.
+    if !check_column_exists(pool, "pending_next_trades", "provisional_order_id").await? {
+        sqlx::query(
+            "ALTER TABLE pending_next_trades ADD COLUMN provisional_order_id TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+    }
+    // Backfill empty provisional ids so TrackOrder/hydrate have a stable UUID.
+    let missing: Vec<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT child_trade_index FROM pending_next_trades
+        WHERE provisional_order_id IS NULL OR provisional_order_id = ''
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for (child_idx,) in missing {
+        let provisional = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            UPDATE pending_next_trades
+            SET provisional_order_id = ?
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(&provisional)
+        .bind(child_idx)
+        .execute(pool)
+        .await?;
+    }
+
     // One-shot lift of any legacy single-slot binds still sitting on orders rows.
     if check_column_exists(pool, "orders", "pending_next_trade_index").await? {
         sqlx::query(
             r#"
-            INSERT OR IGNORE INTO pending_next_trades (child_trade_index, parent_order_id, full_privacy)
-            SELECT pending_next_trade_index, id, full_privacy
+            INSERT OR IGNORE INTO pending_next_trades
+              (child_trade_index, parent_order_id, full_privacy, provisional_order_id)
+            SELECT pending_next_trade_index, id, full_privacy, lower(hex(randomblob(16)))
             FROM orders
             WHERE pending_next_trade_index IS NOT NULL
             "#,
         )
         .execute(pool)
         .await?;
+        // Normalize hex blobs that are not UUID-shaped into real UUIDs.
+        let legacy: Vec<(i64, String)> = sqlx::query_as(
+            r#"
+            SELECT child_trade_index, provisional_order_id FROM pending_next_trades
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        for (child_idx, prov) in legacy {
+            if uuid::Uuid::parse_str(&prov).is_err() {
+                let provisional = uuid::Uuid::new_v4().to_string();
+                sqlx::query(
+                    r#"
+                    UPDATE pending_next_trades
+                    SET provisional_order_id = ?
+                    WHERE child_trade_index = ?
+                    "#,
+                )
+                .bind(&provisional)
+                .bind(child_idx)
+                .execute(pool)
+                .await?;
+            }
+        }
         sqlx::query("UPDATE orders SET pending_next_trade_index = NULL")
             .execute(pool)
             .await?;

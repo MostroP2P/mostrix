@@ -261,6 +261,14 @@ pub async fn hydrate_startup_active_order_dm_state(
         }
     }
 
+    // Pending NextTrade children: subscribe/replay their reserved trade keys
+    // before the child NewOrder creates a real orders row.
+    for (provisional_id, trade_index) in Order::list_pending_next_trade_tracks(pool).await? {
+        active_order_trade_indices
+            .entry(provisional_id)
+            .or_insert(trade_index);
+    }
+
     Ok(StartupDmHydration {
         active_order_trade_indices,
         order_last_seen_dm_ts,

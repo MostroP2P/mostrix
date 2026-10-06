@@ -171,8 +171,9 @@ pub async fn send_new_order(
                                     order.id
                                 );
 
-                                // Save order to database
-                                if let Err(e) = save_order(
+                                // Save order to database — fail closed if local persist
+                                // fails (full-privacy trades are not restoreable via identity).
+                                save_order(
                                     order.clone(),
                                     &trade_keys,
                                     request_id,
@@ -182,9 +183,12 @@ pub async fn send_new_order(
                                     full_privacy,
                                 )
                                 .await
-                                {
-                                    log::error!("Failed to save order to database: {}", e);
-                                }
+                                .map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Mostro accepted the order but local save failed: {e}. \
+                                         Trade keys/privacy may be unrecoverable — retry or check the database."
+                                    )
+                                })?;
                                 if dm_subscription_tx.is_some() {
                                     if let Some(order_id) = order.id {
                                         send_track_order_cmd(order_id, next_idx);
