@@ -2276,6 +2276,53 @@ mod upsert_from_small_order_dm_tests {
     }
 
     #[tokio::test]
+    async fn bind_rejects_conflicting_parent_for_same_child_index() {
+        let pool = create_test_pool().await;
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(first, 1000),
+            &Keys::generate(),
+            Some(1),
+            1,
+            true,
+            false,
+        )
+        .await
+        .expect("reputation parent");
+        Order::new(
+            &pool,
+            sample_small_order(second, 1000),
+            &Keys::generate(),
+            Some(2),
+            2,
+            true,
+            true,
+        )
+        .await
+        .expect("private parent");
+
+        Order::bind_pending_next_trade(&pool, &first.to_string(), 3)
+            .await
+            .expect("first bind at index 3");
+        let err = Order::bind_pending_next_trade(&pool, &second.to_string(), 3)
+            .await
+            .expect_err("second bind at same child index under a different parent must fail");
+        assert!(
+            err.to_string().contains("already bound") || err.to_string().contains("conflict"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 3)
+                .await
+                .expect("peek"),
+            Some(false),
+            "stale reputation bind must not be replaced by the private parent"
+        );
+    }
+
+    #[tokio::test]
     async fn insert_from_restore_persists_peer_chat_fields_from_trade_pubkeys() {
         let pool = create_test_pool().await;
         let buyer = Keys::generate();

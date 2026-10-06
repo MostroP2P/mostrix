@@ -1803,4 +1803,70 @@ mod tests {
         let err = handle_mostro_response(&message, EXPECTED_RID).expect_err("CantDo");
         assert!(err.to_string().contains("Invalid action"), "got {err}");
     }
+
+    #[tokio::test]
+    async fn payment_request_surfaces_local_persist_failure() {
+        use super::payment_request_operation_result;
+        use crate::ui::OperationResult;
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("memory");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
+                bond_invoice TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders");
+
+        let order_id = Uuid::new_v4();
+        let trade_keys = Keys::generate();
+        let err = payment_request_operation_result(
+            Action::PayInvoice,
+            Some(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Buy),
+                status: Some(Status::WaitingPayment),
+                amount: 1000,
+                fiat_code: "USD".into(),
+                fiat_amount: 10,
+                payment_method: "ln".into(),
+                ..Default::default()
+            }),
+            "lnbc1test".into(),
+            Some(1000),
+            None,
+            1,
+            0, // invalid trade_index → Order::new fails
+            &pool,
+            &trade_keys,
+            true,
+            true,
+            None,
+            "test_persist_fail",
+            None,
+        )
+        .await
+        .expect_err("Must not return PaymentRequestRequired when local save fails");
+        assert!(
+            err.to_string().contains("trade_index") || err.to_string().contains("persist"),
+            "unexpected error: {err}"
+        );
+        // And we must not have treated this as a successful payment UI path.
+        let _ = OperationResult::Info(String::new());
+    }
 }
