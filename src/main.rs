@@ -1266,8 +1266,6 @@ mod paste_routing_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
-            buyer_full_privacy: None,
-            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });

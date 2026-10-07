@@ -1639,10 +1639,6 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     app.mode = UiMode::RatingOrder(RatingOrderState {
                         order_id: oid,
                         selected_rating: 3,
-                        counterpart_full_privacy:
-                            crate::ui::key_handler::chat_helpers::counterpart_full_privacy_for_order(
-                                app, oid,
-                            ),
                     });
                 } else {
                     app.mode = UiMode::operation_result(OperationResult::Error(

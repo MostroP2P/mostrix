@@ -90,9 +90,6 @@ impl User {
         let mut tx = pool.begin().await?;
         Self::replace_all_in_tx(&user, &mut tx).await?;
         Order::delete_all_in_tx(&mut tx).await?;
-        sqlx::query(r#"DELETE FROM pending_next_trades"#)
-            .execute(&mut *tx)
-            .await?;
         tx.commit().await?;
 
         Ok(user)
@@ -297,12 +294,15 @@ pub const TERMINAL_ORDER_HISTORY_STATUSES: &[&str] = &[
 pub const ORDER_HISTORY_BULK_DELETE_STATUSES: &[&str] = &["success", "canceled"];
 
 impl Order {
-    /// Delete every row in `orders`. Used when rotating the user mnemonic so persisted trade keys
-    /// cannot reference the previous seed.
+    /// Delete every row in `orders` and `pending_next_trades`. Used on every seed/session change
+    /// so persisted trade keys and NextTrade binds cannot reference the previous seed.
     pub async fn delete_all_in_tx(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(r#"DELETE FROM orders"#)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(r#"DELETE FROM pending_next_trades"#)
             .execute(&mut **tx)
             .await?;
         Ok(())
@@ -1040,6 +1040,25 @@ impl Order {
             out.push((id, trade_index));
         }
         Ok(out)
+    }
+
+    /// True when `order_id` is the provisional id of a still-pending NextTrade bind at this index.
+    pub async fn is_pending_next_trade_provisional(
+        pool: &SqlitePool,
+        order_id: uuid::Uuid,
+        child_trade_index: i64,
+    ) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT 1 FROM pending_next_trades
+            WHERE child_trade_index = ? AND provisional_order_id = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .bind(order_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// Update only the status field of an existing order by id.
@@ -2396,6 +2415,68 @@ mod upsert_from_small_order_dm_tests {
                 .expect("peek"),
             Some(false),
             "stale reputation bind must not be replaced by the private parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn key_rotation_tx_clears_pending_next_trade_binds() {
+        let pool = create_test_pool().await;
+        sqlx::query(
+            "CREATE TABLE users (i0_pubkey char(64) PRIMARY KEY, mnemonic TEXT, \
+             last_trade_index INTEGER, created_at INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .expect("users table");
+        let old_parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(old_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            2,
+            true,
+            false,
+        )
+        .await
+        .expect("old-seed reputation parent");
+        Order::bind_pending_next_trade(&pool, &old_parent.to_string(), 3)
+            .await
+            .expect("old-seed bind at child 3");
+
+        // Same transaction shape as `spawn_key_rotation_task` (Generate New Keys).
+        let new_user = crate::models::User::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+        )
+        .expect("user");
+        let mut tx = pool.begin().await.expect("tx");
+        crate::models::User::replace_all_in_tx(&new_user, &mut tx)
+            .await
+            .expect("replace user");
+        Order::delete_all_in_tx(&mut tx).await.expect("wipe orders");
+        tx.commit().await.expect("commit");
+
+        let new_parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(new_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            2,
+            true,
+            true,
+        )
+        .await
+        .expect("new-seed private parent");
+        Order::bind_pending_next_trade(&pool, &new_parent.to_string(), 3)
+            .await
+            .expect("reused child index must bind to the new seed's parent");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 3)
+                .await
+                .expect("inherit"),
+            Some(true)
         );
     }
 

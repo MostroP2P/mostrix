@@ -79,8 +79,8 @@ In this mode, Mostro cannot link the trade to your identity key. You operate ano
 - **Range children**: When FiatSent/Release reserves a `NextTrade` child index, Mostrix stores a row in `pending_next_trades` keyed by that child index (parent id + `full_privacy` + provisional order id for early DM subscribe). A timed-out retry that reserves a new index cannot overwrite an earlier bind; a conflicting bind under another parent is rejected. The bind is cleared only after the child row is persisted, and the table is wiped on session/seed rotation. Unbound children are not inferred from a preceding maker.
 - **My Trades refresh (Shift+U)**: skipped for full-privacy rows — `Action::Orders` is identity-scoped and must not associate a private order id with the long-lived identity key.
 - **Restore Session**: Full-privacy trades are **not** recovered via identity-scoped Restore / `LastTradeIndex` (Mostro has no master key for them). Local SQLite + trade keys remain the recovery path.
-- **Rating**: Rating a full-privacy counterparty is a silent no-op on Mostro. Mostrix suppresses `RateUser` when dispute flags mark the counterparty private. A bare `Peer { reputation: None }` (including FiatSentOk) is **not** treated as full privacy — the daemon sends that shape for reputation-mode trades too.
-- **My Trades header**: shows `Privacy: Buyer - Yes/No/Unknown  Seller - …` from the local `full_privacy` flag plus dispute / reputation-snapshot signals when known.
+- **Rating**: `RateUser` is always sent; Mostro silently ignores ratings for a full-privacy counterparty. A new user and a full-privacy user both show a zeroed reputation and are not distinguished.
+- **My Trades header**: shows `Privacy: Full privacy | Reputation` for the local trade (`orders.full_privacy`).
 
 ## Trade Index Incrementation
 Whenever a user creates or takes an order, the next trade index is reserved atomically in the database before any network I/O.

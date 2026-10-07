@@ -1061,8 +1061,6 @@ pub struct RatingOrderState {
     pub order_id: uuid::Uuid,
     /// 1..=5 (`mostro_core::MIN_RATING`..=`MAX_RATING`).
     pub selected_rating: u8,
-    /// Peer has no reputation identity on Mostro (full privacy) — `RateUser` is a no-op.
-    pub counterpart_full_privacy: bool,
 }
 
 /// Build a `MessageNotification` from an `OrderMessage` for use in popups.

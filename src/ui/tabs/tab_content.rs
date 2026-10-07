@@ -364,11 +364,7 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
 pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
-    let popup_height = if state.counterpart_full_privacy {
-        16
-    } else {
-        14
-    };
+    let popup_height = 14;
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
     let block = Block::default()
@@ -385,7 +381,6 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(1),
-            Constraint::Length(if state.counterpart_full_privacy { 2 } else { 0 }),
             Constraint::Length(1),
         ],
     )
@@ -430,17 +425,6 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
         chunks[3],
     );
 
-    if state.counterpart_full_privacy {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                "Peer used full privacy — Mostro will ignore this rating.",
-                Style::default().fg(Color::Yellow),
-            )]))
-            .alignment(ratatui::layout::Alignment::Center),
-            chunks[4],
-        );
-    }
-
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Left/Right ", Style::default().fg(PRIMARY_COLOR)),
@@ -448,16 +432,12 @@ pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
             Span::styled("+/- ", Style::default().fg(PRIMARY_COLOR)),
             Span::raw("adjust  "),
             Span::styled("Enter ", Style::default().fg(PRIMARY_COLOR)),
-            Span::raw(if state.counterpart_full_privacy {
-                "dismiss  "
-            } else {
-                "submit  "
-            }),
+            Span::raw("submit  "),
             Span::styled("Esc ", Style::default().fg(PRIMARY_COLOR)),
             Span::raw("cancel"),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
-        chunks[5],
+        chunks[4],
     );
 }
 

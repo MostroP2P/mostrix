@@ -288,29 +288,10 @@ pub fn build_rating_state_for_mytrades(
     app: &AppState,
     default_rating: u8,
 ) -> Option<RatingOrderState> {
-    resolve_selected_mytrades_order_id(app).map(|order_id| {
-        let counterpart_full_privacy = resolve_counterpart_full_privacy(app, order_id);
-        RatingOrderState {
-            order_id,
-            selected_rating: default_rating,
-            counterpart_full_privacy,
-        }
+    resolve_selected_mytrades_order_id(app).map(|order_id| RatingOrderState {
+        order_id,
+        selected_rating: default_rating,
     })
-}
-
-fn resolve_counterpart_full_privacy(app: &AppState, order_id: Uuid) -> bool {
-    let header = app.order_chat_static.get(&order_id);
-    let is_mine = header.map(|h| h.is_mine);
-    let kind = header.and_then(|h| h.kind);
-    let rows = crate::ui::helpers::active_order_chat_list_snapshot(app);
-    let row = rows.iter().find(|r| r.order_id == order_id.to_string());
-    row.and_then(|r| crate::ui::helpers::counterpart_full_privacy_from_row(r, is_mine, kind))
-        .unwrap_or(false)
-}
-
-/// Whether the selected My Trades counterparty is full-privacy (RateUser no-op).
-pub(crate) fn counterpart_full_privacy_for_order(app: &AppState, order_id: Uuid) -> bool {
-    resolve_counterpart_full_privacy(app, order_id)
 }
 
 /// Finalization popup button index: 0 = Pay Buyer, 1 = Refund Seller, 2 = Bond slash.
@@ -385,8 +366,6 @@ mod draft_and_pin_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
-            buyer_full_privacy: None,
-            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -402,8 +381,6 @@ mod draft_and_pin_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
-            buyer_full_privacy: None,
-            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });
@@ -544,8 +521,6 @@ mod draft_and_pin_tests {
             seller_trade_pubkey: None,
             buyer_reputation: None,
             seller_reputation: None,
-            buyer_full_privacy: None,
-            seller_full_privacy: None,
             solver_pubkey: None,
             dispute_id: None,
         });

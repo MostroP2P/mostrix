@@ -300,9 +300,6 @@ pub async fn clear_session_tables_in_tx(
     AdminDispute::delete_all_in_tx(tx).await?;
     Order::delete_all_in_tx(tx).await?;
     crate::util::solver_dms::store::delete_all_in_tx(tx).await?;
-    sqlx::query(r#"DELETE FROM pending_next_trades"#)
-        .execute(&mut **tx)
-        .await?;
     sqlx::query(r#"DELETE FROM users"#)
         .execute(&mut **tx)
         .await?;
