@@ -35,8 +35,9 @@ pub fn format_user_rating_compact(info: &UserInfo) -> String {
 ///
 /// - `None` (not fetched yet): empty string (caller omits the segment).
 /// - `reviews == 0`: `"reputation: none"` (protocol: do not show a star average).
-/// - otherwise: `"★ r.r · N · since Mon YYYY"` using [`UserInfo::since`] when
+/// - otherwise: `"⭐ r.r · 🗳 N · since Mon YYYY"` using [`UserInfo::since`] when
 ///   present; falls back to deprecated `operating_days` when `since` is absent.
+///   The status bar paints `⭐` + rating in yellow.
 #[must_use]
 pub fn format_own_reputation_status(info: Option<&UserInfo>) -> String {
     let Some(info) = info else {
@@ -49,9 +50,11 @@ pub fn format_own_reputation_status(info: Option<&UserInfo>) -> String {
     match info.since.and_then(|ts| {
         DateTime::from_timestamp(ts as i64, 0).map(|dt| dt.format("%b %Y").to_string())
     }) {
-        Some(since_label) => format!("★ {rating:.1} · {} · since {since_label}", info.reviews),
+        Some(since_label) => {
+            format!("⭐ {rating:.1} · 🗳 {} · since {since_label}", info.reviews)
+        }
         None => format!(
-            "★ {rating:.1} · {} · {}d",
+            "⭐ {rating:.1} · 🗳 {} · {}d",
             info.reviews, info.operating_days
         ),
     }
@@ -225,7 +228,7 @@ mod rating_format_tests {
         };
         assert_eq!(
             format_own_reputation_status(Some(&info)),
-            "★ 4.8 · 23 · since Nov 2023"
+            "⭐ 4.8 · 🗳 23 · since Nov 2023"
         );
     }
 
@@ -237,7 +240,10 @@ mod rating_format_tests {
             operating_days: 40,
             since: None,
         };
-        assert_eq!(format_own_reputation_status(Some(&info)), "★ 4.0 · 2 · 40d");
+        assert_eq!(
+            format_own_reputation_status(Some(&info)),
+            "⭐ 4.0 · 🗳 2 · 40d"
+        );
     }
 
     #[test]
@@ -261,7 +267,7 @@ mod rating_format_tests {
         };
         assert_eq!(
             status_bar_reputation_segment(true, Some(&info)),
-            " | ★ 4.8 · 23 · since Nov 2023"
+            " | ⭐ 4.8 · 🗳 23 · since Nov 2023"
         );
         assert_eq!(status_bar_reputation_segment(true, None), "");
     }
