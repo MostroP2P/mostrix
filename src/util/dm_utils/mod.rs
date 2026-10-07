@@ -329,8 +329,8 @@ pub fn protocol_identity_keys(identity: &Keys, full_privacy: bool) -> Option<&Ke
 /// Never pass the long-lived identity key as `trade_keys` — that authors a
 /// public, permanent identity→receiver link on every relay and drops the
 /// proof. Account-scoped requests with no per-trade key (restore session,
-/// last-trade-index) use a fresh ephemeral key instead. The admin flows are
-/// the intentional exception: the admin key *is* the account.
+/// last-trade-index, user-info) use a fresh ephemeral key instead. The admin
+/// flows are the intentional exception: the admin key *is* the account.
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,

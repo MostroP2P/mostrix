@@ -1,6 +1,6 @@
-// Own-reputation sync with Mostro (`Action::UserInfo`).
-//
-// Protocol: https://mostro.network/protocol/user_info.html
+//! Own-reputation sync with Mostro (`Action::UserInfo`).
+//!
+//! Protocol: <https://mostro.network/protocol/user_info.html>
 use std::time::Duration;
 
 use anyhow::Result;

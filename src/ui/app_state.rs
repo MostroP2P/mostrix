@@ -379,7 +379,11 @@ pub struct AppState {
     /// Populated only from client-authenticated fetches; apply via [`Self::set_mostro_info`].
     pub mostro_info: Option<MostroInstanceInfo>,
     /// Own identity reputation on the connected Mostro (`Action::UserInfo`).
-    /// `None` until the first successful fetch; zeros mean no reputation yet.
+    ///
+    /// `None` until the first successful fetch (status bar omits the segment).
+    /// After a fetch, `reviews == 0` is “no reputation yet” (same as a new or
+    /// unknown identity); the status bar shows `reputation: none` and does not
+    /// display a star average.
     pub own_reputation: Option<UserInfo>,
     /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
     /// Kept in sync by [`Self::set_mostro_info`] (including stale-revision ignore).

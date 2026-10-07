@@ -57,8 +57,11 @@ pub fn format_own_reputation_status(info: Option<&UserInfo>) -> String {
     }
 }
 
-/// Prefixed status-bar segment (`" | …"`) for user mode; empty for admin or
-/// before the first `user-info` fetch.
+/// Prefixed status-bar segment (`" | …"`) for the first global status line.
+///
+/// Empty for admin mode, before the first `user-info` fetch (`own_reputation`
+/// is `None`), or when the fragment is empty. Used from `main` when building
+/// the Mostro name / pubkey status line.
 #[must_use]
 pub fn status_bar_reputation_segment(
     is_user_role: bool,

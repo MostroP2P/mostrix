@@ -5,6 +5,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
 
+/// Draw the multi-line bottom status bar (Mostro name/pubkey, optional own
+/// reputation segment, relays, currencies) plus a blinking notification badge.
 pub fn render_status_bar(
     f: &mut ratatui::Frame,
     area: Rect,

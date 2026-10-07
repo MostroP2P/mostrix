@@ -70,7 +70,8 @@ fn operation_result_for_mostro_command_error(
 
 /// Fetch this identity's own reputation from Mostro and update the status bar cache.
 ///
-/// Soft-fails on network/parse errors (`log::warn` only — no popup). Success sends
+/// Thin wrapper around [`crate::util::spawn_fetch_user_info`]. Soft-fails on
+/// network/parse errors (`log::warn` only — no popup). Success sends
 /// [`OperationResult::OwnReputationUpdated`] on `order_result_tx`.
 pub fn spawn_fetch_own_reputation(
     pool: SqlitePool,
