@@ -65,6 +65,8 @@ pub async fn init_db() -> Result<SqlitePool> {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -74,6 +76,12 @@ pub async fn init_db() -> Result<SqlitePool> {
                 buyer_reputation TEXT,
                 seller_reputation TEXT,
                 bond_invoice TEXT
+            );
+            CREATE TABLE IF NOT EXISTS pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS users (
                 i0_pubkey char(64) PRIMARY KEY,
@@ -197,6 +205,9 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     let has_buyer_reputation = check_column_exists(pool, "orders", "buyer_reputation").await?;
     let has_seller_reputation = check_column_exists(pool, "orders", "seller_reputation").await?;
     let has_bond_invoice = check_column_exists(pool, "orders", "bond_invoice").await?;
+    let has_full_privacy = check_column_exists(pool, "orders", "full_privacy").await?;
+    let has_pending_next_trade_index =
+        check_column_exists(pool, "orders", "pending_next_trade_index").await?;
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -217,6 +228,8 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         || !has_buyer_reputation
         || !has_seller_reputation
         || !has_bond_invoice
+        || !has_full_privacy
+        || !has_pending_next_trade_index
     {
         log::info!("Running migration: adding missing database columns");
 
@@ -389,8 +402,109 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
                 .await?;
         }
 
+        if !has_full_privacy {
+            sqlx::query("ALTER TABLE orders ADD COLUMN full_privacy INTEGER NOT NULL DEFAULT 0")
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        if !has_pending_next_trade_index {
+            sqlx::query("ALTER TABLE orders ADD COLUMN pending_next_trade_index INTEGER")
+                .execute(&mut *tx)
+                .await?;
+        }
+
         tx.commit().await?;
         log::info!("Migration completed successfully");
+    }
+
+    // Range NextTrade binds are keyed by child trade_index so a FiatSent/Release
+    // retry cannot overwrite an earlier outstanding child binding.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_next_trades (
+            child_trade_index INTEGER PRIMARY KEY,
+            parent_order_id TEXT NOT NULL,
+            full_privacy INTEGER NOT NULL,
+            provisional_order_id TEXT NOT NULL DEFAULT ''
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Builds that created the table before provisional_order_id existed.
+    if !check_column_exists(pool, "pending_next_trades", "provisional_order_id").await? {
+        sqlx::query(
+            "ALTER TABLE pending_next_trades ADD COLUMN provisional_order_id TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+    }
+    // Backfill empty provisional ids so TrackOrder/hydrate have a stable UUID.
+    let missing: Vec<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT child_trade_index FROM pending_next_trades
+        WHERE provisional_order_id IS NULL OR provisional_order_id = ''
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for (child_idx,) in missing {
+        let provisional = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            UPDATE pending_next_trades
+            SET provisional_order_id = ?
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(&provisional)
+        .bind(child_idx)
+        .execute(pool)
+        .await?;
+    }
+
+    // One-shot lift of any legacy single-slot binds still sitting on orders rows.
+    if check_column_exists(pool, "orders", "pending_next_trade_index").await? {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO pending_next_trades
+              (child_trade_index, parent_order_id, full_privacy, provisional_order_id)
+            SELECT pending_next_trade_index, id, full_privacy, lower(hex(randomblob(16)))
+            FROM orders
+            WHERE pending_next_trade_index IS NOT NULL
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        // Normalize hex blobs that are not UUID-shaped into real UUIDs.
+        let legacy: Vec<(i64, String)> = sqlx::query_as(
+            r#"
+            SELECT child_trade_index, provisional_order_id FROM pending_next_trades
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        for (child_idx, prov) in legacy {
+            if uuid::Uuid::parse_str(&prov).is_err() {
+                let provisional = uuid::Uuid::new_v4().to_string();
+                sqlx::query(
+                    r#"
+                    UPDATE pending_next_trades
+                    SET provisional_order_id = ?
+                    WHERE child_trade_index = ?
+                    "#,
+                )
+                .bind(&provisional)
+                .bind(child_idx)
+                .execute(pool)
+                .await?;
+            }
+        }
+        sqlx::query("UPDATE orders SET pending_next_trade_index = NULL")
+            .execute(pool)
+            .await?;
     }
 
     // Builds that added `suppress_next_new_order_dm` must drop it so `SELECT *` matches `Order`.
@@ -453,6 +567,8 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
             solver_pubkey TEXT,
             dispute_chat_shared_key_hex TEXT,
             is_mine INTEGER NOT NULL,
+            full_privacy INTEGER NOT NULL DEFAULT 0,
+            pending_next_trade_index INTEGER,
             buyer_invoice TEXT,
             request_id INTEGER,
             trade_index INTEGER,
@@ -472,15 +588,17 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
         INSERT INTO orders_new (
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
-            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
-            request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            pending_next_trade_index,
+            buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         )
         SELECT
             id, kind, status, amount, fiat_code, min_amount, max_amount, fiat_amount,
             payment_method, premium, trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
-            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, buyer_invoice,
-            request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
+            dispute_id, solver_pubkey, dispute_chat_shared_key_hex, is_mine, full_privacy,
+            pending_next_trade_index,
+            buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts,
             buyer_reputation, seller_reputation, bond_invoice
         FROM orders;
         "#,
@@ -517,6 +635,136 @@ mod tests {
             .await
             .expect("Failed to query user count");
         assert_eq!(user_count.0, 1, "Expected one user to be created");
+        let (fp_col,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'full_privacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma_table_info");
+        assert_eq!(
+            fp_col, 1,
+            "orders.full_privacy column must exist after init_db"
+        );
+        let (pending_col,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'pending_next_trade_index'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma_table_info");
+        assert_eq!(
+            pending_col, 1,
+            "orders.pending_next_trade_index column must exist after init_db"
+        );
+        let (pending_table,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pending_next_trades'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("sqlite_master");
+        assert_eq!(
+            pending_table, 1,
+            "pending_next_trades table must exist after init_db"
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn migrate_adds_full_privacy_to_legacy_orders_table() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("memory db");
+        // Minimal legacy schema: orders without full_privacy, plus empty admin_disputes
+        // with the columns migrate_db probes so only the orders column is missing.
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY,
+                kind TEXT,
+                status TEXT,
+                amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL,
+                min_amount INTEGER,
+                max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL,
+                trade_keys TEXT,
+                counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT,
+                dispute_id TEXT,
+                solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT,
+                is_mine INTEGER NOT NULL,
+                buyer_invoice TEXT,
+                request_id INTEGER,
+                trade_index INTEGER,
+                created_at INTEGER,
+                expires_at INTEGER,
+                last_seen_dm_ts INTEGER,
+                buyer_reputation TEXT,
+                seller_reputation TEXT,
+                bond_invoice TEXT
+            );
+            CREATE TABLE admin_disputes (
+                id TEXT PRIMARY KEY,
+                dispute_id TEXT NOT NULL DEFAULT '',
+                initiator_pubkey TEXT NOT NULL,
+                initiator_full_privacy INTEGER NOT NULL,
+                counterpart_full_privacy INTEGER NOT NULL,
+                premium INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                fiat_amount INTEGER NOT NULL,
+                fee INTEGER NOT NULL,
+                routing_fee INTEGER NOT NULL,
+                invoice_held_at INTEGER NOT NULL,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                initiator_info TEXT,
+                counterpart_info TEXT,
+                fiat_code TEXT DEFAULT 'USD',
+                buyer_chat_last_seen INTEGER,
+                seller_chat_last_seen INTEGER,
+                buyer_shared_key_hex TEXT,
+                seller_shared_key_hex TEXT
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy tables");
+
+        migrate_db(&pool).await.expect("migrate");
+
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'full_privacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma");
+        assert_eq!(count, 1);
+
+        let (pending_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name = 'pending_next_trade_index'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("pragma pending");
+        assert_eq!(pending_count, 1);
+
+        sqlx::query(
+            r#"INSERT INTO orders (
+                id, amount, fiat_code, fiat_amount, payment_method, premium, is_mine
+            ) VALUES ('o1', 1, 'USD', 1, 'ln', 0, 1)"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert uses default full_privacy=0");
+        let (fp,): (i64,) = sqlx::query_as("SELECT full_privacy FROM orders WHERE id = 'o1'")
+            .fetch_one(&pool)
+            .await
+            .expect("read default");
+        assert_eq!(fp, 0);
         pool.close().await;
     }
 }

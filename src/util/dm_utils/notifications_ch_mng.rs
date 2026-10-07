@@ -764,6 +764,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "initiator".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             },

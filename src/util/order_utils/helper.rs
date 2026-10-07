@@ -736,6 +736,7 @@ pub(super) fn build_order_chat_static_header(
     trade_index: i64,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
 ) -> Option<OrderChatStaticHeader> {
     let order_id = order.id?;
     Some(OrderChatStaticHeader {
@@ -745,6 +746,7 @@ pub(super) fn build_order_chat_static_header(
         trade_index,
         initiator_trade_pubkey: trade_keys.public_key().to_string(),
         is_mine,
+        full_privacy,
         solver_pubkey: None,
         dispute_id: None,
     })
@@ -767,6 +769,7 @@ pub(super) async fn payment_request_operation_result(
     pool: &SqlitePool,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
     dm_subscription_tx: Option<&UnboundedSender<OrderDmSubscriptionCmd>>,
     log_prefix: &str,
     trade_amount_to_persist: Option<i64>,
@@ -815,10 +818,14 @@ pub(super) async fn payment_request_operation_result(
         next_idx,
         pool,
         is_mine,
+        full_privacy,
     )
     .await
     {
-        log::error!("Failed to save order to database: {e}");
+        return Err(anyhow::anyhow!(
+            "Mostro accepted the trade but local save failed: {e}. \
+             Trade keys/privacy may be unrecoverable — retry or check the database."
+        ));
     }
 
     // Persist the bond BOLT11 so the bond QR stays reopenable after a restart.
@@ -844,14 +851,13 @@ pub(super) async fn payment_request_operation_result(
     log::info!("Received {popup_action:?} for order {effective_order_id} with invoice");
 
     let static_header =
-        build_order_chat_static_header(&order_to_save, next_idx, trade_keys, is_mine).ok_or_else(
-            || {
+        build_order_chat_static_header(&order_to_save, next_idx, trade_keys, is_mine, full_privacy)
+            .ok_or_else(|| {
                 anyhow::anyhow!(
                     "failed to build static header for order id {:?}",
                     order_to_save.id
                 )
-            },
-        )?;
+            })?;
 
     let sat_amount = if matches!(popup_action, Action::PayBondInvoice) {
         popup_sat_amount
@@ -875,6 +881,7 @@ pub(super) fn create_order_result_success(
     trade_index: i64,
     trade_keys: &Keys,
     is_mine: bool,
+    full_privacy: bool,
 ) -> OperationResult {
     OperationResult::Success(OrderSuccess {
         order_id: order.id,
@@ -888,7 +895,13 @@ pub(super) fn create_order_result_success(
         premium: order.premium,
         status: order.status,
         trade_index: Some(trade_index),
-        static_header: build_order_chat_static_header(order, trade_index, trade_keys, is_mine),
+        static_header: build_order_chat_static_header(
+            order,
+            trade_index,
+            trade_keys,
+            is_mine,
+            full_privacy,
+        ),
     })
 }
 
@@ -1792,5 +1805,70 @@ mod tests {
         );
         let err = handle_mostro_response(&message, EXPECTED_RID).expect_err("CantDo");
         assert!(err.to_string().contains("Invalid action"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn payment_request_surfaces_local_persist_failure() {
+        use super::payment_request_operation_result;
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("memory");
+        sqlx::query(
+            r#"
+            CREATE TABLE orders (
+                id TEXT PRIMARY KEY, kind TEXT, status TEXT, amount INTEGER NOT NULL,
+                fiat_code TEXT NOT NULL, min_amount INTEGER, max_amount INTEGER,
+                fiat_amount INTEGER NOT NULL, payment_method TEXT NOT NULL,
+                premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
+                order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
+                dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
+                buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
+                created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
+                bond_invoice TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("orders");
+
+        let order_id = Uuid::new_v4();
+        let trade_keys = Keys::generate();
+        let err = payment_request_operation_result(
+            Action::PayInvoice,
+            Some(SmallOrder {
+                id: Some(order_id),
+                kind: Some(mostro_core::order::Kind::Buy),
+                status: Some(Status::WaitingPayment),
+                amount: 1000,
+                fiat_code: "USD".into(),
+                fiat_amount: 10,
+                payment_method: "ln".into(),
+                ..Default::default()
+            }),
+            "lnbc1test".into(),
+            Some(1000),
+            None,
+            1,
+            0, // invalid trade_index → Order::new fails
+            &pool,
+            &trade_keys,
+            true,
+            true,
+            None,
+            "test_persist_fail",
+            None,
+        )
+        .await
+        .expect_err("Must not return PaymentRequestRequired when local save fails");
+        assert!(
+            err.to_string().contains("trade_index")
+                || err.to_string().contains("local save failed")
+                || err.to_string().contains("persist"),
+            "unexpected error: {err}"
+        );
     }
 }

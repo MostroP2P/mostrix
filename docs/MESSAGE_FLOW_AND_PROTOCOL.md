@@ -61,7 +61,11 @@ sequenceDiagram
     Client->>DB: reserve_next_trade_index (transaction)
     DB-->>Client: next_idx, trade_keys
     Client->>Client: Construct message (request_id, trade_index)
-    Client->>IdentityKey: Sign identity proof (ciphertext)
+    alt Reputation mode (default)
+        Client->>IdentityKey: Sign identity proof (ciphertext)
+    else Full privacy
+        Note over Client,IdentityKey: Omit identity proof (protocol_identity_keys → None)
+    end
     Client->>TradeKey: Sign kind-14 event
     Client->>Client: Register DM waiter in router
     Client->>NostrRelays: Publish signed kind 14 (NIP-44)
@@ -143,9 +147,11 @@ A `Message` is constructed with:
 ```
 
 The message is sent via `send_dm`, which:
-- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14; identity proof in ciphertext)
-- Uses the **Identity Key** for reputation binding and the **Trade Key** to sign the published event and inner message tuple
+- Wraps with [`wrap_message_with`](../src/util/mod.rs) using [`Transport::Nip44Direct`](../src/util/mod.rs) (signed kind 14)
+- Passes identity keys through [`protocol_identity_keys`](../src/util/dm_utils/mod.rs): reputation mode includes the identity proof; **full privacy** (`FormState.full_privacy` / `orders.full_privacy`) passes `None` so the proof is omitted
+- Uses the **Trade Key** to sign the published event and inner message tuple
 - Adds a default NIP-40 expiration (30 days) when the caller passes `None`
+- Persists `orders.full_privacy` with the new row so FiatSent / Release / Cancel / Dispute / Rate / AddInvoice / NextTrade keep the same wrap
 
 ### 5. Waiting for Response
 **Source**: `src/util/order_utils/send_new_order.rs:141`
@@ -178,7 +184,7 @@ The response is:
 | `Action::NewOrder` | `Payload::Order` | `OperationResult::Success` | "Order Created Successfully" modal |
 | `Action::PayBondInvoice` | `PaymentRequest` (order often `waiting-maker-bond`) | `PaymentRequestRequired` | Bond popup via `order_ch_mng.rs` (no success modal) |
 
-Both paths call `save_order(..., is_maker: true)`, send `TrackOrder` on `dm_subscription_tx`, and set `order_chat_static`. The bond path delegates persistence + popup wiring to shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) (also used by `take_order` for taker bonds).
+Both paths call `save_order(..., is_maker: true, full_privacy)`, send `TrackOrder` on `dm_subscription_tx`, and set `order_chat_static`. A failed local save is **not** swallowed: the create / take / payment-request path returns an error instead of a success modal or payment prompt, because a private trade's keys and privacy flag would otherwise be unrecoverable (identity-scoped Restore cannot find it). The bond path delegates persistence + popup wiring to shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) (also used by `take_order` for taker bonds).
 
 **Post-bond publication**: after the maker pays in their wallet, Mostro sends a follow-up `Action::NewOrder` on the trade DM subscription (listener path). Generic hydration updates SQLite `waiting-maker-bond` → `pending`; the order then appears on the public book.
 
@@ -248,6 +254,8 @@ The message includes:
 - A `request_id` for tracking
 - The `trade_index` for this new trade
 - The appropriate action (`TakeBuy` or `TakeSell`)
+
+Take Order has the same **Space** privacy toggle as New Order (default reputation). `take_order` passes `protocol_identity_keys(..., full_privacy)` and persists `orders.full_privacy` on success; a failed local persist is returned as an error rather than reported as a successful take.
 
 ### 4. Response Handling
 Similar to order creation, the client waits for Mostro's response, which may include:
@@ -374,7 +382,11 @@ sequenceDiagram
     Client->>DB: Get identity keys
     DB-->>Client: identity_keys
     Client->>Client: Create payload & request_id
-    Client->>IdentityKey: Sign identity proof (ciphertext)
+    alt Reputation mode (orders.full_privacy = 0)
+        Client->>IdentityKey: Sign identity proof (ciphertext)
+    else Full privacy (orders.full_privacy = 1)
+        Note over Client,IdentityKey: Omit identity proof (protocol_identity_keys → None)
+    end
     Client->>TradeKey: Sign kind-14 event
     Client->>NostrRelays: Publish signed kind 14 (NIP-44)
     NostrRelays->>Mostro: Forward message
@@ -443,10 +455,10 @@ pub async fn execute_send_msg(
 
 Key points:
 - The **trade keys are retrieved from the database** (they were stored when the order was created/taken)
-- The **identity proof lives in ciphertext** (identity keys sign that proof when they differ from the trade keys); the **kind-14 event is signed with the trade keys** before publication
+- Identity keys are passed through **`protocol_identity_keys(&identity, order.full_privacy)`**: reputation mode includes the identity proof in ciphertext; full-privacy trades omit it so follow-ups cannot leak index 0. The **kind-14 event is always signed with the trade keys** before publication
 - A **request_id** is generated for tracking the response
 - The message is **sent and the client waits for Mostro's acknowledgment**
-- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism
+- For **range orders**, see [RANGE_ORDERS.md](RANGE_ORDERS.md) for details on the `NextTrade` payload mechanism (child rows inherit the parent's `full_privacy` via `pending_next_trades`, keyed by child trade index)
 - For **`Action::Cancel`**, a successful response may be **`Canceled`** or **`CooperativeCancelAccepted`** (`execute_send_msg` in `src/util/order_utils/execute_send_msg.rs`).
 
 ### Cooperative cancel (peer request)

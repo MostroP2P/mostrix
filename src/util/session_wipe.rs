@@ -458,6 +458,7 @@ mod tests {
                 solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT,
                 is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT,
                 request_id INTEGER,
                 trade_index INTEGER,
@@ -470,6 +471,12 @@ mod tests {
                 mnemonic TEXT,
                 last_trade_index INTEGER,
                 created_at INTEGER
+            );
+            CREATE TABLE pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             );
             CREATE TABLE admin_disputes (
                 id TEXT PRIMARY KEY,
@@ -659,6 +666,39 @@ ln_address = "user@domain.com"
         assert_eq!(count_rows(&pool, "orders").await, 0);
         assert_eq!(count_rows(&pool, "admin_disputes").await, 0);
         assert_eq!(count_rows(&pool, "solver_dms").await, 0);
+        assert_eq!(
+            count_rows(&pool, "pending_next_trades").await,
+            0,
+            "session wipe must clear pending NextTrade binds"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_session_tables_drops_stale_next_trade_binds() {
+        let pool = create_wipe_test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO pending_next_trades
+              (child_trade_index, parent_order_id, full_privacy, provisional_order_id)
+            VALUES (3, 'old-parent', 0, '00000000-0000-0000-0000-000000000003')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("stale bind");
+        assert_eq!(count_rows(&pool, "pending_next_trades").await, 1);
+
+        let mut tx = pool.begin().await.expect("tx");
+        clear_session_tables_in_tx(&mut tx)
+            .await
+            .expect("wipe tables");
+        tx.commit().await.expect("commit");
+
+        assert_eq!(
+            count_rows(&pool, "pending_next_trades").await,
+            0,
+            "pending_next_trades must not survive a session wipe"
+        );
     }
 
     #[test]

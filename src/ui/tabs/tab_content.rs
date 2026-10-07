@@ -364,7 +364,8 @@ pub fn render_message_view(f: &mut ratatui::Frame, view_state: &MessageViewState
 pub fn render_rating_order(f: &mut ratatui::Frame, state: &RatingOrderState) {
     let area = f.area();
     let popup_width = area.width.saturating_sub(area.width / 4);
-    let popup = helpers::create_centered_popup(area, popup_width, 14);
+    let popup_height = 14;
+    let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
     let block = Block::default()
         .title("Rate counterparty")

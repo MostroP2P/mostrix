@@ -11,7 +11,8 @@ use crate::models::Order;
 use crate::ui::orders::{order_message_to_notification, OperationResult, OrderMessage};
 use crate::util::db_utils::update_order_status;
 use crate::util::dm_utils::{
-    parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_TIMEOUT_MSG,
+    parse_dm_events, protocol_identity_keys, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    WAIT_FOR_DM_TIMEOUT_MSG,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
@@ -309,6 +310,7 @@ async fn operation_result_from_bond_invoice_reply(
                 trade_index,
                 ctx.order_trade_keys,
                 ctx.db_order.is_mine,
+                ctx.db_order.full_privacy,
             )
             .ok_or_else(|| anyhow::anyhow!("failed to build static header"))?;
             let sat_amount = opt_amount.or(Some(order_to_save.amount));
@@ -375,7 +377,7 @@ async fn execute_payment_request_reply(
 
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, order.full_privacy),
         &order_trade_keys,
         &mostro_pubkey,
         message_json,
@@ -442,7 +444,7 @@ async fn execute_bond_payment_request_reply(
 
     let sent_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, order.full_privacy),
         &order_trade_keys,
         &mostro_pubkey,
         message_json,
@@ -556,6 +558,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
             )

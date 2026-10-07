@@ -242,6 +242,12 @@ pub struct Order {
     pub dispute_chat_shared_key_hex: Option<String>,
     /// Maker (`true`) vs taker (`false`). Matches `orders.is_mine` INTEGER NOT NULL (0/1).
     pub is_mine: bool,
+    /// Local user omitted identity proof for this trade (`orders.full_privacy`).
+    pub full_privacy: bool,
+    /// Reserved NextTrade child index bound to this range parent (cleared when
+    /// the child row is persisted). Not part of protocol; local bind only.
+    #[sqlx(default)]
+    pub pending_next_trade_index: Option<i64>,
     pub buyer_invoice: Option<String>,
     pub request_id: Option<i64>,
     pub trade_index: Option<i64>,
@@ -288,12 +294,15 @@ pub const TERMINAL_ORDER_HISTORY_STATUSES: &[&str] = &[
 pub const ORDER_HISTORY_BULK_DELETE_STATUSES: &[&str] = &["success", "canceled"];
 
 impl Order {
-    /// Delete every row in `orders`. Used when rotating the user mnemonic so persisted trade keys
-    /// cannot reference the previous seed.
+    /// Delete every row in `orders` and `pending_next_trades`. Used on every seed/session change
+    /// so persisted trade keys and NextTrade binds cannot reference the previous seed.
     pub async fn delete_all_in_tx(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(r#"DELETE FROM orders"#)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(r#"DELETE FROM pending_next_trades"#)
             .execute(&mut **tx)
             .await?;
         Ok(())
@@ -303,6 +312,8 @@ impl Order {
     ///
     /// `is_maker`: `true` if the local user **created** the order (maker); `false` if they **took**
     /// an existing order from the book (taker). Stored as `is_mine`.
+    ///
+    /// `full_privacy`: when `true`, protocol DMs for this trade omit the identity proof.
     pub async fn new(
         pool: &SqlitePool,
         order: mostro_core::prelude::SmallOrder,
@@ -310,6 +321,7 @@ impl Order {
         _request_id: Option<i64>,
         trade_index: i64,
         is_maker: bool,
+        full_privacy: bool,
     ) -> Result<Self> {
         if trade_index <= 0 {
             anyhow::bail!(
@@ -341,6 +353,8 @@ impl Order {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
+            full_privacy,
+            pending_next_trade_index: None,
             buyer_invoice: order.buyer_invoice,
             request_id: _request_id,
             trade_index: Some(trade_index),
@@ -418,6 +432,9 @@ impl Order {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: is_maker,
+            // Restore Session is identity-scoped; rows from restore are reputation-mode.
+            full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: order.buyer_invoice,
             request_id: None,
             trade_index: Some(trade_index),
@@ -459,6 +476,9 @@ impl Order {
             .dispute_chat_shared_key_hex
             .or_else(|| existing.dispute_chat_shared_key_hex.clone());
         self.last_seen_dm_ts = self.last_seen_dm_ts.or(existing.last_seen_dm_ts);
+        // Privacy mode is chosen at create/take and must survive restore refresh.
+        self.full_privacy = existing.full_privacy;
+        self.pending_next_trade_index = existing.pending_next_trade_index;
         self
     }
 
@@ -466,11 +486,11 @@ impl Order {
         sqlx::query(
             r#"
             INSERT INTO orders (id, kind, status, amount, min_amount, max_amount,
-            fiat_code, fiat_amount, payment_method, premium, is_mine,
+            fiat_code, fiat_amount, payment_method, premium, is_mine, full_privacy,
             trade_keys, counterparty_pubkey, order_chat_shared_key_hex,
             dispute_id, solver_pubkey, dispute_chat_shared_key_hex,
             buyer_invoice, request_id, trade_index, created_at, expires_at, last_seen_dm_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&self.id)
@@ -484,6 +504,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -507,7 +528,8 @@ impl Order {
             UPDATE orders 
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                is_mine = ?, full_privacy = ?, trade_keys = ?, counterparty_pubkey = ?,
+                order_chat_shared_key_hex = ?,
                 dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ?
@@ -523,6 +545,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -558,7 +581,8 @@ impl Order {
             UPDATE orders
             SET kind = ?, status = ?, amount = ?, min_amount = ?, max_amount = ?,
                 fiat_code = ?, fiat_amount = ?, payment_method = ?, premium = ?,
-                is_mine = ?, trade_keys = ?, counterparty_pubkey = ?, order_chat_shared_key_hex = ?,
+                is_mine = ?, full_privacy = ?, trade_keys = ?, counterparty_pubkey = ?,
+                order_chat_shared_key_hex = ?,
                 dispute_id = ?, solver_pubkey = ?, dispute_chat_shared_key_hex = ?, buyer_invoice = ?,
                 request_id = ?, trade_index = ?, created_at = ?, expires_at = ?, last_seen_dm_ts = ?
             WHERE id = ? AND (last_seen_dm_ts IS NULL OR last_seen_dm_ts <= ?)
@@ -574,6 +598,7 @@ impl Order {
         .bind(&self.payment_method)
         .bind(self.premium)
         .bind(self.is_mine)
+        .bind(self.full_privacy)
         .bind(&self.trade_keys)
         .bind(&self.counterparty_pubkey)
         .bind(&self.order_chat_shared_key_hex)
@@ -634,6 +659,8 @@ impl Order {
             dispute_chat_shared_key_hex: existing
                 .and_then(|e| e.dispute_chat_shared_key_hex.clone()),
             is_mine: existing.map(|e| e.is_mine).unwrap_or(true),
+            full_privacy: existing.map(|e| e.full_privacy).unwrap_or(false),
+            pending_next_trade_index: existing.and_then(|e| e.pending_next_trade_index),
             buyer_invoice: small_order.buyer_invoice.clone(),
             request_id: message_request_id.or_else(|| existing.and_then(|e| e.request_id)),
             trade_index: existing.and_then(|e| e.trade_index),
@@ -893,6 +920,160 @@ impl Order {
             Some(order) => Ok(order),
             None => Err(anyhow::anyhow!("Order not found")),
         }
+    }
+
+    /// Privacy mode for a new range-order child listing (`NextTrade` → `NewOrder`).
+    ///
+    /// Looks up the bind written by [`Self::bind_pending_next_trade`] when
+    /// FiatSent/Release reserved the child index. Does **not** clear the bind
+    /// (call [`Self::clear_pending_next_trade`] only after the child row is
+    /// persisted). Does **not** fall back to the preceding-maker heuristic —
+    /// that can pick an unrelated maker after an interleaved create. Unbound →
+    /// `Ok(None)` so the caller can fail closed.
+    pub async fn inherit_full_privacy_for_range_child(
+        pool: &SqlitePool,
+        child_trade_index: i64,
+    ) -> Result<Option<bool>> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT full_privacy FROM pending_next_trades
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(|(fp,)| fp))
+    }
+
+    /// Remember that `child_trade_index` was reserved as the NextTrade child of
+    /// this maker parent. Returns a provisional order id for early DM
+    /// `TrackOrder` (Mostro assigns the real child id later).
+    ///
+    /// Bindings are keyed by child index. Re-binding the same index under the
+    /// same parent is idempotent; a different parent is rejected so a wipe that
+    /// missed this table cannot silently keep another identity's privacy flag.
+    pub async fn bind_pending_next_trade(
+        pool: &SqlitePool,
+        parent_order_id: &str,
+        child_trade_index: i64,
+    ) -> Result<uuid::Uuid> {
+        let parent: Option<(bool,)> =
+            sqlx::query_as(r#"SELECT full_privacy FROM orders WHERE id = ?"#)
+                .bind(parent_order_id)
+                .fetch_optional(pool)
+                .await?;
+        let Some((full_privacy,)) = parent else {
+            return Err(anyhow::anyhow!(
+                "Cannot bind NextTrade index {child_trade_index}: parent order {parent_order_id} not found"
+            ));
+        };
+
+        let existing: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT parent_order_id, provisional_order_id FROM pending_next_trades
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((existing_parent, provisional)) = existing {
+            if existing_parent != parent_order_id {
+                return Err(anyhow::anyhow!(
+                    "Cannot bind NextTrade index {child_trade_index}: already bound to parent {existing_parent} (conflict with {parent_order_id})"
+                ));
+            }
+            return Ok(uuid::Uuid::parse_str(&provisional)?);
+        }
+
+        let provisional = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO pending_next_trades
+              (child_trade_index, parent_order_id, full_privacy, provisional_order_id)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(child_trade_index)
+        .bind(parent_order_id)
+        .bind(full_privacy)
+        .bind(provisional.to_string())
+        .execute(pool)
+        .await?;
+        Ok(provisional)
+    }
+
+    /// Drop a NextTrade bind after the child row has been persisted successfully.
+    pub async fn clear_pending_next_trade(pool: &SqlitePool, child_trade_index: i64) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM pending_next_trades
+            WHERE child_trade_index = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Drop binds whose child row already exists (a post-save clear that failed earlier).
+    pub async fn prune_consumed_pending_next_trades(pool: &SqlitePool) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM pending_next_trades
+            WHERE child_trade_index IN (
+                SELECT trade_index FROM orders WHERE trade_index IS NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Provisional `(order_id, trade_index)` pairs for pending NextTrade children.
+    ///
+    /// Included in DM startup hydration so the listener can subscribe/replay the
+    /// reserved trade pubkey before the child `NewOrder` creates a real order row.
+    pub async fn list_pending_next_trade_tracks(
+        pool: &SqlitePool,
+    ) -> Result<Vec<(uuid::Uuid, i64)>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT provisional_order_id, child_trade_index FROM pending_next_trades
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id_str, trade_index) in rows {
+            let Ok(id) = uuid::Uuid::parse_str(&id_str) else {
+                continue;
+            };
+            out.push((id, trade_index));
+        }
+        Ok(out)
+    }
+
+    /// True when `order_id` is the provisional id of a still-pending NextTrade bind at this index.
+    pub async fn is_pending_next_trade_provisional(
+        pool: &SqlitePool,
+        order_id: uuid::Uuid,
+        child_trade_index: i64,
+    ) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT 1 FROM pending_next_trades
+            WHERE child_trade_index = ? AND provisional_order_id = ?
+            "#,
+        )
+        .bind(child_trade_index)
+        .bind(order_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// Update only the status field of an existing order by id.
@@ -1801,9 +1982,17 @@ mod upsert_from_small_order_dm_tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
+                pending_next_trade_index INTEGER,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER
-            )
+            );
+            CREATE TABLE pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
+            );
             "#,
         )
         .execute(&pool)
@@ -1900,6 +2089,462 @@ mod upsert_from_small_order_dm_tests {
         assert_eq!(
             updated.trade_keys.as_deref(),
             Some(stored_keys.secret_key().to_secret_hex().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn order_new_persists_full_privacy_flag() {
+        let pool = create_test_pool().await;
+        let trade_keys = Keys::generate();
+        let id = Uuid::new_v4();
+        let small_order = sample_small_order(id, 1000);
+
+        Order::new(&pool, small_order, &trade_keys, Some(1), 1, true, true)
+            .await
+            .expect("insert full-privacy order");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("stored row");
+        assert!(stored.full_privacy);
+        assert!(stored.is_mine);
+    }
+
+    #[tokio::test]
+    async fn dm_upsert_preserves_existing_full_privacy() {
+        let pool = create_test_pool().await;
+        let trade_keys = Keys::generate();
+        let id = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(id, 1000),
+            &trade_keys,
+            Some(1),
+            1,
+            true,
+            true,
+        )
+        .await
+        .expect("seed private order");
+
+        let mut updated = sample_small_order(id, 2000);
+        updated.status = Some(Status::Active);
+        Order::upsert_from_small_order_dm(&pool, id, updated, &trade_keys, Some(2))
+            .await
+            .expect("dm upsert");
+
+        let stored = Order::get_by_id(&pool, &id.to_string())
+            .await
+            .expect("row after upsert");
+        assert_eq!(stored.amount, 2000);
+        assert!(
+            stored.full_privacy,
+            "DM upsert must not clear create/take privacy mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_full_privacy_for_range_child_requires_bind() {
+        let pool = create_test_pool().await;
+        let parent_keys = Keys::generate();
+        let parent_id = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent_id, 1000),
+            &parent_keys,
+            Some(1),
+            3,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 4)
+                .await
+                .expect("unbound")
+                .is_none(),
+            "unbound child must not infer privacy from a preceding maker"
+        );
+
+        Order::bind_pending_next_trade(&pool, &parent_id.to_string(), 4)
+            .await
+            .expect("bind");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 4)
+                .await
+                .expect("bound"),
+            Some(true),
+            "bound child inherits parent full_privacy"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_full_privacy_ignores_taker_rows() {
+        let pool = create_test_pool().await;
+        let keys = Keys::generate();
+        Order::new(
+            &pool,
+            sample_small_order(Uuid::new_v4(), 1000),
+            &keys,
+            Some(1),
+            5,
+            false,
+            true,
+        )
+        .await
+        .expect("taker private row");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 6)
+                .await
+                .expect("inherit")
+                .is_none(),
+            "taker rows must not seed maker range-child privacy"
+        );
+    }
+
+    #[tokio::test]
+    async fn bound_next_trade_survives_intervening_maker_order() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private range parent at index 10");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker at index 11");
+
+        assert!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("unbound")
+                .is_none(),
+            "unbound child must not follow intervening reputation maker"
+        );
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("bind child 12 to private parent");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("bound inherit"),
+            Some(true),
+            "bound NextTrade must follow the parent, not the intervening maker"
+        );
+        Order::clear_pending_next_trade(&pool, 12)
+            .await
+            .expect("clear after successful persist");
+        assert!(Order::inherit_full_privacy_for_range_child(&pool, 12)
+            .await
+            .expect("cleared")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_bind_keeps_earlier_child_index() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private range parent at index 10");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker at index 11");
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("first NextTrade bind for child 12");
+        // Timed-out FiatSent/Release retry reserves a fresh index and must not
+        // orphan the earlier binding — child 12's NewOrder may still arrive.
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 13)
+            .await
+            .expect("retry NextTrade bind for child 13");
+
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("inherit 12"),
+            Some(true),
+            "delayed child 12 must keep the private parent's mode after a retry bind"
+        );
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 13)
+                .await
+                .expect("inherit 13"),
+            Some(true),
+            "retry child 13 must also inherit the private parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_leaves_bind_until_child_persisted() {
+        let pool = create_test_pool().await;
+        let private_parent = Uuid::new_v4();
+        let intervening = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(private_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("private parent");
+        Order::new(
+            &pool,
+            sample_small_order(intervening, 1000),
+            &Keys::generate(),
+            Some(2),
+            11,
+            true,
+            false,
+        )
+        .await
+        .expect("intervening reputation maker");
+
+        Order::bind_pending_next_trade(&pool, &private_parent.to_string(), 12)
+            .await
+            .expect("bind");
+
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("first peek"),
+            Some(true),
+            "first inherit must see the private parent"
+        );
+        // Simulate a failed child save: bind must still be available for replay.
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 12)
+                .await
+                .expect("replay peek"),
+            Some(true),
+            "bind must survive until child persistence succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_pending_next_trade_tracks_exposes_provisional_ids() {
+        let pool = create_test_pool().await;
+        let parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+        let provisional = Order::bind_pending_next_trade(&pool, &parent.to_string(), 12)
+            .await
+            .expect("bind");
+        let tracks = Order::list_pending_next_trade_tracks(&pool)
+            .await
+            .expect("list");
+        assert_eq!(tracks, vec![(provisional, 12)]);
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_conflicting_parent_for_same_child_index() {
+        let pool = create_test_pool().await;
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(first, 1000),
+            &Keys::generate(),
+            Some(1),
+            1,
+            true,
+            false,
+        )
+        .await
+        .expect("reputation parent");
+        Order::new(
+            &pool,
+            sample_small_order(second, 1000),
+            &Keys::generate(),
+            Some(2),
+            2,
+            true,
+            true,
+        )
+        .await
+        .expect("private parent");
+
+        Order::bind_pending_next_trade(&pool, &first.to_string(), 3)
+            .await
+            .expect("first bind at index 3");
+        let err = Order::bind_pending_next_trade(&pool, &second.to_string(), 3)
+            .await
+            .expect_err("second bind at same child index under a different parent must fail");
+        assert!(
+            err.to_string().contains("already bound") || err.to_string().contains("conflict"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 3)
+                .await
+                .expect("peek"),
+            Some(false),
+            "stale reputation bind must not be replaced by the private parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_drops_binds_whose_child_row_exists() {
+        let pool = create_test_pool().await;
+        let parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+        Order::bind_pending_next_trade(&pool, &parent.to_string(), 12)
+            .await
+            .expect("bind child 12");
+        Order::bind_pending_next_trade(&pool, &parent.to_string(), 13)
+            .await
+            .expect("bind child 13");
+        // Child 12 was saved but its bind clear failed.
+        Order::new(
+            &pool,
+            sample_small_order(Uuid::new_v4(), 500),
+            &Keys::generate(),
+            Some(2),
+            12,
+            true,
+            true,
+        )
+        .await
+        .expect("child 12 row");
+
+        assert_eq!(
+            Order::prune_consumed_pending_next_trades(&pool)
+                .await
+                .expect("prune"),
+            1
+        );
+        assert!(Order::inherit_full_privacy_for_range_child(&pool, 12)
+            .await
+            .expect("12")
+            .is_none());
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 13)
+                .await
+                .expect("13"),
+            Some(true),
+            "still-pending child must keep its bind"
+        );
+    }
+
+    #[tokio::test]
+    async fn key_rotation_tx_clears_pending_next_trade_binds() {
+        let pool = create_test_pool().await;
+        sqlx::query(
+            "CREATE TABLE users (i0_pubkey char(64) PRIMARY KEY, mnemonic TEXT, \
+             last_trade_index INTEGER, created_at INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .expect("users table");
+        let old_parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(old_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            2,
+            true,
+            false,
+        )
+        .await
+        .expect("old-seed reputation parent");
+        Order::bind_pending_next_trade(&pool, &old_parent.to_string(), 3)
+            .await
+            .expect("old-seed bind at child 3");
+
+        // Same transaction shape as `spawn_key_rotation_task` (Generate New Keys).
+        let new_user = crate::models::User::from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+        )
+        .expect("user");
+        let mut tx = pool.begin().await.expect("tx");
+        crate::models::User::replace_all_in_tx(&new_user, &mut tx)
+            .await
+            .expect("replace user");
+        Order::delete_all_in_tx(&mut tx).await.expect("wipe orders");
+        tx.commit().await.expect("commit");
+
+        let new_parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(new_parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            2,
+            true,
+            true,
+        )
+        .await
+        .expect("new-seed private parent");
+        Order::bind_pending_next_trade(&pool, &new_parent.to_string(), 3)
+            .await
+            .expect("reused child index must bind to the new seed's parent");
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 3)
+                .await
+                .expect("inherit"),
+            Some(true)
         );
     }
 

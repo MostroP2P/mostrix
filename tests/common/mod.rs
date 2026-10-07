@@ -27,6 +27,8 @@ pub async fn create_test_db() -> Result<SqlitePool> {
             solver_pubkey TEXT,
             dispute_chat_shared_key_hex TEXT,
             is_mine INTEGER NOT NULL,
+            full_privacy INTEGER NOT NULL DEFAULT 0,
+            pending_next_trade_index INTEGER,
             buyer_invoice TEXT,
             request_id INTEGER,
             trade_index INTEGER,
@@ -34,6 +36,12 @@ pub async fn create_test_db() -> Result<SqlitePool> {
             expires_at INTEGER,
             last_seen_dm_ts INTEGER,
             bond_invoice TEXT
+        );
+        CREATE TABLE IF NOT EXISTS pending_next_trades (
+            child_trade_index INTEGER PRIMARY KEY,
+            parent_order_id TEXT NOT NULL,
+            full_privacy INTEGER NOT NULL,
+            provisional_order_id TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS users (
             i0_pubkey char(64) PRIMARY KEY,

@@ -158,6 +158,7 @@ pub async fn execute_orders_info(
     // them *before* sending so each row doubles as the freshness baseline.
     let mut summary = OrdersInfoSummary::default();
     let mut baselines: Vec<(Uuid, Order, Keys)> = Vec::with_capacity(order_ids.len());
+    let mut refused_full_privacy = 0usize;
     for &order_id in order_ids {
         let id_str = order_id.to_string();
         let row = match Order::get_by_id(pool, &id_str).await {
@@ -168,6 +169,17 @@ pub async fn execute_orders_info(
                 continue;
             }
         };
+        // Fail closed: Action::Orders is identity-scoped. Sending a full-privacy
+        // order id with the identity proof would associate the private trade
+        // with the long-lived identity key on Mostro.
+        if row.full_privacy {
+            log::warn!(
+                "OrdersInfo: refusing identity-scoped refresh for full-privacy order {id_str}"
+            );
+            refused_full_privacy += 1;
+            summary.failed += 1;
+            continue;
+        }
         let Some(trade_keys) = row
             .trade_keys
             .as_deref()
@@ -180,6 +192,11 @@ pub async fn execute_orders_info(
         baselines.push((order_id, row, trade_keys));
     }
     if baselines.is_empty() {
+        if refused_full_privacy > 0 && refused_full_privacy == order_ids.len() {
+            return Err(anyhow::anyhow!(
+                "This trade used full privacy — Mostro has no identity-linked record to refresh."
+            ));
+        }
         return Err(anyhow::anyhow!(
             "Could not refresh the selected order — see log."
         ));

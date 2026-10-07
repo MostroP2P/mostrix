@@ -9,7 +9,8 @@ use crate::models::User;
 use crate::ui::FormState;
 use crate::util::db_utils::save_order;
 use crate::util::dm_utils::{
-    parse_dm_events, send_dm, send_track_order_cmd, wait_for_dm, FETCH_EVENTS_TIMEOUT,
+    parse_dm_events, protocol_identity_keys, send_dm, send_track_order_cmd, wait_for_dm,
+    FETCH_EVENTS_TIMEOUT,
 };
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{
@@ -132,9 +133,10 @@ pub async fn send_new_order(
     );
 
     let identity_keys = User::get_identity_keys(pool).await?;
+    let full_privacy = form.full_privacy;
     let new_order_message = send_dm(
         client,
-        Some(&identity_keys),
+        protocol_identity_keys(&identity_keys, full_privacy),
         &trade_keys,
         &mostro_pubkey,
         message_json,
@@ -169,19 +171,24 @@ pub async fn send_new_order(
                                     order.id
                                 );
 
-                                // Save order to database
-                                if let Err(e) = save_order(
+                                // Save order to database — fail closed if local persist
+                                // fails (full-privacy trades are not restoreable via identity).
+                                save_order(
                                     order.clone(),
                                     &trade_keys,
                                     request_id,
                                     next_idx,
                                     pool,
                                     true,
+                                    full_privacy,
                                 )
                                 .await
-                                {
-                                    log::error!("Failed to save order to database: {}", e);
-                                }
+                                .map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Mostro accepted the order but local save failed: {e}. \
+                                         Trade keys/privacy may be unrecoverable — retry or check the database."
+                                    )
+                                })?;
                                 if dm_subscription_tx.is_some() {
                                     if let Some(order_id) = order.id {
                                         send_track_order_cmd(order_id, next_idx);
@@ -193,6 +200,7 @@ pub async fn send_new_order(
                                     next_idx,
                                     &trade_keys,
                                     true,
+                                    full_privacy,
                                 ))
                             } else {
                                 log::error!(
@@ -224,6 +232,7 @@ pub async fn send_new_order(
                                     pool,
                                     &trade_keys,
                                     true,
+                                    full_privacy,
                                     dm_subscription_tx,
                                     "send_new_order",
                                     Some(amount),

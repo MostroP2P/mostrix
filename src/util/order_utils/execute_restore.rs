@@ -680,6 +680,8 @@ mod tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: false,
+            full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: None,
             request_id: None,
             trade_index: Some(1),

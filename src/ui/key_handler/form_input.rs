@@ -320,14 +320,19 @@ pub fn handle_char_input(
                         // Toggle range mode
                         form.use_range = !form.use_range;
                     }
+                    FormField::FullPrivacy => {
+                        form.full_privacy = !form.full_privacy;
+                    }
                     _ => {}
                 }
+            } else if let UiMode::UserMode(UserMode::TakingOrder(ref mut take_state)) = app.mode {
+                take_state.full_privacy = !take_state.full_privacy;
             }
         }
         KeyCode::Char(c) => {
             if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-                if form.focused == FormField::OrderType {
-                    // ignore typing on toggle field
+                if matches!(form.focused, FormField::OrderType | FormField::FullPrivacy) {
+                    // ignore typing on toggle fields
                 } else {
                     let target = match form.focused {
                         FormField::Currency => &mut form.fiat_code,
@@ -367,7 +372,7 @@ pub fn handle_char_input(
 /// Handle backspace for forms
 pub fn handle_backspace(app: &mut AppState, validate_range_amount: &dyn Fn(&mut TakeOrderState)) {
     if let UiMode::UserMode(UserMode::CreatingOrder(ref mut form)) = app.mode {
-        if form.focused == FormField::OrderType {
+        if matches!(form.focused, FormField::OrderType | FormField::FullPrivacy) {
             // ignore
         } else {
             let target = match form.focused {
@@ -416,6 +421,63 @@ mod tests {
             form.focused = FormField::OrderType;
         }
         assert!(!is_creating_order_text_input(&app));
+    }
+
+    #[test]
+    fn space_toggles_full_privacy_on_new_order_form() {
+        let mut app = AppState::new(UserRole::User);
+        let mut form = FormState::new_default_form();
+        assert!(!form.full_privacy);
+        form.focused = FormField::FullPrivacy;
+        app.mode = UiMode::UserMode(UserMode::CreatingOrder(form));
+
+        handle_char_input(KeyCode::Char(' '), &mut app, &|_| {});
+        match &app.mode {
+            UiMode::UserMode(UserMode::CreatingOrder(form)) => {
+                assert!(form.full_privacy);
+            }
+            other => panic!("expected CreatingOrder, got {other:?}"),
+        }
+
+        handle_char_input(KeyCode::Char(' '), &mut app, &|_| {});
+        match &app.mode {
+            UiMode::UserMode(UserMode::CreatingOrder(form)) => {
+                assert!(!form.full_privacy);
+            }
+            other => panic!("expected CreatingOrder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn space_toggles_full_privacy_on_take_order() {
+        use crate::ui::TakeOrderState;
+        use mostro_core::prelude::SmallOrder;
+
+        let mut app = AppState::new(UserRole::User);
+        app.mode = UiMode::UserMode(UserMode::TakingOrder(TakeOrderState {
+            order: SmallOrder::default(),
+            amount_input: String::new(),
+            is_range_order: false,
+            validation_error: None,
+            selected_button: true,
+            full_privacy: false,
+        }));
+
+        handle_char_input(KeyCode::Char(' '), &mut app, &|_| {});
+        match &app.mode {
+            UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
+                assert!(take_state.full_privacy);
+            }
+            other => panic!("expected TakingOrder, got {other:?}"),
+        }
+
+        handle_char_input(KeyCode::Char(' '), &mut app, &|_| {});
+        match &app.mode {
+            UiMode::UserMode(UserMode::TakingOrder(take_state)) => {
+                assert!(!take_state.full_privacy);
+            }
+            other => panic!("expected TakingOrder, got {other:?}"),
+        }
     }
 
     #[test]

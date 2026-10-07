@@ -104,7 +104,7 @@ fn merge_order_fields(entry: &mut OrderChatListItem, order: &SmallOrder, msg: &O
 }
 
 /// Whether the **counterparty** is the buyer, from our maker/taker role and book side.
-fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<bool> {
+pub(crate) fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<bool> {
     match (is_mine, kind) {
         (Some(true), Some(Kind::Buy)) => Some(false),
         (Some(true), Some(Kind::Sell)) => Some(true),
@@ -117,7 +117,8 @@ fn counterpart_is_buyer(is_mine: Option<bool>, kind: Option<Kind>) -> Option<boo
 /// Apply `Payload::Peer` reputation onto buyer/seller slots.
 ///
 /// Mostro's `notify_taker_reputation` sends an empty `peer.pubkey`; in that case attribute
-/// the snapshot to the counterparty from `is_mine` + order kind.
+/// the snapshot to the counterparty from `is_mine` + order kind. A zeroed snapshot is shown
+/// as-is: a new user and a full-privacy user are treated the same.
 pub(crate) fn assign_peer_reputation(
     buyer_trade_pubkey: Option<&str>,
     seller_trade_pubkey: Option<&str>,
@@ -346,6 +347,8 @@ mod db_order_row_tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: true,
+            full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: None,
             request_id: None,
             trade_index: Some(4),
@@ -462,6 +465,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "initiator".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: Some("solver-pubkey".to_string()),
                 dispute_id: Some("dispute-id".to_string()),
             },
@@ -616,6 +620,85 @@ mod tests {
         assert_eq!(
             rows[0].seller_reputation.as_ref().map(|r| r.reviews),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn peer_without_reputation_leaves_reputation_empty() {
+        let order_id = Uuid::new_v4();
+        let mut msg = sample_order_message(
+            order_id,
+            Action::PayInvoice,
+            Some(Payload::Peer(Peer {
+                pubkey: String::new(),
+                reputation: None,
+            })),
+        );
+        // Maker of a sell listing → counterparty is the buyer.
+        msg.order_kind = Some(Kind::Sell);
+        msg.is_mine = Some(true);
+
+        let rows = build_active_order_chat_list(&[msg], &[]);
+
+        assert!(rows[0].buyer_reputation.is_none());
+    }
+
+    #[test]
+    fn fiat_sent_ok_peer_without_reputation_leaves_reputation_empty() {
+        let order_id = Uuid::new_v4();
+        let peer_hex = "ab".repeat(32);
+        let mut msg = sample_order_message(
+            order_id,
+            Action::FiatSentOk,
+            Some(Payload::Peer(Peer {
+                pubkey: peer_hex.clone(),
+                reputation: None,
+            })),
+        );
+        msg.order_kind = Some(Kind::Sell);
+        msg.is_mine = Some(true);
+        msg.order_snapshot = Some(SmallOrder {
+            id: Some(order_id),
+            kind: Some(Kind::Sell),
+            status: Some(Status::FiatSent),
+            amount: 1000,
+            fiat_code: "USD".into(),
+            fiat_amount: 50,
+            payment_method: "sepa".into(),
+            buyer_trade_pubkey: Some(peer_hex),
+            seller_trade_pubkey: Some("cd".repeat(32)),
+            ..Default::default()
+        });
+
+        let rows = build_active_order_chat_list(&[msg], &[]);
+
+        assert!(rows[0].buyer_reputation.is_none());
+    }
+
+    #[test]
+    fn zeroed_reputation_is_shown_without_privacy_flag() {
+        let order_id = Uuid::new_v4();
+        let mut msg = sample_order_message(
+            order_id,
+            Action::PayInvoice,
+            Some(Payload::Peer(Peer {
+                pubkey: String::new(),
+                reputation: Some(UserInfo {
+                    rating: 0.0,
+                    reviews: 0,
+                    operating_days: 0,
+                    since: None,
+                }),
+            })),
+        );
+        msg.order_kind = Some(Kind::Sell);
+        msg.is_mine = Some(true);
+
+        let rows = build_active_order_chat_list(&[msg], &[]);
+
+        assert_eq!(
+            rows[0].buyer_reputation.as_ref().map(|r| r.reviews),
+            Some(0)
         );
     }
 }

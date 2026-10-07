@@ -47,6 +47,7 @@ use crate::util::order_utils::{
     should_strictly_advance_status, validate_take_sell_add_invoice_reply_with_fee_check, FeeCheck,
 };
 use futures::StreamExt;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 pub const FETCH_EVENTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -261,6 +262,17 @@ pub async fn hydrate_startup_active_order_dm_state(
         }
     }
 
+    // Pending NextTrade children: subscribe/replay their reserved trade keys
+    // before the child NewOrder creates a real orders row.
+    if let Err(e) = Order::prune_consumed_pending_next_trades(pool).await {
+        log::warn!("Failed to prune consumed NextTrade binds at startup: {}", e);
+    }
+    for (provisional_id, trade_index) in Order::list_pending_next_trade_tracks(pool).await? {
+        active_order_trade_indices
+            .entry(provisional_id)
+            .or_insert(trade_index);
+    }
+
     Ok(StartupDmHydration {
         active_order_trade_indices,
         order_last_seen_dm_ts,
@@ -291,6 +303,14 @@ fn trade_message_is_terminal(message: &Message) -> bool {
         return true;
     }
     message_has_terminal_order_status(message)
+}
+
+/// Identity keys to pass into [`send_dm`] for a trade protocol message.
+///
+/// When `full_privacy` is true, returns `None` so the wrap omits the identity
+/// proof and Mostro treats the trade key as the identity.
+pub fn protocol_identity_keys(identity: &Keys, full_privacy: bool) -> Option<&Keys> {
+    (!full_privacy).then_some(identity)
 }
 
 /// Send a direct message to a receiver.
@@ -683,6 +703,27 @@ fn try_send_track_order(order_id: Uuid, trade_index: i64) {
     send_track_order_cmd(order_id, trade_index);
 }
 
+/// Provisional NextTrade child id -> Mostro's child id, recorded once the child row is saved.
+static RANGE_CHILD_HANDOFF: Mutex<BTreeMap<Uuid, Uuid>> = Mutex::new(BTreeMap::new());
+
+fn note_range_child_handoff(provisional_id: Uuid, child_id: Uuid) {
+    if provisional_id == child_id {
+        return;
+    }
+    if let Ok(mut handoff) = RANGE_CHILD_HANDOFF.lock() {
+        handoff.insert(provisional_id, child_id);
+    }
+}
+
+/// DMs still routed under a provisional id must target the persisted child row.
+fn canonical_range_child_id(order_id: Uuid) -> Uuid {
+    RANGE_CHILD_HANDOFF
+        .lock()
+        .ok()
+        .and_then(|handoff| handoff.get(&order_id).copied())
+        .unwrap_or(order_id)
+}
+
 /// `NewOrder` + `Payload::Order` with `status: pending` — book republish or range child listing.
 fn small_order_pending_from_new_order_payload(payload: &Option<Payload>) -> Option<SmallOrder> {
     match payload.as_ref()? {
@@ -740,13 +781,37 @@ async fn persist_range_child_listing_from_new_order(
     request_id: u64,
     trade_keys: &Keys,
 ) -> bool {
+    let child_id = small_order.id.unwrap_or(order_id);
+    let full_privacy = match Order::inherit_full_privacy_for_range_child(pool, trade_index).await {
+        Ok(Some(fp)) => fp,
+        Ok(None) => {
+            log::error!(
+                "No NextTrade bind for range child {} (trade_index={}); skipping persistence",
+                order_id,
+                trade_index
+            );
+            // Fail closed: do not let generic hydration invent a reputation-mode row.
+            return true;
+        }
+        Err(e) => {
+            log::error!(
+                "Failed to inherit full_privacy for range child {}: {}; skipping persistence",
+                order_id,
+                e
+            );
+            return true;
+        }
+    };
+    let mut child_order = small_order.clone();
+    child_order.id = Some(child_id);
     if let Err(e) = save_order(
-        small_order.clone(),
+        child_order,
         trade_keys,
         request_id,
         trade_index,
         pool,
         true,
+        full_privacy,
     )
     .await
     {
@@ -755,16 +820,26 @@ async fn persist_range_child_listing_from_new_order(
             order_id,
             e
         );
-        return false;
+        // Keep the bind so a later replay can retry; skip generic hydrate.
+        return true;
+    }
+    if let Err(e) = Order::clear_pending_next_trade(pool, trade_index).await {
+        log::warn!(
+            "Persisted range child {} but failed to clear NextTrade bind: {}",
+            child_id,
+            e
+        );
     }
 
-    try_send_track_order(order_id, trade_index);
+    note_range_child_handoff(order_id, child_id);
+    try_send_track_order(child_id, trade_index);
     try_notify_my_trades_maker_book_changed();
 
     log::info!(
-        "Persisted new pending child listing {} from NewOrder DM (trade_index={})",
-        order_id,
-        trade_index
+        "Persisted new pending child listing {} from NewOrder DM (trade_index={}, routed_id={})",
+        child_id,
+        trade_index,
+        order_id
     );
     true
 }
@@ -1544,6 +1619,8 @@ async fn dispatch_trade_dm_batch(
     notify: bool,
     dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
 ) {
+    let routed_order_id = order_id;
+    let order_id = canonical_range_child_id(routed_order_id);
     if let Ok(guard) = dropped_user_history_order_ids.lock() {
         if guard.contains(&order_id) {
             log::info!(
@@ -1559,6 +1636,8 @@ async fn dispatch_trade_dm_batch(
     );
 
     for (message, timestamp, sender) in parsed_messages {
+        // A child NewOrder earlier in this batch may have just handed off the provisional id.
+        let order_id = canonical_range_child_id(routed_order_id);
         let has_terminal_status = trade_message_is_terminal(&message);
         let should_untrack_chat = trade_message_should_untrack_order_chat(&message);
         log::info!(
@@ -1827,6 +1906,12 @@ async fn replay_single_trade_dm(
     let event_list: Vec<Event> = events.into_iter().collect();
     let fetched_n = event_list.len();
 
+    // Unsaved range child: its NewOrder must be replayed even when a later DM is newest.
+    let provisional_child = Order::is_pending_next_trade_provisional(pool, order_id, trade_index)
+        .await
+        .unwrap_or(false);
+    let mut child_listing: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
+
     let mut best: Option<(i64, EventId, (Message, i64, PublicKey))> = None;
     for event in &event_list {
         let unwrapped = match unwrap_incoming(event, &trade_keys).await {
@@ -1846,7 +1931,15 @@ async fn replay_single_trade_dm(
             continue;
         }
         for triple in parsed_messages {
-            let (ref _msg, ts, ref _sender) = triple;
+            let (ref msg, ts, ref _sender) = triple;
+            if provisional_child {
+                let kind = msg.get_inner_message_kind();
+                let is_child_listing = matches!(kind.action, Action::NewOrder)
+                    && small_order_pending_from_new_order_payload(&kind.payload).is_some();
+                if is_child_listing && child_listing.as_ref().is_none_or(|(t, _, _)| ts < *t) {
+                    child_listing = Some((ts, event.id, triple.clone()));
+                }
+            }
             let take = match &best {
                 None => true,
                 Some((best_ts, best_eid, _)) => {
@@ -1859,7 +1952,7 @@ async fn replay_single_trade_dm(
         }
     }
 
-    let Some((max_rumor_ts, _, freshest)) = best else {
+    let Some((max_rumor_ts, best_eid, freshest)) = best else {
         log::trace!(
             "Trade DM replay: order_id={} trade_index={} had {} event(s) but none decrypted/parsed",
             order_id,
@@ -1896,8 +1989,10 @@ async fn replay_single_trade_dm(
         TradeDmReplayDispatchMode::UntrackedFallback => TradeDmTerminalPolicy::UntrackedFallback,
     };
 
+    let batch = replay_batch_with_child_listing(child_listing, max_rumor_ts, best_eid, freshest);
+
     dispatch_trade_dm_batch(
-        vec![freshest],
+        batch,
         order_id,
         trade_index,
         &trade_keys,
@@ -1917,6 +2012,20 @@ async fn replay_single_trade_dm(
     .await;
 
     ReplayTradeDmOutcome::Hydrated
+}
+
+fn replay_batch_with_child_listing(
+    child_listing: Option<(i64, EventId, (Message, i64, PublicKey))>,
+    freshest_ts: i64,
+    freshest_eid: EventId,
+    freshest: (Message, i64, PublicKey),
+) -> Vec<(Message, i64, PublicKey)> {
+    match child_listing {
+        Some((ts, eid, listing)) if ts != freshest_ts || eid != freshest_eid => {
+            vec![listing, freshest]
+        }
+        _ => vec![freshest],
+    }
 }
 
 /// One-shot relay fetch + replay for all active trade orders (awaitable).
@@ -2720,10 +2829,11 @@ pub async fn listen_for_order_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_dm_expiration, effective_is_mine_for_trade_dm_message, handle_trade_dm_for_order,
-        is_own_signed_v2_outbound, is_pre_active_maker_listing, is_pre_active_taker_take,
-        is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
-        new_order_would_regress_messages_row, resolve_take_sell_add_invoice_trusted_sats,
+        canonical_range_child_id, default_dm_expiration, effective_is_mine_for_trade_dm_message,
+        handle_trade_dm_for_order, is_own_signed_v2_outbound, is_pre_active_maker_listing,
+        is_pre_active_taker_take, is_take_sell_buyer_waiting_invoice, is_taker_reputation_peer_dm,
+        new_order_would_regress_messages_row, protocol_identity_keys,
+        replay_batch_with_child_listing, resolve_take_sell_add_invoice_trusted_sats,
         satisfy_pending_waiters_for_event, small_order_pending_from_new_order_payload,
         trade_dm_replay_dispatch_mode, trade_dm_replay_fetch_filter, trade_message_is_terminal,
         trade_message_should_untrack_order_chat, upsert_order_from_trade_dm,
@@ -2741,7 +2851,7 @@ mod tests {
         Action, Kind, Message, Payload, Peer, SmallOrder, Status, Transport, UnwrappedMessage,
         UserInfo, WrapOptions,
     };
-    use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Tag, Timestamp};
+    use nostr_sdk::prelude::{EventBuilder, EventId, FinalizeEvent, Keys, Tag, Timestamp};
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
@@ -2760,9 +2870,16 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
+            );
+            CREATE TABLE pending_next_trades (
+                child_trade_index INTEGER PRIMARY KEY,
+                parent_order_id TEXT NOT NULL,
+                full_privacy INTEGER NOT NULL,
+                provisional_order_id TEXT NOT NULL
             )
             "#,
         )
@@ -2770,6 +2887,118 @@ mod tests {
         .await
         .expect("orders table");
         pool
+    }
+
+    #[tokio::test]
+    async fn range_child_new_order_hands_off_provisional_id_to_child_id() {
+        let pool = memory_orders_pool().await;
+        let parent_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO orders (id, kind, status, amount, fiat_code, fiat_amount, \
+             payment_method, premium, is_mine, full_privacy, trade_index) \
+             VALUES (?, 'sell', 'active', 0, 'USD', 10, 'bank', 0, 1, 1, 10)",
+        )
+        .bind(parent_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("private range parent");
+        let provisional = Order::bind_pending_next_trade(&pool, &parent_id.to_string(), 12)
+            .await
+            .expect("bind child 12");
+
+        let child_id = Uuid::new_v4();
+        let child = SmallOrder {
+            id: Some(child_id),
+            kind: Some(Kind::Sell),
+            status: Some(Status::Pending),
+            amount: 0,
+            fiat_code: "USD".into(),
+            min_amount: Some(10),
+            max_amount: Some(90),
+            fiat_amount: 0,
+            payment_method: "bank".into(),
+            premium: 0,
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_invoice: None,
+            created_at: None,
+            expires_at: None,
+        };
+        let new_order = Message::new_order(
+            Some(child_id),
+            None,
+            Some(12),
+            Action::NewOrder,
+            Some(Payload::Order(child)),
+        );
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let pending_notifications = Arc::new(Mutex::new(0));
+        let (notification_tx, _notification_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        handle_trade_dm_for_order(
+            &messages,
+            &pending_notifications,
+            &notification_tx,
+            provisional,
+            12,
+            new_order,
+            30,
+            Keys::generate().public_key(),
+            &pool,
+            &Keys::generate(),
+            false,
+        )
+        .await;
+
+        let saved = Order::get_by_id(&pool, &child_id.to_string())
+            .await
+            .expect("child saved under Mostro's id");
+        assert!(saved.full_privacy, "child inherits private parent");
+        assert!(Order::get_by_id(&pool, &provisional.to_string())
+            .await
+            .is_err());
+        assert!(
+            !Order::is_pending_next_trade_provisional(&pool, provisional, 12)
+                .await
+                .expect("bind lookup"),
+            "bind cleared after child persisted"
+        );
+        assert_eq!(
+            canonical_range_child_id(provisional),
+            child_id,
+            "later DMs routed under the provisional id must reach the child row"
+        );
+    }
+
+    #[test]
+    fn replay_batch_puts_unsaved_child_listing_before_newer_dm() {
+        let id = Uuid::new_v4();
+        let sender = Keys::generate().public_key();
+        let listing = Message::new_order(Some(id), None, Some(12), Action::NewOrder, None);
+        let later = Message::new_order(Some(id), None, Some(12), Action::BuyerTookOrder, None);
+        let listing_eid = EventId::from_byte_array([1u8; 32]);
+        let later_eid = EventId::from_byte_array([2u8; 32]);
+
+        let batch = replay_batch_with_child_listing(
+            Some((10, listing_eid, (listing.clone(), 10, sender))),
+            20,
+            later_eid,
+            (later, 20, sender),
+        );
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].0.get_inner_message_kind().action, Action::NewOrder);
+        assert_eq!(
+            batch[1].0.get_inner_message_kind().action,
+            Action::BuyerTookOrder
+        );
+
+        let same = replay_batch_with_child_listing(
+            Some((10, listing_eid, (listing.clone(), 10, sender))),
+            10,
+            listing_eid,
+            (listing, 10, sender),
+        );
+        assert_eq!(same.len(), 1, "newest is the listing itself: no duplicate");
     }
 
     #[test]
@@ -3239,6 +3468,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3318,6 +3548,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3453,6 +3684,17 @@ mod tests {
     }
 
     #[test]
+    fn protocol_identity_keys_omitted_only_in_full_privacy() {
+        let identity = Keys::generate();
+        assert!(protocol_identity_keys(&identity, false).is_some());
+        assert!(protocol_identity_keys(&identity, true).is_none());
+        assert_eq!(
+            protocol_identity_keys(&identity, false).map(|k| k.public_key()),
+            Some(identity.public_key())
+        );
+    }
+
+    #[test]
     fn effective_is_mine_uses_post_upsert_db_when_row_existed() {
         assert_eq!(
             effective_is_mine_for_trade_dm_message(true, Some(true), None),
@@ -3500,6 +3742,8 @@ mod tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine,
+            full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: None,
             request_id: Some(1),
             trade_index: Some(1),
@@ -3622,6 +3866,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3681,6 +3926,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3759,6 +4005,8 @@ mod tests {
             solver_pubkey: None,
             dispute_chat_shared_key_hex: None,
             is_mine: false,
+            full_privacy: false,
+            pending_next_trade_index: None,
             buyer_invoice: None,
             request_id: None,
             trade_index: Some(3),
@@ -3802,6 +4050,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT
@@ -3866,6 +4115,7 @@ mod tests {
                 premium INTEGER NOT NULL, trade_keys TEXT, counterparty_pubkey TEXT,
                 order_chat_shared_key_hex TEXT, dispute_id TEXT, solver_pubkey TEXT,
                 dispute_chat_shared_key_hex TEXT, is_mine INTEGER NOT NULL,
+                full_privacy INTEGER NOT NULL DEFAULT 0,
                 buyer_invoice TEXT, request_id INTEGER, trade_index INTEGER,
                 created_at INTEGER, expires_at INTEGER, last_seen_dm_ts INTEGER,
                 buyer_reputation TEXT, seller_reputation TEXT

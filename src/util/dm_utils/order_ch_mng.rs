@@ -819,6 +819,7 @@ mod tests {
                     trade_index: 1,
                     initiator_trade_pubkey: "pk".to_string(),
                     is_mine: true,
+                    full_privacy: false,
                     solver_pubkey: None,
                     dispute_id: None,
                 },
@@ -888,6 +889,7 @@ mod tests {
                     trade_index: 1,
                     initiator_trade_pubkey: sender.to_string(),
                     is_mine: true,
+                    full_privacy: false,
                     solver_pubkey: None,
                     dispute_id: None,
                 },
@@ -961,6 +963,7 @@ mod tests {
                     trade_index: 3,
                     initiator_trade_pubkey: sender.to_string(),
                     is_mine: false,
+                    full_privacy: false,
                     solver_pubkey: None,
                     dispute_id: None,
                 },
@@ -1033,6 +1036,7 @@ mod tests {
                     trade_index: 3,
                     initiator_trade_pubkey: sender.to_string(),
                     is_mine: false,
+                    full_privacy: false,
                     solver_pubkey: None,
                     dispute_id: None,
                 },
@@ -1101,6 +1105,7 @@ mod tests {
                     trade_index: 3,
                     initiator_trade_pubkey: sender.to_string(),
                     is_mine: false,
+                    full_privacy: false,
                     solver_pubkey: None,
                     dispute_id: None,
                 },
@@ -1132,6 +1137,7 @@ mod tests {
             is_range_order: true,
             validation_error: None,
             selected_button: true,
+            full_privacy: false,
         }));
 
         let sender = Keys::generate().public_key();

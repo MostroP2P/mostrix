@@ -156,6 +156,7 @@ fn render_details(
                 FormField::Premium,
                 FormField::Invoice,
                 FormField::ExpirationDays,
+                FormField::FullPrivacy,
             ],
         ),
     ];
@@ -505,6 +506,14 @@ fn build_rows(form: &FormState) -> Vec<Row> {
         text_len: form.expiration_days.len(),
         editable: true,
     });
+    rows.push(Row {
+        field: FormField::FullPrivacy,
+        label: "Privacy",
+        value: privacy_line(form.full_privacy),
+        prefix_len: 0,
+        text_len: 0,
+        editable: false,
+    });
 
     rows
 }
@@ -615,6 +624,11 @@ fn build_preview_lines(form: &FormState) -> Vec<Line<'static>> {
         if method.is_empty() { "—" } else { method }
     )));
     lines.push(Line::from(expiry_preview(&form.expiration_days)));
+    lines.push(Line::from(if form.full_privacy {
+        "privacy  full (no reputation)".to_string()
+    } else {
+        "privacy  reputation".to_string()
+    }));
 
     if let Some(price) = implied_price_per_btc(form) {
         lines.push(Line::from(""));
@@ -1017,6 +1031,31 @@ fn field_status(form: &FormState, field: FormField, accepted: &[String]) -> Fiel
                 Some(t.parse::<i64>().map(|n| n >= 1).unwrap_or(false))
             }
         }
+        FormField::FullPrivacy => None,
+    }
+}
+
+fn privacy_line(full_privacy: bool) -> Line<'static> {
+    if full_privacy {
+        Line::from(vec![
+            Span::styled(
+                "Full privacy",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  (Space)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                "Reputation",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  (Space)", Style::default().fg(Color::DarkGray)),
+        ])
     }
 }
 
@@ -1239,6 +1278,13 @@ fn build_field_help(form: &FormState) -> Vec<Line<'static>> {
             Line::from("Expiration (days)"),
             Line::from("How long the order stays active. Minimum 1 day."),
         ],
+        FormField::FullPrivacy => vec![
+            Line::from("Privacy"),
+            Line::from(
+                "Space toggles Reputation (default) or Full privacy. Full privacy omits \
+                 your identity key — no reputation, and Restore Session cannot find the trade.",
+            ),
+        ],
         _ => vec![
             Line::from("Create New Order"),
             Line::from("Fill the fields on the left and press Enter to submit."),
@@ -1355,6 +1401,35 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Method"));
         assert!(buffer_contains(buf, "▾ pick"));
+    }
+
+    #[test]
+    fn privacy_field_defaults_to_reputation_and_shows_full_privacy() {
+        let mut form = FormState::new_default_form();
+        assert!(!form.full_privacy);
+        assert_eq!(
+            FormField::ExpirationDays.next(false),
+            FormField::FullPrivacy
+        );
+        assert_eq!(FormField::FullPrivacy.next(false), FormField::OrderType);
+        assert_eq!(FormField::OrderType.prev(false), FormField::FullPrivacy);
+
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Privacy"));
+        assert!(buffer_contains(buf, "Reputation"));
+
+        form.full_privacy = true;
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Full privacy"));
+        assert!(buffer_contains(buf, "privacy  full"));
     }
 
     #[test]

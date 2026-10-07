@@ -214,6 +214,8 @@ CREATE TABLE IF NOT EXISTS orders (
 | `counterparty_pubkey` | `TEXT` | Public key of the counterparty (buyer or seller) when a trade is active. |
 | `order_chat_shared_key_hex` | `TEXT` | Hex-encoded ECDH IKM for user order chat. Used to derive `K_conv` / `K_sign` at runtime and for attachment decryption when no inline key is present in the attachment JSON. |
 | `is_mine` | `INTEGER` | Boolean (0 or 1). Role marker: `1` when the local user is the **maker** (created/published the order), `0` when the local user is the **taker** (took an existing order). |
+| `full_privacy` | `INTEGER` | Boolean (0 or 1). When `1`, protocol DMs for this trade omit the identity proof (New Order / Take Order toggle). Default `0` = reputation mode. Follow-up actions read this flag so they never leak index 0 after a private create/take. |
+| `pending_next_trade_index` | `INTEGER` | Legacy single-slot NextTrade bind (cleared on migrate). New binds live in `pending_next_trades`. |
 | `buyer_invoice` | `TEXT` | Lightning invoice provided by the buyer (if applicable). |
 | `request_id` | `INTEGER` | Request ID used when creating the order (for tracking responses). |
 | `trade_index` | `INTEGER` | NIP-06 derivation index for this trade’s keys (`m/44'/1237'/38383'/0/{index}`). Required for startup DM routing when non-null. |
@@ -231,14 +233,25 @@ The `orders` table is essential for:
 - **Order Recovery**: Allows the client to recover active orders on startup (`Order::get_startup_active_orders`, `hydrate_startup_active_order_dm_state`) and after **session restore** (`execute_restore_session` → post-restore hydrate in `src/ui/helpers/startup.rs`)
 - **State Synchronization**: Enables the "fetch-on-startup" strategy to sync with Mostro daemon
 - **Trade History**: Maintains a local record of orders and trades
-- **My Trades static header (UI)**: on user history sync, `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs` seeds `AppState.order_chat_static` from existing `orders` rows (`id`, `kind`, `created_at`, `trade_index`, `is_mine`, and trade public key derived from `trade_keys`) so the in-app header (order id, type, created time, trade index, initiator) is stable across process restarts without re-folding the DM list.
+- **My Trades static header (UI)**: on user history sync, `sync_user_order_history_messages_from_db` in `src/ui/helpers/startup.rs` seeds `AppState.order_chat_static` from existing `orders` rows (`id`, `kind`, `created_at`, `trade_index`, `is_mine`, `full_privacy`, and trade public key derived from `trade_keys`) so the in-app header (order id, type, created time, trade index, initiator, privacy) is stable across process restarts without re-folding the DM list.
 
 #### Data Persistence
 
 - **Trade Keys**: Stored as hex-encoded secret keys. **Critical security data** - these keys are needed to decrypt messages for each trade.
 - **Order Updates**: Orders are updated (not just inserted) when status changes, using upsert logic. Status writes are guarded for monotonic progression where applicable (stale/out-of-order DMs should not move an order backward in the trade phase graph); see `should_apply_status_transition` in `src/util/order_utils/helper.rs` and **DM_LISTENER_FLOW.md**. The only intentional reopen of a terminal status is post-retry `Action::AddInvoice` (`Success` → `SettledHoldInvoice`); relay reconcile passes `action = None` and never applies that exception.
 - **Relay terminal reconcile**: `src/util/order_utils/relay_order_db_reconcile.rs` can set **`orders.status`** from the latest Mostro nostr order event when the relay reports a **terminal** status and the local row is still non-terminal. Runs on startup and on the periodic orders updater (`fetch_scheduler.rs`). Targeted mode (`Order::list_ids_for_targeted_relay_reconcile`) only considers rows with **`trade_keys`** set and status not in `TERMINAL_ORDER_HISTORY_STATUSES` (`helper.rs`). Does not replace trade-DM hydration for active phases; complements it when the client missed the final DM.
-- **Maker/Taker persistence**: `save_order(..., is_maker)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow).
+- **Maker/Taker persistence**: `save_order(..., is_maker, full_privacy)` sets `is_mine` from runtime flow (`true` for new-order flow, `false` for take-order flow) and stores the privacy toggle so later DMs use `protocol_identity_keys`.
+
+#### `pending_next_trades` Table
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `child_trade_index` | `INTEGER` | Primary key. Trade index reserved for a range-order child (`NextTrade`). |
+| `parent_order_id` | `TEXT` | Parent maker order UUID that reserved the child. |
+| `full_privacy` | `INTEGER` | Snapshot of the parent's privacy mode at bind time. |
+| `provisional_order_id` | `TEXT` | Temporary UUID used for early DM `TrackOrder` / startup hydrate before Mostro assigns the real child order id. |
+
+Written when FiatSent/Release builds a `NextTrade` payload; cleared only after the child `NewOrder` row is persisted (under Mostro's child id; the provisional id is then retired). Keying by child index keeps a delayed first child and a retry child both recoverable. Startup DM hydration reads it so pending children are subscribed and replayed after a restart. Cleared with `orders` by `Order::delete_all_in_tx` (seed import, session wipe, Generate New Keys). Conflicting binds (same child index, different parent) are rejected.
 
 **Source**: `src/models.rs:154`
 

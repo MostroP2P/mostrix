@@ -290,6 +290,19 @@ struct OrderInfoEconomics<'a> {
     premium_text: &'a str,
     buyer: Option<&'a UserInfo>,
     seller: Option<&'a UserInfo>,
+    full_privacy: Option<bool>,
+}
+
+fn order_info_privacy_line(full_privacy: Option<bool>) -> Line<'static> {
+    let mode = match full_privacy {
+        Some(true) => "Full privacy",
+        Some(false) => "Reputation",
+        None => "Unknown",
+    };
+    Line::from(vec![
+        Span::styled("Privacy: ", Style::default().fg(Color::Gray)),
+        Span::styled(mode, Style::default().fg(Color::Cyan)),
+    ])
 }
 
 fn assemble_order_info_header(
@@ -307,9 +320,11 @@ fn assemble_order_info_header(
         economics.premium_text,
         true,
     );
+    let privacy = order_info_privacy_line(economics.full_privacy);
     let ratings = order_info_rating_lines(inner_width, economics.buyer, economics.seller);
     let mut full = vec![identity_id.clone(), context_line.clone()];
     full.extend(economics_stacked.iter().cloned());
+    full.push(privacy.clone());
     full.extend(ratings.iter().cloned());
     if full.len() <= max_body {
         return full;
@@ -330,6 +345,10 @@ fn assemble_order_info_header(
             economics.premium_text,
             false,
         ));
+    }
+    let room = max_body.saturating_sub(lines.len());
+    if room >= 1 {
+        lines.push(privacy);
     }
     let room = max_body.saturating_sub(lines.len());
     if ratings.len() <= room {
@@ -610,9 +629,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         _ => "amount N/A".to_string(),
     };
 
-    // TODO(My Trades header): Wire "Privacy:", "Buyer -", "Seller -" from trade privacy / full-privacy
-    // signals once available on DM payloads or local `orders` (see dispute UI + `Order::is_full_privacy_order`).
-    // Omit that row until then — avoid static "Unknown" placeholders.
+    let full_privacy = static_h.map(|h| h.full_privacy);
 
     let order_id_display = static_h
         .map(|h| h.order_id.to_string())
@@ -687,6 +704,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             premium_text: &premium_text,
             buyer: selected.buyer_reputation.as_ref(),
             seller: selected.seller_reputation.as_ref(),
+            full_privacy,
         },
     );
     let header_height = if max_header == 0 {
@@ -1257,6 +1275,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: Some("solver-pubkey".to_string()),
                 dispute_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
             },
@@ -1314,6 +1333,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             },
@@ -1375,6 +1395,7 @@ mod tests {
                 trade_index: 1,
                 initiator_trade_pubkey: "trade-pubkey".to_string(),
                 is_mine: false,
+                full_privacy: false,
                 solver_pubkey: None,
                 dispute_id: None,
             },
