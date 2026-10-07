@@ -21,8 +21,8 @@ use crate::util::{
     hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
     set_dm_router_cmd_tx, spawn_fetch_user_info, spawn_supervised_chat_listener,
     spawn_supervised_trade_dm_listener, sync_trade_index_from_mostro_and_persist,
-    unsubscribe_dm_listener_subscriptions, ChatRouterCmd, FatalNotify, MostroInstanceInfo,
-    OrderDmSubscriptionCmd, StartupDmHydration,
+    try_spawn_fetch_own_reputation, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
+    FatalNotify, MostroInstanceInfo, OrderDmSubscriptionCmd, StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
@@ -245,6 +245,30 @@ fn clear_runtime_session_state(app: &mut AppState) {
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
     app.own_reputation = None;
+}
+
+/// Soft-start a status-bar reputation fetch when the session is eligible.
+///
+/// Same gates as startup: user role and a persisted identity row. Soft-fails inside
+/// [`try_spawn_fetch_own_reputation`] when the order-result channel is unset.
+async fn spawn_own_reputation_if_eligible(
+    app: &AppState,
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+) {
+    if !matches!(app.user_role, UserRole::User) {
+        return;
+    }
+    if User::get(pool).await.is_err() {
+        return;
+    }
+    try_spawn_fetch_own_reputation(
+        pool.clone(),
+        client.clone(),
+        mostro_pubkey,
+        app.mostro_info.clone(),
+    );
 }
 
 fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
@@ -559,6 +583,9 @@ async fn apply_pending_key_reload_from_settings<F, Fut>(
         app.mostro_info.clone(),
     );
 
+    // Session cleared `own_reputation`; refetch for the new identity on this Mostro.
+    spawn_own_reputation_if_eligible(app, pool, client, new_mostro_pubkey).await;
+
     app.backup_requires_restart = false;
     app.pending_key_reload = false;
     app.mode = match router_reg {
@@ -660,7 +687,8 @@ pub async fn apply_pending_fetch_scheduler_reload(
     })?;
 
     // Drop reputation for the previous coordinator before subscriptions move.
-    if new_mostro_pubkey != *mostro_pubkey {
+    let coordinator_changed = new_mostro_pubkey != *mostro_pubkey;
+    if coordinator_changed {
         app.own_reputation = None;
     }
 
@@ -751,6 +779,10 @@ pub async fn apply_pending_fetch_scheduler_reload(
         new_dm_rx,
         app.mostro_info.clone(),
     );
+
+    if coordinator_changed {
+        spawn_own_reputation_if_eligible(app, pool, client, new_mostro_pubkey).await;
+    }
 
     match router_reg {
         Ok(()) => Ok(()),
@@ -935,6 +967,12 @@ pub async fn reload_runtime_session_after_reconnect(
         new_dm_rx,
         ctx.app.mostro_info.clone(),
     );
+
+    // Startup skips user-info when relays were down; refetch once connectivity returns
+    // and the cache is still empty (same eligibility as startup).
+    if ctx.app.own_reputation.is_none() {
+        spawn_own_reputation_if_eligible(ctx.app, ctx.pool, ctx.client, new_mostro_pubkey).await;
+    }
 
     match router_reg {
         Ok(()) => Ok(()),
