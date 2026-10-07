@@ -1118,6 +1118,7 @@ fn handle_enter_settings_mode(
                         // the new fetch is in flight (and so stale created_at from A cannot
                         // block applying B — see AppState::set_mostro_info).
                         app.set_mostro_info(None);
+                        app.own_reputation = None;
                         app.pending_fetch_scheduler_reload = true;
                         spawn_refresh_mostro_info_task(
                             ctx.client.clone(),

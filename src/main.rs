@@ -30,11 +30,11 @@ use crate::ui::{
 };
 use crate::util::solver_dms::apply_live_dm;
 use crate::util::{
-    blossom_servers_from_settings, execute_restore_session, handle_message_notification,
-    handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
-    restore_completion_result, set_chat_router_cmd_tx, set_dm_router_cmd_tx, set_fatal_error_tx,
-    set_order_result_tx, spawn_save_attachment, spawn_send_order_chat_attachment,
-    untrack_dispute_chat_parties, FatalNotify,
+    apply_own_reputation_update_if_current, blossom_servers_from_settings, execute_restore_session,
+    handle_message_notification, handle_operation_result, install_background_panic_hook,
+    order_utils::validate_range_amount, restore_completion_result, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
+    spawn_send_order_chat_attachment, untrack_dispute_chat_parties, FatalNotify,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -81,6 +81,35 @@ async fn apply_order_result(
     if let OperationResult::PostRestoreHydrateCompleted { report } = &result {
         apply_restored_peer_order_chats_from_disk(app, &report.peer_hydrated_order_ids);
         track_startup_chats(pool, app).await;
+        return;
+    }
+
+    if let OperationResult::OwnReputationUpdated {
+        info,
+        mostro_pubkey: fetched_mostro,
+        identity_pubkey: fetched_identity,
+    } = result
+    {
+        match User::get(pool).await {
+            Ok(user) => match PublicKey::from_str(&user.i0_pubkey) {
+                Ok(current_identity) => {
+                    let _ = apply_own_reputation_update_if_current(
+                        app,
+                        &mostro_pubkey,
+                        &current_identity,
+                        fetched_mostro,
+                        fetched_identity,
+                        info,
+                    );
+                }
+                Err(e) => {
+                    log::warn!("Own reputation update skipped: invalid session identity: {e}");
+                }
+            },
+            Err(e) => {
+                log::warn!("Own reputation update skipped: identity unavailable: {e}");
+            }
+        }
         return;
     }
 

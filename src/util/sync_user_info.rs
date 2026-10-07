@@ -150,6 +150,7 @@ pub fn spawn_fetch_user_info(
                 return;
             }
         };
+        let identity_pubkey = identity_keys.public_key();
         match fetch_user_info_from_mostro(
             &client,
             &identity_keys,
@@ -159,7 +160,11 @@ pub fn spawn_fetch_user_info(
         .await
         {
             Ok(info) => {
-                let _ = order_result_tx.send(OperationResult::OwnReputationUpdated { info });
+                let _ = order_result_tx.send(OperationResult::OwnReputationUpdated {
+                    info,
+                    mostro_pubkey,
+                    identity_pubkey,
+                });
             }
             Err(e) => {
                 log::warn!("Own reputation fetch failed: {e}");

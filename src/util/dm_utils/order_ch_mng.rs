@@ -11,8 +11,29 @@ use crate::ui::{
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::order_utils::should_apply_status_transition;
-use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
+use mostro_core::prelude::{Action, Message, Payload, SmallOrder, UserInfo};
+use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
+
+/// Apply a successful `user-info` fetch when it still matches the live session.
+///
+/// Ignores replies for a previous Mostro instance or identity (key reload / switch).
+#[must_use]
+pub fn apply_own_reputation_update_if_current(
+    app: &mut AppState,
+    current_mostro: &PublicKey,
+    current_identity: &PublicKey,
+    fetched_mostro: PublicKey,
+    fetched_identity: PublicKey,
+    info: UserInfo,
+) -> bool {
+    if fetched_mostro != *current_mostro || fetched_identity != *current_identity {
+        log::debug!("Ignoring stale OwnReputationUpdated (mostro/identity mismatch)");
+        return false;
+    }
+    app.own_reputation = Some(info);
+    true
+}
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
     match app.messages.lock() {
@@ -504,8 +525,8 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 
     // Handle silent channel updates (don't show popup)
     match result {
-        OperationResult::OwnReputationUpdated { info } => {
-            app.own_reputation = Some(info);
+        OperationResult::OwnReputationUpdated { .. } => {
+            // Freshness is enforced in `apply_order_result` (live mostro + DB identity).
             return;
         }
         OperationResult::ObserverChatLoaded {
@@ -732,8 +753,12 @@ mod tests {
             operating_days: 30,
             since: Some(1_700_784_000),
         };
+        let mostro = Keys::generate().public_key();
+        let identity = Keys::generate().public_key();
 
-        handle_operation_result(OperationResult::OwnReputationUpdated { info }, &mut app);
+        assert!(apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, info,
+        ));
 
         let cached = app.own_reputation.expect("cached");
         assert_eq!(cached.rating, 4.5);
@@ -742,6 +767,64 @@ mod tests {
         assert!(
             !matches!(app.mode, UiMode::OperationResult(_)),
             "own reputation must not open a popup"
+        );
+    }
+
+    #[test]
+    fn own_reputation_updated_ignores_stale_mostro_or_identity() {
+        let mut app = AppState::new(UserRole::User);
+        let info = UserInfo {
+            rating: 4.5,
+            reviews: 10,
+            operating_days: 30,
+            since: Some(1_700_784_000),
+        };
+        let current_mostro = Keys::generate().public_key();
+        let current_identity = Keys::generate().public_key();
+        let other = Keys::generate().public_key();
+
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app,
+            &current_mostro,
+            &current_identity,
+            other,
+            current_identity,
+            info.clone(),
+        ));
+        assert!(app.own_reputation.is_none());
+
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app,
+            &current_mostro,
+            &current_identity,
+            current_mostro,
+            other,
+            info,
+        ));
+        assert!(app.own_reputation.is_none());
+    }
+
+    #[test]
+    fn own_reputation_updated_via_handle_is_silent_without_cache() {
+        let mut app = AppState::new(UserRole::User);
+        let info = UserInfo {
+            rating: 1.0,
+            reviews: 1,
+            operating_days: 1,
+            since: None,
+        };
+        handle_operation_result(
+            OperationResult::OwnReputationUpdated {
+                info,
+                mostro_pubkey: Keys::generate().public_key(),
+                identity_pubkey: Keys::generate().public_key(),
+            },
+            &mut app,
+        );
+        assert!(app.own_reputation.is_none());
+        assert!(
+            !matches!(app.mode, UiMode::OperationResult(_)),
+            "must not open a popup"
         );
     }
 

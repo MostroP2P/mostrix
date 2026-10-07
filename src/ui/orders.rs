@@ -489,8 +489,13 @@ pub enum OperationResult {
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
     /// Own identity reputation from `Action::UserInfo` (no UI popup).
+    ///
+    /// Carries the Mostro and identity pubkeys used for the request so the UI
+    /// can ignore stale replies after a key reload or Mostro switch.
     OwnReputationUpdated {
         info: mostro_core::prelude::UserInfo,
+        mostro_pubkey: PublicKey,
+        identity_pubkey: PublicKey,
     },
     /// Background post-restore hydrate finished (silent). The main loop loads peer transcripts
     /// from disk and re-emits [`crate::ui::helpers::track_startup_chats`].
