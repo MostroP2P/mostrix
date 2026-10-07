@@ -100,4 +100,20 @@ mod tests {
         assert!(buffer_contains(buf, "Status line"));
         assert!(buffer_contains(buf, "new notification"));
     }
+
+    #[test]
+    fn render_status_bar_shows_own_reputation_segment() {
+        let backend = TestBackend::new(100, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let lines = vec![
+            "🧌 Mostro name: demo | Pubkey: npub1abc | ★ 4.8 · 23 · since Nov 2023".to_string(),
+        ];
+        terminal
+            .draw(|f| render_status_bar(f, f.area(), &lines, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "★ 4.8"));
+        assert!(buffer_contains(buf, "since Nov 2023"));
+        assert!(!buffer_contains(buf, "reputation: none"));
+    }
 }

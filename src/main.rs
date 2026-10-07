@@ -15,7 +15,8 @@ use crate::ui::helpers::{
     apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
     load_admin_disputes_at_startup, merge_refreshed_orders_into_history,
     prepare_post_restore_trade_dm_replay, refresh_my_trades_maker_book_cache,
-    spawn_post_restore_hydrate, sync_user_order_history_messages_from_db, track_startup_chats,
+    spawn_post_restore_hydrate, status_bar_reputation_segment,
+    sync_user_order_history_messages_from_db, track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, append_paste_to_order_chat,
@@ -1121,10 +1122,14 @@ async fn main() -> Result<(), anyhow::Error> {
             Some(info) => info.name.as_deref().unwrap_or("unknown").to_string(),
             None => "unknown".to_string(),
         };
+        let reputation_segment = status_bar_reputation_segment(
+            app.user_role == UserRole::User,
+            app.own_reputation.as_ref(),
+        );
         let status_lines = vec![
             format!(
-                "🧌 Mostro name: {} | Pubkey: {}",
-                mostro_alias, &current_settings.mostro_pubkey
+                "🧌 Mostro name: {} | Pubkey: {}{}",
+                mostro_alias, &current_settings.mostro_pubkey, reputation_segment
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
