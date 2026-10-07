@@ -11,7 +11,7 @@ pub use dm_helpers::seed_admin_chat_last_seen;
 pub use notifications_ch_mng::{
     apply_saved_ln_address_invoice_choice, handle_message_notification, present_add_invoice_popup,
 };
-pub use order_ch_mng::handle_operation_result;
+pub use order_ch_mng::{apply_own_reputation_update_if_current, handle_operation_result};
 pub use order_result_tx::{
     set_order_result_tx, try_notify_my_trades_maker_book_changed, try_spawn_fetch_own_reputation,
     try_spawn_own_reputation_refresh_after_success,
@@ -1622,6 +1622,7 @@ async fn dispatch_trade_dm_batch(
     terminal_policy: TradeDmTerminalPolicy<'_>,
     notify: bool,
     dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
+    mostro_instance: Option<MostroInstanceInfo>,
 ) {
     let routed_order_id = order_id;
     let order_id = canonical_range_child_id(routed_order_id);
@@ -1681,14 +1682,14 @@ async fn dispatch_trade_dm_batch(
                     pool.clone(),
                     client.clone(),
                     mostro_pubkey,
-                    None,
+                    mostro_instance.clone(),
                 );
             } else {
                 crate::util::try_spawn_fetch_own_reputation(
                     pool.clone(),
                     client.clone(),
                     mostro_pubkey,
-                    None,
+                    mostro_instance.clone(),
                 );
             }
         }
@@ -2033,6 +2034,7 @@ async fn replay_single_trade_dm(
         terminal_policy,
         false,
         dropped_user_history_order_ids,
+        None, // notify=false: reputation refresh skipped
     )
     .await;
 
@@ -2458,6 +2460,7 @@ pub async fn listen_for_order_messages(
     pending_notifications: Arc<Mutex<usize>>,
     dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
     mut dm_subscription_rx: tokio::sync::mpsc::UnboundedReceiver<OrderDmSubscriptionCmd>,
+    mostro_instance: Option<MostroInstanceInfo>,
 ) {
     // Get user key from db (for deriving trade keys)
     let user = match User::get(&pool).await {
@@ -2806,6 +2809,7 @@ pub async fn listen_for_order_messages(
                             TradeDmTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
                             &dropped_user_history_order_ids,
+                            mostro_instance.clone(),
                         )
                         .await;
                     } else if let Some((order_id, trade_index, trade_keys, unwrapped)) =
@@ -2844,6 +2848,7 @@ pub async fn listen_for_order_messages(
                             TradeDmTerminalPolicy::UntrackedFallback,
                             true,
                             &dropped_user_history_order_ids,
+                            mostro_instance.clone(),
                         )
                         .await;
                     }

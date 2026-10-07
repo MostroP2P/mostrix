@@ -31,6 +31,7 @@ use crate::util::dm_utils::{
     OrderDmSubscriptionCmd,
 };
 use crate::util::fatal::{fatal_requested, next_backoff_secs, send_fatal_notify, FatalNotify};
+use crate::util::mostro_info::MostroInstanceInfo;
 
 const TRADE_DM_LISTENER_LABEL: &str = "trade DM listener";
 const CHAT_ROUTER_LABEL: &str = "chat subscription router";
@@ -147,6 +148,7 @@ pub fn spawn_supervised_trade_dm_listener(
     pending_notifications: Arc<Mutex<usize>>,
     dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
     initial_dm_rx: UnboundedReceiver<OrderDmSubscriptionCmd>,
+    mostro_instance: Option<MostroInstanceInfo>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let last_seen_seed = order_last_seen_dm_ts;
@@ -170,6 +172,7 @@ pub fn spawn_supervised_trade_dm_listener(
                     let pending_notifications = Arc::clone(&pending_notifications);
                     let dropped_user_history_order_ids =
                         Arc::clone(&dropped_user_history_order_ids);
+                    let mostro_instance = mostro_instance.clone();
                     let mut last_seen = last_seen_seed.clone();
                     async move {
                         merge_durable_dm_tracks(&pool, &active_order_trade_indices, &mut last_seen)
@@ -186,6 +189,7 @@ pub fn spawn_supervised_trade_dm_listener(
                             pending_notifications,
                             dropped_user_history_order_ids,
                             rx,
+                            mostro_instance,
                         )
                         .await;
                     }

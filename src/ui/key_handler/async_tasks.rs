@@ -244,6 +244,7 @@ fn clear_runtime_session_state(app: &mut AppState) {
     clear_session_chat_projection(app);
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
+    app.own_reputation = None;
 }
 
 fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
@@ -347,6 +348,7 @@ pub async fn respawn_trade_dm_listener(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
+        app.mostro_info.clone(),
     );
     Ok(())
 }
@@ -554,6 +556,7 @@ async fn apply_pending_key_reload_from_settings<F, Fut>(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
+        app.mostro_info.clone(),
     );
 
     app.backup_requires_restart = false;
@@ -656,6 +659,11 @@ pub async fn apply_pending_fetch_scheduler_reload(
         )
     })?;
 
+    // Drop reputation for the previous coordinator before subscriptions move.
+    if new_mostro_pubkey != *mostro_pubkey {
+        app.own_reputation = None;
+    }
+
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
@@ -741,6 +749,7 @@ pub async fn apply_pending_fetch_scheduler_reload(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
+        app.mostro_info.clone(),
     );
 
     match router_reg {
@@ -924,6 +933,7 @@ pub async fn reload_runtime_session_after_reconnect(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
+        ctx.app.mostro_info.clone(),
     );
 
     match router_reg {
