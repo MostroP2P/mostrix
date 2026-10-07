@@ -2923,6 +2923,7 @@ mod tests {
             buyer_invoice: None,
             created_at: None,
             expires_at: None,
+            cashu_mint_url: None,
         };
         let new_order = Message::new_order(
             Some(child_id),

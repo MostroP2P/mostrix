@@ -2018,6 +2018,7 @@ mod upsert_from_small_order_dm_tests {
             buyer_invoice: None,
             created_at: None,
             expires_at: None,
+            cashu_mint_url: None,
         }
     }
 

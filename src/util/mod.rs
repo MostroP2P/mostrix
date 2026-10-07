@@ -19,6 +19,7 @@ pub mod session_wipe;
 pub mod solver_dms;
 pub mod supervised_listener;
 pub mod sync_trade_index;
+pub mod sync_user_info;
 pub mod types;
 
 // Re-export commonly used items
@@ -83,6 +84,7 @@ pub use sync_trade_index::{
     effective_last_trade_index, fetch_last_trade_index_from_mostro,
     sync_trade_index_from_mostro_and_persist, LastTradeIndexSync,
 };
+pub use sync_user_info::fetch_user_info_from_mostro;
 pub use types::{
     get_cant_do_description, is_invalid_trade_index_error, Event, ListKind, MostroCantDoError,
 };

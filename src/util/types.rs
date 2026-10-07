@@ -88,6 +88,39 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::PriceTooStale => {
             "Price quote is too stale — refresh the rate and try again".to_string()
         }
+        CantDoReason::InvalidPaymentHash => {
+            "Invalid payment hash — must be 64 lowercase hex characters".to_string()
+        }
+        CantDoReason::PayerNotDeclared => {
+            "Fiat sent refused — declare the payer first on this Mostro node".to_string()
+        }
+        CantDoReason::ReputationIdentityRequired => {
+            "Reputation needs an identity proof — unavailable in full privacy mode".to_string()
+        }
+        CantDoReason::NotEligibleForReputationExport => {
+            "Not eligible to export reputation — need more completed trades or ratings".to_string()
+        }
+        CantDoReason::ReputationBoundToOtherIdentity => {
+            "Reputation is bound to another identity — rebind authorisation required".to_string()
+        }
+        CantDoReason::InvalidReputationRebind => {
+            "Invalid reputation rebind authorisation".to_string()
+        }
+        CantDoReason::InvalidReputationAttestation => {
+            "Invalid reputation attestation".to_string()
+        }
+        CantDoReason::UntrustedReputationIssuer => {
+            "Reputation attestation issuer is not trusted on this Mostro node".to_string()
+        }
+        CantDoReason::ExpiredReputationAttestation => {
+            "Reputation attestation has expired".to_string()
+        }
+        CantDoReason::ReputationIdentityMismatch => {
+            "Reputation attestation identity does not match the proven identity".to_string()
+        }
+        CantDoReason::ReputationAlreadyImported => {
+            "Reputation was already imported for this identity on this Mostro node".to_string()
+        }
     }
 }
 
