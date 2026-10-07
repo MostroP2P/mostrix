@@ -106,9 +106,7 @@ pub fn get_cant_do_description(reason: &CantDoReason) -> String {
         CantDoReason::InvalidReputationRebind => {
             "Invalid reputation rebind authorisation".to_string()
         }
-        CantDoReason::InvalidReputationAttestation => {
-            "Invalid reputation attestation".to_string()
-        }
+        CantDoReason::InvalidReputationAttestation => "Invalid reputation attestation".to_string(),
         CantDoReason::UntrustedReputationIssuer => {
             "Reputation attestation issuer is not trusted on this Mostro node".to_string()
         }

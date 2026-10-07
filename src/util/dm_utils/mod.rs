@@ -12,7 +12,10 @@ pub use notifications_ch_mng::{
     apply_saved_ln_address_invoice_choice, handle_message_notification, present_add_invoice_popup,
 };
 pub use order_ch_mng::handle_operation_result;
-pub use order_result_tx::{set_order_result_tx, try_notify_my_trades_maker_book_changed};
+pub use order_result_tx::{
+    set_order_result_tx, try_notify_my_trades_maker_book_changed, try_spawn_fetch_own_reputation,
+    try_spawn_own_reputation_refresh_after_success,
+};
 pub use waiters::{WAIT_FOR_DM_BUSY_MSG, WAIT_FOR_DM_CANCELED_MSG};
 
 use anyhow::Result;
@@ -1614,6 +1617,7 @@ async fn dispatch_trade_dm_batch(
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     client: &Client,
+    mostro_pubkey: PublicKey,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     terminal_policy: TradeDmTerminalPolicy<'_>,
     notify: bool,
@@ -1654,6 +1658,7 @@ async fn dispatch_trade_dm_batch(
                 trade_index
             );
         }
+        let action = message.get_inner_message_kind().action.clone();
         handle_trade_dm_for_order(
             messages,
             pending_notifications,
@@ -1668,6 +1673,25 @@ async fn dispatch_trade_dm_batch(
             notify,
         )
         .await;
+
+        // Live DMs only: refresh status-bar reputation after success / rate ACK.
+        if notify && crate::util::should_refresh_own_reputation_after_action(&action) {
+            if matches!(action, Action::PurchaseCompleted) {
+                crate::util::try_spawn_own_reputation_refresh_after_success(
+                    pool.clone(),
+                    client.clone(),
+                    mostro_pubkey,
+                    None,
+                );
+            } else {
+                crate::util::try_spawn_fetch_own_reputation(
+                    pool.clone(),
+                    client.clone(),
+                    mostro_pubkey,
+                    None,
+                );
+            }
+        }
 
         if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await
         {
@@ -2004,6 +2028,7 @@ async fn replay_single_trade_dm(
         active_order_trade_indices,
         subscribed_pubkeys,
         client,
+        mostro_pubkey,
         subscription_to_order,
         terminal_policy,
         false,
@@ -2776,6 +2801,7 @@ pub async fn listen_for_order_messages(
                             &active_order_trade_indices,
                             &mut subscribed_pubkeys,
                             &client,
+                            mostro_pubkey,
                             &mut subscription_to_order,
                             TradeDmTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
@@ -2813,6 +2839,7 @@ pub async fn listen_for_order_messages(
                             &active_order_trade_indices,
                             &mut subscribed_pubkeys,
                             &client,
+                            mostro_pubkey,
                             &mut subscription_to_order,
                             TradeDmTerminalPolicy::UntrackedFallback,
                             true,

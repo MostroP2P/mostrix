@@ -302,7 +302,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::DisputeTaken { .. }
         | OperationResult::DisputeClosedByUsers { .. }
-        |         OperationResult::MyTradesMakerBookChanged
+        | OperationResult::MyTradesMakerBookChanged
         | OperationResult::OwnReputationUpdated { .. }
         | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }

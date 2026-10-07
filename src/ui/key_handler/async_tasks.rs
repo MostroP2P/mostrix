@@ -18,8 +18,8 @@ use crate::util::order_utils::spawn_fetch_scheduler_loops;
 use crate::util::solver_dms::SolverDm;
 use crate::util::{
     any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
-    fetch_user_info_from_mostro, hydrate_startup_active_order_dm_state, is_invalid_trade_index_error,
-    set_chat_router_cmd_tx, set_dm_router_cmd_tx, spawn_supervised_chat_listener,
+    hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, spawn_fetch_user_info, spawn_supervised_chat_listener,
     spawn_supervised_trade_dm_listener, sync_trade_index_from_mostro_and_persist,
     unsubscribe_dm_listener_subscriptions, ChatRouterCmd, FatalNotify, MostroInstanceInfo,
     OrderDmSubscriptionCmd, StartupDmHydration,
@@ -79,30 +79,13 @@ pub fn spawn_fetch_own_reputation(
     mostro_instance: Option<MostroInstanceInfo>,
     order_result_tx: UnboundedSender<OperationResult>,
 ) {
-    tokio::spawn(async move {
-        let identity_keys = match User::get_identity_keys(&pool).await {
-            Ok(keys) => keys,
-            Err(e) => {
-                log::warn!("Own reputation fetch skipped: identity keys unavailable: {e}");
-                return;
-            }
-        };
-        match fetch_user_info_from_mostro(
-            &client,
-            &identity_keys,
-            mostro_pubkey,
-            mostro_instance.as_ref(),
-        )
-        .await
-        {
-            Ok(info) => {
-                let _ = order_result_tx.send(OperationResult::OwnReputationUpdated { info });
-            }
-            Err(e) => {
-                log::warn!("Own reputation fetch failed: {e}");
-            }
-        }
-    });
+    spawn_fetch_user_info(
+        pool,
+        client,
+        mostro_pubkey,
+        mostro_instance,
+        order_result_tx,
+    );
 }
 
 /// Sync trade index from Mostro, then re-run the command that failed with `InvalidTradeIndex`.

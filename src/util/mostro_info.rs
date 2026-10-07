@@ -617,7 +617,9 @@ mod tests {
         assert!(is_v2_first_contact_protocol_action(&Action::UserInfo));
         assert!(!is_v2_first_contact_protocol_action(&Action::AddInvoice));
         assert!(!is_v2_first_contact_protocol_action(&Action::PayInvoice));
-        assert!(!is_v2_first_contact_protocol_action(&Action::RestoreSession));
+        assert!(!is_v2_first_contact_protocol_action(
+            &Action::RestoreSession
+        ));
     }
 
     #[test]
@@ -667,7 +669,10 @@ mod tests {
             nostr_pow_for_protocol_dm(Some(&info), &Action::LastTradeIndex),
             16
         );
-        assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::UserInfo), 16);
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::UserInfo),
+            16
+        );
         assert_eq!(
             nostr_pow_for_protocol_dm(Some(&info), &Action::AddInvoice),
             8

@@ -34,7 +34,7 @@ use crate::util::{
         start_fetch_scheduler, FetchSchedulerResult,
     },
     spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
-    sync_trade_index_from_mostro_and_persist, StartupDmHydration,
+    sync_trade_index_from_mostro_and_persist, try_spawn_fetch_own_reputation, StartupDmHydration,
 };
 
 pub struct PostTerminalStartupInput<'a> {
@@ -233,6 +233,19 @@ pub async fn run_post_terminal_startup(
         );
         Transport::Nip44Direct
     };
+
+    // After instance info (for PoW): silently refresh own reputation for the status bar.
+    if relays_reachable
+        && matches!(input.user_role, UserRole::User)
+        && User::get(input.pool).await.is_ok()
+    {
+        try_spawn_fetch_own_reputation(
+            input.pool.clone(),
+            client.clone(),
+            mostro_pubkey,
+            app.mostro_info.clone(),
+        );
+    }
 
     let client_for_messages = client.clone();
     let pool_for_messages = input.pool.clone();

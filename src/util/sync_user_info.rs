@@ -1,14 +1,24 @@
 // Own-reputation sync with Mostro (`Action::UserInfo`).
 //
 // Protocol: https://mostro.network/protocol/user_info.html
+use std::time::Duration;
+
 use anyhow::Result;
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
+use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+use crate::models::User;
+use crate::ui::OperationResult;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::types::get_cant_do_description;
+
+/// Delay before a second `user-info` fetch after `PurchaseCompleted` so a
+/// counterpart rating that arrives shortly after success can update the bar.
+pub const OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY: Duration = Duration::from_secs(45);
 
 /// Ask Mostro for this identity's own reputation (`Action::UserInfo`).
 ///
@@ -61,9 +71,7 @@ pub async fn fetch_user_info_from_mostro(
     let messages = parse_dm_events(recv_event, &ephemeral_trade_keys, None).await;
 
     let Some((response_message, _, sender)) = messages.first() else {
-        return Err(anyhow::anyhow!(
-            "No response received for Action::UserInfo"
-        ));
+        return Err(anyhow::anyhow!("No response received for Action::UserInfo"));
     };
     if sender != &mostro_pubkey {
         return Err(anyhow::anyhow!(
@@ -124,9 +132,74 @@ fn parse_user_info_response(message: &Message) -> Result<UserInfo> {
     }
 }
 
+/// Fetch own reputation and push [`OperationResult::OwnReputationUpdated`].
+///
+/// Soft-fails on network/parse errors (`log::warn` only — no popup).
+pub fn spawn_fetch_user_info(
+    pool: SqlitePool,
+    client: Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<MostroInstanceInfo>,
+    order_result_tx: UnboundedSender<OperationResult>,
+) {
+    tokio::spawn(async move {
+        let identity_keys = match User::get_identity_keys(&pool).await {
+            Ok(keys) => keys,
+            Err(e) => {
+                log::warn!("Own reputation fetch skipped: identity keys unavailable: {e}");
+                return;
+            }
+        };
+        match fetch_user_info_from_mostro(
+            &client,
+            &identity_keys,
+            mostro_pubkey,
+            mostro_instance.as_ref(),
+        )
+        .await
+        {
+            Ok(info) => {
+                let _ = order_result_tx.send(OperationResult::OwnReputationUpdated { info });
+            }
+            Err(e) => {
+                log::warn!("Own reputation fetch failed: {e}");
+            }
+        }
+    });
+}
+
+/// Like [`spawn_fetch_user_info`], but waits `delay` first (e.g. after success).
+pub fn spawn_fetch_user_info_delayed(
+    pool: SqlitePool,
+    client: Client,
+    mostro_pubkey: PublicKey,
+    mostro_instance: Option<MostroInstanceInfo>,
+    order_result_tx: UnboundedSender<OperationResult>,
+    delay: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        spawn_fetch_user_info(
+            pool,
+            client,
+            mostro_pubkey,
+            mostro_instance,
+            order_result_tx,
+        );
+    });
+}
+
+/// Whether a live trade-DM action should refresh the status-bar reputation cache.
+pub fn should_refresh_own_reputation_after_action(action: &Action) -> bool {
+    matches!(action, Action::PurchaseCompleted | Action::RateReceived)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_user_info_response, validate_correlated_response};
+    use super::{
+        parse_user_info_response, should_refresh_own_reputation_after_action,
+        validate_correlated_response,
+    };
     use mostro_core::prelude::*;
 
     fn user_info_message(request_id: Option<u64>, info: UserInfo) -> Message {
@@ -248,5 +321,19 @@ mod tests {
         let message = user_info_message(None, UserInfo::default());
         let err = validate_correlated_response(&message, 1).expect_err("missing rid");
         assert!(err.to_string().contains("omitted request_id"));
+    }
+
+    #[test]
+    fn should_refresh_own_reputation_after_success_or_rate_received() {
+        assert!(should_refresh_own_reputation_after_action(
+            &Action::PurchaseCompleted
+        ));
+        assert!(should_refresh_own_reputation_after_action(
+            &Action::RateReceived
+        ));
+        assert!(!should_refresh_own_reputation_after_action(&Action::Rate));
+        assert!(!should_refresh_own_reputation_after_action(
+            &Action::FiatSent
+        ));
     }
 }
