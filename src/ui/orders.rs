@@ -488,6 +488,10 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Own identity reputation from `Action::UserInfo` (no UI popup).
+    OwnReputationUpdated {
+        info: mostro_core::prelude::UserInfo,
+    },
     /// Background post-restore hydrate finished (silent). The main loop loads peer transcripts
     /// from disk and re-emits [`crate::ui::helpers::track_startup_chats`].
     PostRestoreHydrateCompleted {

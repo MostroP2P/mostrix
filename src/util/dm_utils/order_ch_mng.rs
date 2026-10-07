@@ -502,8 +502,12 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         }
     }
 
-    // Handle observer chat results directly (don't show popup)
+    // Handle silent channel updates (don't show popup)
     match result {
+        OperationResult::OwnReputationUpdated { info } => {
+            app.own_reputation = Some(info);
+            return;
+        }
         OperationResult::ObserverChatLoaded {
             generation,
             messages,
@@ -717,6 +721,29 @@ mod tests {
 
     use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
+
+    #[test]
+    fn own_reputation_updated_is_silent_and_caches_info() {
+        let mut app = AppState::new(UserRole::User);
+        assert!(app.own_reputation.is_none());
+        let info = UserInfo {
+            rating: 4.5,
+            reviews: 10,
+            operating_days: 30,
+            since: Some(1_700_784_000),
+        };
+
+        handle_operation_result(OperationResult::OwnReputationUpdated { info }, &mut app);
+
+        let cached = app.own_reputation.expect("cached");
+        assert_eq!(cached.rating, 4.5);
+        assert_eq!(cached.reviews, 10);
+        assert_eq!(cached.since, Some(1_700_784_000));
+        assert!(
+            !matches!(app.mode, UiMode::OperationResult(_)),
+            "own reputation must not open a popup"
+        );
+    }
 
     #[test]
     fn failed_new_order_keeps_form_draft() {
