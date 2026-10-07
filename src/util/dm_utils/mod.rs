@@ -264,6 +264,9 @@ pub async fn hydrate_startup_active_order_dm_state(
 
     // Pending NextTrade children: subscribe/replay their reserved trade keys
     // before the child NewOrder creates a real orders row.
+    if let Err(e) = Order::prune_consumed_pending_next_trades(pool).await {
+        log::warn!("Failed to prune consumed NextTrade binds at startup: {}", e);
+    }
     for (provisional_id, trade_index) in Order::list_pending_next_trade_tracks(pool).await? {
         active_order_trade_indices
             .entry(provisional_id)
@@ -799,8 +802,10 @@ async fn persist_range_child_listing_from_new_order(
             return true;
         }
     };
+    let mut child_order = small_order.clone();
+    child_order.id = Some(child_id);
     if let Err(e) = save_order(
-        small_order.clone(),
+        child_order,
         trade_keys,
         request_id,
         trade_index,

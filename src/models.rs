@@ -1018,6 +1018,21 @@ impl Order {
         Ok(())
     }
 
+    /// Drop binds whose child row already exists (a post-save clear that failed earlier).
+    pub async fn prune_consumed_pending_next_trades(pool: &SqlitePool) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM pending_next_trades
+            WHERE child_trade_index IN (
+                SELECT trade_index FROM orders WHERE trade_index IS NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Provisional `(order_id, trade_index)` pairs for pending NextTrade children.
     ///
     /// Included in DM startup hydration so the listener can subscribe/replay the
@@ -2415,6 +2430,59 @@ mod upsert_from_small_order_dm_tests {
                 .expect("peek"),
             Some(false),
             "stale reputation bind must not be replaced by the private parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_drops_binds_whose_child_row_exists() {
+        let pool = create_test_pool().await;
+        let parent = Uuid::new_v4();
+        Order::new(
+            &pool,
+            sample_small_order(parent, 1000),
+            &Keys::generate(),
+            Some(1),
+            10,
+            true,
+            true,
+        )
+        .await
+        .expect("parent");
+        Order::bind_pending_next_trade(&pool, &parent.to_string(), 12)
+            .await
+            .expect("bind child 12");
+        Order::bind_pending_next_trade(&pool, &parent.to_string(), 13)
+            .await
+            .expect("bind child 13");
+        // Child 12 was saved but its bind clear failed.
+        Order::new(
+            &pool,
+            sample_small_order(Uuid::new_v4(), 500),
+            &Keys::generate(),
+            Some(2),
+            12,
+            true,
+            true,
+        )
+        .await
+        .expect("child 12 row");
+
+        assert_eq!(
+            Order::prune_consumed_pending_next_trades(&pool)
+                .await
+                .expect("prune"),
+            1
+        );
+        assert!(Order::inherit_full_privacy_for_range_child(&pool, 12)
+            .await
+            .expect("12")
+            .is_none());
+        assert_eq!(
+            Order::inherit_full_privacy_for_range_child(&pool, 13)
+                .await
+                .expect("13"),
+            Some(true),
+            "still-pending child must keep its bind"
         );
     }
 
