@@ -206,7 +206,7 @@ Several background tasks are spawned to keep the UI and data in sync:
 6. **DM Router Wiring (trade messages)**:
    - App channel creation includes `dm_subscription_tx` / `dm_subscription_rx`.
    - `set_dm_router_cmd_tx(dm_subscription_tx.clone())` publishes the sender globally for `wait_for_dm` (returns `Result`; startup fails fast if the mutex is poisoned).
-   - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map.
+   - Before spawning the listener, `hydrate_startup_active_order_dm_state` loads non-terminal orders from SQLite and returns `active_order_trade_indices` plus `order_last_seen_dm_ts` cursors; `main.rs` seeds the shared active-order map. Pending range-order children (`pending_next_trades`) are included under their provisional ids so their `NewOrder` is received after a restart.
    - `listen_for_order_messages(client, mostro_pubkey, transport, pool, …, order_last_seen_dm_ts, …, dm_subscription_rx)` runs as the single router loop consuming:
      - `TrackOrder` commands for long-lived trade subscriptions.
      - `RegisterWaiter` subscribe hints for one-shot request/response waits (oneshots live in the process-wide waiter registry).

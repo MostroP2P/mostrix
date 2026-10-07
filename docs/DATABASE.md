@@ -251,7 +251,7 @@ The `orders` table is essential for:
 | `full_privacy` | `INTEGER` | Snapshot of the parent's privacy mode at bind time. |
 | `provisional_order_id` | `TEXT` | Temporary UUID used for early DM `TrackOrder` / startup hydrate before Mostro assigns the real child order id. |
 
-Written when FiatSent/Release builds a `NextTrade` payload; cleared only after the child `NewOrder` row is persisted. Keying by child index keeps a delayed first child and a retry child both recoverable. Cleared on session wipe / seed rotation. Conflicting binds (same child index, different parent) are rejected.
+Written when FiatSent/Release builds a `NextTrade` payload; cleared only after the child `NewOrder` row is persisted (under Mostro's child id; the provisional id is then retired). Keying by child index keeps a delayed first child and a retry child both recoverable. Startup DM hydration reads it so pending children are subscribed and replayed after a restart. Cleared with `orders` by `Order::delete_all_in_tx` (seed import, session wipe, Generate New Keys). Conflicting binds (same child index, different parent) are rejected.
 
 **Source**: `src/models.rs:154`
 

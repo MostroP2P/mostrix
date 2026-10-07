@@ -184,7 +184,7 @@ The response is:
 | `Action::NewOrder` | `Payload::Order` | `OperationResult::Success` | "Order Created Successfully" modal |
 | `Action::PayBondInvoice` | `PaymentRequest` (order often `waiting-maker-bond`) | `PaymentRequestRequired` | Bond popup via `order_ch_mng.rs` (no success modal) |
 
-Both paths call `save_order(..., is_maker: true)`, send `TrackOrder` on `dm_subscription_tx`, and set `order_chat_static`. The bond path delegates persistence + popup wiring to shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) (also used by `take_order` for taker bonds).
+Both paths call `save_order(..., is_maker: true, full_privacy)`, send `TrackOrder` on `dm_subscription_tx`, and set `order_chat_static`. A failed local save is **not** swallowed: the create / take / payment-request path returns an error instead of a success modal or payment prompt, because a private trade's keys and privacy flag would otherwise be unrecoverable (identity-scoped Restore cannot find it). The bond path delegates persistence + popup wiring to shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) (also used by `take_order` for taker bonds).
 
 **Post-bond publication**: after the maker pays in their wallet, Mostro sends a follow-up `Action::NewOrder` on the trade DM subscription (listener path). Generic hydration updates SQLite `waiting-maker-bond` → `pending`; the order then appears on the public book.
 
@@ -255,7 +255,7 @@ The message includes:
 - The `trade_index` for this new trade
 - The appropriate action (`TakeBuy` or `TakeSell`)
 
-Take Order has the same **Space** privacy toggle as New Order (default reputation). `take_order` passes `protocol_identity_keys(..., full_privacy)` and persists `orders.full_privacy` on success.
+Take Order has the same **Space** privacy toggle as New Order (default reputation). `take_order` passes `protocol_identity_keys(..., full_privacy)` and persists `orders.full_privacy` on success; a failed local persist is returned as an error rather than reported as a successful take.
 
 ### 4. Response Handling
 Similar to order creation, the client waits for Mostro's response, which may include:

@@ -134,6 +134,8 @@ What happens:
 
 **Conceptually:** TrackOrder is long-lived; it binds the pubkey to a concrete order and makes the tracked-order path reliable and O(1).
 
+`TrackOrder` is also sent with a **provisional** order id for a pending range-order child (`NextTrade`) so its first `NewOrder` is received before any `orders` row exists. Startup hydration adds these provisional ids from `pending_next_trades`, and startup replay processes an unsaved child's `NewOrder` ahead of newer DMs. See [RANGE_ORDERS.md](RANGE_ORDERS.md).
+
 ### 2) `RegisterWaiter { trade_keys }`
 
 Use case: “I’m about to send a request DM; wait for the first decryptable response for these trade keys”.
@@ -216,7 +218,7 @@ Key behaviors:
   Create-order `NewOrder` uses the **waiter** path (`send_new_order`), not this listener. On a tracked trade subscription, `try_handle_new_order_trade_dm` handles only:
   - pre-Active **taker** republish → delete stale take row and remove from Messages;
   - pre-Active **maker** republish → revert DB to `pending`, remove from Messages, refresh My Trades maker-book cache;
-  - **range child** listing (`Payload::Order` + `pending`, no local row) → `save_order` + track.
+  - **range child** listing (`Payload::Order` + `pending`, no local row) → look up the `pending_next_trades` bind for this trade index (missing or failing lookup skips persistence), `save_order` with the parent's `full_privacy` under Mostro's child id, clear the bind, re-track under the child id, and remember the provisional → child id mapping so later DMs routed under the provisional id reach the child row.
   When that helper returns `false`, the message continues through generic trade-DM hydration. Replayed `NewOrder` must not replace an established non-`NewOrder` Messages row (`new_order_would_regress_messages_row`).
 
 - **DB refresh/upsert for certain actions**  
