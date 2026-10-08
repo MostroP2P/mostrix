@@ -6,7 +6,9 @@ mostro_pubkey = "mostro_pubkey_hex_format"
 # leave empty if you are a regular trader.
 # - Dispute solver: put the nsec of the key the Mostro operator registered as a
 #   solver (via Add Dispute Solver). It signs take / settle / cancel dispute and
-#   the dispute chat with buyer and seller.
+#   the dispute chat with buyer and seller. What the solver may do depends on the
+#   permission it was registered with: Read can take disputes and chat (mediate);
+#   settling / canceling and taking over from a read-only solver need Read-Write.
 # - Mostro operator: put the Mostro daemon nsec (the key behind mostro_pubkey).
 #   Only this key can run operator actions such as Add Dispute Solver.
 # Do NOT reuse nsec_privkey here: that is your trader identity.

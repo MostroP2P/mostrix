@@ -104,7 +104,11 @@ user_mode = "user"
 - **`admin_privkey`**  
   - Private key (`nsec…`) used only when running Mostrix in **admin mode** (`user_mode = "admin"`). It signs every admin flow: taking a dispute, settling (pay buyer) / canceling (refund seller), and the per-dispute shared-key chat with buyer and seller.
   - Which key goes here depends on your role:
-    - **Dispute solver**: the `nsec` of the key the Mostro operator registered as a solver (its `npub` was added with **Add Dispute Solver**). With it you can take and resolve disputes, but you **cannot** run operator actions such as adding other solvers.
+    - **Dispute solver**: the `nsec` of the key the Mostro operator registered as a solver (its `npub` was added with **Add Dispute Solver**). What it can do depends on the permission the operator chose when registering it:
+      - **Read**: take disputes and chat with buyer and seller (mediation), but not settle or cancel them.
+      - **Read-Write**: also settle (pay buyer) / cancel (refund seller), and take over an `in-progress` dispute held by a read-only solver (see [Taking over a dispute from Serbero](docs/ADMIN_DISPUTES.md#taking-over-a-dispute-from-serbero-ctrlt)).
+
+      Either way, a solver key **cannot** run operator actions such as adding other solvers.
     - **Mostro operator**: the **Mostro daemon** `nsec` (same key whose pubkey is `mostro_pubkey`). Only this key can run operator actions such as **Add Dispute Solver**; it can also take and resolve disputes.
   - Do **not** reuse `nsec_privkey` here — your trader identity and your admin/solver key are separate keys.
   - Set it via **Settings → Change Admin Key** (or edit `settings.toml`). Do not use **Generate New Keys** for this — that option exists in **User** mode only.  
@@ -113,7 +117,7 @@ user_mode = "user"
 | | `nsec_privkey` | `admin_privkey` |
 |---|---|---|
 | **Regular trader** | Auto-managed identity | Empty |
-| **Dispute solver** | Auto-managed identity (for trading) | Your registered solver `nsec` |
+| **Dispute solver** | Auto-managed identity (for trading) | Your registered solver `nsec` (Read or Read-Write) |
 | **Mostro operator** | Auto-managed identity (for trading) | Mostro daemon `nsec` |
 
 - **`relays`**  
