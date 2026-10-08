@@ -182,6 +182,13 @@ pub fn watch_message_for(dispute: &AdminDispute) -> Option<WatchdogMessage> {
     )
 }
 
+/// The `unwatch` for a dispute; `None` for an id that is not a UUID.
+pub fn unwatch_message(dispute_id: &str) -> Option<WatchdogMessage> {
+    Uuid::parse_str(dispute_id)
+        .ok()
+        .map(|dispute_id| WatchdogMessage::Unwatch { dispute_id })
+}
+
 /// `message` wrapped for `watchdog`: the admin key proves the identity
 /// inside the ciphertext, and a fresh trade key signs the event.
 pub fn build_event(
@@ -252,6 +259,18 @@ pub async fn notify_linked(client: &Client, admin_keys: &Keys, message: &Watchdo
         log::warn!("[watchdog] {e}");
     }
 }
+
+/// Tells the linked watchdog, in the background, to stop watching a dispute
+/// that left `in-progress` (settled, canceled, or closed by the users).
+pub fn spawn_unwatch(client: &Client, admin_keys: &Keys, dispute_id: &str) {
+    if let Some(message) = unwatch_message(dispute_id) {
+        spawn_notify_linked(client, admin_keys, message);
+    }
+}
+
+/// Longest wait for each `watch` sent while linking, so a stalled relay
+/// cannot keep the Settings operation pending.
+pub const WATCH_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Longest wait for a `sent` receipt before the solver's message is
 /// published anyway: a slow watchdog relay must not hold the chat back.
@@ -324,10 +343,19 @@ pub async fn link(
         .filter(|d| d.status.as_deref() == Some(in_progress.as_str()))
         .filter_map(watch_message_for)
     {
-        match send(client, admin_keys, watchdog, &message).await {
-            Ok(()) => outcome.watched += 1,
-            Err(e) => {
+        let sent = tokio::time::timeout(
+            WATCH_SEND_TIMEOUT,
+            send(client, admin_keys, watchdog, &message),
+        )
+        .await;
+        match sent {
+            Ok(Ok(())) => outcome.watched += 1,
+            Ok(Err(e)) => {
                 log::warn!("[watchdog] {e}");
+                outcome.failed += 1;
+            }
+            Err(_) => {
+                log::warn!("[watchdog] a watch timed out");
                 outcome.failed += 1;
             }
         }
@@ -447,6 +475,17 @@ mod tests {
             WatchdogMessage::Watch { ref conversations, .. } if conversations.len() == 1
         ));
         assert_eq!(watch_message(dispute(), None, Some("zz")), None);
+    }
+
+    #[test]
+    fn an_unwatch_needs_a_dispute_uuid() {
+        assert_eq!(
+            unwatch_message(DISPUTE),
+            Some(WatchdogMessage::Unwatch {
+                dispute_id: dispute()
+            })
+        );
+        assert_eq!(unwatch_message("not-a-uuid"), None);
     }
 
     #[test]

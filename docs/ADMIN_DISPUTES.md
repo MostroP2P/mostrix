@@ -859,9 +859,9 @@ public signing key of each conversation and the id of each message you send.
    in Telegram. To relink (a new code, or another chat), run it again: the key
    is prefilled.
 
-To stop, send `/unlink` to the bot. Mostrix keeps sending its messages while
-`watchdog_pubkey` is set, and the watchdog ignores them; clear the setting to
-stop them too.
+To stop, send `/unlink` to the bot. Mostrix keeps sending its messages, which
+the watchdog then ignores, until you clear `watchdog_pubkey` in `settings.toml`
+and restart Mostrix: the linked key is kept for the running session.
 
 **What Mostrix sends** (`src/util/watchdog.rs`), each a Mostro v2 `send-dm` to
 the watchdog key, with the admin key proven inside the ciphertext and a fresh
@@ -872,7 +872,7 @@ trade key on the event, so relays do not see your key writing to the watchdog:
 | Linking | `link` with the code, then a `watch` for each held dispute |
 | Taking a dispute | `watch` with the dispute id and `pub(K_sign)` of the buyer and seller chats |
 | Sending a chat message | `sent` with the event id, **before** the message is published, so the watchdog does not notify you of your own message (both sides of a chat sign with the same `K_sign`). Mostrix waits at most 5 s for it, then publishes anyway |
-| Settling or canceling | `unwatch` |
+| Settling or canceling, or the users closing the dispute | `unwatch` |
 
 A failed watchdog message is logged and never blocks the dispute action. The
 protocol is `SOLVER_NOTIFICATIONS.md` in the mostro-watchdog repository.
