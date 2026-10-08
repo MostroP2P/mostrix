@@ -1,5 +1,4 @@
 use std::sync::Mutex;
-use std::time::Duration;
 
 use nostr_sdk::prelude::{Client, PublicKey};
 use sqlx::SqlitePool;
@@ -7,10 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::ui::OperationResult;
 use crate::util::mostro_info::MostroInstanceInfo;
-use crate::util::sync_user_info::{
-    spawn_fetch_user_info, spawn_fetch_user_info_delayed,
-    OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
-};
+use crate::util::sync_user_info::spawn_fetch_user_info;
 
 static ORDER_RESULT_TX: Mutex<Option<UnboundedSender<OperationResult>>> = Mutex::new(None);
 
@@ -54,39 +50,35 @@ pub fn try_spawn_fetch_own_reputation(
     spawn_fetch_user_info(pool, client, mostro_pubkey, mostro_instance, tx);
 }
 
-/// Spawn a delayed own-reputation fetch (after trade success).
-pub fn try_spawn_fetch_own_reputation_delayed(
-    pool: SqlitePool,
-    client: Client,
-    mostro_pubkey: PublicKey,
-    mostro_instance: Option<MostroInstanceInfo>,
-    delay: Duration,
-) {
+/// Ask the main loop to refetch own reputation with its live Mostro instance info.
+pub fn try_request_own_reputation_refresh(after_success: bool) {
     let Some(tx) = cloned_order_result_tx() else {
-        log::debug!("Delayed own reputation fetch skipped: order_result_tx not registered");
+        log::debug!("Own reputation refresh skipped: order_result_tx not registered");
         return;
     };
-    spawn_fetch_user_info_delayed(pool, client, mostro_pubkey, mostro_instance, tx, delay);
+    let _ = tx.send(OperationResult::OwnReputationRefreshRequested { after_success });
 }
 
-/// Immediate + delayed refresh after `PurchaseCompleted` (protocol freshness).
-pub fn try_spawn_own_reputation_refresh_after_success(
-    pool: SqlitePool,
-    client: Client,
-    mostro_pubkey: PublicKey,
-    mostro_instance: Option<MostroInstanceInfo>,
-) {
-    try_spawn_fetch_own_reputation(
-        pool.clone(),
-        client.clone(),
-        mostro_pubkey,
-        mostro_instance.clone(),
-    );
-    try_spawn_fetch_own_reputation_delayed(
-        pool,
-        client,
-        mostro_pubkey,
-        mostro_instance,
-        OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
-    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Listener must not carry its own instance snapshot (stale `pow_first_contact`);
+    /// it only asks the main loop, which reads live `app.mostro_info`.
+    #[test]
+    fn refresh_request_carries_no_instance_snapshot() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        set_order_result_tx(tx).expect("register channel");
+
+        try_request_own_reputation_refresh(true);
+
+        let mut found = false;
+        while let Ok(result) = rx.try_recv() {
+            if let OperationResult::OwnReputationRefreshRequested { after_success } = result {
+                assert!(after_success);
+                found = true;
+            }
+        }
+        assert!(found, "refresh request must reach the main-loop channel");
+    }
 }

@@ -33,8 +33,9 @@ use crate::util::{
     apply_own_reputation_update_if_current, blossom_servers_from_settings, execute_restore_session,
     handle_message_notification, handle_operation_result, install_background_panic_hook,
     order_utils::validate_range_amount, restore_completion_result, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_save_attachment,
-    spawn_send_order_chat_attachment, untrack_dispute_chat_parties, FatalNotify,
+    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_fetch_user_info,
+    spawn_save_attachment, spawn_send_order_chat_attachment, untrack_dispute_chat_parties,
+    FatalNotify, OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -61,6 +62,16 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
         result,
         OperationResult::OrderHistoryDeleted { .. } | OperationResult::SessionRestored { .. }
     )
+}
+
+/// Re-enter the main loop after `delay` so the delayed refetch also reads live instance info.
+fn schedule_own_reputation_refresh_request(tx: UnboundedSender<OperationResult>, delay: Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = tx.send(OperationResult::OwnReputationRefreshRequested {
+            after_success: false,
+        });
+    });
 }
 
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
@@ -108,6 +119,25 @@ async fn apply_order_result(
             },
             Err(e) => {
                 log::warn!("Own reputation update skipped: identity unavailable: {e}");
+            }
+        }
+        return;
+    }
+
+    if let OperationResult::OwnReputationRefreshRequested { after_success } = result {
+        if app.user_role == UserRole::User {
+            spawn_fetch_user_info(
+                pool.clone(),
+                client.clone(),
+                mostro_pubkey,
+                app.mostro_info.clone(),
+                order_result_tx.clone(),
+            );
+            if after_success {
+                schedule_own_reputation_refresh_request(
+                    order_result_tx.clone(),
+                    OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
+                );
             }
         }
         return;
@@ -1186,6 +1216,27 @@ async fn main() -> Result<(), anyhow::Error> {
     terminal::leave(&mut terminal)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod own_reputation_refresh_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delayed_refresh_reenters_main_loop_as_immediate_request() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        schedule_own_reputation_refresh_request(tx, Duration::from_millis(10));
+        let result = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("request before timeout")
+            .expect("channel open");
+        assert!(matches!(
+            result,
+            OperationResult::OwnReputationRefreshRequested {
+                after_success: false
+            }
+        ));
+    }
 }
 
 #[cfg(test)]

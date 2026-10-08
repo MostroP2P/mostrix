@@ -304,6 +304,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::DisputeClosedByUsers { .. }
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::OwnReputationUpdated { .. }
+        | OperationResult::OwnReputationRefreshRequested { .. }
         | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }
@@ -499,6 +500,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         }
         OperationResult::MyTradesMakerBookChanged
         | OperationResult::OwnReputationUpdated { .. }
+        | OperationResult::OwnReputationRefreshRequested { .. }
         | OperationResult::PostRestoreHydrateCompleted { .. }
         | OperationResult::OpenInvoicePopup { .. }
         | OperationResult::OrderChatAttachmentSent { .. }

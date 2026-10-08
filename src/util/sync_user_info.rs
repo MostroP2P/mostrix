@@ -173,27 +173,6 @@ pub fn spawn_fetch_user_info(
     });
 }
 
-/// Like [`spawn_fetch_user_info`], but waits `delay` first (e.g. after success).
-pub fn spawn_fetch_user_info_delayed(
-    pool: SqlitePool,
-    client: Client,
-    mostro_pubkey: PublicKey,
-    mostro_instance: Option<MostroInstanceInfo>,
-    order_result_tx: UnboundedSender<OperationResult>,
-    delay: Duration,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(delay).await;
-        spawn_fetch_user_info(
-            pool,
-            client,
-            mostro_pubkey,
-            mostro_instance,
-            order_result_tx,
-        );
-    });
-}
-
 /// Whether a live trade-DM action should refresh the status-bar reputation cache.
 pub fn should_refresh_own_reputation_after_action(action: &Action) -> bool {
     matches!(action, Action::PurchaseCompleted | Action::RateReceived)

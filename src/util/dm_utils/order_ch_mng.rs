@@ -529,6 +529,10 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             // Freshness is enforced in `apply_order_result` (live mostro + DB identity).
             return;
         }
+        OperationResult::OwnReputationRefreshRequested { .. } => {
+            // Spawned from `apply_order_result` with live instance info.
+            return;
+        }
         OperationResult::ObserverChatLoaded {
             generation,
             messages,

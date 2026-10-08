@@ -13,8 +13,8 @@ pub use notifications_ch_mng::{
 };
 pub use order_ch_mng::{apply_own_reputation_update_if_current, handle_operation_result};
 pub use order_result_tx::{
-    set_order_result_tx, try_notify_my_trades_maker_book_changed, try_spawn_fetch_own_reputation,
-    try_spawn_own_reputation_refresh_after_success,
+    set_order_result_tx, try_notify_my_trades_maker_book_changed,
+    try_request_own_reputation_refresh, try_spawn_fetch_own_reputation,
 };
 pub use waiters::{WAIT_FOR_DM_BUSY_MSG, WAIT_FOR_DM_CANCELED_MSG};
 
@@ -1617,12 +1617,10 @@ async fn dispatch_trade_dm_batch(
     active_order_trade_indices: &Arc<Mutex<HashMap<Uuid, i64>>>,
     subscribed_pubkeys: &mut HashSet<PublicKey>,
     client: &Client,
-    mostro_pubkey: PublicKey,
     subscription_to_order: &mut HashMap<SubscriptionId, (Uuid, i64)>,
     terminal_policy: TradeDmTerminalPolicy<'_>,
     notify: bool,
     dropped_user_history_order_ids: &Arc<Mutex<HashSet<Uuid>>>,
-    mostro_instance: Option<MostroInstanceInfo>,
 ) {
     let routed_order_id = order_id;
     let order_id = canonical_range_child_id(routed_order_id);
@@ -1677,21 +1675,10 @@ async fn dispatch_trade_dm_batch(
 
         // Live DMs only: refresh status-bar reputation after success / rate ACK.
         if notify && crate::util::should_refresh_own_reputation_after_action(&action) {
-            if matches!(action, Action::PurchaseCompleted) {
-                crate::util::try_spawn_own_reputation_refresh_after_success(
-                    pool.clone(),
-                    client.clone(),
-                    mostro_pubkey,
-                    mostro_instance.clone(),
-                );
-            } else {
-                crate::util::try_spawn_fetch_own_reputation(
-                    pool.clone(),
-                    client.clone(),
-                    mostro_pubkey,
-                    mostro_instance.clone(),
-                );
-            }
+            crate::util::try_request_own_reputation_refresh(matches!(
+                action,
+                Action::PurchaseCompleted
+            ));
         }
 
         if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await
@@ -2029,12 +2016,10 @@ async fn replay_single_trade_dm(
         active_order_trade_indices,
         subscribed_pubkeys,
         client,
-        mostro_pubkey,
         subscription_to_order,
         terminal_policy,
         false,
         dropped_user_history_order_ids,
-        None, // notify=false: reputation refresh skipped
     )
     .await;
 
@@ -2460,7 +2445,6 @@ pub async fn listen_for_order_messages(
     pending_notifications: Arc<Mutex<usize>>,
     dropped_user_history_order_ids: Arc<Mutex<HashSet<Uuid>>>,
     mut dm_subscription_rx: tokio::sync::mpsc::UnboundedReceiver<OrderDmSubscriptionCmd>,
-    mostro_instance: Option<MostroInstanceInfo>,
 ) {
     // Get user key from db (for deriving trade keys)
     let user = match User::get(&pool).await {
@@ -2804,12 +2788,10 @@ pub async fn listen_for_order_messages(
                             &active_order_trade_indices,
                             &mut subscribed_pubkeys,
                             &client,
-                            mostro_pubkey,
                             &mut subscription_to_order,
                             TradeDmTerminalPolicy::TrackedSubscription(&subscription_id),
                             true,
                             &dropped_user_history_order_ids,
-                            mostro_instance.clone(),
                         )
                         .await;
                     } else if let Some((order_id, trade_index, trade_keys, unwrapped)) =
@@ -2843,12 +2825,10 @@ pub async fn listen_for_order_messages(
                             &active_order_trade_indices,
                             &mut subscribed_pubkeys,
                             &client,
-                            mostro_pubkey,
                             &mut subscription_to_order,
                             TradeDmTerminalPolicy::UntrackedFallback,
                             true,
                             &dropped_user_history_order_ids,
-                            mostro_instance.clone(),
                         )
                         .await;
                     }

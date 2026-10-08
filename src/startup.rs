@@ -250,7 +250,6 @@ pub async fn run_post_terminal_startup(
         pending_notifications_clone,
         dropped_user_history_clone,
         dm_subscription_rx,
-        app.mostro_info.clone(),
     );
 
     // After listener + instance info (for first-contact PoW): align trade index

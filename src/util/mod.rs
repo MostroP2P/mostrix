@@ -40,7 +40,7 @@ pub use dm_utils::{
     hydrate_startup_active_order_dm_state, listen_for_order_messages, parse_dm_events,
     replay_active_trade_dms, seed_admin_chat_last_seen, send_dm, send_track_order_cmd,
     set_dm_router_cmd_tx, set_order_result_tx, try_notify_my_trades_maker_book_changed,
-    try_spawn_fetch_own_reputation, try_spawn_own_reputation_refresh_after_success,
+    try_request_own_reputation_refresh, try_spawn_fetch_own_reputation,
     unsubscribe_dm_listener_subscriptions, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
     TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_CANCELED_MSG, WAIT_FOR_DM_TIMEOUT_MSG,
 };

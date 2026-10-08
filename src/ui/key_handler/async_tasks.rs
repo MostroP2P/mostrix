@@ -372,7 +372,6 @@ pub async fn respawn_trade_dm_listener(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
-        app.mostro_info.clone(),
     );
     Ok(())
 }
@@ -580,7 +579,6 @@ async fn apply_pending_key_reload_from_settings<F, Fut>(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
-        app.mostro_info.clone(),
     );
 
     // Session cleared `own_reputation`; refetch for the new identity on this Mostro.
@@ -777,7 +775,6 @@ pub async fn apply_pending_fetch_scheduler_reload(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
-        app.mostro_info.clone(),
     );
 
     if coordinator_changed {
@@ -965,7 +962,6 @@ pub async fn reload_runtime_session_after_reconnect(
         pending_notifications_clone,
         dropped_user_history_clone,
         new_dm_rx,
-        ctx.app.mostro_info.clone(),
     );
 
     // Startup skips user-info when relays were down; refetch once connectivity returns
