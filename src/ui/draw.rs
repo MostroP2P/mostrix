@@ -936,4 +936,39 @@ mod tests {
             "pending dispute status must stay visible through ui_draw at 8 rows"
         );
     }
+
+    /// Regression (ermeme on #212): a long first status line wrapped and pushed
+    /// the currencies line and notification badge out of the 3-row status bar.
+    #[test]
+    fn ui_draw_status_bar_keeps_reputation_currencies_and_badge() {
+        let disputes = Arc::new(Mutex::new(Vec::new()));
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let status = [
+            format!(
+                "🧌 Mostro name: demo | ⭐ 4.8 · 🗳 23 · since Nov 2023 | Pubkey: {}",
+                "a".repeat(64)
+            ),
+            "🔗 Relays: wss://relay.mostro.network, wss://nos.lol".to_string(),
+            "💱 Currencies: USD, EUR - Filters: All currencies are accepted | Shift+F: Order filters | Shift+X: Clear order filters".to_string(),
+        ];
+        for width in [80, 120] {
+            let mut app = AppState::new(UserRole::User);
+            *app.pending_notifications.lock().expect("pending lock") = 3;
+            let backend = TestBackend::new(width, 12);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status)))
+                .expect("draw");
+            let buf = terminal.backend().buffer();
+            assert!(buffer_contains(buf, "4.8"), "reputation at {width} cols");
+            assert!(
+                buffer_contains(buf, "Currencies"),
+                "currencies at {width} cols"
+            );
+            assert!(
+                buffer_contains(buf, "3 new notification(s)"),
+                "badge at {width} cols"
+            );
+        }
+    }
 }

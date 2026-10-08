@@ -1157,8 +1157,8 @@ async fn main() -> Result<(), anyhow::Error> {
         );
         let status_lines = vec![
             format!(
-                "🧌 Mostro name: {} | Pubkey: {}{}",
-                mostro_alias, &current_settings.mostro_pubkey, reputation_segment
+                "🧌 Mostro name: {}{} | Pubkey: {}",
+                mostro_alias, reputation_segment, &current_settings.mostro_pubkey
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
