@@ -2,16 +2,28 @@
 
 # Mostro pubkey, it can be hex or npub
 mostro_pubkey = "mostro_pubkey_hex_format"
-# Admin private key - leave empty for user mode
+# Admin / dispute-solver private key (nsec). Used only when user_mode = "admin";
+# leave empty if you are a regular trader.
+# - Dispute solver: put the nsec of the key the Mostro operator registered as a
+#   solver (via Add Dispute Solver). It signs take / settle / cancel dispute and
+#   the dispute chat with buyer and seller. What the solver may do depends on the
+#   permission it was registered with: Read can take disputes and chat (mediate);
+#   settling / canceling and taking over from a read-only solver need Read-Write.
+# - Mostro operator: put the Mostro daemon nsec (the key behind mostro_pubkey).
+#   Only this key can run operator actions such as Add Dispute Solver.
+# Do NOT reuse nsec_privkey here: that is your trader identity.
 admin_privkey = ""
 # Relays to connect to
 relays = ["wss://relay.mostro.network","wss://relay.shadowbip.com","wss://mostro-p2p.tech"]
 log_level = "info"
 # Visually filter currencies to show in the UI - leave empty to show all currencies
 currencies_filter = []
-# Nostr private key in nsec format
+# Your trader identity (nsec), used in user mode to create/take orders and chat
+# with counterparties. Mostrix derives it on first run from the identity mnemonic
+# stored in the local database and keeps both in sync; Settings -> Generate New
+# Keys rotates it. You normally do not edit it, and it is unrelated to admin_privkey.
 nsec_privkey = 'nsec1_privkey_format'
-# User mode: "user" or "admin"
+# User mode: "user" (trader) or "admin" (dispute solver / operator, signs with admin_privkey)
 user_mode = "user"
 # Lightning address when you buy (receive via LNURL-pay); leave empty if unused.
 ln_address = ""

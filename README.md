@@ -60,11 +60,13 @@ For portable installs, a colocated `settings.toml` must not contain placeholder 
 # Mostro pubkey, hex format - official Mostro instance
 mostro_pubkey = "82fa8cb978b43c79b2156585bac2c011176a21d2aead6d9f7c575c005be88390"
 
-# Nostr user private key (nsec format, KEEP THIS SECRET)
-# Auto-generated on first run if not provided
+# Trader identity (nsec format, KEEP THIS SECRET)
+# Auto-generated on first run and kept in sync with the local database
 nsec_privkey = "nsec1..."
 
-# Admin private key - leave empty for normal user mode
+# Admin key (nsec format, KEEP THIS SECRET), used only when user_mode = "admin"
+# Dispute solver: your registered solver nsec. Operator: the Mostro daemon nsec.
+# Leave empty if you are a regular trader.
 admin_privkey = ""
 
 # Nostr relays to connect to
@@ -80,7 +82,7 @@ log_level = "info"
 # Empty list = show all currencies from Mostro instance
 currencies_filter = []
 
-# User mode: "user" or "admin" (controls available actions and UI)
+# User mode: "user" (trader) or "admin" (dispute solver / operator)
 user_mode = "user"
 ```
 
@@ -93,17 +95,30 @@ user_mode = "user"
   - Accepts hex format. Use the key of the Mostro deployment you trust.
 
 - **`nsec_privkey`**  
-  - Your **Nostr private key** in `nsec…` format.
-  - In normal user mode, Mostrix derives this automatically on first run from the DB identity mnemonic and keeps it in sync with the SQLite database.
+  - Your **trader identity**: the Nostr private key (`nsec…`) used in **user mode** to create/take orders and chat with counterparties.
+  - Mostrix derives this automatically on first run from the DB identity mnemonic and keeps it in sync with the SQLite database. You normally do not edit it by hand.
   - When you use **Settings → Generate New Keys**, Mostrix rotates this value and shows the backup mnemonic popup.
+  - It is **not** used for admin / dispute-solver actions — that is `admin_privkey`.
   - **Treat this like a password** – do not share or commit it to Git.
 
 - **`admin_privkey`**  
-  - Private key used when running Mostrix in **admin mode**.  
-  - Needed for admin-only flows (e.g., dispute resolution for admins).  
-  - For operator actions such as **Add Dispute Solver**, this must be the **Mostro daemon** `nsec` (same key whose pubkey is `mostro_pubkey`).  
+  - Private key (`nsec…`) used only when running Mostrix in **admin mode** (`user_mode = "admin"`). It signs every admin flow: taking a dispute, settling (pay buyer) / canceling (refund seller), and the per-dispute shared-key chat with buyer and seller.
+  - Which key goes here depends on your role:
+    - **Dispute solver**: the `nsec` of the key the Mostro operator registered as a solver (its `npub` was added with **Add Dispute Solver**). What it can do depends on the permission the operator chose when registering it:
+      - **Read**: take disputes and chat with buyer and seller (mediation), but not settle or cancel them.
+      - **Read-Write**: also settle (pay buyer) / cancel (refund seller), and take over an `in-progress` dispute held by a read-only solver (see [Taking over a dispute from Serbero](docs/ADMIN_DISPUTES.md#taking-over-a-dispute-from-serbero-ctrlt)).
+
+      Either way, a solver key **cannot** run operator actions such as adding other solvers.
+    - **Mostro operator**: the **Mostro daemon** `nsec` (same key whose pubkey is `mostro_pubkey`). Only this key can run operator actions such as **Add Dispute Solver**; it can also take and resolve disputes.
+  - Do **not** reuse `nsec_privkey` here — your trader identity and your admin/solver key are separate keys.
   - Set it via **Settings → Change Admin Key** (or edit `settings.toml`). Do not use **Generate New Keys** for this — that option exists in **User** mode only.  
-  - Leave it empty if you are a normal user.
+  - Leave it empty if you are a regular trader.
+
+| | `nsec_privkey` | `admin_privkey` |
+|---|---|---|
+| **Regular trader** | Auto-managed identity | Empty |
+| **Dispute solver** | Auto-managed identity (for trading) | Your registered solver `nsec` (Read or Read-Write) |
+| **Mostro operator** | Auto-managed identity (for trading) | Mostro daemon `nsec` |
 
 - **`relays`**  
   - List of Nostr relay URLs (WebSocket endpoints) that Mostrix will connect to.  
