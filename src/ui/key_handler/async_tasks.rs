@@ -19,10 +19,10 @@ use crate::util::solver_dms::SolverDm;
 use crate::util::{
     any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
     hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, spawn_fetch_user_info, spawn_supervised_chat_listener,
-    spawn_supervised_trade_dm_listener, sync_trade_index_from_mostro_and_persist,
-    try_spawn_fetch_own_reputation, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
-    FatalNotify, MostroInstanceInfo, OrderDmSubscriptionCmd, StartupDmHydration,
+    set_dm_router_cmd_tx, spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
+    sync_trade_index_from_mostro_and_persist, try_spawn_fetch_own_reputation,
+    unsubscribe_dm_listener_subscriptions, ChatRouterCmd, FatalNotify, OrderDmSubscriptionCmd,
+    StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
@@ -66,27 +66,6 @@ fn operation_result_for_mostro_command_error(
     } else {
         OperationResult::Error(err.to_string())
     }
-}
-
-/// Fetch this identity's own reputation from Mostro and update the status bar cache.
-///
-/// Thin wrapper around [`crate::util::spawn_fetch_user_info`]. Soft-fails on
-/// network/parse errors (`log::warn` only — no popup). Success sends
-/// [`OperationResult::OwnReputationUpdated`] on `order_result_tx`.
-pub fn spawn_fetch_own_reputation(
-    pool: SqlitePool,
-    client: Client,
-    mostro_pubkey: PublicKey,
-    mostro_instance: Option<MostroInstanceInfo>,
-    order_result_tx: UnboundedSender<OperationResult>,
-) {
-    spawn_fetch_user_info(
-        pool,
-        client,
-        mostro_pubkey,
-        mostro_instance,
-        order_result_tx,
-    );
 }
 
 /// Sync trade index from Mostro, then re-run the command that failed with `InvalidTradeIndex`.

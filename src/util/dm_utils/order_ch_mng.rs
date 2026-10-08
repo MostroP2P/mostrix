@@ -17,7 +17,8 @@ use uuid::Uuid;
 
 /// Apply a successful `user-info` fetch when it still matches the live session.
 ///
-/// Ignores replies for a previous Mostro instance or identity (key reload / switch).
+/// Ignores replies for a previous Mostro instance or identity (key reload / switch),
+/// and replies from a fetch issued before the one already applied.
 #[must_use]
 pub fn apply_own_reputation_update_if_current(
     app: &mut AppState,
@@ -25,13 +26,22 @@ pub fn apply_own_reputation_update_if_current(
     current_identity: &PublicKey,
     fetched_mostro: PublicKey,
     fetched_identity: PublicKey,
+    generation: u64,
     info: UserInfo,
 ) -> bool {
     if fetched_mostro != *current_mostro || fetched_identity != *current_identity {
         log::debug!("Ignoring stale OwnReputationUpdated (mostro/identity mismatch)");
         return false;
     }
+    if generation <= app.own_reputation_generation {
+        log::debug!(
+            "Ignoring out-of-order OwnReputationUpdated (generation {generation} <= {})",
+            app.own_reputation_generation
+        );
+        return false;
+    }
     app.own_reputation = Some(info);
+    app.own_reputation_generation = generation;
     true
 }
 
@@ -761,7 +771,7 @@ mod tests {
         let identity = Keys::generate().public_key();
 
         assert!(apply_own_reputation_update_if_current(
-            &mut app, &mostro, &identity, mostro, identity, info,
+            &mut app, &mostro, &identity, mostro, identity, 1, info,
         ));
 
         let cached = app.own_reputation.expect("cached");
@@ -793,6 +803,7 @@ mod tests {
             &current_identity,
             other,
             current_identity,
+            1,
             info.clone(),
         ));
         assert!(app.own_reputation.is_none());
@@ -803,9 +814,40 @@ mod tests {
             &current_identity,
             current_mostro,
             other,
+            2,
             info,
         ));
         assert!(app.own_reputation.is_none());
+    }
+
+    #[test]
+    fn own_reputation_older_completion_does_not_overwrite_newer() {
+        let mut app = AppState::new(UserRole::User);
+        let mostro = Keys::generate().public_key();
+        let identity = Keys::generate().public_key();
+        let older = UserInfo {
+            rating: 4.0,
+            reviews: 5,
+            operating_days: 10,
+            since: None,
+        };
+        let newer = UserInfo {
+            rating: 4.2,
+            reviews: 6,
+            operating_days: 10,
+            since: None,
+        };
+
+        // Fetch 2 completes first, then the slower fetch 1 lands.
+        assert!(apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, 2, newer,
+        ));
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, 1, older,
+        ));
+
+        assert_eq!(app.own_reputation.as_ref().map(|i| i.reviews), Some(6));
+        assert_eq!(app.own_reputation_generation, 2);
     }
 
     #[test]
@@ -822,6 +864,7 @@ mod tests {
                 info,
                 mostro_pubkey: Keys::generate().public_key(),
                 identity_pubkey: Keys::generate().public_key(),
+                generation: 1,
             },
             &mut app,
         );

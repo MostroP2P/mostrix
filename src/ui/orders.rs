@@ -496,6 +496,8 @@ pub enum OperationResult {
         info: mostro_core::prelude::UserInfo,
         mostro_pubkey: PublicKey,
         identity_pubkey: PublicKey,
+        /// Fetch issue order; older completions must not overwrite a newer cache.
+        generation: u64,
     },
     /// Background trade event asks the main loop to refetch own reputation (no UI popup).
     ///

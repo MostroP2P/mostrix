@@ -1,6 +1,7 @@
 //! Own-reputation sync with Mostro (`Action::UserInfo`).
 //!
 //! Protocol: <https://mostro.network/protocol/user_info.html>
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -15,6 +16,9 @@ use crate::ui::OperationResult;
 use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_TIMEOUT};
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::types::get_cant_do_description;
+
+/// Issue order of own-reputation fetches; replies can complete out of order.
+static OWN_REPUTATION_FETCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Delay before a second `user-info` fetch after `PurchaseCompleted` so a
 /// counterpart rating that arrives shortly after success can update the bar.
@@ -142,6 +146,7 @@ pub fn spawn_fetch_user_info(
     mostro_instance: Option<MostroInstanceInfo>,
     order_result_tx: UnboundedSender<OperationResult>,
 ) {
+    let generation = OWN_REPUTATION_FETCH_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     tokio::spawn(async move {
         let identity_keys = match User::get_identity_keys(&pool).await {
             Ok(keys) => keys,
@@ -164,6 +169,7 @@ pub fn spawn_fetch_user_info(
                     info,
                     mostro_pubkey,
                     identity_pubkey,
+                    generation,
                 });
             }
             Err(e) => {

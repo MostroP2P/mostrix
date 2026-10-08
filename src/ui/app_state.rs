@@ -385,6 +385,8 @@ pub struct AppState {
     /// unknown identity); the status bar shows `reputation: none` and does not
     /// display a star average.
     pub own_reputation: Option<UserInfo>,
+    /// Fetch generation of the last applied [`Self::own_reputation`] (0 = none yet).
+    pub own_reputation_generation: u64,
     /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
     /// Kept in sync by [`Self::set_mostro_info`] (including stale-revision ignore).
     pub transport: Transport,
@@ -494,6 +496,7 @@ impl AppState {
             order_filters: OrderBookFilters::default(),
             mostro_info: None,
             own_reputation: None,
+            own_reputation_generation: 0,
             transport: Transport::Nip44Direct,
             offline_overlay_message: None,
             background_task_alarms: BTreeMap::new(),

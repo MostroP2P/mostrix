@@ -99,6 +99,7 @@ async fn apply_order_result(
         info,
         mostro_pubkey: fetched_mostro,
         identity_pubkey: fetched_identity,
+        generation,
     } = result
     {
         match User::get(pool).await {
@@ -110,6 +111,7 @@ async fn apply_order_result(
                         &current_identity,
                         fetched_mostro,
                         fetched_identity,
+                        generation,
                         info,
                     );
                 }
