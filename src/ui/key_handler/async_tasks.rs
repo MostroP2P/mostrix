@@ -250,6 +250,35 @@ async fn spawn_own_reputation_if_eligible(
     );
 }
 
+/// Drop cached own reputation when reconnect/reload installs a different Mostro.
+///
+/// Returns `true` when the coordinator changed. Callers refetch when the cache is
+/// empty afterward (coordinator change or never filled after offline startup).
+fn invalidate_own_reputation_if_coordinator_changed(
+    app: &mut AppState,
+    previous: &PublicKey,
+    next: PublicKey,
+) -> bool {
+    if next == *previous {
+        return false;
+    }
+    app.own_reputation = None;
+    true
+}
+
+/// Whether reconnect should spawn a user-info fetch after applying `next`.
+///
+/// Clears a populated cache when the coordinator changes so coordinator A's
+/// rating cannot remain displayed beside B (and suppress B's fetch).
+fn prepare_own_reputation_for_reconnect(
+    app: &mut AppState,
+    previous: &PublicKey,
+    next: PublicKey,
+) -> bool {
+    invalidate_own_reputation_if_coordinator_changed(app, previous, next);
+    app.own_reputation.is_none()
+}
+
 fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
     if clear_active_order_indices_or_fatal(app).is_err() {
         return;
@@ -664,10 +693,8 @@ pub async fn apply_pending_fetch_scheduler_reload(
     })?;
 
     // Drop reputation for the previous coordinator before subscriptions move.
-    let coordinator_changed = new_mostro_pubkey != *mostro_pubkey;
-    if coordinator_changed {
-        app.own_reputation = None;
-    }
+    let coordinator_changed =
+        invalidate_own_reputation_if_coordinator_changed(app, mostro_pubkey, new_mostro_pubkey);
 
     message_listener_handle.abort();
     order_fetch_task.abort();
@@ -870,6 +897,10 @@ pub async fn reload_runtime_session_after_reconnect(
     await_aborted_task(ctx.order_fetch_task).await;
     await_aborted_task(ctx.dispute_fetch_task).await;
     unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
+    // Mirror coordinator-switch invalidation: a settings change while offline
+    // must not keep A's rating beside B after reconnect installs B.
+    let should_fetch_own_reputation =
+        prepare_own_reputation_for_reconnect(ctx.app, ctx.mostro_pubkey, new_mostro_pubkey);
     *ctx.mostro_pubkey = new_mostro_pubkey;
     match ctx.current_mostro_pubkey.lock() {
         Ok(mut active_pubkey) => {
@@ -943,9 +974,9 @@ pub async fn reload_runtime_session_after_reconnect(
         new_dm_rx,
     );
 
-    // Startup skips user-info when relays were down; refetch once connectivity returns
-    // and the cache is still empty (same eligibility as startup).
-    if ctx.app.own_reputation.is_none() {
+    // Offline startup left the cache empty, or reconnect installed a new
+    // coordinator and cleared A's snapshot — refetch when eligible.
+    if should_fetch_own_reputation {
         spawn_own_reputation_if_eligible(ctx.app, ctx.pool, ctx.client, new_mostro_pubkey).await;
     }
 
@@ -1542,8 +1573,61 @@ mod tests {
         snapshot_pending_waiter_candidates, take_and_send_pending_waiter,
     };
     use crate::util::{set_dm_router_cmd_tx, wait_for_dm};
+    use mostro_core::prelude::UserInfo;
     use nostr_sdk::prelude::{Event, EventBuilder, FinalizeEvent, Kind, RelayUrl, Tag, ToBech32};
     use std::time::Duration;
+
+    #[test]
+    fn reconnect_clears_populated_reputation_when_coordinator_changes() {
+        // Regression: reconnect with A cached and B in settings must not keep
+        // A's rating beside B (and must refetch because the cache is cleared).
+        let mut app = AppState::new(UserRole::User);
+        app.own_reputation = Some(UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+            since: None,
+        });
+        let coordinator_a = Keys::generate().public_key();
+        let coordinator_b = Keys::generate().public_key();
+
+        assert!(prepare_own_reputation_for_reconnect(
+            &mut app,
+            &coordinator_a,
+            coordinator_b
+        ));
+        assert!(app.own_reputation.is_none());
+    }
+
+    #[test]
+    fn reconnect_keeps_reputation_for_same_coordinator() {
+        let mut app = AppState::new(UserRole::User);
+        app.own_reputation = Some(UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+            since: None,
+        });
+        let coordinator = Keys::generate().public_key();
+
+        assert!(!prepare_own_reputation_for_reconnect(
+            &mut app,
+            &coordinator,
+            coordinator
+        ));
+        assert_eq!(app.own_reputation.as_ref().map(|i| i.reviews), Some(12));
+    }
+
+    #[test]
+    fn reconnect_refetches_when_cache_empty_same_coordinator() {
+        let mut app = AppState::new(UserRole::User);
+        let coordinator = Keys::generate().public_key();
+        assert!(prepare_own_reputation_for_reconnect(
+            &mut app,
+            &coordinator,
+            coordinator
+        ));
+    }
 
     #[test]
     fn format_unsubscribe_failures_joins_url_and_error() {
