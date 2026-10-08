@@ -761,6 +761,7 @@ ln_address = "user@domain.com"
             push_server_url: String::new(),
             notifications_enabled: true,
             trusted_dm_senders: vec![],
+            watchdog_pubkey: String::new(),
         };
 
         clear_ln_address(&mut settings);

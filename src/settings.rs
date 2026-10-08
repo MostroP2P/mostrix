@@ -48,6 +48,11 @@ pub struct Settings {
     /// kind 14 to a solver, so only listed authors are read.
     #[serde(default)]
     pub trusted_dm_senders: Vec<String>,
+    /// mostro-watchdog key (npub or hex) linked from Settings → Link Watchdog.
+    /// When set, admin mode tells it which dispute chats to watch so the solver
+    /// gets Telegram notifications. Empty disables it.
+    #[serde(default)]
+    pub watchdog_pubkey: String,
 }
 
 fn default_notifications_enabled() -> bool {
@@ -92,6 +97,7 @@ impl Default for Settings {
             push_server_url: default_push_server_url(),
             notifications_enabled: default_notifications_enabled(),
             trusted_dm_senders: Vec::new(),
+            watchdog_pubkey: String::new(),
         }
     }
 }

@@ -20,6 +20,7 @@ pub mod solver_dms;
 pub mod supervised_listener;
 pub mod sync_trade_index;
 pub mod types;
+pub mod watchdog;
 
 // Re-export commonly used items
 pub use crate::ui::helpers::PreparedOrderChatAttachment;

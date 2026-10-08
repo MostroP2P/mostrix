@@ -71,6 +71,10 @@ pub enum UiMode {
     ConfirmRestoreDefaultRelays(bool),
     /// Settings: enter a Blossom server HTTPS base.
     AddBlossomServer(KeyInputState),
+    /// Settings (admin): enter the mostro-watchdog key to link.
+    LinkWatchdogKey(KeyInputState),
+    /// Settings (admin): enter the `/link` code for the watchdog (hex key).
+    LinkWatchdogCode(String, KeyInputState),
     /// Settings: confirm adding a Blossom server (url, selected_button).
     ConfirmBlossomServer(String, bool),
     /// Settings: pick a Blossom server to remove (snapshot taken at open).
@@ -197,6 +201,10 @@ impl Clone for UiMode {
                 UiMode::ConfirmRestoreDefaultRelays(*selected)
             }
             UiMode::AddBlossomServer(state) => UiMode::AddBlossomServer(state.clone()),
+            UiMode::LinkWatchdogKey(state) => UiMode::LinkWatchdogKey(state.clone()),
+            UiMode::LinkWatchdogCode(watchdog, state) => {
+                UiMode::LinkWatchdogCode(watchdog.clone(), state.clone())
+            }
             UiMode::ConfirmBlossomServer(url, selected) => {
                 UiMode::ConfirmBlossomServer(url.clone(), *selected)
             }

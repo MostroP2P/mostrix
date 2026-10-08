@@ -25,6 +25,7 @@ pub enum SettingsMenuAction {
     ImportSeedWords,
     AddDisputeSolver,
     ChangeAdminKey,
+    LinkWatchdog,
     GenerateNewKeys,
 }
 
@@ -40,7 +41,7 @@ pub const NOTIFICATIONS_LABEL: &str = "Background Alerts";
 /// set via **Change Admin Key** — generating a fresh keypair would overwrite
 /// `admin_privkey` with a key the daemon rejects.
 #[allow(clippy::redundant_static_lifetimes)]
-const ADMIN_SETTINGS: [SettingsMenuRow; 14] = [
+const ADMIN_SETTINGS: [SettingsMenuRow; 15] = [
     (SettingsMenuAction::SwitchMode, "Switch Mode (User ↔ Admin)"),
     (
         SettingsMenuAction::ChangeMostroPubkey,
@@ -70,6 +71,10 @@ const ADMIN_SETTINGS: [SettingsMenuRow; 14] = [
     (SettingsMenuAction::ViewSeedWords, "View Seed Words"),
     (SettingsMenuAction::AddDisputeSolver, "Add Dispute Solver"),
     (SettingsMenuAction::ChangeAdminKey, "Change Admin Key"),
+    (
+        SettingsMenuAction::LinkWatchdog,
+        "Link Watchdog (Telegram notifications)",
+    ),
 ];
 
 /// Single source of truth for User Settings rows (action + list label).
@@ -334,7 +339,7 @@ mod tests {
 
     #[test]
     fn admin_settings_omit_generate_new_keys() {
-        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 14);
+        assert_eq!(ADMIN_SETTINGS_OPTIONS_COUNT, 15);
         assert!(ADMIN_SETTINGS
             .iter()
             .all(|(action, _)| *action != SettingsMenuAction::GenerateNewKeys));
@@ -342,7 +347,19 @@ mod tests {
             settings_action_for_index(UserRole::Admin, 13),
             Some(SettingsMenuAction::ChangeAdminKey)
         ));
-        assert!(settings_action_for_index(UserRole::Admin, 14).is_none());
+        assert!(settings_action_for_index(UserRole::Admin, 15).is_none());
+    }
+
+    #[test]
+    fn only_admins_can_link_the_watchdog() {
+        // Solver notifications follow the admin key's dispute chats.
+        assert_eq!(
+            settings_action_for_index(UserRole::Admin, 14),
+            Some(SettingsMenuAction::LinkWatchdog)
+        );
+        assert!(USER_SETTINGS
+            .iter()
+            .all(|(action, _)| *action != SettingsMenuAction::LinkWatchdog));
     }
 
     #[test]

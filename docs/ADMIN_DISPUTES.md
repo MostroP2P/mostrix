@@ -173,6 +173,7 @@ The Settings tab provides comprehensive configuration options for both User and 
 4. **Clear Currency Filters**: Clears `currencies_filter` in `settings.toml`; the scheduler then shows all orders (no currency filter) on the next fetch.
 5. **Add Dispute Solver**: Add a new dispute solver to the network (see [Adding a Solver](#adding-a-solver) section).
 6. **Change Admin Key**: Update the admin private key used for signing dispute actions.
+7. **Link Watchdog (Telegram notifications)**: Link a [mostro-watchdog](https://github.com/MostroP2P/mostro-watchdog) bot so you get a private Telegram message when a party writes to you in a dispute you took (see [Telegram notifications through mostro-watchdog](#telegram-notifications-through-mostro-watchdog)).
 
 #### Settings Tab Features
 
@@ -838,6 +839,44 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 Once an admin has taken a dispute (state: `InProgress`), they are expected to perform resolution actions such as resolving in favor of buyer or seller, requesting additional information, or transferring/escalating the dispute. The exact UI flows for these actions are still under active development in Mostrix and may change; refer to the Mostro protocol documentation for the canonical dispute actions and state transitions.
 
+## Telegram notifications through mostro-watchdog
+
+A solver can get a private Telegram message when a party writes in the chat of
+a dispute they took, so they do not have to keep Mostrix in view. The
+[mostro-watchdog](https://github.com/MostroP2P/mostro-watchdog) bot sends it.
+It never gets a private key and never reads the chat: Mostrix only tells it the
+public signing key of each conversation and the id of each message you send.
+
+**Linking**
+
+1. Send `/link` to the watchdog bot in a private Telegram chat. It answers with
+   its key and a one-time code (valid 10 minutes).
+2. In Mostrix, admin mode, **Settings → Link Watchdog (Telegram
+   notifications)**: enter the watchdog key, then the code.
+3. Mostrix sends the link and, once it went out, saves the key as
+   `watchdog_pubkey` in `settings.toml` and asks the watchdog to watch every
+   dispute you hold. The bot confirms
+   in Telegram. To relink (a new code, or another chat), run it again: the key
+   is prefilled.
+
+To stop, send `/unlink` to the bot. Mostrix keeps sending its messages while
+`watchdog_pubkey` is set, and the watchdog ignores them; clear the setting to
+stop them too.
+
+**What Mostrix sends** (`src/util/watchdog.rs`), each a Mostro v2 `send-dm` to
+the watchdog key, with the admin key proven inside the ciphertext and a fresh
+trade key on the event, so relays do not see your key writing to the watchdog:
+
+| When | Message |
+|---|---|
+| Linking | `link` with the code, then a `watch` for each held dispute |
+| Taking a dispute | `watch` with the dispute id and `pub(K_sign)` of the buyer and seller chats |
+| Sending a chat message | `sent` with the event id, **before** the message is published, so the watchdog does not notify you of your own message (both sides of a chat sign with the same `K_sign`). Mostrix waits at most 5 s for it, then publishes anyway |
+| Settling or canceling | `unwatch` |
+
+A failed watchdog message is logged and never blocks the dispute action. The
+protocol is `SOLVER_NOTIFICATIONS.md` in the mostro-watchdog repository.
+
 ## Security Considerations
 
 ### Admin Key Management
@@ -857,6 +896,7 @@ Once an admin has taken a dispute (state: `InProgress`), they are expected to pe
 - **Encrypted messages**: Protocol DMs use NIP-44 (signed kind 14); P2P and dispute chat use kind 14 (`K_sign` / `K_conv`).
 - **Signed actions**: All dispute actions are signed with the admin key
 - **Audit trail**: Dispute actions are recorded on the Nostr network
+- **Watchdog privacy**: a linked mostro-watchdog learns which conversations you handle and when they are used, never their content. It never receives a private key.
 - **Push wake privacy**: The wake (`POST /api/notify`) tells `mostro-push-server` only that some IP asked it to wake a given trade pubkey at a given time — no content, sender, dispute, or order id. For a solver this links their IP to the trade pubkeys of the disputes they handle; an operator who considers that sensitive can set `push_server_url = ""` to disable it, or route Mostrix through Tor/a proxy.
 
 ## New Features: Currency Filters & Relay Management

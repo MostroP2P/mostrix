@@ -110,8 +110,9 @@ pub fn prepare_admin_chat_message(
 ///
 /// Looks up the stored `shared_key_hex` for the given party, rebuilds the
 /// ECDH `Keys`, and spawns an async task that wraps the message as kind 14
-/// (`K_sign` / `K_conv` via `send_admin_chat_message_via_shared_key`). When a
-/// relay accepts the envelope, wakes `recipient_pubkey` through the push server.
+/// (`K_sign` / `K_conv` via `send_dispute_chat_message_as_solver`, which also
+/// sends the linked watchdog its receipt). When a relay accepts the envelope,
+/// wakes `recipient_pubkey` through the push server.
 pub fn send_admin_chat_message_via_shared_key(
     dispute_id_key: &str,
     shared_key_hex: Option<&str>,
@@ -119,7 +120,6 @@ pub fn send_admin_chat_message_via_shared_key(
     message_content: &str,
     client: &Client,
     admin_chat_keys: Option<&Keys>,
-    mostro_instance: Option<crate::util::MostroInstanceInfo>,
 ) {
     let Some(admin_keys) = admin_chat_keys else {
         log::warn!(
@@ -148,12 +148,11 @@ pub fn send_admin_chat_message_via_shared_key(
     let dispute_id_key = dispute_id_key.to_string();
 
     tokio::spawn(async move {
-        match crate::util::send_admin_chat_message_via_shared_key(
+        match crate::util::chat_utils::send_dispute_chat_message_as_solver(
             &client,
             &admin_keys,
             &shared_keys,
             &message_content,
-            mostro_instance.as_ref(),
         )
         .await
         {

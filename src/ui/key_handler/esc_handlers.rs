@@ -119,6 +119,8 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
         | UiMode::AddRelay(_)
         | UiMode::RemoveRelay(..)
         | UiMode::AddBlossomServer(_)
+        | UiMode::LinkWatchdogKey(_)
+        | UiMode::LinkWatchdogCode(..)
         | UiMode::RemoveBlossomServer(..)
         | UiMode::AddLnAddress(_)
         | UiMode::AddCurrency(_) => {

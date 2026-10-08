@@ -47,3 +47,9 @@ notifications_enabled = true
 # Admin mode: assistants (e.g. Serbero) whose messages to your admin key are shown
 # per dispute, as npub or hex. Only listed authors are read.
 # trusted_dm_senders = ["npub1..."]
+
+# Admin mode: mostro-watchdog key (npub or hex) that sends you a private Telegram
+# message when a party writes in a dispute you took. Set it from Settings ->
+# Link Watchdog with the code the bot gives you on /link. Only public chat keys
+# are shared with it, never a private key. Empty disables it.
+watchdog_pubkey = ""
