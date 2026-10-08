@@ -11,8 +11,39 @@ use crate::ui::{
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::order_utils::should_apply_status_transition;
-use mostro_core::prelude::{Action, Message, Payload, SmallOrder};
+use mostro_core::prelude::{Action, Message, Payload, SmallOrder, UserInfo};
+use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
+
+/// Apply a successful `user-info` fetch when it still matches the live session.
+///
+/// Ignores replies for a previous Mostro instance or identity (key reload / switch),
+/// and replies from a fetch issued before the one already applied.
+#[must_use]
+pub fn apply_own_reputation_update_if_current(
+    app: &mut AppState,
+    current_mostro: &PublicKey,
+    current_identity: &PublicKey,
+    fetched_mostro: PublicKey,
+    fetched_identity: PublicKey,
+    generation: u64,
+    info: UserInfo,
+) -> bool {
+    if fetched_mostro != *current_mostro || fetched_identity != *current_identity {
+        log::debug!("Ignoring stale OwnReputationUpdated (mostro/identity mismatch)");
+        return false;
+    }
+    if generation <= app.own_reputation_generation {
+        log::debug!(
+            "Ignoring out-of-order OwnReputationUpdated (generation {generation} <= {})",
+            app.own_reputation_generation
+        );
+        return false;
+    }
+    app.own_reputation = Some(info);
+    app.own_reputation_generation = generation;
+    true
+}
 
 fn remove_closed_trade_from_messages_tab(app: &mut AppState, order_id: Uuid) {
     match app.messages.lock() {
@@ -502,8 +533,16 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
         }
     }
 
-    // Handle observer chat results directly (don't show popup)
+    // Handle silent channel updates (don't show popup)
     match result {
+        OperationResult::OwnReputationUpdated { .. } => {
+            // Freshness is enforced in `apply_order_result` (live mostro + DB identity).
+            return;
+        }
+        OperationResult::OwnReputationRefreshRequested { .. } => {
+            // Spawned from `apply_order_result` with live instance info.
+            return;
+        }
         OperationResult::ObserverChatLoaded {
             generation,
             messages,
@@ -717,6 +756,124 @@ mod tests {
 
     use mostro_core::prelude::{Message, Payload, Peer, SmallOrder, Status, UserInfo};
     use nostr_sdk::prelude::Keys;
+
+    #[test]
+    fn own_reputation_updated_is_silent_and_caches_info() {
+        let mut app = AppState::new(UserRole::User);
+        assert!(app.own_reputation.is_none());
+        let info = UserInfo {
+            rating: 4.5,
+            reviews: 10,
+            operating_days: 30,
+            since: Some(1_700_784_000),
+        };
+        let mostro = Keys::generate().public_key();
+        let identity = Keys::generate().public_key();
+
+        assert!(apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, 1, info,
+        ));
+
+        let cached = app.own_reputation.expect("cached");
+        assert_eq!(cached.rating, 4.5);
+        assert_eq!(cached.reviews, 10);
+        assert_eq!(cached.since, Some(1_700_784_000));
+        assert!(
+            !matches!(app.mode, UiMode::OperationResult(_)),
+            "own reputation must not open a popup"
+        );
+    }
+
+    #[test]
+    fn own_reputation_updated_ignores_stale_mostro_or_identity() {
+        let mut app = AppState::new(UserRole::User);
+        let info = UserInfo {
+            rating: 4.5,
+            reviews: 10,
+            operating_days: 30,
+            since: Some(1_700_784_000),
+        };
+        let current_mostro = Keys::generate().public_key();
+        let current_identity = Keys::generate().public_key();
+        let other = Keys::generate().public_key();
+
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app,
+            &current_mostro,
+            &current_identity,
+            other,
+            current_identity,
+            1,
+            info.clone(),
+        ));
+        assert!(app.own_reputation.is_none());
+
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app,
+            &current_mostro,
+            &current_identity,
+            current_mostro,
+            other,
+            2,
+            info,
+        ));
+        assert!(app.own_reputation.is_none());
+    }
+
+    #[test]
+    fn own_reputation_older_completion_does_not_overwrite_newer() {
+        let mut app = AppState::new(UserRole::User);
+        let mostro = Keys::generate().public_key();
+        let identity = Keys::generate().public_key();
+        let older = UserInfo {
+            rating: 4.0,
+            reviews: 5,
+            operating_days: 10,
+            since: None,
+        };
+        let newer = UserInfo {
+            rating: 4.2,
+            reviews: 6,
+            operating_days: 10,
+            since: None,
+        };
+
+        // Fetch 2 completes first, then the slower fetch 1 lands.
+        assert!(apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, 2, newer,
+        ));
+        assert!(!apply_own_reputation_update_if_current(
+            &mut app, &mostro, &identity, mostro, identity, 1, older,
+        ));
+
+        assert_eq!(app.own_reputation.as_ref().map(|i| i.reviews), Some(6));
+        assert_eq!(app.own_reputation_generation, 2);
+    }
+
+    #[test]
+    fn own_reputation_updated_via_handle_is_silent_without_cache() {
+        let mut app = AppState::new(UserRole::User);
+        let info = UserInfo {
+            rating: 1.0,
+            reviews: 1,
+            operating_days: 1,
+            since: None,
+        };
+        handle_operation_result(
+            OperationResult::OwnReputationUpdated {
+                info,
+                mostro_pubkey: Keys::generate().public_key(),
+                identity_pubkey: Keys::generate().public_key(),
+                generation: 1,
+            },
+            &mut app,
+        );
+        assert!(app.own_reputation.is_none());
+        assert!(
+            !matches!(app.mode, UiMode::OperationResult(_)),
+            "must not open a popup"
+        );
+    }
 
     #[test]
     fn failed_new_order_keeps_form_draft() {

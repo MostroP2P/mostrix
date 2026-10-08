@@ -15,7 +15,8 @@ use crate::ui::helpers::{
     apply_user_order_chat_updates, clear_session_chat_projection, expire_attachment_toast,
     load_admin_disputes_at_startup, merge_refreshed_orders_into_history,
     prepare_post_restore_trade_dm_replay, refresh_my_trades_maker_book_cache,
-    spawn_post_restore_hydrate, sync_user_order_history_messages_from_db, track_startup_chats,
+    spawn_post_restore_hydrate, status_bar_reputation_segment,
+    sync_user_order_history_messages_from_db, track_startup_chats,
 };
 use crate::ui::key_handler::{
     append_paste_to_admin_dispute_chat, append_paste_to_order_chat,
@@ -29,11 +30,13 @@ use crate::ui::{
 };
 use crate::util::solver_dms::apply_live_dm;
 use crate::util::{
-    blossom_servers_from_settings, execute_restore_session, handle_message_notification,
-    handle_operation_result, install_background_panic_hook, order_utils::validate_range_amount,
-    restore_completion_result, set_chat_router_cmd_tx, set_dm_router_cmd_tx, set_fatal_error_tx,
-    set_order_result_tx, spawn_save_attachment, spawn_send_order_chat_attachment,
-    untrack_dispute_chat_parties, FatalNotify,
+    apply_own_reputation_update_if_current, blossom_servers_from_settings, execute_restore_session,
+    handle_message_notification, handle_operation_result, install_background_panic_hook,
+    order_utils::validate_range_amount, restore_completion_result, set_chat_router_cmd_tx,
+    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx,
+    should_retry_own_reputation_after_mostro_info, spawn_fetch_user_info, spawn_save_attachment,
+    spawn_send_order_chat_attachment, try_spawn_fetch_own_reputation, untrack_dispute_chat_parties,
+    FatalNotify, OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
 };
 use crossterm::event::EventStream;
 use mostro_core::prelude::*;
@@ -62,6 +65,14 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
     )
 }
 
+/// Re-enter the main loop after `delay` so the delayed refetch also reads live instance info.
+fn schedule_own_reputation_refresh_request(tx: UnboundedSender<OperationResult>, delay: Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = tx.send(OperationResult::OwnReputationRefreshRequested { delayed: false });
+    });
+}
+
 /// Applies one [`OperationResult`] from the background task channel (save attachment, orders, etc.).
 ///
 /// [`OperationResult::SessionRestored`] clears stale chat projection, resyncs DB-backed
@@ -80,6 +91,57 @@ async fn apply_order_result(
     if let OperationResult::PostRestoreHydrateCompleted { report } = &result {
         apply_restored_peer_order_chats_from_disk(app, &report.peer_hydrated_order_ids);
         track_startup_chats(pool, app).await;
+        return;
+    }
+
+    if let OperationResult::OwnReputationUpdated {
+        info,
+        mostro_pubkey: fetched_mostro,
+        identity_pubkey: fetched_identity,
+        generation,
+    } = result
+    {
+        match User::get(pool).await {
+            Ok(user) => match PublicKey::from_str(&user.i0_pubkey) {
+                Ok(current_identity) => {
+                    let _ = apply_own_reputation_update_if_current(
+                        app,
+                        &mostro_pubkey,
+                        &current_identity,
+                        fetched_mostro,
+                        fetched_identity,
+                        generation,
+                        info,
+                    );
+                }
+                Err(e) => {
+                    log::warn!("Own reputation update skipped: invalid session identity: {e}");
+                }
+            },
+            Err(e) => {
+                log::warn!("Own reputation update skipped: identity unavailable: {e}");
+            }
+        }
+        return;
+    }
+
+    if let OperationResult::OwnReputationRefreshRequested { delayed } = result {
+        if app.user_role == UserRole::User {
+            if delayed {
+                schedule_own_reputation_refresh_request(
+                    order_result_tx.clone(),
+                    OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
+                );
+            } else {
+                spawn_fetch_user_info(
+                    pool.clone(),
+                    client.clone(),
+                    mostro_pubkey,
+                    app.mostro_info.clone(),
+                    order_result_tx.clone(),
+                );
+            }
+        }
         return;
     }
 
@@ -787,6 +849,20 @@ async fn main() -> Result<(), anyhow::Error> {
                                     );
                                 }
                             }
+                            // Startup may have skipped UserInfo (or sent with zero PoW)
+                            // when instance info was missing; retry once info lands.
+                            if should_retry_own_reputation_after_mostro_info(
+                                app.user_role == UserRole::User,
+                                app.own_reputation.is_none(),
+                                app.mostro_info.is_some(),
+                            ) {
+                                try_spawn_fetch_own_reputation(
+                                    pool.clone(),
+                                    client.clone(),
+                                    active_mostro,
+                                    app.mostro_info.clone(),
+                                );
+                            }
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),
                             );
@@ -1121,10 +1197,14 @@ async fn main() -> Result<(), anyhow::Error> {
             Some(info) => info.name.as_deref().unwrap_or("unknown").to_string(),
             None => "unknown".to_string(),
         };
+        let reputation_segment = status_bar_reputation_segment(
+            app.user_role == UserRole::User,
+            app.own_reputation.as_ref(),
+        );
         let status_lines = vec![
             format!(
-                "🧌 Mostro name: {} | Pubkey: {}",
-                mostro_alias, &current_settings.mostro_pubkey
+                "🧌 Mostro name: {}{} | Pubkey: {}",
+                mostro_alias, reputation_segment, &current_settings.mostro_pubkey
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
@@ -1152,6 +1232,25 @@ async fn main() -> Result<(), anyhow::Error> {
     terminal::leave(&mut terminal)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod own_reputation_refresh_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delayed_refresh_reenters_main_loop_as_immediate_request() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        schedule_own_reputation_refresh_request(tx, Duration::from_millis(10));
+        let result = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("request before timeout")
+            .expect("channel open");
+        assert!(matches!(
+            result,
+            OperationResult::OwnReputationRefreshRequested { delayed: false }
+        ));
+    }
 }
 
 #[cfg(test)]

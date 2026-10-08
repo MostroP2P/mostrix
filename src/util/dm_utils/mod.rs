@@ -11,8 +11,11 @@ pub use dm_helpers::seed_admin_chat_last_seen;
 pub use notifications_ch_mng::{
     apply_saved_ln_address_invoice_choice, handle_message_notification, present_add_invoice_popup,
 };
-pub use order_ch_mng::handle_operation_result;
-pub use order_result_tx::{set_order_result_tx, try_notify_my_trades_maker_book_changed};
+pub use order_ch_mng::{apply_own_reputation_update_if_current, handle_operation_result};
+pub use order_result_tx::{
+    set_order_result_tx, try_notify_my_trades_maker_book_changed,
+    try_request_own_reputation_refresh, try_spawn_fetch_own_reputation,
+};
 pub use waiters::{WAIT_FOR_DM_BUSY_MSG, WAIT_FOR_DM_CANCELED_MSG};
 
 use anyhow::Result;
@@ -326,8 +329,8 @@ pub fn protocol_identity_keys(identity: &Keys, full_privacy: bool) -> Option<&Ke
 /// Never pass the long-lived identity key as `trade_keys` — that authors a
 /// public, permanent identity→receiver link on every relay and drops the
 /// proof. Account-scoped requests with no per-trade key (restore session,
-/// last-trade-index) use a fresh ephemeral key instead. The admin flows are
-/// the intentional exception: the admin key *is* the account.
+/// last-trade-index, user-info) use a fresh ephemeral key instead. The admin
+/// flows are the intentional exception: the admin key *is* the account.
 pub async fn send_dm(
     client: &Client,
     identity_keys: Option<&Keys>,
@@ -1654,6 +1657,7 @@ async fn dispatch_trade_dm_batch(
                 trade_index
             );
         }
+        let action = message.get_inner_message_kind().action.clone();
         handle_trade_dm_for_order(
             messages,
             pending_notifications,
@@ -1668,6 +1672,11 @@ async fn dispatch_trade_dm_batch(
             notify,
         )
         .await;
+
+        // Live DMs only: our reputation can change once the counterpart rates us.
+        if notify && crate::util::should_refresh_own_reputation_after_action(&action) {
+            crate::util::try_request_own_reputation_refresh(true);
+        }
 
         if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await
         {
@@ -2923,6 +2932,7 @@ mod tests {
             buyer_invoice: None,
             created_at: None,
             expires_at: None,
+            cashu_mint_url: None,
         };
         let new_order = Message::new_order(
             Some(child_id),

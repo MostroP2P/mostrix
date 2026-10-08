@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use uuid::Uuid;
 
-use mostro_core::prelude::{Action, Transport};
+use mostro_core::prelude::{Action, Transport, UserInfo};
 use ratatui::widgets::TableState;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -378,6 +378,15 @@ pub struct AppState {
     /// Cached Mostro instance info (kind 38385), if available.
     /// Populated only from client-authenticated fetches; apply via [`Self::set_mostro_info`].
     pub mostro_info: Option<MostroInstanceInfo>,
+    /// Own identity reputation on the connected Mostro (`Action::UserInfo`).
+    ///
+    /// `None` until the first successful fetch (status bar omits the segment).
+    /// After a fetch, `reviews == 0` is “no reputation yet” (same as a new or
+    /// unknown identity); the status bar shows `reputation: none` and does not
+    /// display a star average.
+    pub own_reputation: Option<UserInfo>,
+    /// Fetch generation of the last applied [`Self::own_reputation`] (0 = none yet).
+    pub own_reputation_generation: u64,
     /// Wire transport resolved from [`Self::mostro_info`] (`protocol_version` tag).
     /// Kept in sync by [`Self::set_mostro_info`] (including stale-revision ignore).
     pub transport: Transport,
@@ -486,6 +495,8 @@ impl AppState {
             currencies_filter: Vec::new(),
             order_filters: OrderBookFilters::default(),
             mostro_info: None,
+            own_reputation: None,
+            own_reputation_generation: 0,
             transport: Transport::Nip44Direct,
             offline_overlay_message: None,
             background_task_alarms: BTreeMap::new(),

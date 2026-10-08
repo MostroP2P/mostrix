@@ -20,8 +20,9 @@ use crate::util::{
     any_relay_reachable, connect_and_wait_for_relay, connect_client_safely,
     hydrate_startup_active_order_dm_state, is_invalid_trade_index_error, set_chat_router_cmd_tx,
     set_dm_router_cmd_tx, spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
-    sync_trade_index_from_mostro_and_persist, unsubscribe_dm_listener_subscriptions, ChatRouterCmd,
-    FatalNotify, OrderDmSubscriptionCmd, StartupDmHydration,
+    sync_trade_index_from_mostro_and_persist, try_spawn_fetch_own_reputation,
+    unsubscribe_dm_listener_subscriptions, ChatRouterCmd, FatalNotify, OrderDmSubscriptionCmd,
+    StartupDmHydration,
 };
 use mostro_core::prelude::{Dispute, SmallOrder, Transport};
 use nostr_sdk::prelude::{Client, Keys, Output, PublicKey, SignerAuthenticator};
@@ -222,6 +223,61 @@ fn clear_runtime_session_state(app: &mut AppState) {
     clear_session_chat_projection(app);
     app.selected_message_idx = 0;
     app.pending_post_take_operation_result = None;
+    app.own_reputation = None;
+}
+
+/// Soft-start a status-bar reputation fetch when the session is eligible.
+///
+/// Same gates as startup: user role and a persisted identity row. Soft-fails inside
+/// [`try_spawn_fetch_own_reputation`] when the order-result channel is unset.
+async fn spawn_own_reputation_if_eligible(
+    app: &AppState,
+    pool: &SqlitePool,
+    client: &Client,
+    mostro_pubkey: PublicKey,
+) {
+    if !matches!(app.user_role, UserRole::User) {
+        return;
+    }
+    if User::get(pool).await.is_err() {
+        return;
+    }
+    try_spawn_fetch_own_reputation(
+        pool.clone(),
+        client.clone(),
+        mostro_pubkey,
+        app.mostro_info.clone(),
+    );
+}
+
+/// Drop coordinator-scoped caches when reconnect/reload installs a different Mostro.
+///
+/// Clears both own reputation and instance info so coordinator A's first-contact
+/// PoW / transport cannot be reused for B's `UserInfo` if B's kind-38385 fetch
+/// fails. Returns `true` when the coordinator changed.
+fn invalidate_coordinator_scoped_caches(
+    app: &mut AppState,
+    previous: &PublicKey,
+    next: PublicKey,
+) -> bool {
+    if next == *previous {
+        return false;
+    }
+    app.own_reputation = None;
+    app.set_mostro_info(None);
+    true
+}
+
+/// Spawn user-info only when the cache is empty and live instance info matches
+/// the active Mostro (so first-contact PoW is B-scoped, not a stale A snapshot).
+fn should_fetch_own_reputation_with_active_info(app: &AppState, active_mostro: PublicKey) -> bool {
+    if app.own_reputation.is_some() {
+        return false;
+    }
+    match app.mostro_info.as_ref() {
+        Some(info) => info.pubkey.is_none_or(|pk| pk == active_mostro),
+        None => false,
+    }
 }
 
 fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
@@ -242,6 +298,9 @@ fn clear_runtime_tracking_state_preserve_messages(app: &mut AppState) {
 ///
 /// Uses [`fetch_mostro_instance_info`] (client-side author / `d` / signature checks). Apply goes
 /// through [`AppState::set_mostro_info`], which ignores older `created_at` than the cache.
+///
+/// When the fetch yields no applicable revision (or errors), drop cached info that belongs to
+/// another coordinator so A's PoW/transport is not reused for B.
 async fn dm_transport_for_mostro(
     client: &Client,
     mostro_pubkey: PublicKey,
@@ -252,13 +311,16 @@ async fn dm_transport_for_mostro(
         Ok(fetch) => {
             if let Some(info) = fetch.to_apply() {
                 app.set_mostro_info(Some(info));
+            } else {
+                app.clear_mostro_info_if_not_for(mostro_pubkey);
             }
             app.transport
         }
         Err(e) => {
             log::warn!(
-                "{log_context}: failed to fetch Mostro instance info: {e}; keeping cached transport"
+                "{log_context}: failed to fetch Mostro instance info: {e}; keeping same-instance cache if any"
             );
+            app.clear_mostro_info_if_not_for(mostro_pubkey);
             app.transport
         }
     }
@@ -534,6 +596,9 @@ async fn apply_pending_key_reload_from_settings<F, Fut>(
         new_dm_rx,
     );
 
+    // Session cleared `own_reputation`; refetch for the new identity on this Mostro.
+    spawn_own_reputation_if_eligible(app, pool, client, new_mostro_pubkey).await;
+
     app.backup_requires_restart = false;
     app.pending_key_reload = false;
     app.mode = match router_reg {
@@ -634,6 +699,10 @@ pub async fn apply_pending_fetch_scheduler_reload(
         )
     })?;
 
+    // Drop reputation + instance policy for the previous coordinator before
+    // subscriptions move (A's PoW must not back B's first-contact DMs).
+    invalidate_coordinator_scoped_caches(app, mostro_pubkey, new_mostro_pubkey);
+
     message_listener_handle.abort();
     order_fetch_task.abort();
     dispute_fetch_task.abort();
@@ -720,6 +789,10 @@ pub async fn apply_pending_fetch_scheduler_reload(
         dropped_user_history_clone,
         new_dm_rx,
     );
+
+    if should_fetch_own_reputation_with_active_info(app, new_mostro_pubkey) {
+        spawn_own_reputation_if_eligible(app, pool, client, new_mostro_pubkey).await;
+    }
 
     match router_reg {
         Ok(()) => Ok(()),
@@ -831,6 +904,9 @@ pub async fn reload_runtime_session_after_reconnect(
     await_aborted_task(ctx.order_fetch_task).await;
     await_aborted_task(ctx.dispute_fetch_task).await;
     unsubscribe_all_best_effort(ctx.client, "Reconnect").await;
+    // Settings may have switched A→B while offline: drop A's reputation and
+    // instance policy before installing B (dm_transport may fail to replace it).
+    invalidate_coordinator_scoped_caches(ctx.app, ctx.mostro_pubkey, new_mostro_pubkey);
     *ctx.mostro_pubkey = new_mostro_pubkey;
     match ctx.current_mostro_pubkey.lock() {
         Ok(mut active_pubkey) => {
@@ -903,6 +979,12 @@ pub async fn reload_runtime_session_after_reconnect(
         dropped_user_history_clone,
         new_dm_rx,
     );
+
+    // Refetch only with usable active-scoped instance info (first-contact PoW).
+    // If B's kind-38385 is missing, MostroInfoFetchResult::Ok retries later.
+    if should_fetch_own_reputation_with_active_info(ctx.app, new_mostro_pubkey) {
+        spawn_own_reputation_if_eligible(ctx.app, ctx.pool, ctx.client, new_mostro_pubkey).await;
+    }
 
     match router_reg {
         Ok(()) => Ok(()),
@@ -1496,9 +1578,156 @@ mod tests {
         lock_pending_waiters_for_tests, reset_pending_waiters_for_tests,
         snapshot_pending_waiter_candidates, take_and_send_pending_waiter,
     };
-    use crate::util::{set_dm_router_cmd_tx, wait_for_dm};
+    use crate::util::{set_dm_router_cmd_tx, wait_for_dm, MostroInstanceInfo};
+    use mostro_core::prelude::UserInfo;
     use nostr_sdk::prelude::{Event, EventBuilder, FinalizeEvent, Kind, RelayUrl, Tag, ToBech32};
     use std::time::Duration;
+
+    /// Mirrors reconnect / fetch-scheduler order: invalidate → (optional B info
+    /// apply / clear foreign) → decide whether to spawn UserInfo.
+    fn reconnect_own_reputation_wiring(
+        app: &mut AppState,
+        previous: &PublicKey,
+        next: PublicKey,
+        b_info: Option<MostroInstanceInfo>,
+    ) -> bool {
+        invalidate_coordinator_scoped_caches(app, previous, next);
+        match b_info {
+            Some(info) => app.set_mostro_info(Some(info)),
+            None => app.clear_mostro_info_if_not_for(next),
+        }
+        should_fetch_own_reputation_with_active_info(app, next)
+    }
+
+    #[test]
+    fn reconnect_a_to_b_clears_info_and_defers_until_b_info() {
+        // A info/reputation cached, B in settings, B info unavailable → no
+        // UserInfo with A's PoW; later B-info recovery enables the fetch.
+        let mut app = AppState::new(UserRole::User);
+        let coordinator_a = Keys::generate().public_key();
+        let coordinator_b = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator_a),
+            pow: Some(0),
+            pow_first_contact: Some(0),
+            ..MostroInstanceInfo::default()
+        }));
+        app.own_reputation = Some(UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+            since: None,
+        });
+
+        assert!(!reconnect_own_reputation_wiring(
+            &mut app,
+            &coordinator_a,
+            coordinator_b,
+            None
+        ));
+        assert!(app.own_reputation.is_none());
+        assert!(app.mostro_info.is_none());
+
+        // Foreign A snapshot must not count as usable B policy.
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator_a),
+            pow_first_contact: Some(0),
+            ..MostroInstanceInfo::default()
+        }));
+        app.clear_mostro_info_if_not_for(coordinator_b);
+        assert!(app.mostro_info.is_none());
+        assert!(!should_fetch_own_reputation_with_active_info(
+            &app,
+            coordinator_b
+        ));
+
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator_b),
+            pow_first_contact: Some(16),
+            ..MostroInstanceInfo::default()
+        }));
+        assert!(should_fetch_own_reputation_with_active_info(
+            &app,
+            coordinator_b
+        ));
+    }
+
+    #[test]
+    fn reconnect_a_to_b_fetches_when_b_info_available() {
+        let mut app = AppState::new(UserRole::User);
+        let coordinator_a = Keys::generate().public_key();
+        let coordinator_b = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator_a),
+            ..MostroInstanceInfo::default()
+        }));
+        app.own_reputation = Some(UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+            since: None,
+        });
+
+        assert!(reconnect_own_reputation_wiring(
+            &mut app,
+            &coordinator_a,
+            coordinator_b,
+            Some(MostroInstanceInfo {
+                pubkey: Some(coordinator_b),
+                pow_first_contact: Some(16),
+                ..MostroInstanceInfo::default()
+            })
+        ));
+        assert_eq!(
+            app.mostro_info.as_ref().and_then(|i| i.pubkey),
+            Some(coordinator_b)
+        );
+    }
+
+    #[test]
+    fn reconnect_keeps_caches_for_same_coordinator() {
+        let mut app = AppState::new(UserRole::User);
+        let coordinator = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator),
+            pow_first_contact: Some(8),
+            ..MostroInstanceInfo::default()
+        }));
+        app.own_reputation = Some(UserInfo {
+            rating: 4.5,
+            reviews: 12,
+            operating_days: 30,
+            since: None,
+        });
+
+        assert!(!reconnect_own_reputation_wiring(
+            &mut app,
+            &coordinator,
+            coordinator,
+            None
+        ));
+        assert_eq!(app.own_reputation.as_ref().map(|i| i.reviews), Some(12));
+        assert_eq!(
+            app.mostro_info.as_ref().and_then(|i| i.pubkey),
+            Some(coordinator)
+        );
+    }
+
+    #[test]
+    fn reconnect_refetches_when_cache_empty_and_info_present() {
+        let mut app = AppState::new(UserRole::User);
+        let coordinator = Keys::generate().public_key();
+        app.set_mostro_info(Some(MostroInstanceInfo {
+            pubkey: Some(coordinator),
+            ..MostroInstanceInfo::default()
+        }));
+        assert!(reconnect_own_reputation_wiring(
+            &mut app,
+            &coordinator,
+            coordinator,
+            None
+        ));
+    }
 
     #[test]
     fn format_unsubscribe_failures_joins_url_and_error() {

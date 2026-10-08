@@ -159,20 +159,29 @@ pub fn effective_pow_first_contact_from_instance(instance: Option<&MostroInstanc
     }
 }
 
-/// Protocol actions that introduce a new trade key to Mostro (v2 spam gate first-contact lane).
+/// Protocol actions that pay the v2 spam-gate first-contact PoW lane.
+///
+/// Includes new order/take (new trade keys) and account-scoped restore actions
+/// that use a fresh ephemeral author (`LastTradeIndex`, `UserInfo`): the daemon
+/// treats unknown outer keys as first contact and drops them below
+/// `pow_first_contact` with no reply.
 pub fn is_v2_first_contact_protocol_action(action: &Action) -> bool {
     matches!(
         action,
-        Action::NewOrder | Action::TakeBuy | Action::TakeSell
+        Action::NewOrder
+            | Action::TakeBuy
+            | Action::TakeSell
+            | Action::LastTradeIndex
+            | Action::UserInfo
     )
 }
 
 /// NIP-13 bits for a protocol DM toward Mostro.
 ///
-/// First-contact actions (`NewOrder`, `TakeBuy`, `TakeSell`) use
-/// `max(pow, pow_first_contact)` so new order/take clears the daemon's stiffer
-/// toll when operators set `pow_first_contact` above `pow`. Other actions use
-/// base instance `pow`.
+/// First-contact actions use `max(pow, pow_first_contact)` so new order/take
+/// and ephemeral-key account queries clear the daemon's stiffer toll when
+/// operators set `pow_first_contact` above `pow`. Other actions use base
+/// instance `pow`.
 pub fn nostr_pow_for_protocol_dm(instance: Option<&MostroInstanceInfo>, action: &Action) -> u8 {
     let base = nostr_pow_from_instance(instance);
     if is_v2_first_contact_protocol_action(action) {
@@ -604,8 +613,13 @@ mod tests {
         assert!(is_v2_first_contact_protocol_action(&Action::NewOrder));
         assert!(is_v2_first_contact_protocol_action(&Action::TakeBuy));
         assert!(is_v2_first_contact_protocol_action(&Action::TakeSell));
+        assert!(is_v2_first_contact_protocol_action(&Action::LastTradeIndex));
+        assert!(is_v2_first_contact_protocol_action(&Action::UserInfo));
         assert!(!is_v2_first_contact_protocol_action(&Action::AddInvoice));
         assert!(!is_v2_first_contact_protocol_action(&Action::PayInvoice));
+        assert!(!is_v2_first_contact_protocol_action(
+            &Action::RestoreSession
+        ));
     }
 
     #[test]
@@ -651,6 +665,14 @@ mod tests {
             16
         );
         assert_eq!(nostr_pow_for_protocol_dm(Some(&info), &Action::TakeBuy), 16);
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::LastTradeIndex),
+            16
+        );
+        assert_eq!(
+            nostr_pow_for_protocol_dm(Some(&info), &Action::UserInfo),
+            16
+        );
         assert_eq!(
             nostr_pow_for_protocol_dm(Some(&info), &Action::AddInvoice),
             8

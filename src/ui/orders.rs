@@ -488,6 +488,25 @@ pub enum OperationResult {
     },
     /// Rebuild [`crate::ui::AppState::my_trades_maker_book`] from SQLite (no UI popup).
     MyTradesMakerBookChanged,
+    /// Own identity reputation from `Action::UserInfo` (no UI popup).
+    ///
+    /// Carries the Mostro and identity pubkeys used for the request so the UI
+    /// can ignore stale replies after a key reload or Mostro switch.
+    OwnReputationUpdated {
+        info: mostro_core::prelude::UserInfo,
+        mostro_pubkey: PublicKey,
+        identity_pubkey: PublicKey,
+        /// Fetch issue order; older completions must not overwrite a newer cache.
+        generation: u64,
+    },
+    /// Background trade event asks the main loop to refetch own reputation (no UI popup).
+    ///
+    /// The main loop spawns the fetch with its live Mostro pubkey and instance info, so
+    /// first-contact PoW always follows the current kind-38385 policy.
+    OwnReputationRefreshRequested {
+        /// Wait [`crate::util::OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY`] before fetching.
+        delayed: bool,
+    },
     /// Background post-restore hydrate finished (silent). The main loop loads peer transcripts
     /// from disk and re-emits [`crate::ui::helpers::track_startup_chats`].
     PostRestoreHydrateCompleted {

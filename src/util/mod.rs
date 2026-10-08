@@ -19,6 +19,7 @@ pub mod session_wipe;
 pub mod solver_dms;
 pub mod supervised_listener;
 pub mod sync_trade_index;
+pub mod sync_user_info;
 pub mod types;
 
 // Re-export commonly used items
@@ -35,12 +36,13 @@ pub use chat_listener::{
 pub use chat_utils::send_admin_chat_message_via_shared_key;
 pub use db_utils::save_order;
 pub use dm_utils::{
-    handle_message_notification, handle_operation_result, hydrate_startup_active_order_dm_state,
-    listen_for_order_messages, parse_dm_events, replay_active_trade_dms, seed_admin_chat_last_seen,
-    send_dm, send_track_order_cmd, set_dm_router_cmd_tx, set_order_result_tx,
-    try_notify_my_trades_maker_book_changed, unsubscribe_dm_listener_subscriptions, wait_for_dm,
-    OrderDmSubscriptionCmd, StartupDmHydration, TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT,
-    WAIT_FOR_DM_CANCELED_MSG, WAIT_FOR_DM_TIMEOUT_MSG,
+    apply_own_reputation_update_if_current, handle_message_notification, handle_operation_result,
+    hydrate_startup_active_order_dm_state, listen_for_order_messages, parse_dm_events,
+    replay_active_trade_dms, seed_admin_chat_last_seen, send_dm, send_track_order_cmd,
+    set_dm_router_cmd_tx, set_order_result_tx, try_notify_my_trades_maker_book_changed,
+    try_request_own_reputation_refresh, try_spawn_fetch_own_reputation,
+    unsubscribe_dm_listener_subscriptions, wait_for_dm, OrderDmSubscriptionCmd, StartupDmHydration,
+    TradeDmReplaySummary, FETCH_EVENTS_TIMEOUT, WAIT_FOR_DM_CANCELED_MSG, WAIT_FOR_DM_TIMEOUT_MSG,
 };
 pub use fatal::{
     fatal_requested, install_background_panic_hook, next_backoff_secs, request_fatal_restart,
@@ -82,6 +84,11 @@ pub use supervised_listener::{spawn_supervised_chat_listener, spawn_supervised_t
 pub use sync_trade_index::{
     effective_last_trade_index, fetch_last_trade_index_from_mostro,
     sync_trade_index_from_mostro_and_persist, LastTradeIndexSync,
+};
+pub use sync_user_info::{
+    fetch_user_info_from_mostro, should_fetch_own_reputation_at_startup,
+    should_refresh_own_reputation_after_action, should_retry_own_reputation_after_mostro_info,
+    spawn_fetch_user_info, OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
 };
 pub use types::{
     get_cant_do_description, is_invalid_trade_index_error, Event, ListKind, MostroCantDoError,

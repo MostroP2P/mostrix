@@ -31,6 +31,56 @@ pub fn format_user_rating_compact(info: &UserInfo) -> String {
     )
 }
 
+/// Compact own-reputation fragment for the global status bar.
+///
+/// - `None` (not fetched yet): empty string (caller omits the segment).
+/// - `reviews == 0`: `"reputation: none"` (protocol: do not show a star average).
+/// - otherwise: `"⭐ r.r · 🗳 N · since Mon YYYY"` using [`UserInfo::since`] when
+///   present; falls back to deprecated `operating_days` when `since` is absent.
+///   The status bar paints `⭐` + rating in yellow.
+#[must_use]
+pub fn format_own_reputation_status(info: Option<&UserInfo>) -> String {
+    let Some(info) = info else {
+        return String::new();
+    };
+    if info.reviews == 0 {
+        return "reputation: none".to_string();
+    }
+    let rating = info.rating.clamp(0.0, 5.0);
+    match info.since.and_then(|ts| {
+        DateTime::from_timestamp(ts as i64, 0).map(|dt| dt.format("%b %Y").to_string())
+    }) {
+        Some(since_label) => {
+            format!("⭐ {rating:.1} · 🗳 {} · since {since_label}", info.reviews)
+        }
+        None => format!(
+            "⭐ {rating:.1} · 🗳 {} · {}d",
+            info.reviews, info.operating_days
+        ),
+    }
+}
+
+/// Prefixed status-bar segment (`" | …"`) for the first global status line.
+///
+/// Empty for admin mode, before the first `user-info` fetch (`own_reputation`
+/// is `None`), or when the fragment is empty. Used from `main` when building
+/// the Mostro name / pubkey status line.
+#[must_use]
+pub fn status_bar_reputation_segment(
+    is_user_role: bool,
+    own_reputation: Option<&UserInfo>,
+) -> String {
+    if !is_user_role {
+        return String::new();
+    }
+    let fragment = format_own_reputation_status(own_reputation);
+    if fragment.is_empty() {
+        String::new()
+    } else {
+        format!(" | {fragment}")
+    }
+}
+
 /// Check if a dispute is finalized (any terminal dispute status).
 pub fn is_dispute_finalized(selected_dispute: &AdminDispute) -> Option<bool> {
     Some(selected_dispute.is_finalized())
@@ -147,6 +197,79 @@ mod rating_format_tests {
         };
         assert_eq!(format_user_rating_compact(&info), "3.9/5 (5 · 9d)");
         assert!(!format_user_rating_compact(&info).contains('⭐'));
+    }
+
+    #[test]
+    fn own_reputation_status_empty_while_unfetched() {
+        assert_eq!(format_own_reputation_status(None), "");
+    }
+
+    #[test]
+    fn own_reputation_status_none_when_zero_reviews() {
+        let info = UserInfo {
+            rating: 0.0,
+            reviews: 0,
+            operating_days: 0,
+            since: None,
+        };
+        assert_eq!(
+            format_own_reputation_status(Some(&info)),
+            "reputation: none"
+        );
+    }
+
+    #[test]
+    fn own_reputation_status_uses_since_when_present() {
+        let info = UserInfo {
+            rating: 4.8,
+            reviews: 23,
+            operating_days: 142,
+            since: Some(1_700_784_000), // 2023-11-24 UTC day start
+        };
+        assert_eq!(
+            format_own_reputation_status(Some(&info)),
+            "⭐ 4.8 · 🗳 23 · since Nov 2023"
+        );
+    }
+
+    #[test]
+    fn own_reputation_status_falls_back_to_operating_days() {
+        let info = UserInfo {
+            rating: 4.0,
+            reviews: 2,
+            operating_days: 40,
+            since: None,
+        };
+        assert_eq!(
+            format_own_reputation_status(Some(&info)),
+            "⭐ 4.0 · 🗳 2 · 40d"
+        );
+    }
+
+    #[test]
+    fn status_bar_reputation_segment_empty_for_admin() {
+        let info = UserInfo {
+            rating: 5.0,
+            reviews: 1,
+            operating_days: 1,
+            since: None,
+        };
+        assert_eq!(status_bar_reputation_segment(false, Some(&info)), "");
+    }
+
+    #[test]
+    fn status_bar_reputation_segment_prefixes_fragment_for_user() {
+        let info = UserInfo {
+            rating: 4.8,
+            reviews: 23,
+            operating_days: 142,
+            since: Some(1_700_784_000),
+        };
+        assert_eq!(
+            status_bar_reputation_segment(true, Some(&info)),
+            " | ⭐ 4.8 · 🗳 23 · since Nov 2023"
+        );
+        assert_eq!(status_bar_reputation_segment(true, None), "");
     }
 }
 
