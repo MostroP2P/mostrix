@@ -187,12 +187,39 @@ pub fn should_refresh_own_reputation_after_action(action: &Action) -> bool {
     matches!(action, Action::PurchaseCompleted)
 }
 
+/// Startup `UserInfo` needs usable instance info so first-contact PoW is applied.
+///
+/// When instance info failed at boot, defer the request; a later successful
+/// [`crate::ui::MostroInfoFetchResult::Ok`] retries via
+/// [`should_retry_own_reputation_after_mostro_info`].
+pub fn should_fetch_own_reputation_at_startup(
+    relays_reachable: bool,
+    is_user_role: bool,
+    has_mostro_info: bool,
+) -> bool {
+    relays_reachable && is_user_role && has_mostro_info
+}
+
+/// Retry own reputation after the first successful instance-info recovery.
+///
+/// Covers the case where startup sent (or skipped) `UserInfo` without
+/// `pow_first_contact` and a PoW-enabled Mostro dropped the request.
+pub fn should_retry_own_reputation_after_mostro_info(
+    is_user_role: bool,
+    own_reputation_empty: bool,
+    has_mostro_info: bool,
+) -> bool {
+    is_user_role && own_reputation_empty && has_mostro_info
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_user_info_response, should_refresh_own_reputation_after_action,
+        parse_user_info_response, should_fetch_own_reputation_at_startup,
+        should_refresh_own_reputation_after_action, should_retry_own_reputation_after_mostro_info,
         validate_correlated_response,
     };
+    use crate::util::mostro_info::{effective_pow_first_contact_from_instance, MostroInstanceInfo};
     use mostro_core::prelude::*;
 
     fn user_info_message(request_id: Option<u64>, info: UserInfo) -> Message {
@@ -328,5 +355,38 @@ mod tests {
         assert!(!should_refresh_own_reputation_after_action(
             &Action::FiatSent
         ));
+    }
+
+    #[test]
+    fn startup_defers_own_reputation_when_instance_info_missing() {
+        assert!(!should_fetch_own_reputation_at_startup(true, true, false));
+        assert!(should_fetch_own_reputation_at_startup(true, true, true));
+        assert!(!should_fetch_own_reputation_at_startup(false, true, true));
+        assert!(!should_fetch_own_reputation_at_startup(true, false, true));
+    }
+
+    #[test]
+    fn mostro_info_recovery_retries_empty_reputation_with_pow_policy() {
+        // Startup info failure left reputation empty; a later Ok with nonzero
+        // pow_first_contact must retry UserInfo using that live policy.
+        assert!(should_retry_own_reputation_after_mostro_info(
+            true, true, true
+        ));
+        assert!(!should_retry_own_reputation_after_mostro_info(
+            true, false, true
+        ));
+        assert!(!should_retry_own_reputation_after_mostro_info(
+            false, true, true
+        ));
+        assert!(!should_retry_own_reputation_after_mostro_info(
+            true, true, false
+        ));
+
+        let info = MostroInstanceInfo {
+            pow: Some(0),
+            pow_first_contact: Some(16),
+            ..MostroInstanceInfo::default()
+        };
+        assert!(effective_pow_first_contact_from_instance(Some(&info)) >= 16);
     }
 }

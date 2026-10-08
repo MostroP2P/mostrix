@@ -33,8 +33,9 @@ use crate::util::{
     apply_own_reputation_update_if_current, blossom_servers_from_settings, execute_restore_session,
     handle_message_notification, handle_operation_result, install_background_panic_hook,
     order_utils::validate_range_amount, restore_completion_result, set_chat_router_cmd_tx,
-    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx, spawn_fetch_user_info,
-    spawn_save_attachment, spawn_send_order_chat_attachment, untrack_dispute_chat_parties,
+    set_dm_router_cmd_tx, set_fatal_error_tx, set_order_result_tx,
+    should_retry_own_reputation_after_mostro_info, spawn_fetch_user_info, spawn_save_attachment,
+    spawn_send_order_chat_attachment, try_spawn_fetch_own_reputation, untrack_dispute_chat_parties,
     FatalNotify, OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
 };
 use crossterm::event::EventStream;
@@ -847,6 +848,20 @@ async fn main() -> Result<(), anyhow::Error> {
                                         "Failed to restart DM listener after transport change: {e}"
                                     );
                                 }
+                            }
+                            // Startup may have skipped UserInfo (or sent with zero PoW)
+                            // when instance info was missing; retry once info lands.
+                            if should_retry_own_reputation_after_mostro_info(
+                                app.user_role == UserRole::User,
+                                app.own_reputation.is_none(),
+                                app.mostro_info.is_some(),
+                            ) {
+                                try_spawn_fetch_own_reputation(
+                                    pool.clone(),
+                                    client.clone(),
+                                    active_mostro,
+                                    app.mostro_info.clone(),
+                                );
                             }
                             app.mode = crate::ui::UiMode::operation_result(
                                 crate::ui::OperationResult::Info(message),

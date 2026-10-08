@@ -33,8 +33,9 @@ use crate::util::{
         run_relay_order_db_reconcile_once, run_targeted_relay_order_db_reconcile_tick,
         start_fetch_scheduler, FetchSchedulerResult,
     },
-    spawn_supervised_chat_listener, spawn_supervised_trade_dm_listener,
-    sync_trade_index_from_mostro_and_persist, try_spawn_fetch_own_reputation, StartupDmHydration,
+    should_fetch_own_reputation_at_startup, spawn_supervised_chat_listener,
+    spawn_supervised_trade_dm_listener, sync_trade_index_from_mostro_and_persist,
+    try_spawn_fetch_own_reputation, StartupDmHydration,
 };
 
 pub struct PostTerminalStartupInput<'a> {
@@ -270,12 +271,22 @@ pub async fn run_post_terminal_startup(
         {
             log::warn!("Startup trade index sync failed: {e}");
         }
-        try_spawn_fetch_own_reputation(
-            input.pool.clone(),
-            client.clone(),
-            mostro_pubkey,
-            app.mostro_info.clone(),
-        );
+        // Defer UserInfo until instance info exists so first-contact PoW applies.
+        // A later MostroInfoFetchResult::Ok retries when this was skipped.
+        if should_fetch_own_reputation_at_startup(
+            relays_reachable,
+            matches!(input.user_role, UserRole::User),
+            app.mostro_info.is_some(),
+        ) {
+            try_spawn_fetch_own_reputation(
+                input.pool.clone(),
+                client.clone(),
+                mostro_pubkey,
+                app.mostro_info.clone(),
+            );
+        } else {
+            log::debug!("Own reputation fetch deferred until Mostro instance info is available");
+        }
     }
 
     // Single shared-key chat subscription router (user order chat + admin dispute chat).

@@ -86,8 +86,9 @@ pub use sync_trade_index::{
     sync_trade_index_from_mostro_and_persist, LastTradeIndexSync,
 };
 pub use sync_user_info::{
-    fetch_user_info_from_mostro, should_refresh_own_reputation_after_action, spawn_fetch_user_info,
-    OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
+    fetch_user_info_from_mostro, should_fetch_own_reputation_at_startup,
+    should_refresh_own_reputation_after_action, should_retry_own_reputation_after_mostro_info,
+    spawn_fetch_user_info, OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
 };
 pub use types::{
     get_cant_do_description, is_invalid_trade_index_error, Event, ListKind, MostroCantDoError,
