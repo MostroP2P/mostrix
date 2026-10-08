@@ -68,9 +68,7 @@ fn requires_db_projection_resync(result: &OperationResult) -> bool {
 fn schedule_own_reputation_refresh_request(tx: UnboundedSender<OperationResult>, delay: Duration) {
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
-        let _ = tx.send(OperationResult::OwnReputationRefreshRequested {
-            after_success: false,
-        });
+        let _ = tx.send(OperationResult::OwnReputationRefreshRequested { delayed: false });
     });
 }
 
@@ -126,19 +124,20 @@ async fn apply_order_result(
         return;
     }
 
-    if let OperationResult::OwnReputationRefreshRequested { after_success } = result {
+    if let OperationResult::OwnReputationRefreshRequested { delayed } = result {
         if app.user_role == UserRole::User {
-            spawn_fetch_user_info(
-                pool.clone(),
-                client.clone(),
-                mostro_pubkey,
-                app.mostro_info.clone(),
-                order_result_tx.clone(),
-            );
-            if after_success {
+            if delayed {
                 schedule_own_reputation_refresh_request(
                     order_result_tx.clone(),
                     OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY,
+                );
+            } else {
+                spawn_fetch_user_info(
+                    pool.clone(),
+                    client.clone(),
+                    mostro_pubkey,
+                    app.mostro_info.clone(),
+                    order_result_tx.clone(),
                 );
             }
         }
@@ -1234,9 +1233,7 @@ mod own_reputation_refresh_tests {
             .expect("channel open");
         assert!(matches!(
             result,
-            OperationResult::OwnReputationRefreshRequested {
-                after_success: false
-            }
+            OperationResult::OwnReputationRefreshRequested { delayed: false }
         ));
     }
 }

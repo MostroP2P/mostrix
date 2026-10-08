@@ -51,12 +51,12 @@ pub fn try_spawn_fetch_own_reputation(
 }
 
 /// Ask the main loop to refetch own reputation with its live Mostro instance info.
-pub fn try_request_own_reputation_refresh(after_success: bool) {
+pub fn try_request_own_reputation_refresh(delayed: bool) {
     let Some(tx) = cloned_order_result_tx() else {
         log::debug!("Own reputation refresh skipped: order_result_tx not registered");
         return;
     };
-    let _ = tx.send(OperationResult::OwnReputationRefreshRequested { after_success });
+    let _ = tx.send(OperationResult::OwnReputationRefreshRequested { delayed });
 }
 
 #[cfg(test)]
@@ -74,8 +74,8 @@ mod tests {
 
         let mut found = false;
         while let Ok(result) = rx.try_recv() {
-            if let OperationResult::OwnReputationRefreshRequested { after_success } = result {
-                assert!(after_success);
+            if let OperationResult::OwnReputationRefreshRequested { delayed } = result {
+                assert!(delayed);
                 found = true;
             }
         }

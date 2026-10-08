@@ -10,7 +10,6 @@ use crate::util::order_utils::{
     execute_add_bond_invoice, execute_add_invoice, execute_dispute, execute_rate_user,
     execute_send_msg,
 };
-use crate::util::try_spawn_fetch_own_reputation;
 use mostro_core::order::Status;
 use mostro_core::prelude::*;
 use uuid::Uuid;
@@ -501,12 +500,6 @@ pub fn handle_enter_rating_order(
         .await
         {
             Ok(()) => {
-                try_spawn_fetch_own_reputation(
-                    pool_clone,
-                    client_clone,
-                    mostro_pubkey,
-                    mostro_info,
-                );
                 let _ = result_tx.send(OperationResult::Info(
                     "Rating sent successfully".to_string(),
                 ));

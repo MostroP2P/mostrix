@@ -504,8 +504,8 @@ pub enum OperationResult {
     /// The main loop spawns the fetch with its live Mostro pubkey and instance info, so
     /// first-contact PoW always follows the current kind-38385 policy.
     OwnReputationRefreshRequested {
-        /// Also schedule a delayed refetch so a late counterpart rating can land.
-        after_success: bool,
+        /// Wait [`crate::util::OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY`] before fetching.
+        delayed: bool,
     },
     /// Background post-restore hydrate finished (silent). The main loop loads peer transcripts
     /// from disk and re-emits [`crate::ui::helpers::track_startup_chats`].

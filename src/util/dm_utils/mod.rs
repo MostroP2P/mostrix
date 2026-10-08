@@ -1673,12 +1673,9 @@ async fn dispatch_trade_dm_batch(
         )
         .await;
 
-        // Live DMs only: refresh status-bar reputation after success / rate ACK.
+        // Live DMs only: our reputation can change once the counterpart rates us.
         if notify && crate::util::should_refresh_own_reputation_after_action(&action) {
-            crate::util::try_request_own_reputation_refresh(matches!(
-                action,
-                Action::PurchaseCompleted
-            ));
+            crate::util::try_request_own_reputation_refresh(true);
         }
 
         if let Err(e) = Order::update_last_seen_dm_ts(pool, &order_id.to_string(), timestamp).await

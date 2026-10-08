@@ -20,8 +20,8 @@ use crate::util::types::get_cant_do_description;
 /// Issue order of own-reputation fetches; replies can complete out of order.
 static OWN_REPUTATION_FETCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Delay before a second `user-info` fetch after `PurchaseCompleted` so a
-/// counterpart rating that arrives shortly after success can update the bar.
+/// Delay before the `user-info` fetch after `PurchaseCompleted` so the
+/// counterpart's rating of us has time to land.
 pub const OWN_REPUTATION_REFRESH_AFTER_SUCCESS_DELAY: Duration = Duration::from_secs(45);
 
 /// Ask Mostro for this identity's own reputation (`Action::UserInfo`).
@@ -180,8 +180,11 @@ pub fn spawn_fetch_user_info(
 }
 
 /// Whether a live trade-DM action should refresh the status-bar reputation cache.
+///
+/// `RateReceived` is excluded: it acks *our* rating of the counterpart, which
+/// never changes our own reputation.
 pub fn should_refresh_own_reputation_after_action(action: &Action) -> bool {
-    matches!(action, Action::PurchaseCompleted | Action::RateReceived)
+    matches!(action, Action::PurchaseCompleted)
 }
 
 #[cfg(test)]
@@ -314,11 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn should_refresh_own_reputation_after_success_or_rate_received() {
+    fn should_refresh_own_reputation_only_after_purchase_completed() {
         assert!(should_refresh_own_reputation_after_action(
             &Action::PurchaseCompleted
         ));
-        assert!(should_refresh_own_reputation_after_action(
+        assert!(!should_refresh_own_reputation_after_action(
             &Action::RateReceived
         ));
         assert!(!should_refresh_own_reputation_after_action(&Action::Rate));
