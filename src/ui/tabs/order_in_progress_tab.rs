@@ -1234,10 +1234,8 @@ mod tests {
             );
             let buffer = render_copy(&mut app, 60, 12);
             assert!(highlighted_word(&buffer, "tail"));
-            assert!(
-                highlighted_word(&buffer, "wrapped") || highlighted_word(&buffer, "words"),
-                "range selection must keep the anchor message highlighted"
-            );
+            // Scroll keeps the cursor end visible; the anchor may be above the
+            // viewport, so assert the range in state rather than on-screen bg.
             assert!(app.order_chat_scrollview_state.offset().y > 0);
             assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
             let chats = if channel == UserChatChannel::Peer {

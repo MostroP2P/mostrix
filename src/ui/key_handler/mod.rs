@@ -3662,6 +3662,11 @@ mod key_handler_tests {
                 file_type: ChatAttachmentType::File,
                 decryption_key: None,
             });
+            // Start selection on the empty-filename attachment so Enter reports
+            // "No filename to copy" without also copying the earlier message.
+            app.observer_line_starts = vec![0, 8];
+            app.observer_scrollview_state
+                .set_offset(ratatui::layout::Position::new(0, 8));
             let generation = app.observer_fetch_generation;
             let messages = app.observer_messages.clone();
             let enter_copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
