@@ -1259,6 +1259,31 @@ mod own_reputation_refresh_tests {
 #[cfg(test)]
 mod paste_routing_tests {
     #[test]
+    fn observer_copy_blocks_paste_and_restores_shared_key_input() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = chat_copy::tests::app_with_observer_messages();
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "bb\n");
+        assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "bb\n");
+        assert_eq!(
+            app.observer_shared_key_input,
+            format!("{}bb", "a".repeat(64))
+        );
+    }
+
+    #[test]
     fn my_trades_copy_blocks_paste_and_resumes_original_draft() {
         use crate::ui::key_handler::chat_copy;
         use crate::ui::UserChatChannel;

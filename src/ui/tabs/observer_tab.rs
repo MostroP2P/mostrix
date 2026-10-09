@@ -4,7 +4,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
+use crate::ui::constants::{CHAT_COPY_HINT, CHAT_COPY_START};
 use crate::ui::helpers::build_observer_scrollview_content;
+use crate::ui::key_handler::chat_copy;
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Below this width the full field labels and footer (the longer footer line
@@ -13,12 +15,42 @@ use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 const OBSERVER_NARROW_WIDTH: u16 = 60;
 
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    chat_copy::validate_selection(app);
+    let selection = chat_copy::selected_index(app);
+    let feedback = chat_copy::feedback_text(app);
+    let copy_context = selection.is_some() || feedback.is_some();
+    let copy_hint = if area.width < 34 {
+        "↑↓ Select\nEnter Copy Esc Cancel\nCtrl+L Clear".to_string()
+    } else {
+        format!("{CHAT_COPY_HINT}\nCtrl+L:Clear all")
+    };
     let compact = area.height < 16 || area.width < OBSERVER_NARROW_WIDTH;
     // Compact footer is 3 short lines (vs. 2 long ones) so shortcuts stay
     // readable instead of being cut off; field row stays 3 rows either way.
-    let input_height = if compact { 6 } else { 5 };
+    let footer_height = if copy_context {
+        Paragraph::new(feedback.unwrap_or(&copy_hint))
+            .wrap(Wrap { trim: true })
+            .line_count(area.width.max(1))
+            .min(3) as u16
+    } else if compact {
+        3
+    } else {
+        2
+    };
+    let field_height = if copy_context && area.height < footer_height + 7 {
+        0
+    } else {
+        3
+    };
+    let input_height = field_height + footer_height;
     // Borders consume 2 rows. Compact: 1 inner row (status/error). Full: 2 inner rows.
-    let header_height = if compact { 3 } else { 4 };
+    let header_height = if copy_context && area.height < footer_height + 11 {
+        0
+    } else if compact {
+        3
+    } else {
+        4
+    };
     let chunks = Layout::new(
         Direction::Vertical,
         [
@@ -98,7 +130,11 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
 
     // Chat view (reuses the same formatting as dispute chat) with scrollview.
     let chat_block = Block::default()
-        .title("Chat messages")
+        .title(if selection.is_some() {
+            "Copy: Observer"
+        } else {
+            "Chat messages"
+        })
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -123,20 +159,21 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         // so right-aligned messages don't lose their last character.
         let viewport_width = inner_area.width.saturating_sub(1).max(1);
         let max_content_width = (viewport_width / 2).max(1);
-        let content = build_observer_scrollview_content(
+        let mut content = build_observer_scrollview_content(
             &app.observer_messages,
             viewport_width,
             Some(max_content_width),
         );
+        let selected_rows = content.select_message(selection);
 
         // Auto-scroll to bottom only when new messages arrive; preserve manual scroll otherwise.
         let visible_count = app.observer_messages.len();
         if visible_count > 0 {
             if let Some(last_count) = app.observer_scroll_tracker {
-                if visible_count > last_count {
+                if visible_count > last_count && selection.is_none() {
                     app.observer_scrollview_state.scroll_to_bottom();
                 }
-            } else {
+            } else if selection.is_none() {
                 // First time we load messages, jump to bottom.
                 app.observer_scrollview_state.scroll_to_bottom();
             }
@@ -145,6 +182,13 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
             app.observer_scroll_tracker = Some(0);
         }
 
+        if let Some(selected_rows) = selected_rows {
+            content.keep_selection_visible(
+                selected_rows,
+                inner_area.height,
+                &mut app.observer_scrollview_state,
+            );
+        }
         let mut scroll_view = ScrollView::new(Size::new(
             content.content_width,
             content.content_height.max(1),
@@ -160,10 +204,12 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     }
 
     // Shared key input + footer
-    let footer_height = if compact { 3 } else { 2 };
     let input_chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(3), Constraint::Length(footer_height)],
+        [
+            Constraint::Length(field_height),
+            Constraint::Length(footer_height),
+        ],
     )
     .split(chunks[2]);
 
@@ -174,7 +220,9 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         .fg(PRIMARY_COLOR)
         .add_modifier(Modifier::BOLD);
 
-    let conv_title = if compact {
+    let conv_title = if selection.is_some() {
+        "Shared key (copying)"
+    } else if compact {
         "Shared key (hex)"
     } else {
         "Shared key (64-char hex, read-only grant)"
@@ -189,9 +237,19 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     );
     f.render_widget(conv_input, input_chunks[0]);
 
+    if copy_context {
+        f.render_widget(
+            Paragraph::new(feedback.unwrap_or(&copy_hint))
+                .style(Style::default().fg(PRIMARY_COLOR))
+                .wrap(Wrap { trim: true }),
+            input_chunks[1],
+        );
+        return;
+    }
+
     let footer_text = if compact {
         // Shortened so shortcuts stay visible instead of clipping on narrow terminals.
-        "Ctrl+H:Help  Paste\n\
+        "Ctrl+H:Help Ctrl+C:Copy Paste\n\
 Enter:Load  Esc:Clear  Ctrl+L:All\n\
 Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
             .to_string()
@@ -202,7 +260,7 @@ Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
             "Ctrl+V / Ctrl+Shift+V / middle-click"
         };
         format!(
-            "Ctrl+H: Help | Paste ({paste_hint})\n\
+            "{CHAT_COPY_START} | Ctrl+H: Help | Paste ({paste_hint})\n\
 Enter: Load chat | Esc: Clear error | Ctrl+L: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
         )
     };
@@ -213,7 +271,10 @@ Enter: Load chat | Esc: Clear error | Ctrl+L: Clear all | Ctrl+S: Save attachmen
 #[cfg(test)]
 mod tests {
     use super::render_observer_tab;
+    use crate::ui::key_handler::chat_copy;
+    use crate::ui::PRIMARY_COLOR;
     use crate::ui::{AppState, UserRole};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -261,6 +322,94 @@ mod tests {
             .draw(|f| render_observer_tab(f, f.area(), app))
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    fn copy_key(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
+        assert!(chat_copy::handle_key_with(
+            app,
+            &KeyEvent::new(code, modifiers),
+            |_| false
+        ));
+    }
+
+    fn highlighted(buffer: &ratatui::buffer::Buffer, text: &str) -> bool {
+        (0..buffer.area.height).any(|row| {
+            (0..buffer.area.width)
+                .map(|column| &buffer[(column, row)])
+                .filter(|cell| cell.bg == PRIMARY_COLOR)
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains(text)
+        })
+    }
+
+    #[test]
+    fn observer_copy_highlight_and_controls_survive_resize() {
+        let mut app = chat_copy::tests::app_with_observer_messages();
+        copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for (width, height) in [(120, 28), (80, 24), (80, 12), (40, 12), (30, 8), (120, 28)] {
+            let buffer = render_observer(&mut app, width, height);
+            assert!(
+                highlighted(&buffer, "first"),
+                "missing selection at {width}x{height}"
+            );
+            for hint in ["Enter", "Esc", "Ctrl+L"] {
+                assert!(buffer_contains(&buffer, hint));
+            }
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+        }
+        for (width, height) in [(0, 0), (1, 1), (8, 3)] {
+            render_observer(&mut app, width, height);
+        }
+    }
+
+    #[test]
+    fn observer_copy_scrolls_selection_and_ignores_incoming_autoscroll() {
+        let mut app = chat_copy::tests::app_with_observer_messages();
+        app.observer_messages[0].content = "first wrapped words ".repeat(60);
+        copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let buffer = render_observer(&mut app, 40, 12);
+        assert!(highlighted(&buffer, "first"));
+        copy_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let buffer = render_observer(&mut app, 40, 12);
+        assert!(highlighted(&buffer, "last"));
+        assert!(app.observer_scrollview_state.offset().y > 0);
+        let mut incoming = app.observer_messages[0].clone();
+        incoming.content = "incoming words ".repeat(60);
+        app.observer_messages.push(incoming);
+        let buffer = render_observer(&mut app, 40, 12);
+        assert!(highlighted(&buffer, "last"));
+        assert_eq!(chat_copy::selected_index(&app), Some(1));
+    }
+
+    #[test]
+    fn observer_copy_feedback_and_clear_remove_highlight() {
+        for success in [true, false] {
+            let mut app = chat_copy::tests::app_with_observer_messages();
+            copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+            assert!(chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                |_| success
+            ));
+            let buffer = render_observer(&mut app, 30, 8);
+            assert!(buffer_contains(
+                &buffer,
+                if success {
+                    "Copied to clipboard"
+                } else {
+                    "Clipboard unavailable"
+                }
+            ));
+            assert!(!highlighted(&buffer, "first"));
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+            copy_key(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
+            let buffer = render_observer(&mut app, 80, 24);
+            assert!(!buffer_contains(&buffer, "first"));
+            assert!(!buffer_contains(&buffer, "Copied to clipboard"));
+            assert!(app.observer_shared_key_input.is_empty());
+        }
     }
 
     #[test]
@@ -321,8 +470,12 @@ mod tests {
                 "missing hint at {width}x{height}"
             );
             assert!(
-                !buffer_contains(&buf, "Ctrl+C"),
-                "stale hint at {width}x{height}"
+                buffer_contains(&buf, "Ctrl+C:Copy"),
+                "missing copy hint at {width}x{height}"
+            );
+            assert!(
+                !buffer_contains(&buf, "Ctrl+C: Clear all") && !buffer_contains(&buf, "Ctrl+C:All"),
+                "stale clear hint at {width}x{height}"
             );
         }
     }

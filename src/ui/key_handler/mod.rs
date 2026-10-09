@@ -3528,6 +3528,78 @@ mod key_handler_tests {
     }
 
     #[tokio::test]
+    async fn observer_copy_dispatch_preserves_inputs_and_rejects_results_after_clear() {
+        use crate::ui::{ChatAttachment, ChatAttachmentType};
+        use crate::util::dm_utils::handle_operation_result;
+
+        for mode in [UiMode::Normal, UiMode::AdminMode(AdminMode::Normal)] {
+            let mut app = chat_copy::tests::app_with_observer_messages();
+            app.mode = mode;
+            app.observer_error = Some("existing error".into());
+            app.observer_messages[1].attachment = Some(ChatAttachment {
+                blossom_url: "https://example.com/blob".into(),
+                filename: String::new(),
+                mime_type: None,
+                file_type: ChatAttachmentType::File,
+                decryption_key: None,
+            });
+            let generation = app.observer_fetch_generation;
+            let messages = app.observer_messages.clone();
+            let enter_copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            for key in [
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            ] {
+                dispatch_observer_test_key(&mut app, key).await;
+            }
+            assert_eq!(chat_copy::selected_index(&app), Some(1));
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .await;
+            assert_eq!(chat_copy::feedback_text(&app), Some("No filename to copy"));
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(app.observer_fetch_generation, generation);
+            assert!(!app.observer_loading);
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .await;
+            assert_eq!(app.observer_error.as_deref(), Some("existing error"));
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            )
+            .await;
+            assert!(app.chat_copy_session.is_none());
+            assert!(app.observer_shared_key_input.is_empty());
+            assert!(app.observer_fetch_generation > generation);
+            handle_operation_result(
+                OperationResult::ObserverChatLoaded {
+                    generation,
+                    messages,
+                },
+                &mut app,
+            );
+            handle_operation_result(
+                OperationResult::ObserverChatError {
+                    generation,
+                    message: "stale error".into(),
+                },
+                &mut app,
+            );
+            assert!(app.observer_messages.is_empty());
+            assert!(app.observer_error.is_none());
+            assert!(!app.observer_loading);
+            assert!(app.observer_inputs_editable());
+        }
+    }
+
+    #[tokio::test]
     async fn observer_ctrl_l_clears_secrets_and_invalidates_pending_fetch() {
         for mode in [UiMode::Normal, UiMode::AdminMode(AdminMode::Normal)] {
             for character in ['l', 'L'] {

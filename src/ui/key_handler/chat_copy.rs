@@ -15,6 +15,7 @@ pub(crate) enum ChatCopyTarget {
     Dispute { id: String, party: ChatParty },
     Order { id: Uuid, channel: UserChatChannel },
     SolverDm { dispute_id: String },
+    Observer { generation: u64 },
 }
 
 pub(crate) struct ChatCopySession {
@@ -30,6 +31,11 @@ pub(crate) struct ChatCopyFeedback {
 }
 
 fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
+    if app.user_role == UserRole::Admin && app.observer_inputs_editable() {
+        return Some(ChatCopyTarget::Observer {
+            generation: app.observer_fetch_generation,
+        });
+    }
     if app.user_role == UserRole::User
         && app.active_tab == Tab::User(UserTab::MyTrades)
         && app.mode.user_my_trades_interactive()
@@ -77,23 +83,29 @@ fn messages<'a>(
 ) -> impl Iterator<Item = CopyMessage<'a>> {
     let (disputes, orders, solver_dms, party) = match target {
         ChatCopyTarget::Dispute { id, party } => {
-            (app.admin_dispute_chats.get(id), None, None, *party)
+            (app.admin_dispute_chats.get(id), None, None, Some(*party))
         }
         ChatCopyTarget::Order { id, channel } => {
             let orders = match channel {
                 UserChatChannel::Peer => app.order_chats.get(&id.to_string()),
                 UserChatChannel::Solver => app.user_dispute_chats.get(&id.to_string()),
             };
-            (None, orders, None, ChatParty::Buyer)
+            (None, orders, None, None)
         }
         ChatCopyTarget::SolverDm { dispute_id } => {
-            (None, None, app.solver_dms.get(dispute_id), ChatParty::Buyer)
+            (None, None, app.solver_dms.get(dispute_id), None)
         }
+        ChatCopyTarget::Observer { .. } => (
+            (!app.observer_loading).then_some(&app.observer_messages),
+            None,
+            None,
+            None,
+        ),
     };
     disputes
         .into_iter()
         .flatten()
-        .filter(move |message| message_visible_for_party(message, party))
+        .filter(move |message| party.is_none_or(|party| message_visible_for_party(message, party)))
         .map(|message| CopyMessage {
             event_id: None,
             content: &message.content,
@@ -211,6 +223,17 @@ pub(crate) fn handle_key_with(
     copy: impl FnOnce(String) -> bool,
 ) -> bool {
     app.chat_copy_feedback = None;
+    if app.user_role == UserRole::Admin
+        && app.observer_inputs_editable()
+        && (app.chat_copy_session.is_some() || app.chat_copy_cancelled)
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L'))
+    {
+        app.clear_observer_secrets();
+        app.chat_copy_session = None;
+        app.chat_copy_cancelled = false;
+        return true;
+    }
     validate_selection(app);
     if std::mem::take(&mut app.chat_copy_cancelled) {
         return true;
@@ -300,6 +323,142 @@ pub(crate) mod tests {
     use crate::ui::{ChatAttachmentType, DisputeChatMessage, UserMode, UserOrderChatMessage};
     use crate::util::solver_dms::SolverDm;
     use mostro_core::prelude::Status;
+
+    pub(crate) fn app_with_observer_messages() -> AppState {
+        let mut app = app_with_messages();
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        app.observer_shared_key_input = "a".repeat(64);
+        app.observer_messages = vec![
+            message(ChatSender::Seller, "  first\n\ttext \u{00e9}\u{754c}  "),
+            message(ChatSender::Buyer, "last message"),
+        ];
+        app
+    }
+
+    #[test]
+    fn observer_copy_preserves_shared_key_and_copies_unfiltered_raw_messages() {
+        for exit in [KeyCode::Enter, KeyCode::Esc] {
+            for selected in 0..2 {
+                let mut app = app_with_observer_messages();
+                app.observer_error = Some("existing error".into());
+                let expected = app.observer_messages[selected].content.clone();
+                let generation = app.observer_fetch_generation;
+                enter_selection(&mut app);
+                press(&mut app, KeyCode::Up);
+                assert_eq!(selected_index(&app), Some(0));
+                if selected == 1 {
+                    press(&mut app, KeyCode::Down);
+                    press(&mut app, KeyCode::Down);
+                }
+                assert_eq!(selected_index(&app), Some(selected));
+                let mut copied = false;
+                assert!(handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(exit, KeyModifiers::NONE),
+                    |text| {
+                        assert_eq!(text, expected);
+                        copied = true;
+                        true
+                    }
+                ));
+                assert_eq!(copied, exit == KeyCode::Enter);
+                assert!(app.chat_copy_session.is_none());
+                assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+                assert_eq!(app.observer_error.as_deref(), Some("existing error"));
+                assert_eq!(app.observer_fetch_generation, generation);
+                assert!(!app.observer_loading);
+                assert!(app.observer_inputs_editable());
+            }
+        }
+    }
+
+    #[test]
+    fn observer_copy_attachment_uses_filename_without_changing_shared_key() {
+        let mut app = app_with_observer_messages();
+        app.observer_messages[0].attachment = Some(ChatAttachment {
+            blossom_url: "https://example.com/blob".into(),
+            filename: "receipt.txt".into(),
+            mime_type: None,
+            file_type: ChatAttachmentType::File,
+            decryption_key: None,
+        });
+        enter_selection(&mut app);
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, "receipt.txt");
+                true
+            }
+        ));
+        assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+    }
+
+    #[test]
+    fn observer_copy_ctrl_l_clears_secrets_and_selection() {
+        for character in ['l', 'L'] {
+            let mut app = app_with_observer_messages();
+            app.observer_error = Some("private error".into());
+            let generation = app.observer_fetch_generation;
+            enter_selection(&mut app);
+            assert!(handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL),
+                |_| panic!("clear must not copy")
+            ));
+            assert!(app.chat_copy_session.is_none());
+            assert!(!app.chat_copy_cancelled);
+            assert!(app.observer_shared_key_input.is_empty());
+            assert!(app.observer_messages.is_empty());
+            assert!(app.observer_error.is_none());
+            assert!(!app.observer_loading);
+            assert!(app.observer_fetch_generation > generation);
+        }
+    }
+
+    #[test]
+    fn observer_copy_invalidates_on_refetch_clear_replacement_and_role_change() {
+        for change in 0..4 {
+            let mut app = app_with_observer_messages();
+            enter_selection(&mut app);
+            match change {
+                0 => {
+                    let old_messages = app.observer_messages.clone();
+                    app.begin_observer_fetch();
+                    app.observer_messages = old_messages;
+                    app.observer_loading = false;
+                }
+                1 => app.clear_observer_secrets(),
+                2 => app.observer_messages[0].content = "replacement".into(),
+                _ => app.switch_role(UserRole::User),
+            }
+            validate_selection(&mut app);
+            assert!(app.chat_copy_session.is_none());
+            press(&mut app, KeyCode::Enter);
+        }
+    }
+
+    #[test]
+    fn observer_copy_empty_loading_and_popups_are_safe() {
+        for loading in [false, true] {
+            let mut app = app_with_observer_messages();
+            app.observer_loading = loading;
+            if !loading {
+                app.observer_messages.clear();
+            }
+            enter_selection(&mut app);
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(feedback_text(&app), Some("No messages to copy"));
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            app.mode = UiMode::HelpPopup(app.active_tab, Box::new(app.mode.clone()));
+            assert!(!handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| false
+            ));
+        }
+    }
 
     pub(crate) fn app_with_solver_dms() -> AppState {
         let mut app = app_with_messages();
