@@ -103,7 +103,11 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
                 inner.height,
             ));
         } else if compact_my_trades {
-            lines.extend(compact_my_trades_help(narrow_my_trades));
+            lines.extend(compact_my_trades_help(
+                narrow_my_trades,
+                inner.width,
+                inner.height,
+            ));
         } else if matches!(tab, Tab::User(UserTab::Orders)) {
             for s in &plain_lines {
                 lines.push(help_shortcut_line(s));
@@ -294,33 +298,50 @@ fn help_my_trades_intro() -> Line<'static> {
     ])
 }
 
-fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
-    if narrow {
-        let (title_style, _) = settings_instruction_block_style();
-        return [
-            "↑↓ Enter Ctrl+C",
-            "Tab  Ctrl+I",
-            "Esc  Ctrl+K",
-            "Shift+C  Shift+F",
-            "Shift+R  Shift+D",
-            "Shift+U",
+fn compact_my_trades_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
+    let width = inner_width.max(1);
+    let close_rows = wrapped_rows(&Line::raw(HELP_CLOSE_HINT), width);
+    let mut available_rows = usize::from(inner_height).saturating_sub(close_rows);
+    if !narrow {
+        let lines: Vec<_> = [
+            "↑↓ / Enter: Select order / send message",
+            "Ctrl+C: Copy; ↑↓: Select; Enter: Copy; Esc: Cancel",
+            "Ctrl+I / Esc: INSERT typing / COMMAND shortcuts",
+            "Tab / Ctrl+K: Peer-Solver chat / trade actions",
+            "Shift+C / Shift+F: Cancel / fiat sent (COMMAND)",
+            "Shift+R / Shift+D: Release / dispute (COMMAND)",
+            "Shift+U: Refresh order details from Mostro (COMMAND)",
         ]
         .into_iter()
-        .map(|row| Line::from(Span::styled(row, title_style)))
+        .map(help_shortcut_line)
         .collect();
+        if lines
+            .iter()
+            .map(|line| wrapped_rows(line, width))
+            .sum::<usize>()
+            <= available_rows
+        {
+            return lines;
+        }
     }
 
+    let (title_style, _) = settings_instruction_block_style();
     [
-        "↑↓ / Enter: Select order / send message",
-        "Ctrl+C: Copy; ↑↓: Select; Enter: Copy; Esc: Cancel",
-        "Ctrl+I / Esc: INSERT typing / COMMAND shortcuts",
-        "Tab / Ctrl+K: Peer-Solver chat / trade actions",
-        "Shift+C / Shift+F: Cancel / fiat sent (COMMAND)",
-        "Shift+R / Shift+D: Release / dispute (COMMAND)",
-        "Shift+U: Refresh order details from Mostro (COMMAND)",
+        "↑↓ Enter Ctrl+C",
+        "Tab  Ctrl+I  Esc  Ctrl+K",
+        "Shift+C  Shift+F",
+        "Shift+R  Shift+D  Shift+U",
     ]
     .into_iter()
-    .map(help_shortcut_line)
+    .map(|row| Line::from(Span::styled(row, title_style)))
+    .take_while(|line| {
+        let rows = wrapped_rows(line, width);
+        if rows > available_rows {
+            return false;
+        }
+        available_rows -= rows;
+        true
+    })
     .collect()
 }
 
@@ -722,25 +743,27 @@ mod help_content_tests {
     #[test]
     fn compact_my_trades_help_includes_copy_controls() {
         let app = AppState::new(UserRole::User);
-        for (width, height) in [(80, 24), (80, 12), (40, 12), (20, 12)] {
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal
-                .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
-                .unwrap();
-            let buffer = terminal.backend().buffer();
-            for expected in ["Ctrl+C", "↑↓", "Enter", "Esc", "Ctrl+H", "close"] {
-                assert!(
-                    buffer_contains(buffer, expected),
-                    "missing {expected} at {width}x{height}: {}",
-                    buffer_text(buffer)
-                );
-            }
-            if width == 80 {
-                for expected in ["↑↓: Select", "Enter: Copy", "Esc: Cancel"] {
+        for width in [20, 40, 60, 80, 120] {
+            for height in (6..=12).chain([24]) {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                for expected in ["Ctrl+C", "↑↓", "Enter", "Esc", "Ctrl+H", "close"] {
                     assert!(
                         buffer_contains(buffer, expected),
-                        "missing {expected} at {width}x{height}"
+                        "missing {expected} at {width}x{height}: {}",
+                        buffer_text(buffer)
                     );
+                }
+                if width >= 60 && height >= 12 {
+                    for expected in ["↑↓: Select", "Enter: Copy", "Esc: Cancel"] {
+                        assert!(
+                            buffer_contains(buffer, expected),
+                            "missing {expected} at {width}x{height}"
+                        );
+                    }
                 }
             }
         }
@@ -748,32 +771,36 @@ mod help_content_tests {
 
     #[test]
     fn short_my_trades_help_keeps_essential_shortcuts_and_close_hint_visible() {
-        let backend = TestBackend::new(80, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
         let app = AppState::new(UserRole::User);
+        for width in [80, 60] {
+            for height in 10..=12 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
+                    .unwrap();
 
-        terminal
-            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
-            .unwrap();
-
-        let buf = terminal.backend().buffer();
-        for expected in [
-            "Enter",
-            "Ctrl+I",
-            "Esc",
-            "Ctrl+K",
-            "Tab",
-            "Shift+C",
-            "Shift+F",
-            "Shift+R",
-            "Shift+D",
-            "Shift+U",
-            HELP_CLOSE_HINT,
-        ] {
-            assert!(
-                buffer_contains(buf, expected),
-                "missing {expected:?} from compact My Trades help"
-            );
+                let buffer = terminal.backend().buffer();
+                for expected in [
+                    HELP_CLOSE_HINT,
+                    "Enter",
+                    "Ctrl+C",
+                    "Ctrl+I",
+                    "Esc",
+                    "Ctrl+K",
+                    "Tab",
+                    "Shift+C",
+                    "Shift+F",
+                    "Shift+R",
+                    "Shift+D",
+                    "Shift+U",
+                ] {
+                    assert!(
+                        buffer_contains(buffer, expected),
+                        "missing {expected:?} at {width}x{height}: {}",
+                        buffer_text(buffer)
+                    );
+                }
+            }
         }
     }
 
