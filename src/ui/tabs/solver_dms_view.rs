@@ -82,9 +82,10 @@ fn solver_dm_content(dms: &[SolverDm], compact: bool, width: u16) -> ChatScrollV
 /// Renders the pane for `dispute_id` into `area`.
 pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState, dispute_id: &str) {
     chat_copy::validate_selection(app);
-    let selection = chat_copy::selected_index(app).filter(|_| {
-        app.admin_show_solver_dms && app.selected_dispute_id.as_deref() == Some(dispute_id)
-    });
+    let selection_active =
+        app.admin_show_solver_dms && app.selected_dispute_id.as_deref() == Some(dispute_id);
+    let selection = chat_copy::selected_index(app).filter(|_| selection_active);
+    let selection_range = chat_copy::selected_range(app).filter(|_| selection_active);
     if app.solver_dm_scroll_dispute.as_deref() != Some(dispute_id) {
         app.solver_dm_scroll = 0;
         app.solver_dm_scroll_dispute = Some(dispute_id.to_string());
@@ -119,6 +120,7 @@ pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState,
 
     if dms.is_empty() {
         app.solver_dm_scroll = 0;
+        app.solver_dm_line_starts.clear();
         let empty = Paragraph::new(vec![
             Line::styled(
                 "No assistant messages for this dispute.",
@@ -134,7 +136,9 @@ pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState,
 
     let inner = block.inner(area);
     let mut content = solver_dm_content(dms, !wide, inner.width);
-    let selected_rows = content.select_message_with_wrap(selection, Wrap { trim: false });
+    let selected_rows =
+        content.select_messages_with_wrap(selection_range, selection, Wrap { trim: false });
+    app.solver_dm_line_starts = content.line_start_per_message.clone();
     // Scroll counts wrapped rows: stop once the last row reaches the bottom.
     let rows = usize::from(content.content_height);
     let max_scroll = rows.saturating_sub(usize::from(inner.height));
@@ -288,7 +292,7 @@ mod tests {
         let expected_rows = Paragraph::new(content.lines.clone())
             .wrap(Wrap { trim: false })
             .line_count(12);
-        content.select_message_with_wrap(Some(0), Wrap { trim: false });
+        content.select_messages_with_wrap(Some(0..=0), Some(0), Wrap { trim: false });
         assert_eq!(usize::from(content.content_height), expected_rows);
     }
 

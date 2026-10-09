@@ -528,6 +528,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         chat_copy::validate_order_view(app, &selected.order_id, app.active_user_chat_channel);
     }
     let copy_selection = chat_copy::selected_index(app);
+    let copy_range = chat_copy::selected_range(app);
     let copy_feedback = chat_copy::feedback_text(app);
     let copy_context = copy_selection.is_some() || copy_feedback.is_some();
     let chunks = Layout::new(
@@ -867,7 +868,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     // Match disputes/observer chat: content width reserves one column for the vertical scrollbar.
     let content_width = chat_inner.width.saturating_sub(1).max(1);
     let mut content = build_order_chat_content(&chat_messages, content_width, active_channel);
-    let selected_rows = content.select_message(copy_selection);
+    let selected_rows = content.select_messages(copy_range, copy_selection);
     app.order_chat_line_starts = content.line_start_per_message.clone();
     let content_height = content.content_height;
 
@@ -1233,7 +1234,12 @@ mod tests {
             );
             let buffer = render_copy(&mut app, 60, 12);
             assert!(highlighted_word(&buffer, "tail"));
+            assert!(
+                highlighted_word(&buffer, "wrapped") || highlighted_word(&buffer, "words"),
+                "range selection must keep the anchor message highlighted"
+            );
             assert!(app.order_chat_scrollview_state.offset().y > 0);
+            assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
             let chats = if channel == UserChatChannel::Peer {
                 &mut app.order_chats
             } else {
@@ -1246,6 +1252,7 @@ mod tests {
             let buffer = render_copy(&mut app, 60, 12);
             assert!(highlighted_word(&buffer, "tail"));
             assert_eq!(chat_copy::selected_index(&app), Some(1));
+            assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
         }
     }
 

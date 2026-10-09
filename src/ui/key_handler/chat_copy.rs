@@ -3,7 +3,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
+use crate::ui::helpers::{
+    first_visible_message_index, format_local_timestamp, message_visible_for_party,
+    selected_filtered_dispute,
+};
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
 use crate::ui::key_handler::{copy_to_native_clipboard, NativeClipboardOutcome};
 use crate::ui::terminal::copy_with_osc52;
@@ -23,9 +26,14 @@ pub(crate) enum ChatCopyTarget {
 
 pub(crate) struct ChatCopySession {
     target: ChatCopyTarget,
+    /// Fixed end of the selection (Ctrl+C start).
+    anchor_index: usize,
+    /// Moving end of the selection (Up/Down cursor).
     selected_index: usize,
     fingerprint: [u8; 32],
     event_id: Option<String>,
+    anchor_fingerprint: [u8; 32],
+    anchor_event_id: Option<String>,
 }
 
 pub(crate) struct ChatCopyFeedback {
@@ -72,34 +80,59 @@ fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
         })
 }
 
+#[derive(Clone, Copy)]
 struct CopyMessage<'a> {
     event_id: Option<&'a str>,
     content: &'a str,
     attachment: Option<&'a ChatAttachment>,
     timestamp: i64,
     sender: u8,
+    role: &'static str,
+}
+
+fn dispute_role(sender: ChatSender) -> &'static str {
+    match sender {
+        ChatSender::Admin => "Admin",
+        ChatSender::Buyer => "Buyer",
+        ChatSender::Seller => "Seller",
+    }
+}
+
+fn order_role(sender: UserChatSender, channel: UserChatChannel) -> &'static str {
+    match sender {
+        UserChatSender::You => "You",
+        UserChatSender::Peer => match channel {
+            UserChatChannel::Peer => "Peer",
+            UserChatChannel::Solver => "Solver",
+        },
+    }
 }
 
 fn messages<'a>(
     app: &'a AppState,
     target: &ChatCopyTarget,
 ) -> impl Iterator<Item = CopyMessage<'a>> {
-    let (disputes, orders, solver_dms, party) = match target {
-        ChatCopyTarget::Dispute { id, party } => {
-            (app.admin_dispute_chats.get(id), None, None, Some(*party))
-        }
+    let (disputes, orders, solver_dms, party, order_channel) = match target {
+        ChatCopyTarget::Dispute { id, party } => (
+            app.admin_dispute_chats.get(id),
+            None,
+            None,
+            Some(*party),
+            None,
+        ),
         ChatCopyTarget::Order { id, channel } => {
             let orders = match channel {
                 UserChatChannel::Peer => app.order_chats.get(&id.to_string()),
                 UserChatChannel::Solver => app.user_dispute_chats.get(&id.to_string()),
             };
-            (None, orders, None, None)
+            (None, orders, None, None, Some(*channel))
         }
         ChatCopyTarget::SolverDm { dispute_id } => {
-            (None, None, app.solver_dms.get(dispute_id), None)
+            (None, None, app.solver_dms.get(dispute_id), None, None)
         }
         ChatCopyTarget::Observer { .. } => (
             (!app.observer_loading).then_some(&app.observer_messages),
+            None,
             None,
             None,
             None,
@@ -119,16 +152,21 @@ fn messages<'a>(
                 ChatSender::Buyer => 1,
                 ChatSender::Seller => 2,
             },
+            role: dispute_role(message.sender),
         })
-        .chain(orders.into_iter().flatten().map(|message| CopyMessage {
-            event_id: None,
-            content: &message.content,
-            attachment: message.attachment.as_ref(),
-            timestamp: message.timestamp,
-            sender: match message.sender {
-                UserChatSender::You => 0,
-                UserChatSender::Peer => 1,
-            },
+        .chain(orders.into_iter().flatten().map(move |message| {
+            let channel = order_channel.unwrap_or(UserChatChannel::Peer);
+            CopyMessage {
+                event_id: None,
+                content: &message.content,
+                attachment: message.attachment.as_ref(),
+                timestamp: message.timestamp,
+                sender: match message.sender {
+                    UserChatSender::You => 0,
+                    UserChatSender::Peer => 1,
+                },
+                role: order_role(message.sender, channel),
+            }
         }))
         .chain(
             solver_dms
@@ -141,6 +179,7 @@ fn messages<'a>(
                     attachment: None,
                     timestamp: message.created_at,
                     sender: 0,
+                    role: "Serbero",
                 }),
         )
 }
@@ -160,24 +199,82 @@ fn fingerprint(message: CopyMessage<'_>) -> [u8; 32] {
     digest.finalize().into()
 }
 
+fn resolve_message_index(
+    app: &AppState,
+    target: &ChatCopyTarget,
+    event_id: Option<&str>,
+    index: usize,
+    expected: [u8; 32],
+) -> Option<usize> {
+    let resolved = if let Some(event_id) = event_id {
+        messages(app, target).position(|message| message.event_id == Some(event_id))?
+    } else {
+        index
+    };
+    messages(app, target)
+        .nth(resolved)
+        .filter(|message| fingerprint(*message) == expected)
+        .map(|_| resolved)
+}
+
+fn copy_header(role: &str, timestamp: i64) -> String {
+    let date =
+        format_local_timestamp(timestamp, "%d-%m-%Y").unwrap_or_else(|| "??-??-????".to_string());
+    let time = format_local_timestamp(timestamp, "%H:%M").unwrap_or_else(|| "??:??".to_string());
+    format!("{role} - {date} - {time}")
+}
+
+fn copy_text_for_message(message: CopyMessage<'_>) -> Option<String> {
+    let body = match &message.attachment {
+        Some(attachment) => {
+            (!attachment.filename.is_empty()).then_some(attachment.filename.as_str())?
+        }
+        None => message.content,
+    };
+    Some(format!(
+        "{}\n{}",
+        copy_header(message.role, message.timestamp),
+        body
+    ))
+}
+
+fn selection_bounds(session: &ChatCopySession) -> (usize, usize) {
+    (
+        session.anchor_index.min(session.selected_index),
+        session.anchor_index.max(session.selected_index),
+    )
+}
+
 pub(crate) fn validate_selection(app: &mut AppState) {
     let Some(mut session) = app.chat_copy_session.take() else {
         return;
     };
-    let index = if let Some(event_id) = &session.event_id {
-        messages(app, &session.target)
-            .position(|message| message.event_id == Some(event_id.as_str()))
-    } else {
-        Some(session.selected_index)
-    };
-    let valid_index = index.filter(|index| {
-        focused_target(app).as_ref() == Some(&session.target)
-            && messages(app, &session.target)
-                .nth(*index)
-                .is_some_and(|message| fingerprint(message) == session.fingerprint)
-    });
-    if let Some(index) = valid_index {
-        session.selected_index = index;
+    let focused = focused_target(app).as_ref() == Some(&session.target);
+    let cursor = focused
+        .then(|| {
+            resolve_message_index(
+                app,
+                &session.target,
+                session.event_id.as_deref(),
+                session.selected_index,
+                session.fingerprint,
+            )
+        })
+        .flatten();
+    let anchor = focused
+        .then(|| {
+            resolve_message_index(
+                app,
+                &session.target,
+                session.anchor_event_id.as_deref(),
+                session.anchor_index,
+                session.anchor_fingerprint,
+            )
+        })
+        .flatten();
+    if let (Some(cursor), Some(anchor)) = (cursor, anchor) {
+        session.selected_index = cursor;
+        session.anchor_index = anchor;
         app.chat_copy_session = Some(session);
     } else {
         app.chat_copy_cancelled = true;
@@ -188,6 +285,13 @@ pub(crate) fn selected_index(app: &AppState) -> Option<usize> {
     app.chat_copy_session
         .as_ref()
         .map(|session| session.selected_index)
+}
+
+pub(crate) fn selected_range(app: &AppState) -> Option<std::ops::RangeInclusive<usize>> {
+    app.chat_copy_session.as_ref().map(|session| {
+        let (start, end) = selection_bounds(session);
+        start..=end
+    })
 }
 
 pub(crate) fn validate_order_view(app: &mut AppState, order_id: &str, channel: UserChatChannel) {
@@ -304,22 +408,21 @@ fn handle_key_with_result(
         match key.code {
             KeyCode::Esc => return true,
             KeyCode::Enter => {
-                let text = messages(app, &session.target)
-                    .nth(session.selected_index)
-                    .and_then(|message| match &message.attachment {
-                        Some(attachment) => {
-                            (!attachment.filename.is_empty()).then(|| attachment.filename.clone())
-                        }
-                        None => Some(message.content.to_owned()),
-                    });
-                let feedback = match text {
-                    Some(text) => match copy(text) {
+                let (start, end) = selection_bounds(&session);
+                let parts: Vec<String> = messages(app, &session.target)
+                    .skip(start)
+                    .take(end.saturating_sub(start).saturating_add(1))
+                    .filter_map(copy_text_for_message)
+                    .collect();
+                let feedback = if parts.is_empty() {
+                    "No filename to copy"
+                } else {
+                    match copy(parts.join("\n\n")) {
                         CopyOutcome::Copied => "Copied to clipboard",
                         CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
                         CopyOutcome::Unavailable => "Clipboard unavailable",
                         CopyOutcome::Indeterminate => "Clipboard result unknown",
-                    },
-                    None => "No filename to copy",
+                    }
                 };
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target: session.target,
@@ -353,26 +456,54 @@ fn handle_key_with_result(
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
         if let Some(target) = focused_target(app) {
-            let first = messages(app, &target)
-                .next()
-                .map(|message| (message.event_id.map(str::to_owned), fingerprint(message)));
-            if let Some((event_id, fingerprint)) = first {
-                app.chat_copy_session = Some(ChatCopySession {
-                    target,
-                    selected_index: 0,
-                    fingerprint,
-                    event_id,
-                });
-            } else {
+            let count = messages(app, &target).count();
+            if count == 0 {
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target,
                     text: "No messages to copy",
+                });
+                return true;
+            }
+            let start = viewport_start_index(app, &target).min(count.saturating_sub(1));
+            let started = messages(app, &target)
+                .nth(start)
+                .map(|message| (message.event_id.map(str::to_owned), fingerprint(message)));
+            if let Some((event_id, fingerprint)) = started {
+                app.chat_copy_session = Some(ChatCopySession {
+                    target,
+                    anchor_index: start,
+                    selected_index: start,
+                    fingerprint,
+                    event_id: event_id.clone(),
+                    anchor_fingerprint: fingerprint,
+                    anchor_event_id: event_id,
                 });
             }
             return true;
         }
     }
     false
+}
+
+fn viewport_start_index(app: &AppState, target: &ChatCopyTarget) -> usize {
+    let (line_starts, scroll_offset) = match target {
+        ChatCopyTarget::Dispute { .. } => (
+            app.admin_chat_line_starts.as_slice(),
+            app.admin_chat_scrollview_state.offset().y,
+        ),
+        ChatCopyTarget::Order { .. } => (
+            app.order_chat_line_starts.as_slice(),
+            app.order_chat_scrollview_state.offset().y,
+        ),
+        ChatCopyTarget::SolverDm { .. } => {
+            (app.solver_dm_line_starts.as_slice(), app.solver_dm_scroll)
+        }
+        ChatCopyTarget::Observer { .. } => (
+            app.observer_line_starts.as_slice(),
+            app.observer_scrollview_state.offset().y,
+        ),
+    };
+    first_visible_message_index(line_starts, scroll_offset)
 }
 
 #[cfg(test)]
@@ -415,7 +546,8 @@ pub(crate) mod tests {
                     );
                     let mode = std::mem::discriminant(&app.mode);
                     let target = focused_target(&app).unwrap();
-                    let expected = messages(&app, &target).next().unwrap().content.to_owned();
+                    let expected =
+                        copy_text_for_message(messages(&app, &target).next().unwrap()).unwrap();
                     enter_selection(&mut app);
                     press(&mut app, KeyCode::Up);
                     enter_selection(&mut app);
@@ -535,7 +667,7 @@ pub(crate) mod tests {
                         line_start_per_message: vec![0, 3],
                     };
                     let range = content
-                        .select_message_with_wrap(Some(selected), wrap)
+                        .select_messages_with_wrap(Some(selected..=selected), Some(selected), wrap)
                         .unwrap();
                     assert_eq!(usize::from(content.content_height), expected_height);
                     let offset = content.selection_scroll_offset(range.clone(), 3, 0);
@@ -795,16 +927,40 @@ pub(crate) mod tests {
             for selected in 0..2 {
                 let mut app = app_with_observer_messages();
                 app.observer_error = Some("existing error".into());
-                let expected = app.observer_messages[selected].content.clone();
+                let first = copy_text_for_message(CopyMessage {
+                    event_id: None,
+                    content: &app.observer_messages[0].content,
+                    attachment: app.observer_messages[0].attachment.as_ref(),
+                    timestamp: app.observer_messages[0].timestamp,
+                    sender: 2,
+                    role: "Seller",
+                })
+                .unwrap();
+                let second = copy_text_for_message(CopyMessage {
+                    event_id: None,
+                    content: &app.observer_messages[1].content,
+                    attachment: app.observer_messages[1].attachment.as_ref(),
+                    timestamp: app.observer_messages[1].timestamp,
+                    sender: 1,
+                    role: "Buyer",
+                })
+                .unwrap();
+                let expected = if selected == 0 {
+                    first
+                } else {
+                    format!("{first}\n\n{second}")
+                };
                 let generation = app.observer_fetch_generation;
                 enter_selection(&mut app);
                 press(&mut app, KeyCode::Up);
                 assert_eq!(selected_index(&app), Some(0));
+                assert_eq!(selected_range(&app), Some(0..=0));
                 if selected == 1 {
                     press(&mut app, KeyCode::Down);
                     press(&mut app, KeyCode::Down);
                 }
                 assert_eq!(selected_index(&app), Some(selected));
+                assert_eq!(selected_range(&app), Some(0..=selected));
                 let mut copied = false;
                 assert!(handle_key_with(
                     &mut app,
@@ -836,12 +992,21 @@ pub(crate) mod tests {
             file_type: ChatAttachmentType::File,
             decryption_key: None,
         });
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: &app.observer_messages[0].content,
+            attachment: app.observer_messages[0].attachment.as_ref(),
+            timestamp: app.observer_messages[0].timestamp,
+            sender: 2,
+            role: "Seller",
+        })
+        .unwrap();
         enter_selection(&mut app);
         assert!(handle_key_with(
             &mut app,
             &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             |text| {
-                assert_eq!(text, "receipt.txt");
+                assert_eq!(text, expected);
                 true
             }
         ));
@@ -940,7 +1105,16 @@ pub(crate) mod tests {
     #[test]
     fn solver_dm_copy_preserves_selected_event_on_arrival_and_copies_full_text() {
         let mut app = app_with_solver_dms();
-        let expected = app.solver_dms["dispute"][1].text.clone();
+        let dm = &app.solver_dms["dispute"][1];
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: Some(&dm.event_id),
+            content: &dm.text,
+            attachment: None,
+            timestamp: dm.created_at,
+            sender: 0,
+            role: "Serbero",
+        })
+        .unwrap();
         enter_selection(&mut app);
         assert_eq!(selected_index(&app), Some(0));
         let mut incoming = app.solver_dms["dispute"][1].clone();
@@ -1075,15 +1249,9 @@ pub(crate) mod tests {
                 for exit in [KeyCode::Esc, KeyCode::Enter] {
                     let mut app = app_with_order_messages(channel);
                     app.order_chat_input_enabled = input_enabled;
-                    let expected = match channel {
-                        UserChatChannel::Peer => {
-                            app.order_chats[&Uuid::nil().to_string()][0].content.clone()
-                        }
-                        UserChatChannel::Solver => app.user_dispute_chats[&Uuid::nil().to_string()]
-                            [0]
-                        .content
-                        .clone(),
-                    };
+                    let target = focused_target(&app).unwrap();
+                    let expected =
+                        copy_text_for_message(messages(&app, &target).next().unwrap()).unwrap();
                     enter_selection(&mut app);
                     assert_eq!(selected_index(&app), Some(0));
                     press(&mut app, KeyCode::Up);
@@ -1178,24 +1346,25 @@ pub(crate) mod tests {
                         decryption_key: None,
                     });
                 }
+                let target = focused_target(&app).unwrap();
+                let parts: Vec<_> = messages(&app, &target)
+                    .take(2)
+                    .filter_map(copy_text_for_message)
+                    .collect();
+                let expected = parts.join("\n\n");
                 enter_selection(&mut app);
                 press(&mut app, KeyCode::Up);
                 assert_eq!(selected_index(&app), Some(0));
+                assert_eq!(selected_range(&app), Some(0..=0));
                 press(&mut app, KeyCode::Down);
                 press(&mut app, KeyCode::Down);
                 assert_eq!(selected_index(&app), Some(1));
+                assert_eq!(selected_range(&app), Some(0..=1));
                 assert!(handle_key_with(
                     &mut app,
                     &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                     |text| {
-                        assert_eq!(
-                            text,
-                            if attachment {
-                                "receipt.txt"
-                            } else {
-                                "  last\ntext\t  "
-                            }
-                        );
+                        assert_eq!(text, expected);
                         true
                     }
                 ));
@@ -1278,15 +1447,18 @@ pub(crate) mod tests {
             app.admin_chat_input_enabled = input_enabled;
             enter_selection(&mut app);
             assert_eq!(selected_index(&app), Some(0));
+            assert_eq!(selected_range(&app), Some(0..=0));
             press(&mut app, KeyCode::Up);
             assert_eq!(selected_index(&app), Some(0));
             press(&mut app, KeyCode::Down);
             press(&mut app, KeyCode::Down);
             assert_eq!(selected_index(&app), Some(1));
+            assert_eq!(selected_range(&app), Some(0..=1));
             press(&mut app, KeyCode::Tab);
             press(&mut app, KeyCode::Char('x'));
             enter_selection(&mut app);
             assert_eq!(selected_index(&app), Some(1));
+            assert_eq!(selected_range(&app), Some(0..=1));
             press(&mut app, KeyCode::Esc);
             assert!(app.chat_copy_session.is_none());
             assert_eq!(app.admin_chat_input, "draft\n  untouched");
@@ -1300,15 +1472,93 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn chat_copy_range_shrinks_back_toward_anchor() {
+        let mut app = app_with_messages();
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_range(&app), Some(0..=1));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(selected_range(&app), Some(0..=0));
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: "  first\nsecond\tline  ",
+            attachment: None,
+            timestamp: 1,
+            sender: 1,
+            role: "Buyer",
+        })
+        .unwrap();
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, expected);
+                true
+            }
+        ));
+    }
+
+    #[test]
+    fn chat_copy_starts_at_first_visible_viewport_message() {
+        use ratatui::layout::Position;
+
+        let mut app = app_with_messages();
+        app.admin_chat_line_starts = vec![0, 12];
+        app.admin_chat_scrollview_state
+            .set_offset(Position::new(0, 12));
+        enter_selection(&mut app);
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(selected_range(&app), Some(1..=1));
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: "last",
+            attachment: None,
+            timestamp: 1,
+            sender: 0,
+            role: "Admin",
+        })
+        .unwrap();
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, expected);
+                true
+            }
+        ));
+    }
+
+    #[test]
+    fn first_visible_message_index_tracks_scroll_offset() {
+        assert_eq!(first_visible_message_index(&[], 0), 0);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 0), 0);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 4), 0);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 5), 1);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 9), 1);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 10), 2);
+        assert_eq!(first_visible_message_index(&[0, 5, 10], 99), 2);
+    }
+
+    #[test]
     fn chat_copy_exact_text_and_failure_feedback() {
         for succeeds in [true, false] {
             let mut app = app_with_messages();
+            let expected = copy_text_for_message(CopyMessage {
+                event_id: None,
+                content: "  first\nsecond\tline  ",
+                attachment: None,
+                timestamp: 1,
+                sender: 1,
+                role: "Buyer",
+            })
+            .unwrap();
             enter_selection(&mut app);
             assert!(handle_key_with(
                 &mut app,
                 &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 |text| {
-                    assert_eq!(text, "  first\nsecond\tline  ");
+                    assert_eq!(text, expected);
                     succeeds
                 },
             ));
@@ -1342,12 +1592,23 @@ pub(crate) mod tests {
             file_type: ChatAttachmentType::File,
             decryption_key: None,
         });
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: "  first\nsecond\tline  ",
+            attachment: app.admin_dispute_chats["dispute"][1].attachment.as_ref(),
+            timestamp: 1,
+            sender: 1,
+            role: "Buyer",
+        })
+        .unwrap();
         enter_selection(&mut app);
         assert!(handle_key_with(
             &mut app,
             &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             |text| {
-                assert_eq!(text, "receipt.txt");
+                assert_eq!(text, expected);
+                assert!(text.contains("Buyer - "));
+                assert!(text.contains("receipt.txt"));
                 true
             }
         ));
@@ -1411,11 +1672,20 @@ pub(crate) mod tests {
         enter_selection(&mut app);
         press(&mut app, KeyCode::Down);
         assert_eq!(selected_index(&app), Some(0));
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: "hidden",
+            attachment: None,
+            timestamp: 1,
+            sender: 2,
+            role: "Seller",
+        })
+        .unwrap();
         assert!(handle_key_with(
             &mut app,
             &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             |text| {
-                assert_eq!(text, "hidden");
+                assert_eq!(text, expected);
                 true
             }
         ));
@@ -1424,8 +1694,17 @@ pub(crate) mod tests {
     #[test]
     fn chat_copy_preserves_unicode_newlines_and_long_tokens() {
         let mut app = app_with_messages();
-        let expected = format!("  \u{00e9}\u{754c}\r\n\t{}\n", "lnbc1".repeat(200));
-        app.admin_dispute_chats.get_mut("dispute").unwrap()[1].content = expected.clone();
+        let body = format!("  \u{00e9}\u{754c}\r\n\t{}\n", "lnbc1".repeat(200));
+        app.admin_dispute_chats.get_mut("dispute").unwrap()[1].content = body.clone();
+        let expected = copy_text_for_message(CopyMessage {
+            event_id: None,
+            content: &body,
+            attachment: None,
+            timestamp: 1,
+            sender: 1,
+            role: "Buyer",
+        })
+        .unwrap();
         enter_selection(&mut app);
         assert!(handle_key_with(
             &mut app,

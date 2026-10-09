@@ -17,6 +17,7 @@ const OBSERVER_NARROW_WIDTH: u16 = 60;
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     chat_copy::validate_selection(app);
     let selection = chat_copy::selected_index(app);
+    let selection_range = chat_copy::selected_range(app);
     let feedback = chat_copy::feedback_text(app);
     let copy_context = selection.is_some() || feedback.is_some();
     let copy_hint = if area.width < 34 {
@@ -164,7 +165,8 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
             viewport_width,
             Some(max_content_width),
         );
-        let selected_rows = content.select_message(selection);
+        let selected_rows = content.select_messages(selection_range, selection);
+        app.observer_line_starts = content.line_start_per_message.clone();
 
         // Auto-scroll to bottom only when new messages arrive; preserve manual scroll otherwise.
         let visible_count = app.observer_messages.len();

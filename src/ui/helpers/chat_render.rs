@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use ratatui::layout::Position;
 use ratatui::style::{Color, Style};
@@ -134,6 +134,18 @@ pub fn build_chat_list_items(
     filtered_items
 }
 
+/// Index of the topmost message that intersects the current scroll offset.
+pub(crate) fn first_visible_message_index(line_starts: &[usize], scroll_offset: u16) -> usize {
+    let offset = usize::from(scroll_offset);
+    line_starts
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, start)| **start <= offset)
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
 /// Content for the dispute chat ScrollView: all lines, dimensions, and line start index per message.
 pub struct ChatScrollViewContent {
     pub lines: Vec<Line<'static>>,
@@ -143,13 +155,18 @@ pub struct ChatScrollViewContent {
 }
 
 impl ChatScrollViewContent {
-    pub(crate) fn select_message(&mut self, selected: Option<usize>) -> Option<Range<usize>> {
-        self.select_message_with_wrap(selected, Wrap { trim: true })
+    pub(crate) fn select_messages(
+        &mut self,
+        selected: Option<RangeInclusive<usize>>,
+        focus: Option<usize>,
+    ) -> Option<Range<usize>> {
+        self.select_messages_with_wrap(selected, focus, Wrap { trim: true })
     }
 
-    pub(crate) fn select_message_with_wrap(
+    pub(crate) fn select_messages_with_wrap(
         &mut self,
-        selected: Option<usize>,
+        selected: Option<RangeInclusive<usize>>,
+        focus: Option<usize>,
         wrap: Wrap,
     ) -> Option<Range<usize>> {
         let logical_starts = self.line_start_per_message.clone();
@@ -162,8 +179,11 @@ impl ChatScrollViewContent {
                 .unwrap_or(self.lines.len());
             self.line_start_per_message[index] = rows;
             let message_start = rows;
+            let in_selection = selected
+                .as_ref()
+                .is_some_and(|range| range.contains(&index));
             for line in &mut self.lines[start..end] {
-                if selected == Some(index) && !line.spans.is_empty() && line.width() > 0 {
+                if in_selection && !line.spans.is_empty() && line.width() > 0 {
                     line.style = line.style.bg(PRIMARY_COLOR).fg(Color::Black);
                     for span in &mut line.spans {
                         span.style = span.style.bg(PRIMARY_COLOR).fg(Color::Black);
@@ -175,7 +195,7 @@ impl ChatScrollViewContent {
                         .line_count(self.content_width.max(1)),
                 );
             }
-            if selected == Some(index) {
+            if focus == Some(index) {
                 let separator = usize::from(self.lines[end - 1].width() == 0);
                 selected_rows =
                     Some(message_start..rows.saturating_sub(separator).max(message_start + 1));

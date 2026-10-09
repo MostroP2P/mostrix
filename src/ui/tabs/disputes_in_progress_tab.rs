@@ -66,6 +66,7 @@ fn truncate_dispute_id_label(display_id: &str, max_chars: usize) -> String {
 pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     chat_copy::validate_selection(app);
     let copy_selection = chat_copy::selected_index(app);
+    let copy_range = chat_copy::selected_range(app);
     let copy_feedback = chat_copy::feedback_text(app);
     let copy_context = copy_selection.is_some() || copy_feedback.is_some();
     let chunks = Layout::new(
@@ -704,7 +705,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     content_width,
                     Some(max_content_width),
                 );
-                let selected_rows = content.select_message(copy_selection);
+                let selected_rows = content.select_messages(copy_range, copy_selection);
 
                 let visible_count = content.line_start_per_message.len();
                 app.admin_chat_line_starts = content.line_start_per_message.clone();
@@ -1172,7 +1173,12 @@ mod tests {
         );
         let buffer = render_copy(&mut app, 60, 12);
         assert!(highlighted_word(&buffer, "last"));
+        assert!(
+            highlighted_word(&buffer, "first") || highlighted_word(&buffer, "wrapped"),
+            "range selection must keep the anchor message highlighted"
+        );
         assert!(app.admin_chat_scrollview_state.offset().y > 0);
+        assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
         let mut incoming = app.admin_dispute_chats["dispute"][2].clone();
         incoming.content = "incoming ".repeat(40);
         app.admin_dispute_chats
@@ -1182,6 +1188,7 @@ mod tests {
         let buffer = render_copy(&mut app, 60, 12);
         assert!(highlighted_word(&buffer, "last"));
         assert_eq!(chat_copy::selected_index(&app), Some(1));
+        assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
     }
 
     #[test]

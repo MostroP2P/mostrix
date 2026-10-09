@@ -280,28 +280,36 @@ With no popup open, focus one of these chat views and press **Ctrl+C**:
 
 | View | Available conversations | First selected message |
 | --- | --- | --- |
-| Disputes in Progress | Selected active dispute, BUYER or SELLER pane | First displayed message in that party's transcript |
-| Solver DMs | SERBERO pane of the selected active dispute | Newest DM, matching the newest-first display |
-| My Trades | Selected trade, Peer or available Solver channel | First displayed message in that channel |
-| Observer | Loaded conversation for the current Shared key | First displayed message, across all parties |
+| Disputes in Progress | Selected active dispute, BUYER or SELLER pane | Topmost visible message in that party's pane |
+| Solver DMs | SERBERO pane of the selected active dispute | Topmost visible DM (newest-first display) |
+| My Trades | Selected trade, Peer or available Solver channel | Topmost visible message in that channel |
+| Observer | Loaded conversation for the current Shared key | Topmost visible message, across all parties |
 
 Ordinary chat transcripts display oldest first. Finalized dispute views and the
 Messages tab's trade timeline are not copy-selection targets.
 
-1. **Ctrl+C** selects the first message, including when chat input is enabled.
-2. **Up/Down** move through messages without wrapping at either end. The selection
-  stays visible during resizing and incoming messages; an oversized message is
-  anchored at its beginning. A new Solver DM does not change the selected DM.
-3. **Enter** copies that message and exits selection, even if copying fails.
-  **Esc** exits without copying.
+1. **Ctrl+C** selects the topmost message currently visible in the chat pane
+  (not the first message of the whole history), including when chat input is
+  enabled. In a long chat scrolled near the bottom, selection starts in that
+  viewport so you can copy a nearby block without jumping to the top.
+2. **Up/Down** move the cursor through messages without wrapping at either end.
+  Every message from the starting message through the cursor stays highlighted.
+  The cursor end stays visible during resizing and incoming messages; an
+  oversized focused message is anchored at its beginning. A new Solver DM does
+  not change the selected DM identity.
+3. **Enter** copies the highlighted range (joined with newlines) and exits
+  selection, even if copying fails. **Esc** exits without copying.
 
-Copying uses the exact stored text, preserving whitespace, Unicode, and newlines.
-It does not add displayed timestamps, sender labels, wrapping, or styling. Solver
-DMs include their full stored text, including the header omitted by the renderer.
-For an attachment, **Enter copies its stored filename**, not its URL, encrypted
-metadata, file contents, or display placeholder. An empty filename reports
-**No filename to copy** without writing to the clipboard. Use **Ctrl+S** outside
-selection mode to save attachments instead.
+Each copied message is prefixed with its displayed role, date, and time
+(`Role - DD-MM-YYYY - HH:MM`), then the exact stored body on the next line,
+preserving whitespace, Unicode, and newlines. Wrapping and styling are not
+copied. Multiple selected messages are separated by a blank line. Solver DMs use
+the `Serbero` role and still include their full stored text (including the
+header omitted by the renderer). For an attachment, **Enter copies the header
+plus its stored filename**, not its URL, encrypted metadata, file contents, or
+display placeholder. An empty filename reports **No filename to copy** without
+writing to the clipboard. Use **Ctrl+S** outside selection mode to save
+attachments instead.
 
 Selection does not change the draft, its owning conversation, or the enabled/
 disabled input layer. Typing, key/bracketed/mouse paste, sending, attachments,

@@ -296,6 +296,8 @@ pub struct AppState {
     pub solver_dm_scroll: u16,
     /// Dispute the scroll offset belongs to; another dispute starts at the top.
     pub solver_dm_scroll_dispute: Option<String>,
+    /// Wrapped row start per Serbero message; updated each frame for copy selection.
+    pub solver_dm_line_starts: Vec<usize>,
     pub selected_settings_option: usize, // Selected option in Settings tab (admin mode)
     pub mode: UiMode,
     pub messages: Arc<Mutex<Vec<OrderMessage>>>, // Messages related to orders
@@ -361,6 +363,8 @@ pub struct AppState {
     pub observer_messages: Vec<DisputeChatMessage>,
     /// Observer mode: scroll state for chat messages.
     pub observer_scrollview_state: tui_scrollview::ScrollViewState,
+    /// Wrapped row start per Observer message; updated each frame for copy selection.
+    pub observer_line_starts: Vec<usize>,
     /// Observer mode: last seen message count for auto-scroll.
     pub observer_scroll_tracker: Option<usize>,
     /// Observer mode: true while an async fetch is in flight.
@@ -460,6 +464,7 @@ impl AppState {
             admin_show_solver_dms: false,
             solver_dm_scroll: 0,
             solver_dm_scroll_dispute: None,
+            solver_dm_line_starts: Vec::new(),
             selected_settings_option: 0,
             mode: UiMode::default_for_role(user_role),
             messages: Arc::new(Mutex::new(Vec::new())),
@@ -495,6 +500,7 @@ impl AppState {
             observer_shared_key_input: String::new(),
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
+            observer_line_starts: Vec::new(),
             observer_scroll_tracker: None,
             observer_loading: false,
             observer_error: None,
@@ -628,6 +634,7 @@ impl AppState {
             msg.content.zeroize();
         }
         self.observer_messages.clear();
+        self.observer_line_starts.clear();
         self.observer_loading = false;
 
         if let Some(err) = &mut self.observer_error {

@@ -99,7 +99,9 @@ The interface is divided into three main sections:
 - **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
 
 With an active dispute selected, **Ctrl+C** starts message selection in BUYER,
-SELLER, or SERBERO. **Up/Down** select, **Enter** copies, and **Esc** cancels.
+SELLER, or SERBERO at the topmost visible message in the pane. **Up/Down**
+extend the highlighted range from that starting message, **Enter** copies that
+range, and **Esc** cancels.
 The first selected message follows display order: oldest first for party chats,
 newest first for SERBERO. Solver DMs copy their full stored text, including the
 header hidden in the pane; attachments copy the filename only. Typing, sending,
@@ -138,7 +140,7 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 #### Observer Keyboard Shortcuts
 
 - **Enter**: Fetch chat from relays using the Shared key, or copy the selected message during copy selection.
-- **Ctrl+C**: Select the first displayed message in a loaded conversation. Up/Down select, Enter copies, and Esc cancels without changing the Shared key.
+- **Ctrl+C**: Select the topmost message currently visible in the loaded conversation. Up/Down extend the highlighted range, Enter copies it, and Esc cancels without changing the Shared key.
 - **Ctrl+L**: Clear inputs, messages, error state, and loading indicator when no popup is open. Sensitive data is securely cleared with `zeroize`; pending fetch results are invalidated. **Ctrl+C** no longer clears Observer data.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
