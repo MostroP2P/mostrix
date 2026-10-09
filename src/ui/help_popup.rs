@@ -569,7 +569,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
                 HELP_OBS_ESC_CLEAR_ERR.to_string(),
-                HELP_OBS_CTRL_C_CLEAR.to_string(),
+                HELP_OBS_CTRL_L_CLEAR.to_string(),
                 HELP_OBS_CTRL_S_ATTACH.to_string(),
             ],
         ),

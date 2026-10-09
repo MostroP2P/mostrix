@@ -192,7 +192,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     let footer_text = if compact {
         // Shortened so shortcuts stay visible instead of clipping on narrow terminals.
         "Ctrl+H:Help  Paste\n\
-Enter:Load  Esc:Clear  Ctrl+C:All\n\
+Enter:Load  Esc:Clear  Ctrl+L:All\n\
 Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
             .to_string()
     } else {
@@ -203,7 +203,7 @@ Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
         };
         format!(
             "Ctrl+H: Help | Paste ({paste_hint})\n\
-Enter: Load chat | Esc: Clear error | Ctrl+C: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
+Enter: Load chat | Esc: Clear error | Ctrl+L: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
         )
     };
     let footer = Paragraph::new(footer_text);
@@ -307,6 +307,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observer_clear_shortcut_is_visible_in_full_and_compact_layouts() {
+        for (width, height, shortcut) in [
+            (120, 24, "Ctrl+L: Clear all"),
+            (40, 24, "Ctrl+L:All"),
+            (80, 12, "Ctrl+L:All"),
+            (40, 12, "Ctrl+L:All"),
+        ] {
+            let buf = render_observer(&mut AppState::new(UserRole::Admin), width, height);
+            assert!(
+                buffer_contains(&buf, shortcut),
+                "missing hint at {width}x{height}"
+            );
+            assert!(
+                !buffer_contains(&buf, "Ctrl+C"),
+                "stale hint at {width}x{height}"
+            );
+        }
+    }
+
     /// A narrow-but-tall terminal (plenty of height, insufficient width) should still
     /// switch to the compact layout: abbreviated field labels and a shortened footer
     /// so keyboard shortcuts stay fully on-screen instead of being clipped.
@@ -333,7 +353,7 @@ mod tests {
             "Ctrl+H:Help",
             "Enter:Load",
             "Esc:Clear",
-            "Ctrl+C:All",
+            "Ctrl+L:All",
             "Ctrl+S:Save",
             "Scroll",
         ] {

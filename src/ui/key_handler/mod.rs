@@ -424,8 +424,7 @@ fn handle_user_order_chat_input(
 }
 
 /// Reset the Shift+K Shared key disclosure popup's "copied" indicator on any
-/// key other than an unmodified `c`/`C`. Ctrl+C (Observer clear-all / generic
-/// clear shortcuts elsewhere) must also clear the indicator, so it is treated
+/// key other than an unmodified `c`/`C`. Ctrl+C must also clear the indicator, so it is treated
 /// the same as any other non-copy key. Mirrors the invoice-copy indicator
 /// reset above.
 fn reset_disclosure_copied_indicator(mode: &mut UiMode, key_event: &KeyEvent) {
@@ -2150,6 +2149,10 @@ pub fn handle_key_event(
         let is_ctrl = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl && matches!(code, KeyCode::Char('l') | KeyCode::Char('L')) {
+            app.clear_observer_secrets();
+            return Some(true);
+        }
         if !is_ctrl {
             match code {
                 KeyCode::Char(c) => {
@@ -2432,17 +2435,6 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
-            // In Observer tab, Ctrl+C clears inputs and decrypted content
-            if let (Tab::Admin(AdminTab::Observer), true) = (
-                app.active_tab,
-                key_event
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL),
-            ) {
-                app.clear_observer_secrets();
-                return Some(true);
-            }
-
             // Handle copy Shared key (K_conv) for the Shift+K disclosure popup. Only
             // the Shared key is copyable — the signing key itself is never disclosed.
             if !key_event
@@ -3471,6 +3463,145 @@ mod key_handler_tests {
         assert_eq!(app.observer_shared_key_input, "abc");
     }
 
+    fn populated_observer() -> AppState {
+        use crate::ui::{ChatSender, DisputeChatMessage};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        app.begin_observer_fetch();
+        app.observer_shared_key_input = "a".repeat(64);
+        app.observer_messages.push(DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: "private message".into(),
+            timestamp: 0,
+            target_party: None,
+            attachment: None,
+        });
+        app.observer_error = Some("private error".into());
+        app
+    }
+
+    async fn dispatch_observer_test_key(app: &mut AppState, key_event: KeyEvent) {
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let disputes = Arc::new(Mutex::new(Vec::new()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pubkey = Keys::generate().public_key();
+        let (order_tx, _order_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ln_tx, _ln_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rotation_tx, _rotation_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (seed_tx, _seed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (info_tx, _info_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dm_tx, _dm_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        assert_eq!(
+            handle_key_event(
+                key_event,
+                app,
+                &orders,
+                &disputes,
+                &pool,
+                &Client::default(),
+                pubkey,
+                &Arc::new(Mutex::new(pubkey)),
+                &order_tx,
+                &ln_tx,
+                &rotation_tx,
+                &seed_tx,
+                &info_tx,
+                &|_| {},
+                None,
+                None,
+                None,
+                &dm_tx,
+            ),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_l_clears_secrets_and_invalidates_pending_fetch() {
+        for mode in [UiMode::Normal, UiMode::AdminMode(AdminMode::Normal)] {
+            for character in ['l', 'L'] {
+                let mut app = populated_observer();
+                app.mode = mode.clone();
+                let generation = app.observer_fetch_generation;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL),
+                )
+                .await;
+                assert!(app.observer_shared_key_input.is_empty());
+                assert!(app.observer_messages.is_empty());
+                assert!(app.observer_error.is_none());
+                assert!(!app.observer_loading);
+                assert!(app.observer_fetch_generation > generation);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_c_and_plain_l_do_not_clear_secrets() {
+        for (character, modifiers) in [
+            ('c', KeyModifiers::CONTROL),
+            ('C', KeyModifiers::CONTROL),
+            ('l', KeyModifiers::NONE),
+        ] {
+            let mut app = populated_observer();
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), modifiers),
+            )
+            .await;
+            let expected_input = if modifiers.is_empty() {
+                format!("{}l", "a".repeat(64))
+            } else {
+                "a".repeat(64)
+            };
+            assert_eq!(app.observer_shared_key_input, expected_input);
+            assert_eq!(app.observer_messages[0].content, "private message");
+            assert_eq!(app.observer_error.as_deref(), Some("private error"));
+            assert!(app.observer_loading);
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_l_does_not_clear_behind_popups_or_on_other_tabs() {
+        let observer_tab = Tab::Admin(AdminTab::Observer);
+        for (tab, mode) in [
+            (
+                observer_tab,
+                UiMode::HelpPopup(observer_tab, Box::new(UiMode::Normal)),
+            ),
+            (
+                observer_tab,
+                UiMode::operation_result(OperationResult::Info("notice".into())),
+            ),
+            (observer_tab, UiMode::ObserverSaveAttachmentPopup(0)),
+            (
+                Tab::Admin(AdminTab::DisputesPending),
+                UiMode::AdminMode(AdminMode::Normal),
+            ),
+        ] {
+            let mut app = populated_observer();
+            app.active_tab = tab;
+            app.mode = mode;
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            )
+            .await;
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            assert_eq!(app.observer_messages[0].content, "private message");
+            assert_eq!(app.observer_error.as_deref(), Some("private error"));
+            assert!(app.observer_loading);
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
     #[test]
     fn invoice_notification_selection_toggles_with_arrows() {
         let mut state = InvoiceInputState::for_input(String::new(), true);
@@ -3625,7 +3756,7 @@ mod key_handler_tests {
                 ..
             } => assert!(
                 !*copied_to_clipboard,
-                "Ctrl+C must clear the indicator consistently with the Observer clear-all shortcut"
+                "Ctrl+C is not the unmodified copy key and must clear the indicator"
             ),
             other => panic!("expected ConversationDisclosure, got {other:?}"),
         }

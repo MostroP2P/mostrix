@@ -128,7 +128,7 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 #### Observer Keyboard Shortcuts
 
 - **Enter**: Fetch chat from relays using the Shared key.
-- **Ctrl+C**: Clear inputs, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
+- **Ctrl+L**: Clear inputs, messages, error state, and loading indicator when no popup is open. Sensitive data is securely cleared with `zeroize`; pending fetch results are invalidated. **Ctrl+C** no longer clears Observer data.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
 
@@ -146,7 +146,7 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+L.
 >
 > **Sharing the Shared key**: on My Trades, **Shift+K** opens a popup with the Shared key. Press **C** to copy the Shared key hex to the clipboard for pasting into a message to the admin — the signing key is never displayed or copied.
 
