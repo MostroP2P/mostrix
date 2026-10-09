@@ -555,6 +555,23 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeClipboardOutcome {
+    Copied,
+    Failed,
+    Indeterminate,
+}
+
+fn clipboard_worker_outcome(
+    result: Result<bool, std::sync::mpsc::RecvTimeoutError>,
+) -> NativeClipboardOutcome {
+    match result {
+        Ok(true) => NativeClipboardOutcome::Copied,
+        Ok(false) => NativeClipboardOutcome::Failed,
+        Err(_) => NativeClipboardOutcome::Indeterminate,
+    }
+}
+
 /// Handle clipboard copy for text (invoice, Shared key, etc.)
 ///
 /// Returns whether the write actually succeeded — `copied_to_clipboard` at the
@@ -562,12 +579,15 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
 /// because a copy attempt was made. On Linux the write runs on a background
 /// thread that keeps serving the selection after the result is reported.
 fn handle_clipboard_copy(text: String) -> bool {
+    copy_to_native_clipboard(text) == NativeClipboardOutcome::Copied
+}
+
+fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
     #[cfg(target_os = "linux")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
-        rx.recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap_or(false)
+        clipboard_worker_outcome(rx.recv_timeout(std::time::Duration::from_secs(2)))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -585,7 +605,7 @@ fn handle_clipboard_copy(text: String) -> bool {
             }
         };
 
-        match copy_result {
+        let success = match copy_result {
             Ok(_) => {
                 log::info!("Copied to clipboard");
                 true
@@ -594,7 +614,8 @@ fn handle_clipboard_copy(text: String) -> bool {
                 log::warn!("Failed to copy to clipboard: {}", e);
                 false
             }
-        }
+        };
+        clipboard_worker_outcome(Ok(success))
     }
 }
 
@@ -3525,6 +3546,75 @@ mod key_handler_tests {
             ),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn chat_copy_post_copy_dispatch_blocks_consecutive_enter_presses() {
+        use crate::ui::{ChatAttachment, ChatAttachmentType};
+
+        let attachment = ChatAttachment {
+            blossom_url: "https://example.com/blob".into(),
+            filename: String::new(),
+            mime_type: None,
+            file_type: ChatAttachmentType::File,
+            decryption_key: None,
+        };
+        for mut app in chat_copy::tests::copy_views()
+            .into_iter()
+            .filter(|app| !app.admin_show_solver_dms)
+        {
+            app.admin_chat_input_enabled = true;
+            app.order_chat_input_enabled = true;
+            for messages in app.admin_dispute_chats.values_mut() {
+                for message in messages {
+                    message.attachment = Some(attachment.clone());
+                }
+            }
+            for messages in app
+                .order_chats
+                .values_mut()
+                .chain(app.user_dispute_chats.values_mut())
+            {
+                for message in messages {
+                    message.attachment = Some(attachment.clone());
+                }
+            }
+            for message in &mut app.observer_messages {
+                message.attachment = Some(attachment.clone());
+            }
+            let mode = std::mem::discriminant(&app.mode);
+            let inputs = (
+                app.admin_chat_input.clone(),
+                app.order_chat_input.clone(),
+                app.observer_shared_key_input.clone(),
+                app.order_chat_draft_owner,
+            );
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            )
+            .await;
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(chat_copy::feedback_text(&app), Some("No filename to copy"));
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+            }
+            assert_eq!(
+                (
+                    app.admin_chat_input,
+                    app.order_chat_input,
+                    app.observer_shared_key_input,
+                    app.order_chat_draft_owner
+                ),
+                inputs
+            );
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
     }
 
     #[tokio::test]

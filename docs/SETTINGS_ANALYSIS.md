@@ -35,8 +35,11 @@ This document provides a comprehensive analysis of the Settings tab features imp
 - **Configuration**: Set `clipboard_osc52 = true` in the active `settings.toml` and
   restart Mostrix. This is a config-only option, not a Settings tab toggle.
 - **Scope**: Chat-message copying only. Native clipboard copying remains first;
-  OSC 52 is attempted only after native failure and explicit opt-in. Invoice,
+  OSC 52 is attempted only after confirmed native failure and explicit opt-in. Invoice,
   seed, and disclosed Shared key copy shortcuts keep their existing behavior.
+- **Unconfirmed native writes**: A Linux worker timeout or disconnected result
+  channel reports **Clipboard result unknown** without attempting OSC 52, since
+  the native worker may still copy the text later.
 - **Limits and feedback**: Interactive stdin/stdout, non-`dumb` terminal, at most
   64 KiB of raw UTF-8. **Sent to terminal clipboard** means a request was written
   and flushed, not that the terminal acknowledged a clipboard update.

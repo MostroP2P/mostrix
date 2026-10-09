@@ -313,8 +313,12 @@ If the selected conversation or message becomes invalid, selection is cancelled.
 The next key is consumed to prevent an intended copy from sending a draft,
 fetching a conversation, or confirming a popup. Paste is also blocked while this
 cancellation is pending. An empty or loading transcript reports **No messages to
-copy** without entering selection. Copy feedback belongs only to its conversation
-and is dismissed by the next key.
+copy** without entering selection. Copy feedback belongs only to its conversation.
+After Enter finishes a copy attempt, further Enter presses are ignored and the
+completion feedback remains visible until another key or a nonempty paste. This
+prevents legacy terminal key repeats from sending the preserved draft or starting
+an Observer fetch. Fresh input dismisses the feedback and restores normal Enter
+handling; the draft and input layer are not changed by the guard.
 
 In Observer, **Enter copies instead of fetching while selecting**. **Ctrl+L** still
 securely clears the Shared key, messages, error, and loading state, cancels copy
@@ -346,6 +350,9 @@ This option applies only to chat-message copying (Disputes in Progress, Solver
 DMs, My Trades, and Observer), not invoice, seed, or Shared key popup shortcuts.
 
 - Native success reports **Copied to clipboard** and never sends OSC 52.
+- On Linux, a native worker timeout or disconnected result channel reports
+  **Clipboard result unknown** and does not send OSC 52. The worker may still
+  complete a native copy later; only a confirmed failure permits fallback.
 - Fallback success reports **Sent to terminal clipboard**. The terminal can ignore
   or block the request; Mostrix cannot confirm that its clipboard changed.
 - Non-interactive output, `TERM=dumb`, an oversized payload, or a write/flush failure reports

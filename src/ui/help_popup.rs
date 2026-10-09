@@ -289,7 +289,7 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
     if narrow {
         let (title_style, _) = settings_instruction_block_style();
         return [
-            "↑↓  Enter",
+            "↑↓ Enter Ctrl+C",
             "Tab  Ctrl+I",
             "Esc  Ctrl+K",
             "Shift+C  Shift+F",
@@ -303,6 +303,7 @@ fn compact_my_trades_help(narrow: bool) -> Vec<Line<'static>> {
 
     [
         "↑↓ / Enter: Select order / send message",
+        "Ctrl+C: Copy; ↑↓: Select; Enter: Copy; Esc: Cancel",
         "Ctrl+I / Esc: INSERT typing / COMMAND shortcuts",
         "Tab / Ctrl+K: Peer-Solver chat / trade actions",
         "Shift+C / Shift+F: Cancel / fiat sent (COMMAND)",
@@ -707,6 +708,33 @@ mod help_content_tests {
             !lines.iter().any(|l| l.contains("Tab: Switch")),
             "Tab focus shortcut should be removed from Observer help now that only one field exists: {lines:?}"
         );
+    }
+
+    #[test]
+    fn compact_my_trades_help_includes_copy_controls() {
+        let app = AppState::new(UserRole::User);
+        for (width, height) in [(80, 24), (80, 12), (40, 12), (20, 12)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for expected in ["Ctrl+C", "↑↓", "Enter", "Esc", "Ctrl+H", "close"] {
+                assert!(
+                    buffer_contains(buffer, expected),
+                    "missing {expected} at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
+            }
+            if width == 80 {
+                for expected in ["↑↓: Select", "Enter: Copy", "Esc: Cancel"] {
+                    assert!(
+                        buffer_contains(buffer, expected),
+                        "missing {expected} at {width}x{height}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

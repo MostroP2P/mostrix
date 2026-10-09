@@ -314,6 +314,9 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
     if app.chat_copy_session.is_some() || app.chat_copy_cancelled {
         return;
     }
+    if !pasted_text.is_empty() {
+        app.chat_copy_feedback = None;
+    }
     let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
 
     if let UiMode::OrderFilters(ref mut state) = app.mode {
@@ -1258,6 +1261,37 @@ mod own_reputation_refresh_tests {
 
 #[cfg(test)]
 mod paste_routing_tests {
+    #[test]
+    fn chat_copy_post_copy_paste_rearms_enter_without_changing_input_layer() {
+        use crate::ui::key_handler::chat_copy;
+        use crate::ui::UserChatChannel;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            app.order_chat_input_enabled = true;
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| false,
+            );
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            chat_copy::handle_key_with(&mut app, &enter, |_| true);
+            super::apply_pasted_text_to_active_input(&mut app, "");
+            assert!(chat_copy::handle_key_with(&mut app, &enter, |_| panic!(
+                "must not copy again"
+            )));
+            super::apply_pasted_text_to_active_input(&mut app, " pasted");
+            assert_eq!(app.order_chat_input, "draft\n  untouched pasted");
+            assert!(app.order_chat_input_enabled);
+            assert_eq!(
+                app.order_chat_draft_owner,
+                Some((uuid::Uuid::nil(), channel))
+            );
+            assert!(!chat_copy::handle_key_with(&mut app, &enter, |_| false));
+        }
+    }
+
     #[test]
     fn chat_copy_matrix_blocks_paste_during_selection_and_pending_cancellation() {
         use crate::ui::key_handler::chat_copy;

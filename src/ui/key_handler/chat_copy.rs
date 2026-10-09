@@ -5,7 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
-use crate::ui::key_handler::handle_clipboard_copy;
+use crate::ui::key_handler::{copy_to_native_clipboard, NativeClipboardOutcome};
 use crate::ui::terminal::copy_with_osc52;
 use crate::ui::{
     AdminMode, AdminTab, AppState, ChatAttachment, ChatParty, ChatSender, DisputeFilter, Tab,
@@ -31,6 +31,7 @@ pub(crate) struct ChatCopySession {
 pub(crate) struct ChatCopyFeedback {
     target: ChatCopyTarget,
     text: &'static str,
+    block_enter: bool,
 }
 
 fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
@@ -221,17 +222,20 @@ enum CopyOutcome {
     Copied,
     SentToTerminal,
     Unavailable,
+    Indeterminate,
 }
 
 fn copy_chat_text_with(
     text: String,
     osc52_enabled: bool,
-    native: impl FnOnce(String) -> bool,
+    native: impl FnOnce(String) -> NativeClipboardOutcome,
     terminal: impl FnOnce(&str) -> bool,
 ) -> CopyOutcome {
     let fallback = osc52_enabled.then(|| Zeroizing::new(text.clone()));
-    if native(text) {
-        return CopyOutcome::Copied;
+    match native(text) {
+        NativeClipboardOutcome::Copied => return CopyOutcome::Copied,
+        NativeClipboardOutcome::Indeterminate => return CopyOutcome::Indeterminate,
+        NativeClipboardOutcome::Failed => {}
     }
     if fallback
         .as_ref()
@@ -250,7 +254,7 @@ pub(crate) fn handle_key(app: &mut AppState, key: &KeyEvent) -> bool {
             SETTINGS
                 .get()
                 .is_some_and(|settings| settings.clipboard_osc52),
-            handle_clipboard_copy,
+            copy_to_native_clipboard,
             copy_with_osc52,
         )
     })
@@ -276,7 +280,14 @@ fn handle_key_with_result(
     key: &KeyEvent,
     copy: impl FnOnce(String) -> CopyOutcome,
 ) -> bool {
-    app.chat_copy_feedback = None;
+    if let Some(feedback) = app.chat_copy_feedback.take() {
+        if feedback.block_enter && key.code == KeyCode::Enter {
+            if focused_target(app).as_ref() == Some(&feedback.target) {
+                app.chat_copy_feedback = Some(feedback);
+            }
+            return true;
+        }
+    }
     if app.user_role == UserRole::Admin
         && app.observer_inputs_editable()
         && (app.chat_copy_session.is_some() || app.chat_copy_cancelled)
@@ -310,12 +321,14 @@ fn handle_key_with_result(
                         CopyOutcome::Copied => "Copied to clipboard",
                         CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
                         CopyOutcome::Unavailable => "Clipboard unavailable",
+                        CopyOutcome::Indeterminate => "Clipboard result unknown",
                     },
                     None => "No filename to copy",
                 };
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target: session.target,
                     text: feedback,
+                    block_enter: true,
                 });
                 return true;
             }
@@ -358,6 +371,7 @@ fn handle_key_with_result(
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target,
                     text: "No messages to copy",
+                    block_enter: false,
                 });
             }
             return true;
@@ -444,6 +458,31 @@ pub(crate) mod tests {
                     assert_eq!(app.admin_chat_selected_message_idx, Some(7));
                     assert_eq!(app.order_chat_selected_message_idx, Some(7));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_copy_post_copy_enter_requires_fresh_input() {
+        for copied in [false, true] {
+            for mut app in copy_views() {
+                enter_selection(&mut app);
+                let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                assert!(handle_key_with(&mut app, &enter, |_| copied));
+                let feedback = feedback_text(&app);
+                for _ in 0..3 {
+                    assert!(handle_key_with(&mut app, &enter, |_| panic!(
+                        "must not copy again"
+                    )));
+                    assert_eq!(feedback_text(&app), feedback);
+                    assert!(app.chat_copy_session.is_none());
+                }
+                assert!(!handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                    |_| false
+                ));
+                assert!(!handle_key_with(&mut app, &enter, |_| false));
             }
         }
     }
@@ -550,11 +589,13 @@ pub(crate) mod tests {
             CopyOutcome::Copied,
             CopyOutcome::SentToTerminal,
             CopyOutcome::Unavailable,
+            CopyOutcome::Indeterminate,
         ] {
             let expected = match outcome {
                 CopyOutcome::Copied => "Copied to clipboard",
                 CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
                 CopyOutcome::Unavailable => "Clipboard unavailable",
+                CopyOutcome::Indeterminate => "Clipboard result unknown",
             };
             for mut app in copy_views() {
                 enter_selection(&mut app);
@@ -565,6 +606,7 @@ pub(crate) mod tests {
                         CopyOutcome::Copied => CopyOutcome::Copied,
                         CopyOutcome::SentToTerminal => CopyOutcome::SentToTerminal,
                         CopyOutcome::Unavailable => CopyOutcome::Unavailable,
+                        CopyOutcome::Indeterminate => CopyOutcome::Indeterminate,
                     },
                 );
                 for (width, height) in [(30, 8), (40, 12), (80, 24)] {
@@ -624,7 +666,11 @@ pub(crate) mod tests {
     #[test]
     fn osc52_fallback_requires_opt_in_and_native_failure() {
         for enabled in [false, true] {
-            for native_success in [false, true] {
+            for native_result in [
+                NativeClipboardOutcome::Copied,
+                NativeClipboardOutcome::Failed,
+                NativeClipboardOutcome::Indeterminate,
+            ] {
                 for terminal_success in [false, true] {
                     let payload = "  private\n\u{00e9}\x1b\t  ";
                     let mut native_called = false;
@@ -635,7 +681,7 @@ pub(crate) mod tests {
                         |text| {
                             native_called = true;
                             assert_eq!(text, payload);
-                            native_success
+                            native_result
                         },
                         |text| {
                             terminal_called = true;
@@ -644,11 +690,16 @@ pub(crate) mod tests {
                         },
                     );
                     assert!(native_called);
-                    assert_eq!(terminal_called, enabled && !native_success);
+                    assert_eq!(
+                        terminal_called,
+                        enabled && native_result == NativeClipboardOutcome::Failed
+                    );
                     assert_eq!(
                         outcome,
-                        if native_success {
+                        if native_result == NativeClipboardOutcome::Copied {
                             CopyOutcome::Copied
+                        } else if native_result == NativeClipboardOutcome::Indeterminate {
+                            CopyOutcome::Indeterminate
                         } else if enabled && terminal_success {
                             CopyOutcome::SentToTerminal
                         } else {
@@ -661,6 +712,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn osc52_does_not_fallback_when_a_timed_out_worker_later_succeeds() {
+        use crate::ui::key_handler::clipboard_worker_outcome;
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+
+        let (sender, receiver) = channel();
+        let outcome = copy_chat_text_with(
+            "private text".into(),
+            true,
+            |_| clipboard_worker_outcome(receiver.recv_timeout(Duration::ZERO)),
+            |_| panic!("an unconfirmed native write must not reach another clipboard"),
+        );
+        assert_eq!(outcome, CopyOutcome::Indeterminate);
+        sender.send(true).unwrap();
+        assert_eq!(
+            clipboard_worker_outcome(receiver.try_recv().map_err(|_| RecvTimeoutError::Timeout)),
+            NativeClipboardOutcome::Copied
+        );
+        assert_eq!(
+            clipboard_worker_outcome(Ok(false)),
+            NativeClipboardOutcome::Failed
+        );
+        assert_eq!(
+            clipboard_worker_outcome(Err(RecvTimeoutError::Disconnected)),
+            NativeClipboardOutcome::Indeterminate
+        );
+    }
+
+    #[test]
     fn osc52_cap_does_not_limit_native_clipboard() {
         let text = "x".repeat(65 * 1024);
         let outcome = copy_chat_text_with(
@@ -668,7 +748,7 @@ pub(crate) mod tests {
             true,
             |payload| {
                 assert_eq!(payload, text);
-                true
+                NativeClipboardOutcome::Copied
             },
             |_| panic!("native success must bypass OSC 52"),
         );
@@ -687,7 +767,9 @@ pub(crate) mod tests {
             assert!(handle_key_with_result(
                 &mut app,
                 &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                |text| { copy_chat_text_with(text, true, |_| false, |_| true) }
+                |text| {
+                    copy_chat_text_with(text, true, |_| NativeClipboardOutcome::Failed, |_| true)
+                }
             ));
             assert!(app.chat_copy_session.is_none());
             assert_eq!(feedback_text(&app), Some("Sent to terminal clipboard"));
