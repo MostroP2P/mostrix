@@ -1,6 +1,6 @@
 [package]
 name = "mostrix"
-version = "0.3.5"
+version = "0.3.6"
 rust-version = "1.97.0"
 edition = "2021"
 license = "GPL-3.0-only"
