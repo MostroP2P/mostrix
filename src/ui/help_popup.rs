@@ -326,23 +326,35 @@ fn compact_my_trades_help(narrow: bool, inner_width: u16, inner_height: u16) -> 
     }
 
     let (title_style, _) = settings_instruction_block_style();
-    [
-        "↑↓ Enter Ctrl+C",
-        "Tab  Ctrl+I  Esc  Ctrl+K",
-        "Shift+C  Shift+F",
-        "Shift+R  Shift+D  Shift+U",
-    ]
-    .into_iter()
-    .map(|row| Line::from(Span::styled(row, title_style)))
-    .take_while(|line| {
-        let rows = wrapped_rows(line, width);
-        if rows > available_rows {
-            return false;
+    // Copy rows come first so they survive the smallest popup; the rest are packed to the width.
+    let mut rows = vec![
+        String::from("↑↓ Enter Ctrl+C"),
+        String::from("Copy: ↑↓ Enter Esc"),
+    ];
+    let mut packed = String::new();
+    for key in [
+        "Tab", "Ctrl+I", "Esc", "Ctrl+K", "Shift+C", "Shift+F", "Shift+R", "Shift+D", "Shift+U",
+    ] {
+        if !packed.is_empty() && packed.len() + 2 + key.len() > usize::from(width) {
+            rows.push(std::mem::take(&mut packed));
         }
-        available_rows -= rows;
-        true
-    })
-    .collect()
+        if !packed.is_empty() {
+            packed.push_str("  ");
+        }
+        packed.push_str(key);
+    }
+    rows.push(packed);
+    rows.into_iter()
+        .map(|row| Line::from(Span::styled(row, title_style)))
+        .take_while(|line| {
+            let rows = wrapped_rows(line, width);
+            if rows > available_rows {
+                return false;
+            }
+            available_rows -= rows;
+            true
+        })
+        .collect()
 }
 
 fn compact_orders_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
@@ -750,13 +762,20 @@ mod help_content_tests {
                     .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
                     .unwrap();
                 let buffer = terminal.backend().buffer();
-                for expected in ["Ctrl+C", "↑↓", "Enter", "Esc", "Ctrl+H", "close"] {
+                for expected in ["Ctrl+C", "↑↓", "Enter", "Ctrl+H", "close"] {
                     assert!(
                         buffer_contains(buffer, expected),
                         "missing {expected} at {width}x{height}: {}",
                         buffer_text(buffer)
                     );
                 }
+                // The close hint also contains `Esc`, so require the copy-cancel phrase itself.
+                assert!(
+                    buffer_contains(buffer, "Copy: ↑↓ Enter Esc")
+                        || buffer_contains(buffer, "Esc: Cancel"),
+                    "copy-mode Esc guidance missing at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
                 if width >= 60 && height >= 12 {
                     for expected in ["↑↓: Select", "Enter: Copy", "Esc: Cancel"] {
                         assert!(
@@ -765,6 +784,30 @@ mod help_content_tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn smallest_my_trades_help_keeps_copy_cancel_guidance() {
+        let app = AppState::new(UserRole::User);
+        for width in 20..=25 {
+            for height in 6..=8 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(
+                    buffer_contains(buffer, "Copy: ↑↓ Enter Esc"),
+                    "copy-cancel row missing at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
+                assert!(
+                    buffer_contains(buffer, "Ctrl+C") && buffer_contains(buffer, "close"),
+                    "copy start or close hint missing at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
             }
         }
     }
