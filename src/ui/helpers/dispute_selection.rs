@@ -153,6 +153,9 @@ pub fn selected_filtered_dispute(app: &AppState) -> Option<AdminDispute> {
 
 /// Move the sidebar selection `delta` rows within the filtered list, clamping
 /// at both ends, and store the landing dispute's id as the new selection.
+///
+/// Clears any unsent composer draft when the selected dispute changes so Enter
+/// cannot send text typed for another dispute.
 pub fn move_dispute_selection(app: &mut AppState, delta: isize) {
     let filtered = get_filtered_disputes(app);
     let Some(idx) = selected_display_idx(app, &filtered) else {
@@ -161,7 +164,13 @@ pub fn move_dispute_selection(app: &mut AppState, delta: isize) {
     let new_idx = idx
         .saturating_add_signed(delta)
         .min(filtered.len().saturating_sub(1));
-    app.selected_dispute_id = Some(filtered[new_idx].1.dispute_id.clone());
+    let new_id = filtered[new_idx].1.dispute_id.clone();
+    if app.selected_dispute_id.as_deref() != Some(new_id.as_str()) {
+        crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
+        app.admin_chat_selected_message_idx = None;
+        app.admin_chat_scroll_tracker = None;
+    }
+    app.selected_dispute_id = Some(new_id);
 }
 
 /// Persist the sidebar selection when that dispute just became terminal.
@@ -186,7 +195,7 @@ pub fn retain_closed_displayed_dispute(
 /// An unsent draft belonged to the previously selected dispute: drop it so
 /// Enter cannot send it to the new buyer.
 pub fn open_taken_dispute(app: &mut AppState, dispute_id: &str) {
-    app.admin_chat_input.clear();
+    crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
     app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
     app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
     app.dispute_filter = DisputeFilter::InProgress;

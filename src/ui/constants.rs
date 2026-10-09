@@ -5,7 +5,8 @@
 
 pub const HELP_CLOSE_HINT: &str = "Esc, Enter or Ctrl+H to close";
 
-/// Footer hint shown in help and disputes footer
+/// Ctrl+H shortcut label (`Ctrl+H: Help`). Live dispute/Observer/My Trades UIs
+/// render keycap bars instead; this string remains for shared help-style copy.
 pub const HELP_KEY: &str = "Ctrl+H: Help";
 
 // Filter toggle (Disputes in Progress)
@@ -37,9 +38,15 @@ pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
 pub const HELP_DIP_SHIFT_R_RECOVER: &str =
     "Shift+R: Pick missing taken disputes to recover (↑↓ Space Enter)";
-pub const HELP_DIP_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable message input";
+/// INSERT / COMMAND for dispute chat (name kept for call-site stability; not Shift+I).
+pub const HELP_DIP_SHIFT_I_INPUT: &str =
+    "i / Insert: Enter INSERT on BUYER/SELLER (not SERBERO). Esc: leave → COMMAND";
+/// Ctrl+K dispute actions (same outcomes as COMMAND Shift/Delete shortcuts).
+pub const HELP_DIP_CTRL_K_ACTIONS: &str =
+    "Ctrl+K: Dispute actions — letter selects, Enter confirms (Resolve / Recover / Filter / Remove)";
 pub const HELP_DIP_DELETE_LOCAL: &str = "Delete: Remove selected dispute from local DB (sidebar)";
-pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
+pub const HELP_DIP_ENTER_SEND: &str =
+    "Enter: Send message (INSERT; draft must match live dispute/party)";
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -47,12 +54,12 @@ pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)"
     target_os = "netbsd"
 ))]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+Shift+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+Shift+V / Shift+Insert / right-click: Paste into message (INSERT)";
 #[cfg(target_os = "windows")]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 #[cfg(target_os = "macos")]
-pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message input";
+pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message (INSERT)";
 #[cfg(not(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -62,7 +69,7 @@ pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message i
     target_os = "macos"
 )))]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const CHAT_COPY_START: &str = "Ctrl+C:Copy";
 pub const CHAT_COPY_HINT: &str = "↑↓:Extend Enter:Copy Esc:Cancel";
@@ -107,8 +114,14 @@ pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste into Shared key field"
 pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into Shared key field";
 pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
 pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
-pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
-pub const HELP_OBS_CTRL_L_CLEAR: &str = "Ctrl+L: Clear all";
+/// Esc only clears the inline error; Shared key and messages stay (use Ctrl+L to wipe).
+pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Dismiss inline error (does not clear Shared key)";
+/// Full Observer wipe (`clear_observer_secrets`); keycap label is Clear, not Esc.
+pub const HELP_OBS_CTRL_L_CLEAR: &str =
+    "Ctrl+L: Clear all (Shared key, loaded pin, messages, attachment keys, error)";
+/// Ctrl+K Observer actions (Clear all / Save attachment / Dismiss error).
+pub const HELP_OBS_CTRL_K_ACTIONS: &str =
+    "Ctrl+K: Observer actions — letter selects, Enter confirms (Clear / Save / Dismiss)";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)
@@ -144,7 +157,7 @@ pub const HELP_MY_TRADES_CTRL_I_INSERT: &str =
 pub const HELP_MY_TRADES_ESC_COMMAND: &str =
     "Esc: Leave INSERT → COMMAND (draft kept for this order/channel)";
 pub const HELP_MY_TRADES_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Trade actions (Fiat sent / Release / Cancel / …)";
+    "Ctrl+K: Trade actions — letter selects, Enter confirms (Fiat sent / Release / …)";
 pub const HELP_MY_TRADES_PASTE: &str =
     "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str =
@@ -212,10 +225,17 @@ pub const HELP_CNO_CHANGE_FIELD: &str = "↑↓: Change field";
 pub const HELP_CNO_TAB_NEXT: &str = "Tab: Next field";
 pub const HELP_CNO_ENTER_CONFIRM: &str = "Enter: Confirm order (from form)";
 
-// --- Footer (Disputes in Progress) ---
+// --- Attachment / popup footers ---
 
 /// Hint shown in the Save Attachment popup footer (↑↓ Select, Enter Save, Esc Cancel).
 pub const SAVE_ATTACHMENT_POPUP_HINT: &str = "↑↓ Select, Enter Save, Esc Cancel";
+
+/// Input placeholder while Disputes In Progress shows the SERBERO pane.
+pub const SOLVER_DMS_READ_ONLY: &str = "Serbero messages are read-only · Tab: Buyer";
+
+// --- Legacy plain-text footer fragments ---
+// Dispute, Observer, and My Trades live UIs render keycap bars in their tab
+// modules instead of concatenating these. Kept for docs / possible reuse.
 
 pub const FOOTER_CTRL_S_SAVE_FILE: &str = " | Ctrl+S: Save file";
 pub const FOOTER_CTRL_O_SEND_FILE: &str = " | Ctrl+O: Send file";
@@ -224,22 +244,19 @@ pub const FOOTER_SENDING_ATTACHMENT: &str = " | Sending attachment…";
 pub const FOOTER_UP_DOWN_SELECT: &str = "↑↓: Select";
 pub const FOOTER_UP_DOWN_SELECT_DISPUTE: &str = "↑↓: Select Dispute";
 pub const FOOTER_TAB_PARTY: &str = "Tab: Party";
-/// Input placeholder while Disputes In Progress shows the SERBERO pane.
-pub const SOLVER_DMS_READ_ONLY: &str = "Serbero messages are read-only · Tab: Buyer";
 pub const FOOTER_TAB_SWITCH_PARTY: &str = "Tab: Switch Party";
 pub const FOOTER_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve";
 pub const FOOTER_SHIFT_R_RECOVER: &str = "Shift+R: Recover";
 pub const FOOTER_DELETE_LOCAL: &str = "Del: Remove";
+/// Obsolete Shift+I toggle copy; live UIs use `i` / Esc INSERT/COMMAND keycaps.
 pub const FOOTER_SHIFT_I_DISABLE: &str = "Shift+I: Disable";
+/// Obsolete Shift+I toggle copy; live UIs use `i` / Esc INSERT/COMMAND keycaps.
 pub const FOOTER_SHIFT_I_ENABLE: &str = "Shift+I: Enable";
 pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
 pub const FOOTER_NAV_CHAT: &str = "↑↓: Navigate Chat";
 pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
-
-// --- Footer (My Trades / Order Chat) ---
-
 pub const FOOTER_MYTRADES_SELECT_ORDER: &str = "↑↓: Select order";
 pub const FOOTER_MYTRADES_TAB_CHAT: &str = "Tab: Peer/Solver chat";
 pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";

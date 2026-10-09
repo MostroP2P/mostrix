@@ -1,4 +1,7 @@
-//! Ctrl+K trade-actions list for My Trades (INSERT and COMMAND layers).
+//! Ctrl+K Observer actions list (Clear all / Save attachment / Dismiss error).
+//!
+//! The Shared key field stays editable outside this popup; Esc alone dismisses
+//! the inline error without wiping secrets (see [`crate::ui::AppState::clear_observer_secrets`]).
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -7,55 +10,44 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-/// Ordered rows shown in the Ctrl+K trade-actions popup.
-pub const TRADE_ACTION_ROWS: &[&str] = &[
-    "F  Mark fiat sent",
-    "R  Release sats",
-    "C  Cooperative cancel",
-    "D  Open dispute",
-    "V  Rate counterparty",
-    "K  Reveal Shared key",
-];
+/// Ordered rows shown in the Ctrl+K Observer actions popup.
+pub const OBSERVER_ACTION_ROWS: &[&str] =
+    &["L  Clear all", "S  Save attachment", "E  Dismiss error"];
 
 #[must_use]
-pub fn trade_action_count() -> usize {
-    TRADE_ACTION_ROWS.len()
+pub fn observer_action_count() -> usize {
+    OBSERVER_ACTION_ROWS.len()
 }
 
-/// Letter → row index for highlight only (Enter confirms; same letters as COMMAND Shift chords).
+/// Letter → row index for highlight only (Enter confirms; `L` alone does not Clear).
 #[must_use]
-pub fn trade_action_index_for_key(c: char) -> Option<usize> {
+pub fn observer_action_index_for_key(c: char) -> Option<usize> {
     match c.to_ascii_lowercase() {
-        'f' => Some(0),
-        'r' => Some(1),
-        'c' => Some(2),
-        'd' => Some(3),
-        'v' => Some(4),
-        'k' => Some(5),
+        'l' => Some(0),
+        's' => Some(1),
+        'e' => Some(2),
         _ => None,
     }
 }
 
-/// Whether the viewport can fit header + all actions + close hint.
-fn use_compact_trade_actions(area: ratatui::layout::Rect) -> bool {
-    // Borders (2) + header (1) + actions + close hint (2) + margin.
-    let full_needed = (trade_action_count() as u16).saturating_add(6);
+fn use_compact_observer_actions(area: ratatui::layout::Rect) -> bool {
+    let full_needed = (observer_action_count() as u16).saturating_add(6);
     area.height < full_needed || area.width < 24
 }
 
-/// Renders the My Trades Ctrl+K action list.
-pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize) {
+/// Renders the Observer Ctrl+K action list.
+pub fn render_observer_actions_popup(f: &mut ratatui::Frame, selected_index: usize) {
     let area = f.area();
-    let compact = use_compact_trade_actions(area);
+    let compact = use_compact_observer_actions(area);
     let popup_width = if compact {
         area.width.clamp(1, 42)
     } else {
-        42.min(area.width.saturating_sub(2).max(24))
+        42.min(area.width.saturating_sub(2).max(28))
     };
     let popup_height = if compact {
         area.height.max(1)
     } else {
-        (trade_action_count() as u16)
+        (observer_action_count() as u16)
             .saturating_add(6)
             .min(area.height.saturating_sub(1).max(8))
     };
@@ -64,14 +56,13 @@ pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize)
     f.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Trade actions ")
+        .title(" Observer actions ")
         .borders(Borders::ALL)
         .style(Style::default().bg(BACKGROUND_COLOR).fg(PRIMARY_COLOR));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
     let list_area = if compact {
-        // Drop secondary header + Esc hint so the action list keeps usable height.
         inner
     } else {
         let chunks = Layout::new(
@@ -97,13 +88,13 @@ pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize)
         chunks[1]
     };
 
-    let items: Vec<ListItem> = TRADE_ACTION_ROWS
+    let items: Vec<ListItem> = OBSERVER_ACTION_ROWS
         .iter()
         .map(|row| ListItem::new(Line::from(Span::raw(*row))))
         .collect();
     let mut state = ListState::default();
     state.select(Some(
-        selected_index.min(trade_action_count().saturating_sub(1)),
+        selected_index.min(observer_action_count().saturating_sub(1)),
     ));
     f.render_stateful_widget(
         List::new(items).highlight_style(
@@ -135,20 +126,22 @@ mod tests {
 
     #[test]
     fn letter_shortcuts_map_to_rows() {
-        assert_eq!(trade_action_index_for_key('F'), Some(0));
-        assert_eq!(trade_action_index_for_key('k'), Some(5));
-        assert_eq!(trade_action_index_for_key('x'), None);
+        assert_eq!(observer_action_index_for_key('L'), Some(0));
+        assert_eq!(observer_action_index_for_key('e'), Some(2));
+        assert_eq!(observer_action_index_for_key('x'), None);
     }
 
     #[test]
     fn render_lists_core_actions() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_trade_actions_popup(f, 0)).unwrap();
+        terminal
+            .draw(|f| render_observer_actions_popup(f, 0))
+            .unwrap();
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Trade actions"));
-        assert!(buffer_contains(buf, "Mark fiat sent"));
-        assert!(buffer_contains(buf, "Release sats"));
+        assert!(buffer_contains(buf, "Observer actions"));
+        assert!(buffer_contains(buf, "Clear all"));
+        assert!(buffer_contains(buf, "Save attachment"));
         assert!(buffer_contains(buf, "Esc"));
     }
 
@@ -156,14 +149,15 @@ mod tests {
     fn compact_layout_on_tiny_terminal_keeps_actions_visible() {
         let backend = TestBackend::new(20, 8);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_trade_actions_popup(f, 0)).unwrap();
+        terminal
+            .draw(|f| render_observer_actions_popup(f, 0))
+            .unwrap();
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Trade actions"));
+        assert!(buffer_contains(buf, "Observer actions"));
         assert!(
-            buffer_contains(buf, "Mark fiat") || buffer_contains(buf, "fiat sent"),
+            buffer_contains(buf, "Clear") || buffer_contains(buf, "Save"),
             "essential action row must remain visible on 20×8"
         );
-        // Compact mode drops the Esc close hint to free list rows.
         assert!(
             !buffer_contains(buf, "to close"),
             "compact mode should omit the Esc close hint"

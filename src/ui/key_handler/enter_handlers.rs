@@ -381,14 +381,19 @@ fn spawn_bulk_history_cleanup_task(
 
 fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     let mode_after_send = UiMode::AdminMode(AdminMode::ManagingDispute);
+    // `handle_enter_key` replaces mode with Normal before matching ManagingDispute.
+    // Restore Managing before ownership resolve, or live_admin_chat_draft_target
+    // returns None and clears the draft (no send).
+    app.mode = mode_after_send.clone();
     // Serbero's pane is read-only: nothing to send.
     if !matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
         || app.admin_show_solver_dms
     {
-        app.mode = mode_after_send;
         return;
     }
 
+    // Resolve + validate draft ownership against the displayed dispute/party.
+    let owned = crate::ui::key_handler::chat_helpers::resolve_admin_chat_send_target(app);
     let content = app.admin_chat_input.trim().to_string();
     let input_enabled = app.admin_chat_input_enabled;
     run_enter_chat_send_flow(
@@ -398,19 +403,21 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             input_enabled,
             content,
         },
-        |app| {
-            selected_filtered_dispute(app).map(|selected_dispute| {
-                let shared_key_hex = match app.active_chat_party {
-                    ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
-                    ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
-                };
-                let recipient_pubkey =
-                    dispute_wake_recipient(&selected_dispute, app.active_chat_party);
-                DisputeChatTarget {
-                    dispute_id_key: selected_dispute.dispute_id.clone(),
-                    shared_key_hex,
-                    recipient_pubkey,
-                }
+        move |app| {
+            let (owned_id, owned_party) = owned?;
+            let selected_dispute = selected_filtered_dispute(app)?;
+            if selected_dispute.dispute_id != owned_id || app.active_chat_party != owned_party {
+                return None;
+            }
+            let shared_key_hex = match owned_party {
+                ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
+                ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
+            };
+            let recipient_pubkey = dispute_wake_recipient(&selected_dispute, owned_party);
+            Some(DisputeChatTarget {
+                dispute_id_key: owned_id,
+                shared_key_hex,
+                recipient_pubkey,
             })
         },
         |app, target, content| {
@@ -429,7 +436,7 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             );
         },
         |app| {
-            app.admin_chat_input.clear();
+            crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
             app.admin_chat_input_enabled = true;
         },
     );
@@ -562,7 +569,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Close help / settings reference (mode restored in key_handler/mod.rs)
             true
         }
-        UiMode::TradeActionsPopup { previous_mode, .. } => {
+        UiMode::TradeActionsPopup { previous_mode, .. }
+        | UiMode::DisputeActionsPopup { previous_mode, .. }
+        | UiMode::ObserverActionsPopup { previous_mode, .. } => {
             // Enter is handled in key_handler/mod.rs; restore if we somehow land here.
             app.mode = *previous_mode;
             true
@@ -1727,7 +1736,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
         // Validate the Shared key (K_conv), then fetch observer chat authenticated
         // against known admin/party inner signers from taken disputes.
-        let key_str = app.observer_shared_key_input.trim().to_string();
+        // Own a Zeroizing copy in the fetch task so Clear / tab exit / role switch
+        // that wipe AppState cannot leave a bare String clone until the task ends.
+        let key_str = Zeroizing::new(app.observer_shared_key_input.trim().to_string());
         if key_str.is_empty() {
             let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
@@ -1735,7 +1746,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             return;
         }
 
-        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+        if crate::util::chat_utils::keys_from_shared_hex(key_str.as_str()).is_none() {
             let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
@@ -1755,7 +1766,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match fetch_observer_chat(&client, &key_str, sign_pubkey, &known_roles).await {
+            match fetch_observer_chat(&client, key_str.as_str(), sign_pubkey, &known_roles).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded {
                         generation,
@@ -1769,6 +1780,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     });
                 }
             }
+            // `key_str` drops here (Zeroizing wipes K_conv hex).
         });
     } else if matches!(
         app.active_tab,

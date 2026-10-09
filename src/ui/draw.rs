@@ -302,6 +302,16 @@ pub fn ui_draw(
         trade_actions_popup::render_trade_actions_popup(f, *selected_index);
     }
 
+    // Disputes in Progress Ctrl+K action list
+    if let UiMode::DisputeActionsPopup { selected_index, .. } = &app.mode {
+        dispute_actions_popup::render_dispute_actions_popup(f, *selected_index);
+    }
+
+    // Observer Ctrl+K action list
+    if let UiMode::ObserverActionsPopup { selected_index, .. } = &app.mode {
+        observer_actions_popup::render_observer_actions_popup(f, *selected_index);
+    }
+
     // Save attachment popup (Ctrl+S in dispute chat)
     if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
         save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);

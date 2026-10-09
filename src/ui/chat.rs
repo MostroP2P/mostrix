@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 
 use nostr_sdk::prelude::{EventId, PublicKey};
+use zeroize::Zeroize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChatParty {
@@ -74,7 +75,26 @@ pub struct ChatAttachment {
     pub mime_type: Option<String>,
     pub file_type: ChatAttachmentType,
     /// When provided by the sender, used to decrypt the blob when saving.
+    /// Cleared via [`Self::zeroize_secrets`] on Observer Clear / transcript replace.
+    /// Callers that `take()` this for an async task must re-wrap in
+    /// [`zeroize::Zeroizing`] before spawn (see `spawn_save_attachment`).
     pub decryption_key: Option<Vec<u8>>,
+}
+
+impl ChatAttachment {
+    /// Overwrite and drop any in-memory decryption key material (Observer wipe paths).
+    pub fn zeroize_secrets(&mut self) {
+        if let Some(key) = self.decryption_key.as_mut() {
+            key.zeroize();
+        }
+        self.decryption_key = None;
+    }
+}
+
+impl Drop for ChatAttachment {
+    fn drop(&mut self) {
+        self.zeroize_secrets();
+    }
 }
 
 /// A chat message in the dispute resolution interface
