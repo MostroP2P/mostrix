@@ -21,78 +21,98 @@ gpg: Good signature from "Arkanoider <github.913zc@simplelogin.com>" [ultimate]
 That will verify the signature of the manifest file, which ensures integrity and authenticity of the archive you've downloaded locally containing the binaries. Next, depending on your operating system, you should then re-compute the sha256 hash of the archive with `shasum -a 256 <filename>`, compare it with the corresponding one in the manifest file, and ensure they match exactly.
 
 
-## What's Changed in 0.3.5
+## What's Changed in 0.3.6
 
 ### 🚀 Features
 
 
-* show user-closed resolution in dispute header by [@arkanoider](https://github.com/arkanoider)
-* dedupe user-closed dispute admin popup by [@arkanoider](https://github.com/arkanoider)
-* listen for admin user-resolved dispute DMs by [@arkanoider](https://github.com/arkanoider)
-* treat cooperatively-canceled as terminal by [@arkanoider](https://github.com/arkanoider)
-* show Serbero handoffs on Disputes Pending by [@grunch](https://github.com/grunch)
-* take over a dispute Serbero holds (Ctrl+T) by [@grunch](https://github.com/grunch)
-* show Serbero's messages to the solver per dispute by [@grunch](https://github.com/grunch)
-* read the open time from published_at by [@grunch](https://github.com/grunch)
-* single Background Alerts toggle in settings by [@arkanoider](https://github.com/arkanoider)
-* alert on new events while terminal unfocused by [@arkanoider](https://github.com/arkanoider)
+* Ctrl+K Actions for dispute and Observer
+* keycap command bars for dispute and Observer
+* simplify My Trades command hints
+* Telegram notifications for solvers through mostro-watchdog by [@grunch](https://github.com/grunch)
+* improve chat copy range selection by [@arkanoider](https://github.com/arkanoider)
+* add opt-in OSC 52 chat copy fallback by [@arkanoider](https://github.com/arkanoider)
+* copy observer chat messages by [@arkanoider](https://github.com/arkanoider)
+* copy solver direct messages by [@arkanoider](https://github.com/arkanoider)
+* copy My Trades chat messages by [@arkanoider](https://github.com/arkanoider)
+* copy dispute chat messages by [@arkanoider](https://github.com/arkanoider)
+* polish reputation status segment by [@arkanoider](https://github.com/arkanoider)
+* show own reputation on the status bar by [@arkanoider](https://github.com/arkanoider)
+* refresh own reputation at startup and after trades by [@arkanoider](https://github.com/arkanoider)
+* cache own reputation on silent channel update by [@arkanoider](https://github.com/arkanoider)
+* fetch own user-info via mostro-core 0.17.3 by [@arkanoider](https://github.com/arkanoider)
+* Take Order privacy toggle and My Trades surfaces by [@arkanoider](https://github.com/arkanoider)
+* honor full_privacy on trade follow-up DMs by [@arkanoider](https://github.com/arkanoider)
+* add full-privacy mode on New Order by [@arkanoider](https://github.com/arkanoider)
 
 ### 🐛 Bug Fixes
 
 
-* harden user-closed dispute status writes by [@arkanoider](https://github.com/arkanoider)
-* name failed openings in the admin alerts help by [@grunch](https://github.com/grunch)
-* address review of the handoff banner by [@grunch](https://github.com/grunch)
-* size non-compact help popups by wrapped rows by [@grunch](https://github.com/grunch)
-* keep dispute help and take-over hints visible on narrow terminals by [@grunch](https://github.com/grunch)
-* keep the take-over origin through confirmation by [@grunch](https://github.com/grunch)
-* address review of the take-over picker by [@grunch](https://github.com/grunch)
-* scope the Serbero inbox to current key and senders by [@grunch](https://github.com/grunch)
-* address review of Serbero solver DMs by [@grunch](https://github.com/grunch)
-* ignore an unusable duplicate open-time tag by [@grunch](https://github.com/grunch)
+* keep contextual keycaps at 60x15
+* zeroize async Observer and attachment keys
+* restore dispute Enter send and pin display
+* harden Ctrl+K Actions after review
+* unwatch disputes the users close and bound watch sends on link by [@grunch](https://github.com/grunch)
+* harden chat copy after review by [@arkanoider](https://github.com/arkanoider)
+* address chat copy review findings by [@arkanoider](https://github.com/arkanoider)
+* fit Observer help on short terminals by [@arkanoider](https://github.com/arkanoider)
+* keep copy-cancel help on smallest terminals by [@arkanoider](https://github.com/arkanoider)
+* fit compact trade help on short terminals by [@arkanoider](https://github.com/arkanoider)
+* preserve copy guard and fit trade help by [@arkanoider](https://github.com/arkanoider)
+* address chat clipboard review findings by [@arkanoider](https://github.com/arkanoider)
+* preallocate OSC 52 clipboard buffer by [@arkanoider](https://github.com/arkanoider)
+* move observer clear to Ctrl+L by [@arkanoider](https://github.com/arkanoider)
+* drop stale mostro_info on A→B reconnect by [@arkanoider](https://github.com/arkanoider)
+* retry reputation after instance info by [@arkanoider](https://github.com/arkanoider)
+* clear reputation on reconnect switch by [@arkanoider](https://github.com/arkanoider)
+* refresh own reputation only after purchase by [@arkanoider](https://github.com/arkanoider)
+* ignore out-of-order own reputation replies by [@arkanoider](https://github.com/arkanoider)
+* refresh own reputation via main loop by [@arkanoider](https://github.com/arkanoider)
+* keep status bar within its three rows by [@arkanoider](https://github.com/arkanoider)
+* refetch own reputation after session resets by [@arkanoider](https://github.com/arkanoider)
+* ignore stale own-reputation channel updates by [@arkanoider](https://github.com/arkanoider)
+* pass instance info for live reputation PoW by [@arkanoider](https://github.com/arkanoider)
+* fetch user-info after DM listener starts by [@arkanoider](https://github.com/arkanoider)
+* save range child under tracked id; prune consumed NextTrade binds at startup by [@arkanoider](https://github.com/arkanoider)
+* clear NextTrade binds on key rotation; hand off range child id by [@arkanoider](https://github.com/arkanoider)
+* wipe binds, track NextTrade, fail save by [@arkanoider](https://github.com/arkanoider)
+* key NextTrade binds; ignore Peer None by [@arkanoider](https://github.com/arkanoider)
+* bind NextTrade parent; refuse Shift+U by [@arkanoider](https://github.com/arkanoider)
+* avoid racing init_db on shared home DB by [@arkanoider](https://github.com/arkanoider)
 
 ### 💼 Other
 
 
-* feat: notify admin when users close a dispute by [@arkanoider](https://github.com/arkanoider) in [#204](https://github.com/MostroP2P/mostrix/pull/204)
-* feat(ui): show Serbero handoffs on Disputes Pending by [@grunch](https://github.com/grunch) in [#203](https://github.com/MostroP2P/mostrix/pull/203)
-* feat(disputes): take over a dispute Serbero holds (Ctrl+T) by [@grunch](https://github.com/grunch) in [#202](https://github.com/MostroP2P/mostrix/pull/202)
-* Merge branch 'feat/serbero-solver-dms' into feat/takeover-serbero-dispute by [@grunch](https://github.com/grunch)
-* Merge branch 'feat/serbero-solver-dms' into feat/takeover-serbero-dispute by [@grunch](https://github.com/grunch)
-* feat(disputes): show Serbero's messages to the solver per dispute by [@grunch](https://github.com/grunch) in [#201](https://github.com/MostroP2P/mostrix/pull/201)
-* feat(disputes): read the open time from published_at by [@arkanoider](https://github.com/arkanoider) in [#196](https://github.com/MostroP2P/mostrix/pull/196)
-* feat(ui): alert on new events while terminal is unfocused by [@arkanoider](https://github.com/arkanoider) in [#197](https://github.com/MostroP2P/mostrix/pull/197)
-
-### 🚜 Refactor
-
-
-* correlate admin take with request_id by [@arkanoider](https://github.com/arkanoider)
-* clarify open-time vs event stamp by [@arkanoider](https://github.com/arkanoider)
+* Merge commit '4b380d26b0dd446825c84151f3896c7c7d6bfcb2'
+* pull request #217 from MostroP2P/feat/my-trades-command-bar
+* feat: Telegram notifications for solvers through mostro-watchdog by [@arkanoider](https://github.com/arkanoider) in [#215](https://github.com/MostroP2P/mostrix/pull/215)
+* Feat/chat clipboard selection by [@arkanoider](https://github.com/arkanoider) in [#216](https://github.com/MostroP2P/mostrix/pull/216)
+* feat: show own reputation on the status bar by [@arkanoider](https://github.com/arkanoider) in [#212](https://github.com/MostroP2P/mostrix/pull/212)
+* docs: clarify admin_privkey vs nsec_privkey for dispute solvers by [@grunch](https://github.com/grunch) in [#213](https://github.com/MostroP2P/mostrix/pull/213)
+* feat: full-privacy orders (create, take, follow-ups) by [@arkanoider](https://github.com/arkanoider) in [#210](https://github.com/MostroP2P/mostrix/pull/210)
 
 ### 📚 Documentation
 
 
-* describe tested mostro-core/mostrod pair by [@arkanoider](https://github.com/arkanoider)
-* align mostro-core pin notes with 0.16.0 by [@arkanoider](https://github.com/arkanoider)
-* refresh relay dispute reconcile module note by [@arkanoider](https://github.com/arkanoider)
+* align comments with keycap command bars
+* document chat copy and SSH setup by [@arkanoider](https://github.com/arkanoider)
+* sync comments with own-reputation API by [@arkanoider](https://github.com/arkanoider)
+* qualify dispute resolution by solver permission by [@grunch](https://github.com/grunch)
+* clarify admin_privkey vs nsec_privkey for dispute solvers by [@grunch](https://github.com/grunch)
+* align range-child binding, early subscribe, id handoff and fail-closed save by [@arkanoider](https://github.com/arkanoider)
 
 ### 🧪 Testing
 
 
-* keep a valid open time over a bad duplicate by [@grunch](https://github.com/grunch)
-* read the dispute open time from published_at by [@grunch](https://github.com/grunch)
-
-### ⚙️ Miscellaneous Tasks
-
-
-* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
-* bump mostro-core to 0.16.0 by [@arkanoider](https://github.com/arkanoider)
-* cargo fmt fix by [@arkanoider](https://github.com/arkanoider)
+* align chat copy tests with range selection by [@arkanoider](https://github.com/arkanoider)
+* cover chat copy interaction boundaries by [@arkanoider](https://github.com/arkanoider)
+* cover wipe, bind conflict, persist fail by [@arkanoider](https://github.com/arkanoider)
+* cover NextTrade bind retry and Peer None by [@arkanoider](https://github.com/arkanoider)
 
 ## Contributors
-* [@arkanoider](https://github.com/arkanoider) made their contribution in [#204](https://github.com/MostroP2P/mostrix/pull/204)
-* [@grunch](https://github.com/grunch) made their contribution in [#203](https://github.com/MostroP2P/mostrix/pull/203)
+* [@arkanoider](https://github.com/arkanoider) made their contribution in [#215](https://github.com/MostroP2P/mostrix/pull/215)
+* [@grunch](https://github.com/grunch) made their contribution
 
-**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.4...0.3.5
+**Full Changelog**: https://github.com/MostroP2P/mostrix/compare/v0.3.5...0.3.6
 
 <!-- generated by git-cliff -->
