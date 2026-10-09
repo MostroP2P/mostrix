@@ -17,6 +17,7 @@ use crate::ui::helpers::{
     format_local_timestamp, format_user_rating, get_filtered_disputes, get_selected_chat_message,
     render_table_list_scrollbar,
 };
+use crate::ui::key_handler::chat_copy;
 use crate::ui::tabs::solver_dms_view::{render_solver_dms, solver_dms_tab_label};
 use crate::ui::ChatParty;
 use crate::ui::{AdminMode, AppState, DisputeFilter, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -63,14 +64,32 @@ fn truncate_dispute_id_label(display_id: &str, max_chars: usize) -> String {
 /// This shows a sidebar with active disputes and a detailed view with chat interface
 /// Can filter between InProgress and Finalized disputes
 pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    chat_copy::validate_selection(app);
+    let copy_selection = chat_copy::selected_index(app);
+    let copy_range = chat_copy::selected_range(app);
+    let copy_feedback = chat_copy::feedback_text(app);
+    let copy_context = copy_selection.is_some() || copy_feedback.is_some();
     let chunks = Layout::new(
         Direction::Horizontal,
         [Constraint::Percentage(20), Constraint::Percentage(80)],
     )
     .split(area);
 
-    let sidebar_area = chunks[0];
-    let main_area = chunks[1];
+    let sidebar_area = if copy_context && area.width < 60 {
+        Rect::default()
+    } else {
+        chunks[0]
+    };
+    let main_area = if copy_context && area.width < 60 {
+        area
+    } else {
+        chunks[1]
+    };
+    let copy_hint = if main_area.width < 34 {
+        "↑↓ Select\nEnter Copy\nEsc Cancel"
+    } else {
+        CHAT_COPY_HINT
+    };
 
     // Filter disputes based on current filter
     let filtered_disputes = get_filtered_disputes(app);
@@ -193,10 +212,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             };
 
             // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
-            let input_height = (input_lines.min(10) as u16) + 2;
+            let mut input_height = (input_lines.min(10) as u16) + 2;
             // Mid (50–89) and wide (≥90) active footers use two hint lines; toast adds a third.
             let use_two_line_footer = main_area.width >= 50;
-            let footer_height = if app.attachment_toast.is_some() {
+            let mut footer_height = if app.attachment_toast.is_some() {
                 if use_two_line_footer {
                     3
                 } else {
@@ -208,11 +227,24 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 1
             };
 
+            let mut header_height = 7;
+            let mut party_height = 3;
+            if copy_context {
+                footer_height = Paragraph::new(copy_feedback.unwrap_or(copy_hint))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .line_count(main_area.width.max(1))
+                    .min(3) as u16;
+                let spare = main_area.height.saturating_sub(footer_height + 4);
+                header_height = if spare >= 10 { 7 } else { 0 };
+                party_height = if spare >= 3 { 3 } else { 0 };
+                input_height = if spare >= 13 { 3 } else { 0 };
+            }
+
             Layout::new(
                 Direction::Vertical,
                 [
-                    Constraint::Length(7),             // Header (amount+fiat+privacy on one line)
-                    Constraint::Length(3),             // Party Tabs
+                    Constraint::Length(header_height),
+                    Constraint::Length(party_height),
                     Constraint::Min(0),                // Chat
                     Constraint::Length(input_height),  // Input (dynamic!)
                     Constraint::Length(footer_height), // Footer (2 mid/wide; +1 toast)
@@ -627,7 +659,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             if serbero_active {
                 let dispute_id = selected_dispute.dispute_id.clone();
-                if main_chunks[2].height < MIN_SERBERO_PANE_HEIGHT {
+                if copy_context || main_chunks[2].height < MIN_SERBERO_PANE_HEIGHT {
                     // Short terminal: the messages matter more than the
                     // read-only notice, so the pane takes the input's rows too.
                     let pane = main_chunks[2].union(main_chunks[3]);
@@ -667,12 +699,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     .unwrap_or(0);
 
                 let messages_slice = chat_messages.map(|m| m.as_slice()).unwrap_or(&[]);
-                let content = build_chat_scrollview_content(
+                let mut content = build_chat_scrollview_content(
                     messages_slice,
                     app.active_chat_party,
                     content_width,
                     Some(max_content_width),
                 );
+                let selected_rows = content.select_messages(copy_range, copy_selection);
 
                 let visible_count = content.line_start_per_message.len();
                 app.admin_chat_line_starts = content.line_start_per_message.clone();
@@ -684,7 +717,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                         app.active_chat_party,
                         visible_count,
                     );
-                    if should_scroll {
+                    if should_scroll && copy_selection.is_none() {
                         app.admin_chat_scrollview_state = Default::default();
                         app.admin_chat_scrollview_state.scroll_to_bottom();
                         app.admin_chat_selected_message_idx = Some(visible_count.saturating_sub(1));
@@ -702,7 +735,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                         Some((dispute_id_key.clone(), app.active_chat_party, 0));
                 }
 
-                let chat_title = if visible_count > 0 {
+                let chat_title = if copy_selection.is_some() {
+                    format!("Copy: {}", app.active_chat_party)
+                } else if main_area.width < 50
+                    && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
+                {
+                    format!("Chat {} | {}", app.active_chat_party, CHAT_COPY_START)
+                } else if visible_count > 0 {
                     if file_count > 0 {
                         format!(
                             "Chat with {} ({} messages, {} file(s))",
@@ -727,7 +766,14 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 let inner_area = chat_block.inner(chat_area);
                 f.render_widget(chat_block, chat_area);
 
-                let display_height = content.content_height.saturating_sub(1).max(1);
+                if let Some(selected_rows) = selected_rows {
+                    content.keep_selection_visible(
+                        selected_rows,
+                        inner_area.height,
+                        &mut app.admin_chat_scrollview_state,
+                    );
+                }
+                let display_height = content.content_height.max(1);
                 let mut scroll_view =
                     ScrollView::new(Size::new(content.content_width, display_height))
                         .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
@@ -746,7 +792,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 // Check if we're in ManagingDispute mode (input is active)
                 let is_input_focused =
                     matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-                let is_input_enabled = app.admin_chat_input_enabled;
+                let is_input_enabled = app.admin_chat_input_enabled && copy_selection.is_none();
 
                 let input_style = if is_input_focused && is_input_enabled {
                     Style::default()
@@ -756,7 +802,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Style::default().fg(Color::Gray)
                 };
 
-                let input_title = if is_input_focused && is_input_enabled {
+                let input_title = if copy_selection.is_some() {
+                    "Message (copying)"
+                } else if is_input_focused && is_input_enabled {
                     "💬 Message (typing enabled)"
                 } else if is_input_focused && !is_input_enabled {
                     "💬 Message (disabled - Shift+I to enable)"
@@ -804,8 +852,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         let footer_area = main_chunks[footer_chunk_idx];
         let footer_width = footer_area.width;
 
+        if copy_context {
+            f.render_widget(
+                Paragraph::new(copy_feedback.unwrap_or(copy_hint))
+                    .style(Style::default().fg(PRIMARY_COLOR))
+                    .wrap(ratatui::widgets::Wrap { trim: true }),
+                footer_area,
+            );
+            return;
+        }
+
         // Mid (50–89) and wide (≥90): two lines when active so Delete/party/filter/Ctrl+S are not clipped
-        let (footer_line1, footer_line2) = if footer_width < 50 {
+        let (mut footer_line1, footer_line2) = if footer_width < 50 {
             (HELP_KEY.to_string(), None)
         } else if footer_width < 90 {
             let is_input_focused =
@@ -920,6 +978,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             (line1, Some(line2))
         };
 
+        if !is_finalized && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+            footer_line1 = format!("{CHAT_COPY_START} | {footer_line1}");
+        }
+
         match (!is_finalized, app.attachment_toast.as_ref()) {
             (true, Some((toast_msg, _))) => {
                 let n = if footer_line2.is_some() { 3 } else { 2 };
@@ -1007,7 +1069,10 @@ mod tests {
     use crate::ui::constants::{
         FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY,
     };
+    use crate::ui::key_handler::chat_copy;
+    use crate::ui::PRIMARY_COLOR;
     use crate::ui::{AdminMode, AppState, ChatParty, DisputeFilter, UiMode, UserRole};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1031,6 +1096,111 @@ mod tests {
             payment_method: "sepa".to_string(),
             fiat_code: "USD".to_string(),
             ..Default::default()
+        }
+    }
+
+    fn copy_app() -> AppState {
+        let mut app = chat_copy::tests::app_with_messages();
+        app.admin_disputes_in_progress[0] = dispute("dispute", "in-progress");
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false,
+        );
+        app
+    }
+
+    fn render_copy(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_disputes_in_progress(frame, frame.area(), app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn highlighted_word(buffer: &ratatui::buffer::Buffer, word: &str) -> bool {
+        (0..buffer.area.height).any(|row| {
+            (0..buffer.area.width.saturating_sub(word.len() as u16)).any(|column| {
+                word.chars().enumerate().all(|(offset, character)| {
+                    let cell = &buffer[(column + offset as u16, row)];
+                    cell.symbol() == character.to_string() && cell.bg == PRIMARY_COLOR
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn chat_copy_highlight_and_controls_survive_narrow_short_and_resized_views() {
+        let mut app = copy_app();
+        for (width, height) in [(120, 28), (80, 12), (40, 12), (30, 8), (120, 28)] {
+            let buffer = render_copy(&mut app, width, height);
+            assert!(
+                highlighted_word(&buffer, "first"),
+                "selection missing at {width}x{height}"
+            );
+            assert!(
+                buffer_contains(&buffer, "Enter"),
+                "copy hint missing at {width}x{height}"
+            );
+            assert!(
+                buffer_contains(&buffer, "Esc"),
+                "cancel hint missing at {width}x{height}"
+            );
+            assert_eq!(chat_copy::selected_index(&app), Some(0));
+        }
+        for (width, height) in [(0, 0), (1, 1), (8, 3)] {
+            render_copy(&mut app, width, height);
+        }
+    }
+
+    #[test]
+    fn chat_copy_scrolls_to_last_message_and_ignores_new_message_autoscroll() {
+        let mut app = copy_app();
+        app.admin_dispute_chats.get_mut("dispute").unwrap()[1].content =
+            "first wrapped words ".repeat(40);
+        app.chat_copy_session = None;
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false,
+        );
+        render_copy(&mut app, 60, 12);
+        assert_eq!(app.admin_chat_scrollview_state.offset().y, 0);
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            |_| false,
+        );
+        let buffer = render_copy(&mut app, 60, 12);
+        assert!(highlighted_word(&buffer, "last"));
+        // Scroll keeps the cursor end visible; the anchor may be above the
+        // viewport, so assert the range in state rather than on-screen bg.
+        assert!(app.admin_chat_scrollview_state.offset().y > 0);
+        assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
+        let mut incoming = app.admin_dispute_chats["dispute"][2].clone();
+        incoming.content = "incoming ".repeat(40);
+        app.admin_dispute_chats
+            .get_mut("dispute")
+            .unwrap()
+            .push(incoming);
+        let buffer = render_copy(&mut app, 60, 12);
+        assert!(highlighted_word(&buffer, "last"));
+        assert_eq!(chat_copy::selected_index(&app), Some(1));
+        assert_eq!(chat_copy::selected_range(&app), Some(0..=1));
+    }
+
+    #[test]
+    fn chat_copy_feedback_is_visible_and_highlight_is_removed_after_copy() {
+        for (width, height) in [(120, 28), (40, 12), (30, 8)] {
+            let mut app = copy_app();
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                |_| true,
+            );
+            let buffer = render_copy(&mut app, width, height);
+            assert!(buffer_contains(&buffer, "Copied to clipboard"));
+            assert!(!highlighted_word(&buffer, "first"));
         }
     }
 
@@ -1330,6 +1500,7 @@ mod solver_dms_pane_tests {
     use crate::models::AdminDispute;
     use crate::ui::UserRole;
     use crate::util::solver_dms::SolverDm;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1376,6 +1547,47 @@ mod solver_dms_pane_tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), app))
             .expect("draw");
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn solver_dm_copy_controls_and_feedback_fit_the_full_view() {
+        for (width, height) in [(120, 28), (80, 12), (40, 12), (30, 8)] {
+            for success in [true, false] {
+                let mut app = chat_copy::tests::app_with_solver_dms();
+                assert!(chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    |_| false
+                ));
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_disputes_in_progress(frame, frame.area(), &mut app))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(buffer_contains(buffer, "Copy: Serbero"));
+                assert!(buffer_contains(buffer, "newest"));
+                assert!(buffer_contains(buffer, "Enter"));
+                assert!(buffer_contains(buffer, "Esc"));
+                assert!(chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    |_| success
+                ));
+                terminal
+                    .draw(|frame| render_disputes_in_progress(frame, frame.area(), &mut app))
+                    .unwrap();
+                assert!(buffer_contains(
+                    terminal.backend().buffer(),
+                    if success {
+                        "Copied to clipboard"
+                    } else {
+                        "Clipboard unavailable"
+                    }
+                ));
+                assert!(app.chat_copy_session.is_none());
+                assert_eq!(app.admin_chat_input, "draft\n  untouched");
+            }
+        }
     }
 
     #[test]

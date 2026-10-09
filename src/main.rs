@@ -311,6 +311,13 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 }
 
 fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
+    if app.chat_copy_session.is_some() || app.chat_copy_cancelled {
+        return;
+    }
+    if !pasted_text.is_empty() {
+        app.chat_copy_block_enter = false;
+        app.chat_copy_feedback = None;
+    }
     let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
 
     if let UiMode::OrderFilters(ref mut state) = app.mode {
@@ -1255,6 +1262,166 @@ mod own_reputation_refresh_tests {
 
 #[cfg(test)]
 mod paste_routing_tests {
+    #[test]
+    fn chat_copy_post_copy_paste_rearms_enter_without_changing_input_layer() {
+        use crate::ui::key_handler::chat_copy;
+        use crate::ui::UserChatChannel;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            app.order_chat_input_enabled = true;
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| false,
+            );
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            chat_copy::handle_key_with(&mut app, &enter, |_| true);
+            super::apply_pasted_text_to_active_input(&mut app, "");
+            assert!(chat_copy::handle_key_with(&mut app, &enter, |_| panic!(
+                "must not copy again"
+            )));
+            super::apply_pasted_text_to_active_input(&mut app, " pasted");
+            assert_eq!(app.order_chat_input, "draft\n  untouched pasted");
+            assert!(app.order_chat_input_enabled);
+            assert_eq!(
+                app.order_chat_draft_owner,
+                Some((uuid::Uuid::nil(), channel))
+            );
+            assert!(!chat_copy::handle_key_with(&mut app, &enter, |_| false));
+        }
+    }
+
+    #[test]
+    fn chat_copy_matrix_blocks_paste_during_selection_and_pending_cancellation() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for enabled in [false, true] {
+            for mut app in chat_copy::tests::copy_views() {
+                app.admin_chat_input_enabled = enabled;
+                app.order_chat_input_enabled = enabled;
+                let inputs = (
+                    app.admin_chat_input.clone(),
+                    app.order_chat_input.clone(),
+                    app.observer_shared_key_input.clone(),
+                    app.order_chat_draft_owner,
+                );
+                chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    |_| panic!("selection must not copy"),
+                );
+                super::apply_pasted_text_to_active_input(&mut app, "ignored\n");
+                assert_eq!(
+                    (
+                        &app.admin_chat_input,
+                        &app.order_chat_input,
+                        &app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    (&inputs.0, &inputs.1, &inputs.2, inputs.3)
+                );
+                app.admin_dispute_chats.clear();
+                app.order_chats.clear();
+                app.user_dispute_chats.clear();
+                app.solver_dms.clear();
+                app.observer_messages.clear();
+                chat_copy::validate_selection(&mut app);
+                assert!(app.chat_copy_session.is_none());
+                assert!(app.chat_copy_cancelled);
+                super::apply_pasted_text_to_active_input(&mut app, "still ignored\n");
+                assert_eq!(
+                    (
+                        app.admin_chat_input,
+                        app.order_chat_input,
+                        app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    inputs
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn observer_copy_blocks_paste_and_restores_shared_key_input() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = chat_copy::tests::app_with_observer_messages();
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "bb\n");
+        assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "bb\n");
+        assert_eq!(
+            app.observer_shared_key_input,
+            format!("{}bb", "a".repeat(64))
+        );
+    }
+
+    #[test]
+    fn my_trades_copy_blocks_paste_and_resumes_original_draft() {
+        use crate::ui::key_handler::chat_copy;
+        use crate::ui::UserChatChannel;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            app.order_chat_input_enabled = true;
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| false,
+            );
+            super::apply_pasted_text_to_active_input(&mut app, "ignored");
+            assert_eq!(app.order_chat_input, "draft\n  untouched");
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                |_| false,
+            );
+            super::apply_pasted_text_to_active_input(&mut app, " pasted");
+            assert_eq!(app.order_chat_input, "draft\n  untouched pasted");
+            assert_eq!(
+                app.order_chat_draft_owner,
+                Some((uuid::Uuid::nil(), channel))
+            );
+        }
+    }
+
+    #[test]
+    fn chat_copy_blocks_bracketed_and_mouse_paste_without_changing_draft() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = chat_copy::tests::app_with_messages();
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| panic!("entry must not write clipboard"),
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "replacement\n");
+        assert_eq!(app.admin_chat_input, "draft\n  untouched");
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "paste\n");
+        assert_eq!(app.admin_chat_input, "draft\n  untouchedpaste\n");
+    }
+
     use super::*;
     use crate::ui::{KeyInputState, UserRole};
 

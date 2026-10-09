@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::shared::permissions::SolverPermission;
+use crate::ui::key_handler::chat_copy;
 use crate::ui::orders::strip_new_order_messages_and_clamp_selected;
 use crate::ui::takeover_picker::{handoff_candidates, TakeoverCandidate};
 use crate::ui::*;
@@ -81,6 +82,7 @@ pub fn ui_draw(
     status_line: Option<&[String]>,
 ) {
     let (tab_h, status_h) = shell_chrome_heights(f.area().height, status_line.is_some());
+    chat_copy::validate_selection(app);
     let chunks = Layout::new(
         Direction::Vertical,
         [

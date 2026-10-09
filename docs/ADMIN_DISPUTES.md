@@ -98,6 +98,18 @@ The interface is divided into three main sections:
 - **Backspace**: Delete characters (when input enabled)
 - **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
 
+With an active dispute selected, **Ctrl+C** starts message selection in BUYER,
+SELLER, or SERBERO at the first displayed message. **Up/Down** extend the
+highlighted range from that starting message, **Enter** copies that range, and
+**Esc** cancels.
+The first selected message follows display order: oldest first for party chats,
+newest first for SERBERO. Solver DMs copy their full stored text, including the
+header hidden in the pane; attachments copy the filename only. Typing, sending,
+paste, pane switching, and other shortcuts are suspended during selection, with
+the original draft and input layer preserved. See
+[Copying Chat Messages](TUI_INTERFACE.md#copying-chat-messages) for invalidation,
+clipboard feedback, privacy, and optional SSH/OSC 52 setup.
+
 See [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) for detailed finalization workflow.
 
 ### 3. Observer Tab
@@ -127,10 +139,18 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 
 #### Observer Keyboard Shortcuts
 
-- **Enter**: Fetch chat from relays using the Shared key.
-- **Ctrl+C**: Clear inputs, messages, error state, and loading indicator. Sensitive data is securely cleared with `zeroize`.
+- **Enter**: Fetch chat from relays using the Shared key, or copy the selected message during copy selection.
+- **Ctrl+C**: Select the first displayed message in a loaded conversation. Up/Down extend the highlighted range, Enter copies it, and Esc cancels without changing the Shared key.
+- **Esc**: Clear the inline Observer error when one is shown (outside copy selection).
+- **Ctrl+L**: Clear inputs, messages, error state, and loading indicator when no popup is open. Sensitive data is securely cleared with `zeroize`; pending fetch results are invalidated. **Ctrl+C** no longer clears Observer data.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat).
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
+
+During copy selection, other shortcuts are suspended except **Ctrl+L**, which also
+cancels selection. Clearing Observer only wipes application state, not text
+already copied to an external clipboard or its history. See
+[Copying Chat Messages](TUI_INTERFACE.md#copying-chat-messages) for the complete
+workflow and filename-copy policy.
 
 When validation or fetching fails (empty key, invalid hex, no messages found, decryption error), Observer sets an inline error message in the header **and** raises a shared `OperationResult` popup showing the failure reason. Closing this popup with **Esc** or **Enter** keeps the admin on the **Observer** tab so they can immediately fix the input and retry.
 
@@ -146,7 +166,7 @@ The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fe
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+C.
+> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+L.
 >
 > **Sharing the Shared key**: on My Trades, **Shift+K** opens a popup with the Shared key. Press **C** to copy the Shared key hex to the clipboard for pasting into a message to the admin — the signing key is never displayed or copied.
 

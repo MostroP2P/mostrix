@@ -1,5 +1,6 @@
 mod admin_handlers;
 mod async_tasks;
+pub(crate) mod chat_copy;
 pub(crate) mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
@@ -265,6 +266,7 @@ fn admin_dispute_chat_input_active(app: &AppState) -> bool {
         && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
         && app.admin_chat_input_enabled
         && !app.admin_show_solver_dms
+        && app.chat_copy_session.is_none()
 }
 
 /// Ctrl+T opens the take-over picker from the dispute tabs when no popup is open.
@@ -283,6 +285,7 @@ fn order_chat_input_active(app: &AppState) -> bool {
     matches!(app.active_tab, Tab::User(UserTab::MyTrades))
         && app.mode.user_my_trades_interactive()
         && app.order_chat_input_enabled
+        && app.chat_copy_session.is_none()
 }
 
 /// Normalize clipboard / bracketed paste for chat: keep newlines and tabs, drop other controls.
@@ -424,8 +427,7 @@ fn handle_user_order_chat_input(
 }
 
 /// Reset the Shift+K Shared key disclosure popup's "copied" indicator on any
-/// key other than an unmodified `c`/`C`. Ctrl+C (Observer clear-all / generic
-/// clear shortcuts elsewhere) must also clear the indicator, so it is treated
+/// key other than an unmodified `c`/`C`. Ctrl+C must also clear the indicator, so it is treated
 /// the same as any other non-copy key. Mirrors the invoice-copy indicator
 /// reset above.
 fn reset_disclosure_copied_indicator(mode: &mut UiMode, key_event: &KeyEvent) {
@@ -553,6 +555,23 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeClipboardOutcome {
+    Copied,
+    Failed,
+    Indeterminate,
+}
+
+fn clipboard_worker_outcome(
+    result: Result<bool, std::sync::mpsc::RecvTimeoutError>,
+) -> NativeClipboardOutcome {
+    match result {
+        Ok(true) => NativeClipboardOutcome::Copied,
+        Ok(false) => NativeClipboardOutcome::Failed,
+        Err(_) => NativeClipboardOutcome::Indeterminate,
+    }
+}
+
 /// Handle clipboard copy for text (invoice, Shared key, etc.)
 ///
 /// Returns whether the write actually succeeded — `copied_to_clipboard` at the
@@ -560,12 +579,15 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
 /// because a copy attempt was made. On Linux the write runs on a background
 /// thread that keeps serving the selection after the result is reported.
 fn handle_clipboard_copy(text: String) -> bool {
+    copy_to_native_clipboard(text) == NativeClipboardOutcome::Copied
+}
+
+fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
     #[cfg(target_os = "linux")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || linux_clipboard_copy_worker(text, tx));
-        rx.recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap_or(false)
+        clipboard_worker_outcome(rx.recv_timeout(std::time::Duration::from_secs(2)))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -583,7 +605,7 @@ fn handle_clipboard_copy(text: String) -> bool {
             }
         };
 
-        match copy_result {
+        let success = match copy_result {
             Ok(_) => {
                 log::info!("Copied to clipboard");
                 true
@@ -592,7 +614,8 @@ fn handle_clipboard_copy(text: String) -> bool {
                 log::warn!("Failed to copy to clipboard: {}", e);
                 false
             }
-        }
+        };
+        clipboard_worker_outcome(Ok(success))
     }
 }
 
@@ -1242,6 +1265,10 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    if chat_copy::handle_key(app, &key_event) {
+        return Some(true);
+    }
 
     if let Some(handled) =
         handle_order_filter_paste_shortcut(app, &key_event, read_clipboard_text_best_effort)
@@ -2150,6 +2177,10 @@ pub fn handle_key_event(
         let is_ctrl = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl && matches!(code, KeyCode::Char('l') | KeyCode::Char('L')) {
+            app.clear_observer_secrets();
+            return Some(true);
+        }
         if !is_ctrl {
             match code {
                 KeyCode::Char(c) => {
@@ -2432,17 +2463,6 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
-            // In Observer tab, Ctrl+C clears inputs and decrypted content
-            if let (Tab::Admin(AdminTab::Observer), true) = (
-                app.active_tab,
-                key_event
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL),
-            ) {
-                app.clear_observer_secrets();
-                return Some(true);
-            }
-
             // Handle copy Shared key (K_conv) for the Shift+K disclosure popup. Only
             // the Shared key is copyable — the signing key itself is never disclosed.
             if !key_event
@@ -2500,6 +2520,7 @@ mod key_handler_tests {
     use super::*;
     use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, UserRole};
     use crossterm::event::KeyModifiers;
+    use uuid::Uuid;
 
     #[test]
     fn dispute_is_allowed_only_while_the_trade_is_under_way() {
@@ -3471,6 +3492,494 @@ mod key_handler_tests {
         assert_eq!(app.observer_shared_key_input, "abc");
     }
 
+    fn populated_observer() -> AppState {
+        use crate::ui::{ChatSender, DisputeChatMessage};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        app.begin_observer_fetch();
+        app.observer_shared_key_input = "a".repeat(64);
+        app.observer_messages.push(DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: "private message".into(),
+            timestamp: 0,
+            target_party: None,
+            attachment: None,
+        });
+        app.observer_error = Some("private error".into());
+        app
+    }
+
+    async fn dispatch_observer_test_key(app: &mut AppState, key_event: KeyEvent) {
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let disputes = Arc::new(Mutex::new(Vec::new()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pubkey = Keys::generate().public_key();
+        let (order_tx, _order_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ln_tx, _ln_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rotation_tx, _rotation_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (seed_tx, _seed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (info_tx, _info_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (dm_tx, _dm_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        assert_eq!(
+            handle_key_event(
+                key_event,
+                app,
+                &orders,
+                &disputes,
+                &pool,
+                &Client::default(),
+                pubkey,
+                &Arc::new(Mutex::new(pubkey)),
+                &order_tx,
+                &ln_tx,
+                &rotation_tx,
+                &seed_tx,
+                &info_tx,
+                &|_| {},
+                None,
+                None,
+                None,
+                &dm_tx,
+            ),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_copy_post_copy_dispatch_blocks_consecutive_enter_presses() {
+        use crate::ui::{ChatAttachment, ChatAttachmentType};
+        use crate::util::dm_utils::handle_operation_result;
+
+        let attachment = ChatAttachment {
+            blossom_url: "https://example.com/blob".into(),
+            filename: String::new(),
+            mime_type: None,
+            file_type: ChatAttachmentType::File,
+            decryption_key: None,
+        };
+        for mut app in chat_copy::tests::copy_views()
+            .into_iter()
+            .filter(|app| !app.admin_show_solver_dms)
+        {
+            app.admin_chat_input_enabled = true;
+            app.order_chat_input_enabled = true;
+            for messages in app.admin_dispute_chats.values_mut() {
+                for message in messages {
+                    message.attachment = Some(attachment.clone());
+                }
+            }
+            for messages in app
+                .order_chats
+                .values_mut()
+                .chain(app.user_dispute_chats.values_mut())
+            {
+                for message in messages {
+                    message.attachment = Some(attachment.clone());
+                }
+            }
+            for message in &mut app.observer_messages {
+                message.attachment = Some(attachment.clone());
+            }
+            let original_mode = app.mode.clone();
+            let mode = std::mem::discriminant(&app.mode);
+            let inputs = (
+                app.admin_chat_input.clone(),
+                app.order_chat_input.clone(),
+                app.observer_shared_key_input.clone(),
+                app.order_chat_draft_owner,
+            );
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            )
+            .await;
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(chat_copy::feedback_text(&app), Some("No filename to copy"));
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+            }
+            handle_operation_result(
+                OperationResult::Info("Background operation completed".into()),
+                &mut app,
+            );
+            assert!(matches!(app.mode, UiMode::OperationResult(_)));
+            chat_copy::validate_selection(&mut app);
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(
+                    matches!(app.mode, UiMode::OperationResult(_)),
+                    "repeated Enter must not dismiss the async popup"
+                );
+            }
+            app.mode = original_mode;
+            app.chat_copy_feedback = None;
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+            }
+            assert_eq!(
+                (
+                    app.admin_chat_input,
+                    app.order_chat_input,
+                    app.observer_shared_key_input,
+                    app.order_chat_draft_owner
+                ),
+                inputs
+            );
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_copy_dispatch_preserves_inputs_and_rejects_results_after_clear() {
+        use crate::ui::{ChatAttachment, ChatAttachmentType};
+        use crate::util::dm_utils::handle_operation_result;
+
+        for mode in [UiMode::Normal, UiMode::AdminMode(AdminMode::Normal)] {
+            let mut app = chat_copy::tests::app_with_observer_messages();
+            app.mode = mode;
+            app.observer_error = Some("existing error".into());
+            app.observer_messages[1].attachment = Some(ChatAttachment {
+                blossom_url: "https://example.com/blob".into(),
+                filename: String::new(),
+                mime_type: None,
+                file_type: ChatAttachmentType::File,
+                decryption_key: None,
+            });
+            // Start selection on the empty-filename attachment so Enter reports
+            // "No filename to copy" without also copying the earlier message.
+            app.observer_line_starts = vec![0, 8];
+            app.observer_scrollview_state
+                .set_offset(ratatui::layout::Position::new(0, 8));
+            let generation = app.observer_fetch_generation;
+            let messages = app.observer_messages.clone();
+            let enter_copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            for key in [
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            ] {
+                dispatch_observer_test_key(&mut app, key).await;
+            }
+            assert_eq!(chat_copy::selected_index(&app), Some(1));
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .await;
+            assert_eq!(chat_copy::feedback_text(&app), Some("No filename to copy"));
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(app.observer_fetch_generation, generation);
+            assert!(!app.observer_loading);
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .await;
+            assert_eq!(app.observer_error.as_deref(), Some("existing error"));
+            dispatch_observer_test_key(&mut app, enter_copy).await;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            )
+            .await;
+            assert!(app.chat_copy_session.is_none());
+            assert!(app.observer_shared_key_input.is_empty());
+            assert!(app.observer_fetch_generation > generation);
+            handle_operation_result(
+                OperationResult::ObserverChatLoaded {
+                    generation,
+                    messages,
+                },
+                &mut app,
+            );
+            handle_operation_result(
+                OperationResult::ObserverChatError {
+                    generation,
+                    message: "stale error".into(),
+                },
+                &mut app,
+            );
+            assert!(app.observer_messages.is_empty());
+            assert!(app.observer_error.is_none());
+            assert!(!app.observer_loading);
+            assert!(app.observer_inputs_editable());
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_l_clears_secrets_and_invalidates_pending_fetch() {
+        for mode in [UiMode::Normal, UiMode::AdminMode(AdminMode::Normal)] {
+            for character in ['l', 'L'] {
+                let mut app = populated_observer();
+                app.mode = mode.clone();
+                let generation = app.observer_fetch_generation;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL),
+                )
+                .await;
+                assert!(app.observer_shared_key_input.is_empty());
+                assert!(app.observer_messages.is_empty());
+                assert!(app.observer_error.is_none());
+                assert!(!app.observer_loading);
+                assert!(app.observer_fetch_generation > generation);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_c_and_plain_l_do_not_clear_secrets() {
+        for (character, modifiers) in [
+            ('c', KeyModifiers::CONTROL),
+            ('C', KeyModifiers::CONTROL),
+            ('l', KeyModifiers::NONE),
+        ] {
+            let mut app = populated_observer();
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), modifiers),
+            )
+            .await;
+            let expected_input = if modifiers.is_empty() {
+                format!("{}l", "a".repeat(64))
+            } else {
+                "a".repeat(64)
+            };
+            assert_eq!(app.observer_shared_key_input, expected_input);
+            assert_eq!(app.observer_messages[0].content, "private message");
+            assert_eq!(app.observer_error.as_deref(), Some("private error"));
+            assert!(app.observer_loading);
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_ctrl_l_does_not_clear_behind_popups_or_on_other_tabs() {
+        let observer_tab = Tab::Admin(AdminTab::Observer);
+        for (tab, mode) in [
+            (
+                observer_tab,
+                UiMode::HelpPopup(observer_tab, Box::new(UiMode::Normal)),
+            ),
+            (
+                observer_tab,
+                UiMode::operation_result(OperationResult::Info("notice".into())),
+            ),
+            (observer_tab, UiMode::ObserverSaveAttachmentPopup(0)),
+            (
+                Tab::Admin(AdminTab::DisputesPending),
+                UiMode::AdminMode(AdminMode::Normal),
+            ),
+        ] {
+            let mut app = populated_observer();
+            app.active_tab = tab;
+            app.mode = mode;
+            let generation = app.observer_fetch_generation;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            )
+            .await;
+            assert_eq!(app.observer_shared_key_input, "a".repeat(64));
+            assert_eq!(app.observer_messages[0].content, "private message");
+            assert_eq!(app.observer_error.as_deref(), Some("private error"));
+            assert!(app.observer_loading);
+            assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_copy_matrix_dispatch_blocks_actions_and_invalidated_enter() {
+        for enabled in [false, true] {
+            for mut app in chat_copy::tests::copy_views() {
+                app.admin_chat_input_enabled = enabled;
+                app.order_chat_input_enabled = enabled;
+                let inputs = (
+                    app.admin_chat_input.clone(),
+                    app.order_chat_input.clone(),
+                    app.observer_shared_key_input.clone(),
+                    app.order_chat_draft_owner,
+                );
+                let mode = std::mem::discriminant(&app.mode);
+                let tab = app.active_tab;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert_eq!(chat_copy::selected_index(&app), Some(0));
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+                assert_eq!(app.active_tab, tab);
+                assert_eq!(app.admin_chat_input_enabled, enabled);
+                assert_eq!(app.order_chat_input_enabled, enabled);
+                app.mode = UiMode::HelpPopup(tab, Box::new(app.mode.clone()));
+                chat_copy::validate_selection(&mut app);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(!app.chat_copy_cancelled);
+                assert!(matches!(app.mode, UiMode::HelpPopup(..)));
+                assert_eq!(
+                    (
+                        app.admin_chat_input,
+                        app.order_chat_input,
+                        app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    inputs
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_copy_dispatch_suspends_input_actions_and_paste_until_cancel() {
+        for input_enabled in [false, true] {
+            for mut app in [
+                chat_copy::tests::app_with_messages(),
+                chat_copy::tests::app_with_solver_dms(),
+            ] {
+                let serbero = app.admin_show_solver_dms;
+                app.admin_chat_input_enabled = input_enabled;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                assert_eq!(chat_copy::selected_index(&app), Some(0));
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert!(!append_paste_to_admin_dispute_chat(&mut app, "paste"));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(chat_copy::selected_index(&app), Some(1));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(app.chat_copy_session.is_none());
+                assert_eq!(app.admin_chat_input, "draft\n  untouched");
+                assert_eq!(app.admin_chat_input_enabled, input_enabled);
+                assert_eq!(app.admin_show_solver_dms, serbero);
+                assert!(matches!(
+                    app.mode,
+                    UiMode::AdminMode(AdminMode::ManagingDispute)
+                ));
+                assert_eq!(
+                    append_paste_to_admin_dispute_chat(&mut app, "paste"),
+                    input_enabled && !serbero
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn my_trades_copy_dispatch_blocks_actions_and_invalidated_enter() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            for input_enabled in [false, true] {
+                let mut app = chat_copy::tests::app_with_order_messages(channel);
+                app.order_chat_input_enabled = input_enabled;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert!(!append_paste_to_order_chat(&mut app, "ignored"));
+                assert_eq!(chat_copy::selected_index(&app), Some(1));
+                assert_eq!(app.active_user_chat_channel, channel);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(app.order_chat_input_enabled, input_enabled);
+                assert_eq!(app.order_chat_input, "draft\n  untouched");
+                assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                let chats = if channel == UserChatChannel::Peer {
+                    &mut app.order_chats
+                } else {
+                    &mut app.user_dispute_chats
+                };
+                chats.get_mut(&Uuid::nil().to_string()).unwrap()[0].content = "changed".into();
+                chat_copy::validate_selection(&mut app);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(app.chat_copy_session.is_none());
+                assert!(!app.chat_copy_cancelled);
+                assert!(app.mode.user_my_trades_interactive());
+                assert_eq!(app.order_chat_input, "draft\n  untouched");
+                assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                assert_eq!(append_paste_to_order_chat(&mut app, "paste"), input_enabled);
+            }
+        }
+    }
+
     #[test]
     fn invoice_notification_selection_toggles_with_arrows() {
         let mut state = InvoiceInputState::for_input(String::new(), true);
@@ -3625,7 +4134,7 @@ mod key_handler_tests {
                 ..
             } => assert!(
                 !*copied_to_clipboard,
-                "Ctrl+C must clear the indicator consistently with the Observer clear-all shortcut"
+                "Ctrl+C is not the unmodified copy key and must clear the indicator"
             ),
             other => panic!("expected ConversationDisclosure, got {other:?}"),
         }

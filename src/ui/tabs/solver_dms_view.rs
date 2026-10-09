@@ -8,7 +8,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
-use crate::ui::helpers::format_local_timestamp;
+use crate::ui::constants::CHAT_COPY_START;
+use crate::ui::helpers::{format_local_timestamp, ChatScrollViewContent};
+use crate::ui::key_handler::chat_copy;
 use crate::ui::{AppState, ChatParty, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::util::solver_dms::SolverDm;
 
@@ -31,8 +33,14 @@ pub fn solver_dms_tab_label(count: usize) -> String {
 /// Newest message first; each shows its time (dropped when `compact`) and
 /// subject, then the body.
 pub fn solver_dm_lines(dms: &[SolverDm], compact: bool) -> Vec<Line<'static>> {
+    solver_dm_content(dms, compact, 1).lines
+}
+
+fn solver_dm_content(dms: &[SolverDm], compact: bool, width: u16) -> ChatScrollViewContent {
     let mut lines = Vec::new();
+    let mut starts = Vec::new();
     for dm in dms.iter().rev() {
+        starts.push(lines.len());
         let at = format_local_timestamp(dm.created_at, "%Y-%m-%d %H:%M")
             .unwrap_or_else(|| "unknown time".to_string());
         let (marker, subject_style) = if dm.needs_action() {
@@ -63,11 +71,21 @@ pub fn solver_dm_lines(dms: &[SolverDm], compact: bool) -> Vec<Line<'static>> {
         lines.extend(dm.text.lines().skip(1).map(|l| Line::raw(l.to_string())));
         lines.push(Line::raw(""));
     }
-    lines
+    ChatScrollViewContent {
+        content_height: lines.len().min(u16::MAX as usize) as u16,
+        content_width: width.max(1),
+        lines,
+        line_start_per_message: starts,
+    }
 }
 
 /// Renders the pane for `dispute_id` into `area`.
 pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState, dispute_id: &str) {
+    chat_copy::validate_selection(app);
+    let selection_active =
+        app.admin_show_solver_dms && app.selected_dispute_id.as_deref() == Some(dispute_id);
+    let selection = chat_copy::selected_index(app).filter(|_| selection_active);
+    let selection_range = chat_copy::selected_range(app).filter(|_| selection_active);
     if app.solver_dm_scroll_dispute.as_deref() != Some(dispute_id) {
         app.solver_dm_scroll = 0;
         app.solver_dm_scroll_dispute = Some(dispute_id.to_string());
@@ -83,10 +101,15 @@ pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState,
         "messages"
     };
     let wide = area.width >= WIDE_PANE_WIDTH;
-    let title = if wide {
-        format!("Serbero · {} {noun} · newest first · PgUp/PgDn", dms.len())
+    let title = if selection.is_some() {
+        "Copy: Serbero".to_string()
+    } else if wide {
+        format!(
+            "Serbero · {} {noun} · newest first · {CHAT_COPY_START}",
+            dms.len()
+        )
     } else {
-        format!("Serbero ({})", dms.len())
+        format!("Serbero ({}) | {CHAT_COPY_START}", dms.len())
     };
     let block = Block::default()
         .title(title)
@@ -97,6 +120,7 @@ pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState,
 
     if dms.is_empty() {
         app.solver_dm_scroll = 0;
+        app.solver_dm_line_starts.clear();
         let empty = Paragraph::new(vec![
             Line::styled(
                 "No assistant messages for this dispute.",
@@ -111,13 +135,21 @@ pub fn render_solver_dms(f: &mut ratatui::Frame, area: Rect, app: &mut AppState,
     }
 
     let inner = block.inner(area);
-    let pane = Paragraph::new(solver_dm_lines(dms, !wide)).wrap(Wrap { trim: false });
+    let mut content = solver_dm_content(dms, !wide, inner.width);
+    let selected_rows =
+        content.select_messages_with_wrap(selection_range, selection, Wrap { trim: false });
+    app.solver_dm_line_starts = content.line_start_per_message.clone();
     // Scroll counts wrapped rows: stop once the last row reaches the bottom.
-    let rows = pane.line_count(inner.width);
+    let rows = usize::from(content.content_height);
     let max_scroll = rows.saturating_sub(usize::from(inner.height));
     app.solver_dm_scroll = app
         .solver_dm_scroll
         .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+    if let Some(selected_rows) = selected_rows {
+        app.solver_dm_scroll =
+            content.selection_scroll_offset(selected_rows, inner.height, app.solver_dm_scroll);
+    }
+    let pane = Paragraph::new(content.lines).wrap(Wrap { trim: false });
     f.render_widget(block, area);
     f.render_widget(pane.scroll((app.solver_dm_scroll, 0)), inner);
 }
@@ -154,6 +186,7 @@ pub fn next_dispute_pane(party: ChatParty, serbero: bool, forward: bool) -> (Cha
 mod tests {
     use super::*;
     use crate::ui::UserRole;
+    use crossterm::event::{KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -182,10 +215,85 @@ mod tests {
 
     fn render(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let dispute_id = app
+            .selected_dispute_id
+            .clone()
+            .unwrap_or_else(|| "d1".into());
         terminal
-            .draw(|f| render_solver_dms(f, f.area(), app, "d1"))
+            .draw(|f| render_solver_dms(f, f.area(), app, &dispute_id))
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    fn highlighted(buffer: &ratatui::buffer::Buffer, text: &str) -> bool {
+        (0..buffer.area.height).any(|row| {
+            (0..buffer.area.width)
+                .map(|column| &buffer[(column, row)])
+                .filter(|cell| cell.bg == PRIMARY_COLOR)
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains(text)
+        })
+    }
+
+    fn copy_key(app: &mut AppState, code: KeyCode, modifiers: KeyModifiers) {
+        assert!(chat_copy::handle_key_with(
+            app,
+            &KeyEvent::new(code, modifiers),
+            |_| false
+        ));
+    }
+
+    #[test]
+    fn solver_dm_copy_highlight_survives_arrival_navigation_and_resize() {
+        let mut app = chat_copy::tests::app_with_solver_dms();
+        copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for (width, height) in [(80, 12), (40, 8), (30, 5), (80, 12)] {
+            let buffer = render(&mut app, width, height);
+            assert!(
+                highlighted(&buffer, "newest"),
+                "missing selection at {width}x{height}"
+            );
+            assert!(buffer_contains(&buffer, "Copy: Serbero"));
+        }
+        let mut incoming = app.solver_dms["dispute"][1].clone();
+        incoming.event_id = "incoming".into();
+        incoming.text = "header\nincoming".into();
+        app.solver_dms.get_mut("dispute").unwrap().push(incoming);
+        let buffer = render(&mut app, 30, 5);
+        assert!(highlighted(&buffer, "newest"));
+        assert_eq!(chat_copy::selected_index(&app), Some(1));
+        copy_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let buffer = render(&mut app, 30, 5);
+        assert!(highlighted(&buffer, "older"));
+        assert!(app.solver_dm_scroll > 0);
+        copy_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let buffer = render(&mut app, 30, 5);
+        assert!(!highlighted(&buffer, "older"));
+        assert!(scroll_solver_dms(&mut app, KeyCode::End));
+        assert_eq!(app.solver_dm_scroll, 0);
+    }
+
+    #[test]
+    fn solver_dm_copy_preserves_wrapping_and_handles_oversized_messages() {
+        let mut app = chat_copy::tests::app_with_solver_dms();
+        app.solver_dms.get_mut("dispute").unwrap()[1].text =
+            format!("header\n    selected {}", "wide text ".repeat(60));
+        copy_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for (width, height) in [(80, 12), (40, 8), (30, 5)] {
+            let buffer = render(&mut app, width, height);
+            assert!(highlighted(&buffer, "selected"));
+            assert_eq!(app.solver_dm_scroll, 0);
+        }
+        for (width, height) in [(0, 0), (1, 1), (8, 3)] {
+            render(&mut app, width, height);
+        }
+        let mut content = solver_dm_content(&app.solver_dms["dispute"], true, 12);
+        let expected_rows = Paragraph::new(content.lines.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(12);
+        content.select_messages_with_wrap(Some(0..=0), Some(0), Wrap { trim: false });
+        assert_eq!(usize::from(content.content_height), expected_rows);
     }
 
     #[test]

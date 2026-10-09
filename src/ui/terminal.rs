@@ -5,6 +5,7 @@
 //! keyboard-enhancement flags (Ctrl+I vs Tab).
 
 use crate::ui::terminal_alert::{POP_TITLE, PUSH_TITLE};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -17,7 +18,45 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, stdout, Stdout, Write};
+use std::io::{self, stdin, stdout, IsTerminal, Stdout, Write};
+use zeroize::Zeroizing;
+
+const MAX_OSC52_BYTES: usize = 64 * 1024;
+
+pub(crate) fn copy_with_osc52(text: &str) -> bool {
+    let output = stdout();
+    let interactive = output.is_terminal() && stdin().is_terminal();
+    let term = std::env::var("TERM").ok();
+    write_osc52(&mut output.lock(), text, interactive, term.as_deref()).is_ok()
+}
+
+fn write_osc52(
+    writer: &mut impl Write,
+    text: &str,
+    interactive: bool,
+    term: Option<&str>,
+) -> io::Result<()> {
+    if !interactive || term.is_some_and(|term| term.eq_ignore_ascii_case("dumb")) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Terminal clipboard unavailable",
+        ));
+    }
+    if text.len() > MAX_OSC52_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Terminal clipboard payload too large",
+        ));
+    }
+    const PREFIX: &str = "\x1b]52;c;";
+    let encoded_len = text.len().div_ceil(3) * 4;
+    let mut sequence = Zeroizing::new(String::with_capacity(PREFIX.len() + encoded_len + 1));
+    sequence.push_str(PREFIX);
+    STANDARD.encode_string(text, &mut sequence);
+    sequence.push('\x07');
+    writer.write_all(sequence.as_bytes())?;
+    writer.flush()
+}
 
 /// Crossterm-backed ratatui terminal used by the main event loop.
 pub type MostrixTerminal = Terminal<CrosstermBackend<Stdout>>;
@@ -115,6 +154,117 @@ pub fn leave(terminal: &mut MostrixTerminal) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ClipboardWriter {
+        bytes: Vec<u8>,
+        fail_write: bool,
+        fail_flush: bool,
+        flushed: bool,
+    }
+
+    impl Write for ClipboardWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed = true;
+            if self.fail_flush {
+                Err(io::Error::other("flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn osc52_encodes_exact_text_and_flushes_without_control_injection() {
+        let text = "  message\r\n\t\u{00e9}\u{754c}\x1b]52;c;untrusted\x07  ";
+        let mut writer = ClipboardWriter::default();
+        write_osc52(&mut writer, text, true, Some("xterm-256color")).unwrap();
+        assert!(writer.flushed);
+        assert!(writer.bytes.starts_with(b"\x1b]52;c;"));
+        assert!(writer.bytes.ends_with(b"\x07"));
+        let encoded = &writer.bytes[7..writer.bytes.len() - 1];
+        assert!(encoded
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(byte)));
+        assert_eq!(STANDARD.decode(encoded).unwrap(), text.as_bytes());
+    }
+
+    #[test]
+    fn osc52_preserves_wire_format_at_padding_and_size_boundaries() {
+        for length in [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            1023,
+            1024,
+            1025,
+            MAX_OSC52_BYTES - 2,
+            MAX_OSC52_BYTES - 1,
+            MAX_OSC52_BYTES,
+        ] {
+            let text = "x".repeat(length);
+            let mut writer = ClipboardWriter::default();
+            write_osc52(&mut writer, &text, true, Some("xterm")).unwrap();
+            let expected = format!("\x1b]52;c;{}\x07", STANDARD.encode(&text));
+            assert_eq!(writer.bytes, expected.as_bytes(), "payload length {length}");
+            assert!(writer.flushed);
+        }
+    }
+
+    #[test]
+    fn osc52_requires_interactive_output_and_rejects_dumb_terminals() {
+        for (interactive, term) in [
+            (false, Some("xterm")),
+            (true, Some("dumb")),
+            (true, Some("DUMB")),
+        ] {
+            let mut writer = ClipboardWriter::default();
+            assert!(write_osc52(&mut writer, "private text", interactive, term).is_err());
+            assert!(writer.bytes.is_empty());
+            assert!(!writer.flushed);
+        }
+    }
+
+    #[test]
+    fn osc52_caps_raw_utf8_bytes_without_truncating() {
+        let text = "\u{00e9}".repeat(MAX_OSC52_BYTES / 2);
+        let mut writer = ClipboardWriter::default();
+        write_osc52(&mut writer, &text, true, None).unwrap();
+        assert_eq!(
+            STANDARD
+                .decode(&writer.bytes[7..writer.bytes.len() - 1])
+                .unwrap(),
+            text.as_bytes()
+        );
+        let mut writer = ClipboardWriter::default();
+        assert!(write_osc52(&mut writer, &(text + "x"), true, None).is_err());
+        assert!(writer.bytes.is_empty());
+    }
+
+    #[test]
+    fn osc52_reports_write_and_flush_failures() {
+        for fail_write in [true, false] {
+            let mut writer = ClipboardWriter {
+                fail_write,
+                fail_flush: !fail_write,
+                ..Default::default()
+            };
+            assert!(write_osc52(&mut writer, "text", true, Some("xterm")).is_err());
+            assert_eq!(writer.flushed, !fail_write);
+        }
+    }
 
     #[test]
     fn keyboard_enhancement_guard_drop_does_not_panic() {

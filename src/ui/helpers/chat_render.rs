@@ -1,9 +1,13 @@
+use std::ops::{Range, RangeInclusive};
+
+use ratatui::layout::Position;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::ListItem;
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
+use tui_scrollview::ScrollViewState;
 
 use crate::ui::helpers::format_local_timestamp;
-use crate::ui::{ChatParty, ChatSender, DisputeChatMessage};
+use crate::ui::{ChatParty, ChatSender, DisputeChatMessage, PRIMARY_COLOR};
 
 use super::chat_visibility::message_visible_for_party;
 
@@ -136,6 +140,94 @@ pub struct ChatScrollViewContent {
     pub content_height: u16,
     pub content_width: u16,
     pub line_start_per_message: Vec<usize>,
+}
+
+impl ChatScrollViewContent {
+    pub(crate) fn select_messages(
+        &mut self,
+        selected: Option<RangeInclusive<usize>>,
+        focus: Option<usize>,
+    ) -> Option<Range<usize>> {
+        self.select_messages_with_wrap(selected, focus, Wrap { trim: true })
+    }
+
+    pub(crate) fn select_messages_with_wrap(
+        &mut self,
+        selected: Option<RangeInclusive<usize>>,
+        focus: Option<usize>,
+        wrap: Wrap,
+    ) -> Option<Range<usize>> {
+        let logical_starts = self.line_start_per_message.clone();
+        let mut rows = 0usize;
+        let mut selected_rows = None;
+        for (index, start) in logical_starts.iter().copied().enumerate() {
+            let end = logical_starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(self.lines.len());
+            self.line_start_per_message[index] = rows;
+            let message_start = rows;
+            let in_selection = selected
+                .as_ref()
+                .is_some_and(|range| range.contains(&index));
+            for line in &mut self.lines[start..end] {
+                if in_selection && !line.spans.is_empty() && line.width() > 0 {
+                    line.style = line.style.bg(PRIMARY_COLOR).fg(Color::Black);
+                    for span in &mut line.spans {
+                        span.style = span.style.bg(PRIMARY_COLOR).fg(Color::Black);
+                    }
+                }
+                rows = rows.saturating_add(
+                    Paragraph::new(line.clone())
+                        .wrap(wrap)
+                        .line_count(self.content_width.max(1)),
+                );
+            }
+            if focus == Some(index) {
+                let separator = usize::from(self.lines[end - 1].width() == 0);
+                selected_rows =
+                    Some(message_start..rows.saturating_sub(separator).max(message_start + 1));
+            }
+        }
+        if !logical_starts.is_empty() {
+            self.content_height = rows.min(u16::MAX as usize) as u16;
+        }
+        selected_rows
+    }
+
+    pub(crate) fn keep_selection_visible(
+        &self,
+        selected: Range<usize>,
+        viewport_height: u16,
+        state: &mut ScrollViewState,
+    ) {
+        state.set_offset(Position::new(
+            0,
+            self.selection_scroll_offset(selected, viewport_height, state.offset().y),
+        ));
+    }
+
+    pub(crate) fn selection_scroll_offset(
+        &self,
+        selected: Range<usize>,
+        viewport_height: u16,
+        current_offset: u16,
+    ) -> u16 {
+        if viewport_height == 0 {
+            return current_offset;
+        }
+        let height = usize::from(viewport_height);
+        let current = usize::from(current_offset);
+        let offset = if selected.start < current || selected.len() > height {
+            selected.start
+        } else if selected.end > current.saturating_add(height) {
+            selected.end.saturating_sub(height)
+        } else {
+            current
+        };
+        let max_offset = self.content_height.saturating_sub(viewport_height);
+        offset.min(usize::from(max_offset)) as u16
+    }
 }
 
 /// Builds scrollview content: flat lines, height, width, and line_start_per_message for the visible messages.

@@ -64,6 +64,11 @@ pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message i
 pub const HELP_DIP_PASTE_CHAT: &str =
     "Ctrl+V / Shift+Insert / right-click: Paste into message input";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
+pub const CHAT_COPY_START: &str = "Ctrl+C:Copy";
+pub const CHAT_COPY_HINT: &str = "↑↓:Extend Enter:Copy Esc:Cancel";
+pub const HELP_CHAT_COPY: &str = "Ctrl+C: Select messages to copy (also while typing)";
+pub const HELP_CHAT_COPY_KEYS: &str =
+    "Copy mode: ↑↓ extend, Enter copies, Esc cancels; draft preserved";
 
 // Help popup lines (Disputes Pending)
 pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
@@ -103,7 +108,7 @@ pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into Shared key field
 pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
 pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
 pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
-pub const HELP_OBS_CTRL_C_CLEAR: &str = "Ctrl+C: Clear all";
+pub const HELP_OBS_CTRL_L_CLEAR: &str = "Ctrl+L: Clear all";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)

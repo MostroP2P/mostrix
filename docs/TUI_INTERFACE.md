@@ -108,7 +108,7 @@ Focused on dispute resolution and protocol management.
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
   - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
-  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
+  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to select a message to copy, `Ctrl+L` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key (set `admin_privkey` to the Mostro daemon nsec)
@@ -255,7 +255,7 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
     - **Payment method picker** (`PaymentMethodPicker` on `FormState`, `form_input::handle_payment_method_picker_key` — interceptor next to the currency one): on **Method**, **Enter** / **Space** / typing opens a multi-select dropdown of standard methods for the current fiat (bundled `src/ui/payment_methods.json`, Mostro Mobile snapshot plus extras such as Satispay on EUR). **↑/↓** move, **Enter** toggles a listed method or adds a sanitized custom name (`+ add custom` row), **Space** with an empty filter also toggles, **Esc** keeps the selection. While closed, **Backspace** is consumed so it cannot silently rewrite the comma-separated value. The field stores a comma-separated string for protocol submit.
     - **Submit**: **Enter** on a complete form opens `ConfirmingOrder` (YES/NO); **Esc** cancels and clears `order_form_draft`.
     - **Draft persistence**: **Left** / **Right** tab navigation silently saves the form to `AppState.order_form_draft` and switches tabs. Returning to Create New Order restores the draft (`navigation::restore_or_new_form`, auto-init in `draw.rs` when tab is active in `Normal` mode).
-  - **Global shortcut guard**: `c` / `C` (copy invoice / observer clear) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency** and **Payment Method**, the picker interceptors run first and consume most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
+  - **Global shortcut guard**: `c` / `C` (copy invoice) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency** and **Payment Method**, the picker interceptors run first and consume most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Observer clear uses **Ctrl+L** only when its input is editable, never behind a popup. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste; enabled at startup via `EnableBracketedPaste`)
@@ -273,6 +273,136 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` or `PayBondInvoice` notification, or in the My Trades **Shift+K** Shared key disclosure popup, uses the `arboard` crate (`handle_clipboard_copy` in `src/ui/key_handler/mod.rs`) to copy the invoice or the Shared key hex respectively. Only the Shared key is copyable from the disclosure popup — the signing key is never copied (and never displayed). The write runs synchronously and reports the real result: `copied_to_clipboard` (and the "✓ ... copied!" confirmation) is only set once `arboard::Clipboard::new()` and `set_text()` actually succeed; a failed write leaves the popup showing "Press C to copy" instead of a false success message. Persistence beyond that call is handled by the platform backend without blocking on it — the shared clipboard worker thread `arboard` starts on X11, or the background process `wl-clipboard-rs` detaches on Wayland.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
+
+### Copying Chat Messages
+
+With no popup open, focus one of these chat views and press **Ctrl+C**:
+
+| View | Available conversations | First selected message |
+| --- | --- | --- |
+| Disputes in Progress | Selected active dispute, BUYER or SELLER pane | First displayed message in that party's transcript |
+| Solver DMs | SERBERO pane of the selected active dispute | Newest DM, matching the newest-first display |
+| My Trades | Selected trade, Peer or available Solver channel | First displayed message in that channel |
+| Observer | Loaded conversation for the current Shared key | First displayed message, across all parties |
+
+Ordinary chat transcripts display oldest first. Finalized dispute views and the
+Messages tab's trade timeline are not copy-selection targets.
+
+1. **Ctrl+C** selects the first message in display order, including when chat
+  input is enabled.
+2. **Up/Down** move the cursor through messages without wrapping at either end.
+  Every message from the starting message through the cursor stays highlighted.
+  The cursor end stays visible during resizing and incoming messages; an
+  oversized focused message is anchored at its beginning. A new Solver DM does
+  not change the selected DM identity.
+3. **Enter** copies the highlighted range (joined with newlines) and exits
+  selection, even if copying fails. **Esc** exits without copying.
+
+Copying uses the exact stored text, preserving whitespace, Unicode, and
+newlines. It does not add displayed timestamps, sender labels, wrapping, or
+styling. Multiple selected messages are separated by a blank line. Solver DMs
+include their full stored text, including the header omitted by the renderer.
+For an attachment, **Enter copies its stored filename**, not its URL, encrypted
+metadata, file contents, or display placeholder. If any selected attachment has
+an empty filename, the whole range fails with **No filename to copy** and
+nothing is written to the clipboard. Use **Ctrl+S** outside selection mode to
+save attachments instead.
+
+Selection does not change the draft, its owning conversation, or the enabled/
+disabled input layer. Typing, key/bracketed/mouse paste, sending, attachments,
+help, tab/channel switching, and other commands are suspended until selection
+ends. Repeated **Ctrl+C** does not restart an active selection. Existing invoice,
+seed, and Shared key popup copy shortcuts remain unchanged.
+
+If the selected conversation or any message in the highlighted range becomes
+invalid (including an interior message whose identity or content changes),
+selection is cancelled.
+The next key is consumed to prevent an intended copy from sending a draft,
+fetching a conversation, or confirming a popup. Paste is also blocked while this
+cancellation is pending. An empty or loading transcript reports **No messages to
+copy** without entering selection. Copy feedback belongs only to its conversation.
+After Enter finishes a copy attempt, further Enter presses are ignored until
+another key or a nonempty paste. This prevents legacy terminal key repeats from
+sending the preserved draft or starting
+an Observer fetch. Fresh input dismisses the feedback and restores normal Enter
+handling; the draft and input layer are not changed by the guard.
+The Enter latch is independent of feedback and temporary focus changes: an async
+popup appearing or disappearing does not reset it. Use **Esc** to dismiss an
+async popup; repeated Enter presses remain ignored until fresh input.
+
+In Observer, **Enter copies instead of fetching while selecting**. **Ctrl+L** still
+securely clears the Shared key, messages, error, and loading state, cancels copy
+selection, and invalidates pending fetch results. It does not clear the system or
+terminal clipboard, including copies of Shared keys, invoices, or messages held
+by clipboard history/managers.
+
+**Implementation and automated coverage:** selection and backend routing live in
+[`chat_copy.rs`](../src/ui/key_handler/chat_copy.rs); production key and paste
+guards live in [`key_handler/mod.rs`](../src/ui/key_handler/mod.rs) and
+[`main.rs`](../src/main.rs). The event loop dispatches key-press events only;
+release/repeat events do not introduce another copy-mode input policy. Inline
+tests cover both input layers, all six conversation contexts, cancellation,
+exact text/filename copying, backend failures, and narrow/short TestBackend
+rendering. Shared wrapping checks include long unbroken tokens and wide Unicode.
+
+### Optional Terminal Clipboard Fallback (OSC 52)
+
+Chat selection with **Ctrl+C**, arrow keys, and **Enter** uses the native clipboard
+first. To allow a terminal clipboard fallback when native copying fails, set this
+in your active `settings.toml` and restart Mostrix:
+
+```toml
+clipboard_osc52 = true
+```
+
+The default is `false`, including for older configurations without this field.
+This option applies only to chat-message copying (Disputes in Progress, Solver
+DMs, My Trades, and Observer), not invoice, seed, or Shared key popup shortcuts.
+
+- Native success reports **Copied to clipboard** and never sends OSC 52.
+- On Linux, a native worker timeout or disconnected result channel reports
+  **Clipboard result unknown** and does not send OSC 52. The worker may still
+  complete a native copy later; only a confirmed failure permits fallback.
+- Fallback success reports **Sent to terminal clipboard**. The terminal can ignore
+  or block the request; Mostrix cannot confirm that its clipboard changed.
+- Non-interactive output, `TERM=dumb`, an oversized payload, or a write/flush failure reports
+  **Clipboard unavailable**. Copy mode exits even on failure.
+- Fallback requires interactive stdin/stdout and rejects `TERM=dumb`. It sends
+  only a clipboard-write sequence, never a clipboard read or query.
+- The limit is **64 KiB of original UTF-8 bytes** before base64 encoding; larger
+  fallback payloads are rejected without truncation. Native copying has no such cap.
+- Over SSH, enable this on the machine running Mostrix and use a local terminal
+  that permits OSC 52 clipboard writes. A working native clipboard still takes
+  priority. tmux/screen may need their own configuration; Mostrix does not add
+  automatic passthrough sequences.
+
+Copied messages and attachment filenames leave Mostrix for the system or terminal
+clipboard and may be retained by clipboard history/managers. Observer **Ctrl+L**
+clears application state, not an external clipboard. Automated tests verify the
+output bytes and failure paths; they do not certify a specific terminal/SSH setup.
+
+### Manual Clipboard Acceptance Checks
+
+These are checks to run on the target environment, **not completed platform
+validation**. Automated tests inject clipboard callbacks or capture OSC 52 bytes;
+they do not write to the operating system clipboard.
+
+- In every supported conversation, copy multiline Unicode text, leading/trailing
+  spaces, and a long invoice/key/order ID. Paste into an external editor and
+  compare the exact text. Check attachment filenames where attachments exist.
+- In writable chats, start a draft with input enabled and disabled. Copy and
+  cancel selections, then resume the original layer. Verify no unintended send,
+  paste, attachment action, or conversation switch occurred.
+- Resize to narrow and short panels and receive another message while selecting.
+  Check selection visibility and Solver DM identity. In Observer, verify Enter
+  copies without fetching and Ctrl+L prevents stale fetch results from returning.
+- Check native clipboard persistence after returning to Mostrix on Windows,
+  macOS, X11, and Wayland as available. Check existing invoice, seed, Shared key,
+  and attachment shortcuts outside selection.
+- Over SSH with the remote native clipboard unavailable, test OSC 52 opt-in off
+  and on, restarting after each setting change. Check the local clipboard, a
+  blocked/unsupported terminal, and a payload larger than 64 KiB. Test any
+  tmux/screen setup separately; a sent status is not proof of delivery.
 
 ## UI Components
 
